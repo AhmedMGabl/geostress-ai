@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoStress AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.2/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link href="/static/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="d-none">
+        <div class="spinner-border text-light" role="status" style="width:3rem;height:3rem;">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <div class="text-light mt-3 fs-5" id="loading-text">Processing...</div>
+    </div>
+
+    <div class="d-flex" style="min-height:100vh">
+        <!-- Sidebar -->
+        <nav id="sidebar">
+            <div class="sidebar-header">
+                <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
+                <small class="text-muted-light">Fracture Analysis & Stress Inversion</small>
+            </div>
+
+            <ul class="nav flex-column sidebar-nav">
+                <li class="nav-item">
+                    <a class="nav-link active" data-tab="data" href="#">
+                        <i class="bi bi-table"></i> Data Overview
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="viz" href="#">
+                        <i class="bi bi-pie-chart"></i> Visualizations
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="inversion" href="#">
+                        <i class="bi bi-gear-wide-connected"></i> Stress Inversion
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="classify" href="#">
+                        <i class="bi bi-diagram-3"></i> ML Classification
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="cluster" href="#">
+                        <i class="bi bi-bullseye"></i> Fracture Clustering
+                    </a>
+                </li>
+            </ul>
+
+            <!-- Parameters -->
+            <div class="sidebar-section">
+                <h6 class="sidebar-heading">Parameters</h6>
+                <div class="mb-2">
+                    <label class="form-label-sm">Well</label>
+                    <select id="well-select" class="form-select form-select-sm">
+                    </select>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label-sm">Stress Regime</label>
+                    <select id="regime-select" class="form-select form-select-sm">
+                        <option value="strike_slip" selected>Strike-Slip</option>
+                        <option value="normal">Normal</option>
+                        <option value="thrust">Thrust</option>
+                    </select>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label-sm">Depth (m)</label>
+                    <input type="number" id="depth-input" class="form-control form-control-sm" value="3300" min="500" max="6000">
+                </div>
+            </div>
+
+            <!-- Upload -->
+            <div class="sidebar-section">
+                <h6 class="sidebar-heading">Upload Data</h6>
+                <input type="file" id="file-upload" class="form-control form-control-sm" accept=".xls,.xlsx">
+                <div id="upload-status" class="small mt-1"></div>
+                <div class="mt-2">
+                    <span class="badge" id="data-source-badge">Demo Data</span>
+                </div>
+                <button id="btn-use-demo" class="btn btn-outline-light btn-sm mt-1 d-none" onclick="switchToDemo()">
+                    Back to Demo Data
+                </button>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="flex-grow-1">
+            <!-- Top bar -->
+            <div class="topbar d-flex align-items-center justify-content-between px-4">
+                <div>
+                    <span id="page-title" class="fw-semibold fs-5">Data Overview</span>
+                    <span class="text-muted ms-2" id="fracture-count-badge"></span>
+                </div>
+                <div class="d-flex align-items-center gap-3">
+                    <span class="text-muted small">AI-Powered Geostress Analysis</span>
+                </div>
+            </div>
+
+            <div class="content-area p-4">
+                <!-- DATA TAB -->
+                <div id="tab-data" class="tab-content active">
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-3">
+                            <div class="metric-card">
+                                <div class="metric-label">Total Fractures</div>
+                                <div class="metric-value" id="total-fractures">--</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="metric-card">
+                                <div class="metric-label">Wells</div>
+                                <div class="metric-value" id="total-wells">--</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="metric-card">
+                                <div class="metric-label">Fracture Types</div>
+                                <div class="metric-value" id="total-types">--</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="metric-card">
+                                <div class="metric-label">Data Source</div>
+                                <div class="metric-value" id="data-source-label">Demo</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">Fracture Summary by Well & Type</div>
+                        <div class="card-body p-0">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover mb-0" id="summary-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Well</th><th>Fracture Type</th><th>Count</th>
+                                            <th>Depth Min (m)</th><th>Depth Max (m)</th>
+                                            <th>Mean Azimuth (&deg;)</th><th>Mean Dip (&deg;)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- VISUALIZATIONS TAB -->
+                <div id="tab-viz" class="tab-content">
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="loadAllViz()">
+                            <i class="bi bi-play-fill"></i> Generate All
+                        </button>
+                    </div>
+                    <div class="row g-3">
+                        <div class="col-lg-6">
+                            <div class="card">
+                                <div class="card-header">Rose Diagram</div>
+                                <div class="card-body text-center">
+                                    <img id="rose-img" class="plot-img" alt="Click Generate All">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="card">
+                                <div class="card-header">Stereonet</div>
+                                <div class="card-body text-center">
+                                    <img id="stereonet-img" class="plot-img" alt="Click Generate All">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <div class="card">
+                                <div class="card-header">Depth Profile</div>
+                                <div class="card-body text-center">
+                                    <img id="depth-img" class="plot-img" alt="Click Generate All">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- INVERSION TAB -->
+                <div id="tab-inversion" class="tab-content">
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="runInversion()">
+                            <i class="bi bi-play-fill"></i> Run Inversion
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="runAllRegimes()">
+                            <i class="bi bi-arrow-repeat"></i> Compare All Regimes
+                        </button>
+                    </div>
+                    <!-- Results metrics -->
+                    <div id="inversion-results" class="d-none">
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;1 (MPa)</div><div class="metric-value" id="inv-sigma1">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;2 (MPa)</div><div class="metric-value" id="inv-sigma2">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;3 (MPa)</div><div class="metric-value" id="inv-sigma3">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">R Ratio</div><div class="metric-value" id="inv-R">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">SHmax (&deg;)</div><div class="metric-value" id="inv-shmax">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">Critically Stressed</div><div class="metric-value" id="inv-cs">--</div></div></div>
+                        </div>
+                        <div class="row g-3">
+                            <div class="col-lg-6">
+                                <div class="card"><div class="card-header">Mohr Circle</div>
+                                <div class="card-body text-center"><img id="mohr-img" class="plot-img"></div></div>
+                            </div>
+                            <div class="col-lg-6">
+                                <div class="card"><div class="card-header">Slip Tendency</div>
+                                <div class="card-body text-center"><img id="slip-img" class="plot-img"></div></div>
+                            </div>
+                            <div class="col-lg-6">
+                                <div class="card"><div class="card-header">Dilation Tendency</div>
+                                <div class="card-body text-center"><img id="dilation-img" class="plot-img"></div></div>
+                            </div>
+                            <div class="col-lg-6">
+                                <div class="card"><div class="card-header">Analysis Dashboard</div>
+                                <div class="card-body text-center"><img id="dashboard-img" class="plot-img"></div></div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Regime comparison table -->
+                    <div id="regime-comparison" class="d-none mt-4">
+                        <div class="card">
+                            <div class="card-header">Regime Comparison</div>
+                            <div class="card-body p-0">
+                                <table class="table table-striped mb-0" id="regime-table">
+                                    <thead><tr>
+                                        <th>Regime</th><th>&sigma;1</th><th>&sigma;2</th><th>&sigma;3</th>
+                                        <th>R</th><th>SHmax</th><th>&mu;</th><th>Crit. Stressed</th>
+                                    </tr></thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- CLASSIFICATION TAB -->
+                <div id="tab-classify" class="tab-content">
+                    <div class="d-flex gap-2 mb-3">
+                        <select id="classifier-select" class="form-select form-select-sm" style="width:auto">
+                            <option value="random_forest">Random Forest</option>
+                            <option value="gradient_boosting">Gradient Boosting</option>
+                        </select>
+                        <button class="btn btn-primary btn-sm" onclick="runClassification()">
+                            <i class="bi bi-play-fill"></i> Run Classification
+                        </button>
+                    </div>
+                    <div id="classify-results" class="d-none">
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-4">
+                                <div class="metric-card">
+                                    <div class="metric-label">CV Accuracy</div>
+                                    <div class="metric-value" id="clf-accuracy">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="metric-card">
+                                    <div class="metric-label">Std Deviation</div>
+                                    <div class="metric-value" id="clf-std">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="metric-card">
+                                    <div class="metric-label">Classifier</div>
+                                    <div class="metric-value" id="clf-type">--</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row g-3">
+                            <div class="col-lg-6">
+                                <div class="card">
+                                    <div class="card-header">Feature Importances</div>
+                                    <div class="card-body" id="feat-imp-container"></div>
+                                </div>
+                            </div>
+                            <div class="col-lg-6">
+                                <div class="card">
+                                    <div class="card-header">Confusion Matrix</div>
+                                    <div class="card-body p-0">
+                                        <div class="table-responsive">
+                                            <table class="table table-bordered mb-0 table-sm" id="confusion-table">
+                                                <thead></thead><tbody></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- CLUSTERING TAB -->
+                <div id="tab-cluster" class="tab-content">
+                    <div class="d-flex gap-2 mb-3">
+                        <select id="n-clusters-select" class="form-select form-select-sm" style="width:auto">
+                            <option value="auto">Auto-detect</option>
+                            <option value="2">2 clusters</option>
+                            <option value="3">3 clusters</option>
+                            <option value="4">4 clusters</option>
+                            <option value="5">5 clusters</option>
+                            <option value="6">6 clusters</option>
+                        </select>
+                        <button class="btn btn-primary btn-sm" onclick="runClustering()">
+                            <i class="bi bi-play-fill"></i> Run Clustering
+                        </button>
+                    </div>
+                    <div id="cluster-results" class="d-none">
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-4">
+                                <div class="metric-card">
+                                    <div class="metric-label">Fracture Sets Found</div>
+                                    <div class="metric-value" id="n-clusters-val">--</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row g-3">
+                            <div class="col-lg-6">
+                                <div class="card">
+                                    <div class="card-header">Cluster Stereonet</div>
+                                    <div class="card-body text-center">
+                                        <img id="cluster-img" class="plot-img">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-lg-6">
+                                <div class="card">
+                                    <div class="card-header">Cluster Statistics</div>
+                                    <div class="card-body p-0">
+                                        <table class="table table-striped mb-0 table-sm" id="cluster-stats-table">
+                                            <thead><tr><th>Set</th><th>Mean Az</th><th>Mean Dip</th><th>Count</th></tr></thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast -->
+    <div class="position-fixed bottom-0 end-0 p-3" style="z-index:9999">
+        <div id="toast" class="toast" role="alert">
+            <div class="toast-header">
+                <strong class="me-auto" id="toast-title">GeoStress AI</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toast-body"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
