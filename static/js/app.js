@@ -5089,20 +5089,31 @@ async function runPredictWithAbstention() {
             var abstained = r.samples.filter(function(s) { return s.status !== "CONFIDENT"; });
             var confident = r.samples.filter(function(s) { return s.status === "CONFIDENT" && !s.correct; });
             html += '<h6><i class="bi bi-person-raised-hand"></i> Samples Requiring Expert Review (' + abstained.length + ')</h6>';
+            html += '<p class="small text-muted">Select the correct fracture type for uncertain samples. Corrections improve future predictions.</p>';
             if (abstained.length > 0) {
+                // Store class names for dropdowns
+                var classNames = r.class_names || [];
+                var classOpts = classNames.map(function(c) { return '<option value="' + c + '">' + c + '</option>'; }).join("");
                 html += '<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr>' +
-                    '<th>Depth</th><th>Az</th><th>Dip</th><th>True</th><th>Conf</th><th>Top Candidates</th></tr></thead><tbody>';
-                abstained.slice(0, 20).forEach(function(s) {
+                    '<th>Depth</th><th>Az</th><th>Dip</th><th>Current</th><th>Conf</th><th>Top Candidates</th><th>Correct As</th></tr></thead><tbody>';
+                abstained.slice(0, 20).forEach(function(s, idx) {
                     var cands = (s.top_candidates || []).map(function(c) {
                         return c["class"] + " (" + (c.probability * 100).toFixed(0) + "%)";
                     }).join(", ");
-                    html += '<tr class="table-warning"><td>' + (s.depth || "-") + '</td><td>' + (s.azimuth || "-") + '</td>' +
+                    var tentative = s.tentative_prediction || s.true_label;
+                    html += '<tr class="table-warning" id="review-row-' + idx + '"><td>' + (s.depth || "-") + '</td><td>' + (s.azimuth || "-") + '</td>' +
                         '<td>' + (s.dip || "-") + '</td><td>' + s.true_label + '</td>' +
-                        '<td>' + (s.confidence * 100).toFixed(0) + '%</td><td>' + cands + '</td></tr>';
+                        '<td>' + (s.confidence * 100).toFixed(0) + '%</td><td>' + cands + '</td>' +
+                        '<td><select class="form-select form-select-sm review-correction" data-index="' + s.index + '" ' +
+                        'data-depth="' + (s.depth || "") + '" data-az="' + (s.azimuth || "") + '" data-dip="' + (s.dip || "") + '" ' +
+                        'data-original="' + s.true_label + '" style="width:auto;display:inline-block">' +
+                        '<option value="">-- Accept --</option>' + classOpts + '</select></td></tr>';
                 });
                 html += '</tbody></table></div>';
+                html += '<button class="btn btn-primary btn-sm mt-2" onclick="submitReviewCorrections()">' +
+                    '<i class="bi bi-check2-all"></i> Submit Corrections</button>';
                 if (abstained.length > 20) {
-                    html += '<small class="text-muted">Showing 20 of ' + abstained.length + ' abstained samples</small>';
+                    html += '<small class="text-muted ms-2">Showing 20 of ' + abstained.length + ' abstained samples</small>';
                 }
             }
             // Misclassified confident samples
@@ -5125,6 +5136,52 @@ async function runPredictWithAbstention() {
         showToast("Abstention error: " + err.message, "Error");
     } finally {
         hideLoading();
+    }
+}
+
+
+async function submitReviewCorrections() {
+    var selects = document.querySelectorAll(".review-correction");
+    var corrections = [];
+    selects.forEach(function(sel) {
+        if (sel.value) {
+            corrections.push({
+                fracture_index: parseInt(sel.dataset.index),
+                depth: parseFloat(sel.dataset.depth) || null,
+                azimuth: parseFloat(sel.dataset.az) || null,
+                dip: parseFloat(sel.dataset.dip) || null,
+                original_type: sel.dataset.original,
+                corrected_type: sel.value,
+                source: "uncertainty_review"
+            });
+        }
+    });
+
+    if (corrections.length === 0) {
+        showToast("No corrections selected", "Info");
+        return;
+    }
+
+    try {
+        var r = await apiPost("/api/feedback/batch-corrections", {
+            well: getWell(),
+            corrections: corrections,
+            reviewer: "expert",
+        });
+        showToast(corrections.length + " correction(s) submitted — model will improve");
+        // Gray out submitted rows
+        selects.forEach(function(sel) {
+            if (sel.value) {
+                var row = sel.closest("tr");
+                if (row) {
+                    row.classList.remove("table-warning");
+                    row.classList.add("table-success");
+                    sel.disabled = true;
+                }
+            }
+        });
+    } catch (err) {
+        showToast("Correction error: " + err.message, "Error");
     }
 }
 

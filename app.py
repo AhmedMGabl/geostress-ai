@@ -1082,6 +1082,49 @@ async def correct_label(request: Request):
     }
 
 
+@app.post("/api/feedback/batch-corrections")
+async def batch_corrections(request: Request):
+    """Submit multiple expert corrections at once (from uncertainty review queue).
+
+    Each correction records the original and corrected fracture type,
+    feeding the RLHF-style feedback loop for model improvement.
+    """
+    body = await request.json()
+    well = body.get("well", "")
+    corrections = body.get("corrections", [])
+    reviewer = body.get("reviewer", "anonymous")
+
+    if not corrections:
+        raise HTTPException(400, "No corrections provided")
+
+    results = []
+    for corr in corrections:
+        try:
+            entry = feedback_store.correct_label(
+                well,
+                int(corr.get("fracture_index", 0)),
+                corr.get("original_type", ""),
+                corr.get("corrected_type", ""),
+                reviewer,
+            )
+            results.append({"index": corr.get("fracture_index"), "status": "ok"})
+        except Exception as e:
+            results.append({"index": corr.get("fracture_index"), "status": "error", "detail": str(e)})
+
+    n_ok = sum(1 for r in results if r["status"] == "ok")
+    _audit_record("batch_corrections", {
+        "well": well, "reviewer": reviewer, "n_submitted": len(corrections),
+    }, {"n_accepted": n_ok}, source="demo", well=well)
+
+    return {
+        "status": "ok",
+        "accepted": n_ok,
+        "total": len(corrections),
+        "results": results,
+        "total_corrections_stored": feedback_store.get_corrections_count(),
+    }
+
+
 @app.post("/api/feedback/trust-score")
 async def compute_trust_score(request: Request):
     """Compute a comprehensive trust score for model predictions.
