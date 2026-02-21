@@ -3424,6 +3424,27 @@ async function runBayesian() {
             r.nwalkers + " walkers x " + r.nsteps + " steps | " +
             "Acceptance: " + (r.acceptance_fraction * 100).toFixed(1) + "%";
 
+        // Inject ± ranges into main inversion metric cards
+        if (r.parameters) {
+            var params = r.parameters;
+            var _addCI = function(elId, pName, unit) {
+                var el = document.getElementById(elId);
+                if (el && params[pName]) {
+                    var ci = params[pName].ci_90;
+                    var current = el.textContent.split("±")[0].trim();
+                    el.innerHTML = current + '<br><small class="text-muted">90% CI: ' +
+                        ci[0].toFixed(1) + '–' + ci[1].toFixed(1) + (unit || "") + '</small>';
+                }
+            };
+            _addCI("inv-sigma1", "sigma1", " MPa");
+            _addCI("inv-sigma3", "sigma3", " MPa");
+            _addCI("inv-R", "R", "");
+            _addCI("inv-shmax", "SHmax_azimuth", "°");
+            // Hide the hint badge since we now have CI
+            var hint = document.getElementById("inv-ci-hint");
+            if (hint) hint.classList.add("d-none");
+        }
+
         showToast("Bayesian uncertainty computed: " + r.n_samples + " posterior samples");
     } catch (err) {
         showToast("Bayesian error: " + err.message, "Error");
