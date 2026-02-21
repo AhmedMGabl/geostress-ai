@@ -3639,14 +3639,37 @@ async def run_worst_case(request: Request):
          "override_mu": max(0.1, baseline_mu * 0.7)},
     ]
 
+    # Run only unique inversions in parallel (reuse where regime+pp are the same)
+    # Baseline inv is already cached from auto_detect above.
+    # Scenarios 1 (low friction) shares baseline inversion (only mu changes).
+    # Scenario 4 (combined) shares high-pp inversion (only mu changes).
+    async def _run_inv(regime, pp):
+        return await asyncio.to_thread(
+            invert_stress, normals, regime=regime,
+            depth_m=avg_depth, pore_pressure=pp,
+        )
+
+    # Parallel: high-pp inversion + wrong-regime inversion
+    high_pp = scenarios[2].get("pore_pressure")
+    wrong_regime = scenarios[3]["regime"]
+    inv_highpp, inv_wrong = await asyncio.gather(
+        _run_inv(best_regime, high_pp),
+        _run_inv(wrong_regime, None),
+    )
+
+    # Map scenarios -> pre-computed inversions
+    inv_map = {
+        0: baseline_inv,   # Baseline
+        1: baseline_inv,   # Low friction (same inv, override mu)
+        2: inv_highpp,     # High PP
+        3: inv_wrong,      # Wrong regime
+        4: inv_highpp,     # Combined worst (high PP + low friction)
+    }
+
     results = []
-    for sc in scenarios:
+    for idx, sc in enumerate(scenarios):
         try:
-            pp = sc.get("pore_pressure", None)
-            inv = await asyncio.to_thread(
-                invert_stress, normals, regime=sc["regime"],
-                depth_m=avg_depth, pore_pressure=pp,
-            )
+            inv = inv_map[idx]
             pp_val = inv.get("pore_pressure", 0.0)
             mu_use = sc.get("override_mu", inv["mu"])
 
