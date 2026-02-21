@@ -405,13 +405,13 @@ async function runAllRegimes() {
 
 // ── Model Comparison (NEW) ────────────────────────
 
-async function runModelComparison() {
-    showLoading("Comparing all ML models (this may take 30-60 seconds)...");
+async function runModelComparison(fast) {
+    showLoading(fast ? "Quick comparison (~30s)..." : "Full comparison with stacking ensemble (may take 2-4 minutes)...");
     try {
         var r = await api("/api/analysis/compare-models", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ source: currentSource })
+            body: JSON.stringify({ source: currentSource, fast: !!fast })
         });
 
         document.getElementById("model-results").classList.remove("d-none");
@@ -517,7 +517,20 @@ async function runModelComparison() {
             });
         }
 
-        showToast("Model comparison complete: " + (r.ranking ? r.ranking.length : 0) + " models evaluated");
+        // Conformal confidence section
+        var confSection = document.getElementById("mc-conformal-section");
+        if (r.conformal && r.conformal.available) {
+            confSection.classList.remove("d-none");
+            val("mc-conf-mean", (r.conformal.mean_confidence * 100).toFixed(1) + "%");
+            val("mc-conf-high", r.conformal.high_confidence_pct + "%");
+            val("mc-conf-uncertain", r.conformal.uncertain_count + " (" + r.conformal.uncertain_pct + "%)");
+            val("mc-conf-min", (r.conformal.min_confidence * 100).toFixed(1) + "%");
+        } else {
+            confSection.classList.add("d-none");
+        }
+
+        showToast("Model comparison complete: " + (r.ranking ? r.ranking.length : 0) + " models evaluated" +
+            (r.conformal && r.conformal.available ? " | Confidence: " + (r.conformal.mean_confidence * 100).toFixed(0) + "%" : ""));
     } catch (err) {
         showToast("Model comparison error: " + err.message, "Error");
     } finally {

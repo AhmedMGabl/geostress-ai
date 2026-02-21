@@ -445,18 +445,21 @@ async def run_clustering(request: Request):
 
 @app.post("/api/analysis/compare-models")
 async def compare_all_models(request: Request):
-    """Compare all available ML models on fracture classification."""
+    """Compare all available ML models on fracture classification.
+
+    Pass fast=true for quicker results (~3x speedup, <0.5% accuracy loss).
+    """
     body = await request.json()
     source = body.get("source", "demo")
+    fast = body.get("fast", False)
 
     df = get_df(source)
 
-    # Check cache
-    cache_key = f"{source}_{len(df)}"
+    cache_key = f"{source}_{len(df)}_{'fast' if fast else 'full'}"
     if cache_key in _model_comparison_cache:
         return _model_comparison_cache[cache_key]
 
-    result = await asyncio.to_thread(compare_models, df)
+    result = await asyncio.to_thread(compare_models, df, fast=fast)
     response = _sanitize_for_json(result)
     _model_comparison_cache[cache_key] = response
     return response

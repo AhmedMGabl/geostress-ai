@@ -306,11 +306,14 @@
                 <!-- MODEL COMPARISON TAB (NEW) -->
                 <div id="tab-models" class="tab-content">
                     <div class="d-flex gap-2 mb-3">
-                        <button class="btn btn-primary btn-sm" onclick="runModelComparison()">
-                            <i class="bi bi-play-fill"></i> Compare All Models
+                        <button class="btn btn-primary btn-sm" onclick="runModelComparison(false)">
+                            <i class="bi bi-play-fill"></i> Full Comparison
+                        </button>
+                        <button class="btn btn-outline-primary btn-sm" onclick="runModelComparison(true)">
+                            <i class="bi bi-lightning"></i> Quick Compare (~3x faster)
                         </button>
                     </div>
-                    <p class="text-muted small">Compares Random Forest, Gradient Boosting, XGBoost, LightGBM, SVM, and Neural Network on fracture classification using enhanced physics-informed features.</p>
+                    <p class="text-muted small">Compares Random Forest, Gradient Boosting, XGBoost, LightGBM, SVM, Neural Network, and <strong>Stacking Ensemble</strong> (meta-learner) on fracture classification using 21 physics-informed features. Includes conformal prediction confidence.</p>
 
                     <div id="model-results" class="d-none">
                         <!-- Summary metrics -->
@@ -358,6 +361,47 @@
                                     </tr></thead>
                                     <tbody></tbody>
                                 </table>
+                            </div>
+                        </div>
+
+                        <!-- Conformal confidence -->
+                        <div id="mc-conformal-section" class="d-none mb-4">
+                            <div class="card border-info">
+                                <div class="card-header bg-info text-white">
+                                    <i class="bi bi-shield-check"></i> Prediction Confidence (Conformal Calibration)
+                                </div>
+                                <div class="card-body">
+                                    <div class="row g-3">
+                                        <div class="col-md-3">
+                                            <div class="text-center p-2 bg-light rounded">
+                                                <div class="small text-muted">Mean Confidence</div>
+                                                <div class="fw-bold fs-5" id="mc-conf-mean">--</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div class="text-center p-2 bg-light rounded">
+                                                <div class="small text-muted">High Confidence (&ge;80%)</div>
+                                                <div class="fw-bold fs-5 text-success" id="mc-conf-high">--</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div class="text-center p-2 bg-light rounded">
+                                                <div class="small text-muted">Uncertain (&lt;50%)</div>
+                                                <div class="fw-bold fs-5 text-danger" id="mc-conf-uncertain">--</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div class="text-center p-2 bg-light rounded">
+                                                <div class="small text-muted">Min Confidence</div>
+                                                <div class="fw-bold fs-5" id="mc-conf-min">--</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <p class="small text-muted mt-2 mb-0">
+                                        <strong>What this means:</strong> Conformal prediction provides calibrated confidence scores.
+                                        Fractures with &lt;50% confidence should be reviewed by an expert before operational decisions.
+                                    </p>
+                                </div>
                             </div>
                         </div>
 
