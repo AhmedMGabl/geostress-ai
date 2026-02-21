@@ -3969,6 +3969,13 @@ async function runMisclassification() {
             html += '</div>';
         }
 
+        // Confusion matrix chart
+        if (r.confusion_chart_img) {
+            html += '<h6 class="mt-3"><i class="bi bi-grid-3x3"></i> Confusion Matrix</h6>';
+            html += '<div class="text-center"><img src="' + r.confusion_chart_img +
+                '" class="img-fluid rounded shadow-sm" alt="Confusion Matrix" style="max-width:600px"></div>';
+        }
+
         // Recommendations
         if (r.recommendations && r.recommendations.length > 0) {
             html += '<h6 class="mt-3"><i class="bi bi-lightbulb"></i> Improvement Recommendations</h6>';

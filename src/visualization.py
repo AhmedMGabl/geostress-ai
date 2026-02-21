@@ -531,3 +531,57 @@ def plot_bootstrap_ci(class_names, per_class_data,
 
     fig.tight_layout()
     return fig
+
+
+def plot_confusion_matrix(cm, class_names,
+                          title="Confusion Matrix — Misclassification Analysis") -> plt.Figure:
+    """Annotated heatmap of the confusion matrix.
+
+    Parameters
+    ----------
+    cm : list of lists or 2D array
+        Confusion matrix (rows=true, cols=predicted).
+    class_names : list of str
+        Class labels in the same order as cm rows/cols.
+    title : str
+        Chart title.
+
+    Returns
+    -------
+    matplotlib Figure
+    """
+    cm = np.asarray(cm, dtype=float)
+    n = len(class_names)
+    fig, ax = plt.subplots(figsize=(max(6, n * 1.2), max(5, n * 1.0)))
+
+    # Normalize per row (recall-based) for colour intensity
+    row_sums = cm.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1  # avoid division by zero
+    cm_norm = cm / row_sums
+
+    im = ax.imshow(cm_norm, cmap="YlOrRd", aspect="auto", vmin=0, vmax=1)
+
+    # Annotate each cell with raw count + percentage
+    for i in range(n):
+        for j in range(n):
+            val = int(cm[i, j])
+            pct = cm_norm[i, j] * 100
+            text_color = "white" if cm_norm[i, j] > 0.6 else "black"
+            weight = "bold" if i == j else "normal"
+            ax.text(j, i, f"{val}\n({pct:.0f}%)",
+                    ha="center", va="center", fontsize=9,
+                    color=text_color, fontweight=weight)
+
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=9)
+    ax.set_yticklabels(class_names, fontsize=9)
+    ax.set_xlabel("Predicted", fontsize=11)
+    ax.set_ylabel("True", fontsize=11)
+    ax.set_title(title, fontsize=12)
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.8)
+    cbar.set_label("Recall (row-normalized)", fontsize=9)
+
+    fig.tight_layout()
+    return fig

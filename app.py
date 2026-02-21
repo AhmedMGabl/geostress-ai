@@ -61,6 +61,7 @@ from src.visualization import (
     plot_mohr_circle, plot_tendency, plot_depth_profile,
     plot_analysis_dashboard,
     plot_model_comparison, plot_learning_curve, plot_bootstrap_ci,
+    plot_confusion_matrix,
 )
 
 # ── Globals ──────────────────────────────────────────
@@ -2287,7 +2288,21 @@ async def run_misclassification_analysis(request: Request):
         return _misclass_cache[cache_key]
 
     result = await asyncio.to_thread(misclassification_analysis, df, fast=fast)
+
+    # Generate confusion matrix chart
+    cm_data = result.get("confusion_matrix")
+    class_names = result.get("class_names", [])
+    chart_img = None
+    if cm_data and class_names:
+        chart_img = await asyncio.to_thread(
+            render_plot, plot_confusion_matrix,
+            cm_data, class_names,
+            title=f"Confusion Matrix — {well or 'All'} ({result.get('overall_accuracy', 0):.1%} accuracy)",
+        )
+
     response = _sanitize_for_json(result)
+    if chart_img:
+        response["confusion_chart_img"] = chart_img
     _misclass_cache[cache_key] = response
     return response
 
