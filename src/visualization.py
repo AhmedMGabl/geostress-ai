@@ -727,3 +727,95 @@ def plot_sensitivity_heatmap(
 
     fig.tight_layout()
     return fig
+
+
+def plot_batch_comparison(well_results: dict, title: str = "Field Comparison") -> plt.Figure:
+    """Create a multi-panel comparison chart for batch well analysis.
+
+    Shows per-well SHmax, accuracy, and critically stressed % in a
+    compact dashboard layout for stakeholder field-level assessment.
+
+    Parameters
+    ----------
+    well_results : dict mapping well name -> {stress, classification, risk}
+    title : Chart title
+
+    Returns
+    -------
+    matplotlib.Figure
+    """
+    wells = list(well_results.keys())
+    n = len(wells)
+    if n == 0:
+        fig, ax = plt.subplots(figsize=(6, 3))
+        ax.text(0.5, 0.5, "No well data available", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
+
+    risk_colors = {"GREEN": "#38a169", "AMBER": "#d69e2e", "RED": "#e53e3e"}
+    bar_x = range(n)
+
+    # Panel 1: SHmax azimuth
+    ax = axes[0]
+    shmax_vals = []
+    for w in wells:
+        s = well_results[w].get("stress", {})
+        shmax_vals.append(s.get("shmax", 0) if "error" not in s else 0)
+    ax.bar(bar_x, shmax_vals, color="#3182ce", alpha=0.85, edgecolor="white")
+    ax.set_xticks(bar_x)
+    ax.set_xticklabels(wells, fontsize=10)
+    ax.set_ylabel("SHmax Azimuth (deg)", fontsize=10)
+    ax.set_title("Maximum Horizontal Stress", fontsize=11, fontweight="bold")
+    for i, v in enumerate(shmax_vals):
+        if v > 0:
+            ax.text(i, v + 1, f"{v:.0f}", ha="center", fontsize=9, fontweight="bold")
+    ax.set_ylim(0, max(shmax_vals + [180]) * 1.15)
+
+    # Panel 2: Classification accuracy
+    ax = axes[1]
+    acc_vals = []
+    for w in wells:
+        c = well_results[w].get("classification", {})
+        acc_vals.append(c.get("accuracy", 0) * 100 if "error" not in c else 0)
+    colors_acc = ["#38a169" if v >= 70 else "#d69e2e" if v >= 50 else "#e53e3e" for v in acc_vals]
+    ax.bar(bar_x, acc_vals, color=colors_acc, alpha=0.85, edgecolor="white")
+    ax.set_xticks(bar_x)
+    ax.set_xticklabels(wells, fontsize=10)
+    ax.set_ylabel("Accuracy (%)", fontsize=10)
+    ax.set_title("Fracture Classification", fontsize=11, fontweight="bold")
+    ax.axhline(70, color="#38a169", linestyle="--", alpha=0.5, linewidth=1)
+    ax.text(n - 0.5, 71, "70% target", fontsize=8, color="#38a169", ha="right")
+    for i, v in enumerate(acc_vals):
+        if v > 0:
+            ax.text(i, v + 1, f"{v:.1f}%", ha="center", fontsize=9, fontweight="bold")
+    ax.set_ylim(0, 110)
+
+    # Panel 3: Critically stressed %
+    ax = axes[2]
+    cs_vals = []
+    cs_colors = []
+    for w in wells:
+        r = well_results[w].get("risk", {})
+        pct = r.get("pct_critically_stressed", 0) if "error" not in r else 0
+        cs_vals.append(pct)
+        level = r.get("risk_level", "GREEN") if "error" not in r else "GREEN"
+        cs_colors.append(risk_colors.get(level, "#718096"))
+    ax.bar(bar_x, cs_vals, color=cs_colors, alpha=0.85, edgecolor="white")
+    ax.set_xticks(bar_x)
+    ax.set_xticklabels(wells, fontsize=10)
+    ax.set_ylabel("Critically Stressed (%)", fontsize=10)
+    ax.set_title("Risk Assessment", fontsize=11, fontweight="bold")
+    ax.axhline(10, color="#38a169", linestyle="--", alpha=0.4, linewidth=1)
+    ax.axhline(30, color="#d69e2e", linestyle="--", alpha=0.4, linewidth=1)
+    ax.text(n - 0.5, 11, "GREEN/AMBER", fontsize=7, color="#38a169", ha="right")
+    ax.text(n - 0.5, 31, "AMBER/RED", fontsize=7, color="#d69e2e", ha="right")
+    for i, v in enumerate(cs_vals):
+        if v > 0:
+            ax.text(i, v + 1, f"{v:.1f}%", ha="center", fontsize=9, fontweight="bold")
+    ax.set_ylim(0, max(cs_vals + [40]) * 1.2)
+
+    fig.tight_layout()
+    return fig

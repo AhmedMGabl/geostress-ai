@@ -64,7 +64,7 @@ from src.visualization import (
     plot_analysis_dashboard,
     plot_model_comparison, plot_learning_curve, plot_bootstrap_ci,
     plot_confusion_matrix, plot_abstention_chart,
-    plot_sensitivity_heatmap,
+    plot_sensitivity_heatmap, plot_batch_comparison,
 )
 
 # ── Globals ──────────────────────────────────────────
@@ -1884,9 +1884,19 @@ async def run_batch_analysis(request: Request):
             if risk_levels.count(level) > 0
         }
 
+    # Generate comparison chart
+    chart = None
+    try:
+        with plot_lock:
+            fig = plot_batch_comparison(well_results, title="Field Well Comparison")
+            chart = fig_to_base64(fig)
+    except Exception:
+        pass
+
     result = {
         "wells": well_results,
         "field_summary": field_summary,
+        "comparison_chart": chart,
     }
 
     _audit_record("batch_analysis", {

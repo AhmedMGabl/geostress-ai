@@ -619,6 +619,12 @@ async function runBatchAnalysis() {
         });
         html += '</div>';
 
+        // Comparison chart
+        if (r.comparison_chart) {
+            html += '<div class="card mt-3"><div class="card-header"><i class="bi bi-bar-chart-line"></i> Field Comparison Chart</div>' +
+                '<div class="card-body text-center"><img src="' + r.comparison_chart + '" class="img-fluid" alt="Batch comparison"></div></div>';
+        }
+
         body.innerHTML = html;
         showToast("Batch: " + fs.n_wells + " wells analyzed, worst risk: " + fs.worst_risk);
     } catch (err) {
