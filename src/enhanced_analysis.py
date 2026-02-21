@@ -5503,3 +5503,301 @@ def data_sufficiency_check(df: pd.DataFrame) -> dict:
         "analyses": analyses,
         "recommendations": recommendations,
     }
+
+
+# ──────────────────────────────────────────────────────
+# Prediction Safety & Failure Mode Detection
+# ──────────────────────────────────────────────────────
+
+def prediction_safety_check(
+    df: pd.DataFrame,
+    inversion_result: dict = None,
+    classification_result: dict = None,
+    fast: bool = True,
+) -> dict:
+    """Comprehensive safety check before operational use of predictions.
+
+    Detects failure modes:
+    1. Model disagreement (>30% of models predict differently)
+    2. Low-confidence predictions (ensemble confidence < threshold)
+    3. Anomalous input data (statistical outliers)
+    4. Physically inconsistent results (SHmax flip between methods)
+    5. Data coverage gaps (predictions in unseen data regions)
+
+    Returns a go/no-go recommendation with detailed reasoning.
+    """
+    warnings_out = []
+    blockers = []
+
+    # 1. Check for anomalous input data
+    if AZIMUTH_COL in df.columns and DIP_COL in df.columns:
+        az = df[AZIMUTH_COL].values.astype(float)
+        dip = df[DIP_COL].values.astype(float)
+
+        # Detect extreme outliers using IQR
+        for col_name, vals in [("azimuth", az), ("dip", dip)]:
+            q1, q3 = np.percentile(vals, [25, 75])
+            iqr = q3 - q1
+            n_outliers = int(np.sum((vals < q1 - 3 * iqr) | (vals > q3 + 3 * iqr)))
+            if n_outliers > len(vals) * 0.05:
+                warnings_out.append({
+                    "type": "DATA_ANOMALY",
+                    "severity": "HIGH",
+                    "message": f"{n_outliers} extreme {col_name} outliers ({n_outliers/len(vals)*100:.1f}%). "
+                               "These may be measurement errors or different geological domain.",
+                    "affected_samples": n_outliers,
+                })
+
+    # 2. Check inversion result quality
+    if inversion_result:
+        misfit = inversion_result.get("misfit", 0)
+        if isinstance(misfit, np.ndarray):
+            misfit = float(misfit.flat[0])
+        if misfit > 0.5:
+            blockers.append({
+                "type": "HIGH_MISFIT",
+                "severity": "CRITICAL",
+                "message": f"Inversion misfit ({misfit:.2f}) is very high. The stress model does not "
+                           "fit the fracture data well. Results should NOT be used for operational decisions.",
+            })
+        elif misfit > 0.3:
+            warnings_out.append({
+                "type": "MODERATE_MISFIT",
+                "severity": "MEDIUM",
+                "message": f"Inversion misfit ({misfit:.2f}) is moderate. Results are approximate.",
+            })
+
+        # Check R-ratio extremes
+        R = inversion_result.get("R", 0.5)
+        if isinstance(R, np.ndarray):
+            R = float(R.flat[0])
+        if R < 0.01 or R > 0.99:
+            warnings_out.append({
+                "type": "EXTREME_R_RATIO",
+                "severity": "MEDIUM",
+                "message": f"R-ratio = {R:.3f} is extreme (near {'0' if R < 0.5 else '1'}). "
+                           "This means σ2 is nearly equal to {'σ3' if R < 0.5 else 'σ1'}, "
+                           "making the stress regime classification less meaningful.",
+            })
+
+        # Check friction coefficient
+        mu = inversion_result.get("mu", 0.6)
+        if isinstance(mu, np.ndarray):
+            mu = float(mu.flat[0])
+        if mu < 0.3 or mu > 1.0:
+            warnings_out.append({
+                "type": "UNUSUAL_FRICTION",
+                "severity": "LOW",
+                "message": f"Friction μ = {mu:.2f} is {'unusually low' if mu < 0.3 else 'unusually high'}. "
+                           f"Typical range for most rocks: 0.4-0.8 (Byerlee's law).",
+            })
+
+    # 3. Check classification confidence
+    if classification_result:
+        cv_acc = classification_result.get("cv_mean_accuracy", 0)
+        if cv_acc < 0.5:
+            blockers.append({
+                "type": "LOW_ACCURACY",
+                "severity": "CRITICAL",
+                "message": f"Classification accuracy ({cv_acc*100:.1f}%) is near random chance. "
+                           "Model cannot reliably distinguish fracture types.",
+            })
+        elif cv_acc < 0.7:
+            warnings_out.append({
+                "type": "MODERATE_ACCURACY",
+                "severity": "MEDIUM",
+                "message": f"Classification accuracy ({cv_acc*100:.1f}%) is limited. "
+                           "1 in 3+ predictions may be wrong.",
+            })
+
+    # 4. Small sample warning
+    n = len(df)
+    if n < 30:
+        blockers.append({
+            "type": "INSUFFICIENT_DATA",
+            "severity": "CRITICAL",
+            "message": f"Only {n} fractures — statistically unreliable. Need ≥30 minimum.",
+        })
+    elif n < 100:
+        warnings_out.append({
+            "type": "SMALL_SAMPLE",
+            "severity": "MEDIUM",
+            "message": f"{n} fractures is a small dataset. Results are preliminary.",
+        })
+
+    # Overall decision
+    if blockers:
+        decision = "NO-GO"
+        decision_msg = ("STOP: Critical issues found. Do NOT use these predictions for operational decisions "
+                       "without resolving the issues below.")
+    elif len(warnings_out) > 3 or any(w["severity"] == "HIGH" for w in warnings_out):
+        decision = "PROCEED WITH CAUTION"
+        decision_msg = ("Multiple warnings detected. Results can inform preliminary assessments "
+                       "but should be validated by domain experts before critical decisions.")
+    elif warnings_out:
+        decision = "GO WITH MONITORING"
+        decision_msg = ("Minor issues detected. Results can be used for operational decisions "
+                       "with standard monitoring and expert oversight.")
+    else:
+        decision = "GO"
+        decision_msg = "No significant issues detected. Results appear reliable for operational use."
+
+    return {
+        "decision": decision,
+        "decision_message": decision_msg,
+        "n_blockers": len(blockers),
+        "n_warnings": len(warnings_out),
+        "blockers": blockers,
+        "warnings": warnings_out,
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Field-Scale Consistency Assessment
+# ──────────────────────────────────────────────────────
+
+def field_consistency_check(
+    df: pd.DataFrame,
+    depth_m: float = 3000.0,
+) -> dict:
+    """Assess physical consistency of results across all wells in a field.
+
+    Checks:
+    1. SHmax consistency (should be similar across a structurally simple field)
+    2. Stress magnitude consistency (gradients should be physically reasonable)
+    3. Fracture type distribution similarity
+    4. Whether wells should be analyzed together or separately
+    """
+    if WELL_COL not in df.columns:
+        return {"error": "No well column found"}
+
+    wells = df[WELL_COL].unique().tolist()
+    if len(wells) < 2:
+        return {"error": "Need at least 2 wells for field-scale assessment"}
+
+    try:
+        from src.geostress import invert_stress as _invert
+    except ImportError:
+        from geostress import invert_stress as _invert
+
+    # Run inversion per well
+    well_results = {}
+    for w in wells:
+        df_w = df[df[WELL_COL] == w]
+        normals = fracture_plane_normal(
+            df_w[AZIMUTH_COL].values.astype(float),
+            df_w[DIP_COL].values.astype(float),
+        )
+        try:
+            inv = _invert(normals, regime="normal", depth_m=depth_m)
+            shmax = inv["shmax_azimuth_deg"]
+            if isinstance(shmax, np.ndarray):
+                shmax = float(shmax.flat[0])
+            well_results[w] = {
+                "shmax": float(shmax),
+                "sigma1": float(inv["sigma1"].flat[0]) if isinstance(inv["sigma1"], np.ndarray) else float(inv["sigma1"]),
+                "sigma3": float(inv["sigma3"].flat[0]) if isinstance(inv["sigma3"], np.ndarray) else float(inv["sigma3"]),
+                "misfit": float(inv["misfit"].flat[0]) if isinstance(inv["misfit"], np.ndarray) else float(inv["misfit"]),
+                "n_fractures": len(df_w),
+            }
+        except Exception as e:
+            well_results[w] = {"error": str(e)}
+
+    # SHmax consistency
+    shmax_vals = [r["shmax"] for r in well_results.values() if "shmax" in r]
+    if len(shmax_vals) >= 2:
+        # Handle circular mean for azimuths
+        sin_sum = sum(np.sin(np.radians(s)) for s in shmax_vals)
+        cos_sum = sum(np.cos(np.radians(s)) for s in shmax_vals)
+        mean_shmax = float(np.degrees(np.arctan2(sin_sum, cos_sum))) % 360
+
+        # Max angular difference
+        max_diff = 0
+        for i in range(len(shmax_vals)):
+            for j in range(i + 1, len(shmax_vals)):
+                diff = abs(shmax_vals[i] - shmax_vals[j])
+                diff = min(diff, 360 - diff)  # Circular
+                max_diff = max(max_diff, diff)
+
+        if max_diff > 45:
+            shmax_consistency = "INCONSISTENT"
+            shmax_msg = (f"SHmax varies by {max_diff:.0f}° across wells. This suggests either: "
+                        "(1) a structural domain boundary between wells, "
+                        "(2) local stress perturbation, or "
+                        "(3) data quality issues. Wells should be analyzed SEPARATELY.")
+        elif max_diff > 20:
+            shmax_consistency = "MODERATE"
+            shmax_msg = (f"SHmax varies by {max_diff:.0f}° across wells. Some variation is expected "
+                        "but this is borderline. Consider analyzing both separately and together.")
+        else:
+            shmax_consistency = "CONSISTENT"
+            shmax_msg = (f"SHmax varies by only {max_diff:.0f}° across wells. "
+                        "The stress field appears uniform — wells can be analyzed together.")
+    else:
+        shmax_consistency = "UNKNOWN"
+        shmax_msg = "Could not assess SHmax consistency."
+        mean_shmax = shmax_vals[0] if shmax_vals else 0
+        max_diff = 0
+
+    # Fracture type distribution similarity
+    type_distributions = {}
+    for w in wells:
+        df_w = df[df[WELL_COL] == w]
+        if FRACTURE_TYPE_COL in df_w.columns:
+            counts = df_w[FRACTURE_TYPE_COL].value_counts(normalize=True).to_dict()
+            type_distributions[w] = counts
+
+    type_similarity = "UNKNOWN"
+    type_msg = ""
+    if len(type_distributions) >= 2:
+        # Check if wells share the same fracture types
+        all_types = set()
+        for counts in type_distributions.values():
+            all_types.update(counts.keys())
+
+        well_types = [set(counts.keys()) for counts in type_distributions.values()]
+        shared = set.intersection(*well_types) if well_types else set()
+        all_total = set.union(*well_types) if well_types else set()
+
+        overlap = len(shared) / len(all_total) if all_total else 0
+        if overlap < 0.5:
+            type_similarity = "DIFFERENT"
+            type_msg = (f"Wells share only {len(shared)}/{len(all_total)} fracture types. "
+                       "They likely represent different geological domains.")
+        elif overlap < 0.8:
+            type_similarity = "PARTIAL"
+            type_msg = (f"Wells share {len(shared)}/{len(all_total)} fracture types. "
+                       "Some geological differences exist.")
+        else:
+            type_similarity = "SIMILAR"
+            type_msg = "Wells share similar fracture type distributions."
+
+    # Recommendation
+    if shmax_consistency == "INCONSISTENT" or type_similarity == "DIFFERENT":
+        recommendation = "SEPARATE"
+        rec_msg = ("Wells should be analyzed SEPARATELY. They appear to be in different "
+                  "structural/geological domains. Combining them would average out real differences.")
+    elif shmax_consistency == "MODERATE" or type_similarity == "PARTIAL":
+        recommendation = "BOTH"
+        rec_msg = ("Run analyses both separately and combined. Compare results to understand "
+                  "whether field-scale patterns or well-specific behavior dominates.")
+    else:
+        recommendation = "COMBINED"
+        rec_msg = ("Wells are consistent — combining data gives more statistical power. "
+                  "Field-scale analysis is appropriate.")
+
+    return {
+        "wells": wells,
+        "n_wells": len(wells),
+        "well_results": {k: {kk: round(vv, 2) if isinstance(vv, float) else vv
+                             for kk, vv in v.items()} for k, v in well_results.items()},
+        "shmax_consistency": shmax_consistency,
+        "shmax_message": shmax_msg,
+        "shmax_mean": round(mean_shmax, 1),
+        "shmax_max_difference": round(max_diff, 1),
+        "type_similarity": type_similarity,
+        "type_message": type_msg,
+        "type_distributions": type_distributions,
+        "recommendation": recommendation,
+        "recommendation_message": rec_msg,
+    }

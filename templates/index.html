@@ -204,6 +204,12 @@
                             <button class="btn btn-outline-primary btn-sm" onclick="runSufficiencyCheck()">
                                 <i class="bi bi-clipboard-check"></i> Data Sufficiency
                             </button>
+                            <button class="btn btn-outline-warning btn-sm" onclick="runSafetyCheck()">
+                                <i class="bi bi-shield-exclamation"></i> Safety Check
+                            </button>
+                            <button class="btn btn-outline-info btn-sm" onclick="runFieldConsistency()">
+                                <i class="bi bi-globe2"></i> Field Consistency
+                            </button>
                         </div>
                     </div>
 
@@ -214,6 +220,45 @@
 
                     <!-- Summary Sections -->
                     <div id="exec-sections" class="mb-4"></div>
+
+                    <!-- Safety Check Results -->
+                    <div id="safety-results" class="d-none mb-4">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-shield-exclamation"></i> Prediction Safety Check</div>
+                            <div class="card-body">
+                                <div id="safety-decision" class="alert mb-3"></div>
+                                <div id="safety-blockers"></div>
+                                <div id="safety-warnings"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Field Consistency Results -->
+                    <div id="field-results" class="d-none mb-4">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-globe2"></i> Field-Scale Consistency</div>
+                            <div class="card-body">
+                                <div id="field-rec" class="alert mb-3"></div>
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-6">
+                                        <h6 class="small fw-bold">SHmax Consistency</h6>
+                                        <div id="field-shmax"></div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <h6 class="small fw-bold">Fracture Type Similarity</h6>
+                                        <div id="field-types"></div>
+                                    </div>
+                                </div>
+                                <h6 class="small fw-bold">Per-Well Results</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-sm small">
+                                        <thead><tr><th>Well</th><th>SHmax</th><th>σ1</th><th>σ3</th><th>Misfit</th><th>Fractures</th></tr></thead>
+                                        <tbody id="field-table-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
 
                     <!-- Data Sufficiency Results -->
                     <div id="suff-results" class="d-none">

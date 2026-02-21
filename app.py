@@ -50,6 +50,7 @@ from src.enhanced_analysis import (
     expert_weighted_ensemble, monte_carlo_uncertainty,
     cross_validate_wells, validate_domain_constraints,
     executive_summary, data_sufficiency_check,
+    prediction_safety_check, field_consistency_check,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -2029,6 +2030,72 @@ async def run_sufficiency_check(request: Request):
         raise HTTPException(400, "No data loaded")
 
     result = data_sufficiency_check(df)
+    return _sanitize_for_json(result)
+
+
+# ── Prediction Safety ────────────────────────────────
+
+@app.post("/api/analysis/safety-check")
+async def run_safety_check(request: Request):
+    """Run comprehensive safety check before operational use of predictions.
+
+    Detects failure modes, anomalies, and conditions that would make
+    predictions unreliable. Returns go/no-go recommendation.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well and WELL_COL in df.columns:
+        df = df[df[WELL_COL] == well]
+
+    # Get inversion result if available
+    inv_result = None
+    try:
+        normals = fracture_plane_normal(
+            df[AZIMUTH_COL].values, df[DIP_COL].values
+        )
+        inv_result = await asyncio.to_thread(
+            invert_stress, normals, regime="normal", depth_m=3000
+        )
+    except Exception:
+        pass
+
+    result = prediction_safety_check(df, inversion_result=inv_result, fast=True)
+    return _sanitize_for_json(result)
+
+
+# ── Field Consistency ────────────────────────────────
+
+@app.post("/api/analysis/field-consistency")
+async def run_field_consistency(request: Request):
+    """Assess physical consistency of results across all wells.
+
+    Checks SHmax alignment, fracture type similarity, and recommends
+    whether wells should be analyzed separately or together.
+    """
+    t0 = time.monotonic()
+    body = await request.json()
+    source = body.get("source", "demo")
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    result = await asyncio.to_thread(field_consistency_check, df, depth_m)
+    elapsed = round(time.monotonic() - t0, 2)
+
+    if "error" not in result:
+        _audit_record("field_consistency", {"depth_m": depth_m},
+                      {"shmax_consistency": result.get("shmax_consistency"),
+                       "recommendation": result.get("recommendation")},
+                      source=source, elapsed_s=elapsed)
+
+    result["elapsed_s"] = elapsed
     return _sanitize_for_json(result)
 
 

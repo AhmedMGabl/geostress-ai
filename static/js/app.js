@@ -232,6 +232,125 @@ async function runSufficiencyCheck() {
 }
 
 
+// ── Safety Check ─────────────────────────────────
+
+async function runSafetyCheck() {
+    showLoading("Running prediction safety check...");
+    try {
+        var r = await api("/api/analysis/safety-check", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, well: currentWell || null})
+        });
+
+        document.getElementById("safety-results").classList.remove("d-none");
+
+        var decColors = {"GO": "success", "GO WITH MONITORING": "info", "PROCEED WITH CAUTION": "warning", "NO-GO": "danger"};
+        var decEl = document.getElementById("safety-decision");
+        decEl.className = "alert alert-" + (decColors[r.decision] || "secondary") + " mb-3";
+        decEl.innerHTML = '<h5 class="mb-1">' + r.decision + '</h5><p class="mb-0">' + r.decision_message + '</p>';
+
+        var blockersEl = document.getElementById("safety-blockers");
+        clearChildren(blockersEl);
+        if (r.blockers && r.blockers.length > 0) {
+            var h6 = document.createElement("h6");
+            h6.className = "small fw-bold text-danger";
+            h6.textContent = "Critical Blockers";
+            blockersEl.appendChild(h6);
+            r.blockers.forEach(function(b) {
+                var div = document.createElement("div");
+                div.className = "alert alert-danger py-2 mb-2 small";
+                div.innerHTML = '<strong>' + b.type + ':</strong> ' + b.message;
+                blockersEl.appendChild(div);
+            });
+        }
+
+        var warnsEl = document.getElementById("safety-warnings");
+        clearChildren(warnsEl);
+        if (r.warnings && r.warnings.length > 0) {
+            var h6w = document.createElement("h6");
+            h6w.className = "small fw-bold text-warning mt-2";
+            h6w.textContent = "Warnings (" + r.warnings.length + ")";
+            warnsEl.appendChild(h6w);
+            r.warnings.forEach(function(w) {
+                var sevColors = {HIGH: "danger", MEDIUM: "warning", LOW: "info"};
+                var div = document.createElement("div");
+                div.className = "alert alert-" + (sevColors[w.severity] || "info") + " py-2 mb-2 small";
+                div.innerHTML = '<strong>' + w.type + ':</strong> ' + w.message;
+                warnsEl.appendChild(div);
+            });
+        }
+
+        showToast("Safety: " + r.decision);
+    } catch (err) {
+        showToast("Safety check error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Field Consistency ────────────────────────────
+
+async function runFieldConsistency() {
+    showLoading("Checking field-scale consistency...");
+    try {
+        var r = await api("/api/analysis/field-consistency", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                source: currentSource,
+                depth: parseFloat(document.getElementById("depth-input").value) || 3000
+            })
+        });
+
+        if (r.error) { showToast(r.error, "Error"); return; }
+
+        document.getElementById("field-results").classList.remove("d-none");
+
+        var recColors = {SEPARATE: "warning", BOTH: "info", COMBINED: "success"};
+        var recEl = document.getElementById("field-rec");
+        recEl.className = "alert alert-" + (recColors[r.recommendation] || "info") + " mb-3";
+        recEl.innerHTML = '<strong>Recommendation: ' + r.recommendation + '</strong> — ' + r.recommendation_message;
+
+        // SHmax
+        var shmaxColors = {CONSISTENT: "success", MODERATE: "warning", INCONSISTENT: "danger"};
+        var shmaxEl = document.getElementById("field-shmax");
+        shmaxEl.innerHTML = '<div class="alert alert-' + (shmaxColors[r.shmax_consistency] || "info") + ' py-2 small">' +
+            '<strong>' + r.shmax_consistency + '</strong> (max diff: ' + r.shmax_max_difference + '°)<br>' +
+            r.shmax_message + '</div>';
+
+        // Types
+        var typeColors = {SIMILAR: "success", PARTIAL: "warning", DIFFERENT: "danger"};
+        var typeEl = document.getElementById("field-types");
+        typeEl.innerHTML = '<div class="alert alert-' + (typeColors[r.type_similarity] || "info") + ' py-2 small">' +
+            '<strong>' + r.type_similarity + '</strong><br>' + r.type_message + '</div>';
+
+        // Per-well table
+        var tbody = document.getElementById("field-table-body");
+        clearChildren(tbody);
+        var wr = r.well_results || {};
+        Object.keys(wr).forEach(function(well) {
+            var w = wr[well];
+            var tr = document.createElement("tr");
+            if (w.error) {
+                tr.innerHTML = '<td>' + well + '</td><td colspan="5" class="text-danger">' + w.error + '</td>';
+            } else {
+                tr.innerHTML = '<td>' + well + '</td><td>' + w.shmax + '°</td><td>' + w.sigma1 + '</td>' +
+                    '<td>' + w.sigma3 + '</td><td>' + w.misfit + '</td><td>' + w.n_fractures + '</td>';
+            }
+            tbody.appendChild(tr);
+        });
+
+        showToast("Field consistency: " + r.shmax_consistency + " SHmax, recommend " + r.recommendation);
+    } catch (err) {
+        showToast("Field consistency error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
 // ── Data Loading ──────────────────────────────────
 
 async function loadSummary() {

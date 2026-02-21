@@ -103,6 +103,8 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/data/validate-constraints` | Domain constraint validation (physical/geological) |
 | POST | `/api/analysis/executive-summary` | Plain-language executive summary for non-technical stakeholders |
 | POST | `/api/data/sufficiency` | Data sufficiency assessment per analysis type |
+| POST | `/api/analysis/safety-check` | Prediction safety: go/no-go with failure mode detection |
+| POST | `/api/analysis/field-consistency` | Cross-well SHmax/type consistency, separate vs combined recommendation |
 
 ## Domain Concepts
 
@@ -182,3 +184,10 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Domain validation catches: depth gaps, class imbalance, physically impossible values, distribution anomalies
 - `fracture_plane_normal()` takes DEGREES (not radians) — don't double-convert
 - Cross-well model fails because 6P only has 2 fracture types vs 5 in 3P — well-specific models needed
+- Safety check detects: data anomalies (IQR outliers), high misfit (>0.5 = NO-GO), extreme R-ratio, unusual friction
+- Field consistency: SHmax between 3P/6P is CONSISTENT (15° diff), but fracture types are DIFFERENT (2/5 shared)
+- Field recommendation: SEPARATE analysis — combining wells would obscure real geological differences
+- Executive summary uses traffic-light risk: RED (>30% CS or trust <40), AMBER (>10% CS or trust <60), GREEN
+- `_azimuth_to_direction()` converts degrees to cardinal (N/NNE/NE/etc.) for plain-language descriptions
+- Data sufficiency: 3/5 analyses READY with current 1022 samples, ML and cross-well are MARGINAL
+- `auto_detect_regime` must be called separately before `invert_stress` — regime="auto" not valid for invert_stress
