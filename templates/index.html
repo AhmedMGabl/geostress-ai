@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GeoStress AI</title>
+    <title>GeoStress AI - Industrial Fracture Analysis</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.2/font/bootstrap-icons.min.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
@@ -22,7 +22,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Fracture Analysis & Stress Inversion</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v2.0</small>
             </div>
 
             <ul class="nav flex-column sidebar-nav">
@@ -42,6 +42,11 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link" data-tab="models" href="#">
+                        <i class="bi bi-bar-chart-line"></i> Model Comparison
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link" data-tab="classify" href="#">
                         <i class="bi bi-diagram-3"></i> ML Classification
                     </a>
@@ -49,6 +54,11 @@
                 <li class="nav-item">
                     <a class="nav-link" data-tab="cluster" href="#">
                         <i class="bi bi-bullseye"></i> Fracture Clustering
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="feedback" href="#">
+                        <i class="bi bi-chat-dots"></i> Feedback
                     </a>
                 </li>
             </ul>
@@ -72,6 +82,12 @@
                 <div class="mb-2">
                     <label class="form-label-sm">Depth (m)</label>
                     <input type="number" id="depth-input" class="form-control form-control-sm" value="3300" min="500" max="6000">
+                </div>
+                <div class="mb-2">
+                    <label class="form-label-sm">Pore Pressure (MPa)
+                        <i class="bi bi-info-circle" title="Hydrostatic estimate used if left empty. Pore pressure reduces effective normal stress on fractures, shifting Mohr circles left."></i>
+                    </label>
+                    <input type="number" id="pp-input" class="form-control form-control-sm" placeholder="Auto (hydrostatic)" step="0.1" min="0" max="200">
                 </div>
             </div>
 
@@ -98,7 +114,7 @@
                     <span class="text-muted ms-2" id="fracture-count-badge"></span>
                 </div>
                 <div class="d-flex align-items-center gap-3">
-                    <span class="text-muted small">AI-Powered Geostress Analysis</span>
+                    <span class="text-muted small">AI-Powered Geostress Analysis for Oil &amp; Gas</span>
                 </div>
             </div>
 
@@ -185,7 +201,7 @@
                     </div>
                 </div>
 
-                <!-- INVERSION TAB -->
+                <!-- INVERSION TAB (Enhanced) -->
                 <div id="tab-inversion" class="tab-content">
                     <div class="d-flex gap-2 mb-3">
                         <button class="btn btn-primary btn-sm" onclick="runInversion()">
@@ -195,6 +211,7 @@
                             <i class="bi bi-arrow-repeat"></i> Compare All Regimes
                         </button>
                     </div>
+
                     <!-- Results metrics -->
                     <div id="inversion-results" class="d-none">
                         <div class="row g-3 mb-4">
@@ -203,8 +220,47 @@
                             <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;3 (MPa)</div><div class="metric-value" id="inv-sigma3">--</div></div></div>
                             <div class="col-md-2"><div class="metric-card"><div class="metric-label">R Ratio</div><div class="metric-value" id="inv-R">--</div></div></div>
                             <div class="col-md-2"><div class="metric-card"><div class="metric-label">SHmax (&deg;)</div><div class="metric-value" id="inv-shmax">--</div></div></div>
-                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">Critically Stressed</div><div class="metric-value" id="inv-cs">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">Pore Pressure</div><div class="metric-value" id="inv-pp">--</div></div></div>
                         </div>
+
+                        <!-- Risk Assessment Banner -->
+                        <div id="risk-banner" class="alert mb-4 d-none">
+                            <h5 class="alert-heading" id="risk-title"></h5>
+                            <div id="risk-body"></div>
+                        </div>
+
+                        <!-- Stakeholder Interpretation -->
+                        <div id="interpretation-section" class="mb-4 d-none">
+                            <div class="card border-primary">
+                                <div class="card-header bg-primary text-white">
+                                    <i class="bi bi-lightbulb"></i> Decision Support - What This Means
+                                </div>
+                                <div class="card-body" id="interpretation-body"></div>
+                            </div>
+                        </div>
+
+                        <!-- Risk Categories -->
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-4">
+                                <div class="metric-card" style="border-left:4px solid #dc3545">
+                                    <div class="metric-label">High Risk Fractures</div>
+                                    <div class="metric-value text-danger" id="inv-high-risk">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="metric-card" style="border-left:4px solid #ffc107">
+                                    <div class="metric-label">Moderate Risk</div>
+                                    <div class="metric-value text-warning" id="inv-mod-risk">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="metric-card" style="border-left:4px solid #198754">
+                                    <div class="metric-label">Low Risk</div>
+                                    <div class="metric-value text-success" id="inv-low-risk">--</div>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="row g-3">
                             <div class="col-lg-6">
                                 <div class="card"><div class="card-header">Mohr Circle</div>
@@ -224,6 +280,7 @@
                             </div>
                         </div>
                     </div>
+
                     <!-- Regime comparison table -->
                     <div id="regime-comparison" class="d-none mt-4">
                         <div class="card">
@@ -241,32 +298,107 @@
                     </div>
                 </div>
 
-                <!-- CLASSIFICATION TAB -->
+                <!-- MODEL COMPARISON TAB (NEW) -->
+                <div id="tab-models" class="tab-content">
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="runModelComparison()">
+                            <i class="bi bi-play-fill"></i> Compare All Models
+                        </button>
+                    </div>
+                    <p class="text-muted small">Compares Random Forest, Gradient Boosting, XGBoost, LightGBM, SVM, and Neural Network on fracture classification using enhanced physics-informed features.</p>
+
+                    <div id="model-results" class="d-none">
+                        <!-- Summary metrics -->
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Best Model</div>
+                                    <div class="metric-value" id="mc-best-model">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Best Accuracy</div>
+                                    <div class="metric-value" id="mc-best-acc">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Model Agreement</div>
+                                    <div class="metric-value" id="mc-agreement">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card" style="border-left:4px solid #ffc107">
+                                    <div class="metric-label">Low Confidence Samples</div>
+                                    <div class="metric-value" id="mc-low-conf">--</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Model agreement explanation -->
+                        <div id="mc-uncertainty-alert" class="alert alert-info mb-4 d-none">
+                            <i class="bi bi-info-circle"></i>
+                            <strong>What does Model Agreement mean?</strong>
+                            <span id="mc-uncertainty-text"></span>
+                        </div>
+
+                        <!-- Ranking table -->
+                        <div class="card mb-4">
+                            <div class="card-header">Model Ranking (by Cross-Validated Accuracy)</div>
+                            <div class="card-body p-0">
+                                <table class="table table-striped mb-0" id="mc-ranking-table">
+                                    <thead><tr>
+                                        <th>Rank</th><th>Model</th><th>CV Accuracy</th><th>F1 Score</th>
+                                    </tr></thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Per-model details -->
+                        <div id="mc-details-container"></div>
+                    </div>
+                </div>
+
+                <!-- CLASSIFICATION TAB (Enhanced) -->
                 <div id="tab-classify" class="tab-content">
                     <div class="d-flex gap-2 mb-3">
                         <select id="classifier-select" class="form-select form-select-sm" style="width:auto">
                             <option value="random_forest">Random Forest</option>
                             <option value="gradient_boosting">Gradient Boosting</option>
+                            <option value="xgboost">XGBoost</option>
+                            <option value="lightgbm">LightGBM</option>
+                            <option value="svm">SVM</option>
+                            <option value="mlp">Neural Network</option>
                         </select>
                         <button class="btn btn-primary btn-sm" onclick="runClassification()">
                             <i class="bi bi-play-fill"></i> Run Classification
                         </button>
                     </div>
+                    <p class="text-muted small">Uses enhanced physics-informed features including pore pressure, overburden stress, temperature, fracture density, and fabric strength.</p>
+
                     <div id="classify-results" class="d-none">
                         <div class="row g-3 mb-4">
-                            <div class="col-md-4">
+                            <div class="col-md-3">
                                 <div class="metric-card">
                                     <div class="metric-label">CV Accuracy</div>
                                     <div class="metric-value" id="clf-accuracy">--</div>
                                 </div>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-3">
                                 <div class="metric-card">
                                     <div class="metric-label">Std Deviation</div>
                                     <div class="metric-value" id="clf-std">--</div>
                                 </div>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">F1 Score</div>
+                                    <div class="metric-value" id="clf-f1">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
                                 <div class="metric-card">
                                     <div class="metric-label">Classifier</div>
                                     <div class="metric-value" id="clf-type">--</div>
@@ -338,6 +470,70 @@
                                             <tbody></tbody>
                                         </table>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- FEEDBACK TAB (NEW) -->
+                <div id="tab-feedback" class="tab-content">
+                    <div class="row g-3 mb-4">
+                        <div class="col-lg-6">
+                            <div class="card">
+                                <div class="card-header"><i class="bi bi-chat-dots"></i> Submit Feedback</div>
+                                <div class="card-body">
+                                    <p class="text-muted small">Help improve GeoStress AI by rating analysis accuracy. Your feedback trains future model versions.</p>
+                                    <div class="mb-3">
+                                        <label class="form-label">Analysis Type</label>
+                                        <select id="fb-type" class="form-select form-select-sm">
+                                            <option value="inversion">Stress Inversion</option>
+                                            <option value="classification">Fracture Classification</option>
+                                            <option value="clustering">Fracture Clustering</option>
+                                            <option value="critically_stressed">Critically Stressed Analysis</option>
+                                        </select>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Accuracy Rating</label>
+                                        <div id="fb-stars" class="d-flex gap-1">
+                                            <button class="btn btn-outline-warning btn-sm fb-star" data-val="1">1</button>
+                                            <button class="btn btn-outline-warning btn-sm fb-star" data-val="2">2</button>
+                                            <button class="btn btn-warning btn-sm fb-star active" data-val="3">3</button>
+                                            <button class="btn btn-outline-warning btn-sm fb-star" data-val="4">4</button>
+                                            <button class="btn btn-outline-warning btn-sm fb-star" data-val="5">5</button>
+                                        </div>
+                                        <small class="text-muted">1 = very inaccurate, 5 = very accurate</small>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Comments (optional)</label>
+                                        <textarea id="fb-comment" class="form-control form-control-sm" rows="3" placeholder="What was inaccurate? What would improve the analysis?"></textarea>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Your Name (optional)</label>
+                                        <input type="text" id="fb-name" class="form-control form-control-sm" placeholder="Anonymous">
+                                    </div>
+                                    <button class="btn btn-primary btn-sm" onclick="submitFeedback()">
+                                        <i class="bi bi-send"></i> Submit Feedback
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="card">
+                                <div class="card-header"><i class="bi bi-graph-up"></i> Feedback Summary</div>
+                                <div class="card-body" id="fb-summary-body">
+                                    <p class="text-muted">No feedback collected yet. Submit feedback to track accuracy over time.</p>
+                                </div>
+                            </div>
+                            <div class="card mt-3">
+                                <div class="card-header"><i class="bi bi-question-circle"></i> Why Feedback Matters</div>
+                                <div class="card-body">
+                                    <ul class="mb-0 small">
+                                        <li><strong>Accuracy tracking</strong>: Monitors how well predictions match field observations</li>
+                                        <li><strong>Model improvement</strong>: Low-rated analyses identify where models need retraining</li>
+                                        <li><strong>Data quality</strong>: Comments help identify data issues (missing fractures, wrong orientations)</li>
+                                        <li><strong>Decision audit trail</strong>: Records expert validation of AI-assisted decisions</li>
+                                    </ul>
                                 </div>
                             </div>
                         </div>

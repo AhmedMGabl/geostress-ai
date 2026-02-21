@@ -106,11 +106,14 @@ def resolve_stress_on_planes(S: np.ndarray, normals: np.ndarray) -> tuple:
 # ──────────────────────────────────────────────
 
 def mohr_coulomb_misfit(sigma_n: np.ndarray, tau: np.ndarray,
-                        mu: float = 0.6, cohesion: float = 0.0) -> np.ndarray:
+                        mu: float = 0.6, cohesion: float = 0.0,
+                        pore_pressure: float = 0.0) -> np.ndarray:
     """Compute misfit from Mohr-Coulomb failure envelope.
 
-    Fractures that slipped should lie ON or ABOVE the failure line:
-        τ = cohesion + μ · σn
+    Uses effective stress principle (Terzaghi):
+        τ = cohesion + μ · (σn - Pp)
+
+    where Pp is pore fluid pressure.
 
     Misfit is the signed distance below the failure line (positive = below,
     meaning the stress state couldn't have caused slip on this plane).
@@ -121,12 +124,14 @@ def mohr_coulomb_misfit(sigma_n: np.ndarray, tau: np.ndarray,
     tau : Shear stresses
     mu : Friction coefficient (typically 0.6 for Byerlee's law)
     cohesion : Cohesive strength (MPa)
+    pore_pressure : Pore fluid pressure in MPa (shifts failure envelope)
 
     Returns
     -------
     misfit : Array of misfits (positive = fracture is below failure line)
     """
-    tau_critical = cohesion + mu * sigma_n
+    sigma_n_eff = sigma_n - pore_pressure
+    tau_critical = cohesion + mu * sigma_n_eff
     return tau_critical - tau  # positive means tau < tau_critical (not failing)
 
 
@@ -160,12 +165,14 @@ def _unpack_params(params):
 
 
 def inversion_objective(params: np.ndarray, normals: np.ndarray,
-                        regime: str = "strike_slip", cohesion: float = 0.0) -> float:
+                        regime: str = "strike_slip", cohesion: float = 0.0,
+                        pore_pressure: float = 0.0) -> float:
     """Objective function for geostress inversion.
 
     Minimizes the sum of squared Mohr-Coulomb misfits across all fractures.
     The idea: the correct stress tensor should place all fractures at or
     above the Mohr-Coulomb failure envelope (misfit ≤ 0).
+    Uses effective stress principle when pore_pressure > 0.
     """
     sigma1, sigma3, R, shmax_az, mu = _unpack_params(params)
 
@@ -176,7 +183,7 @@ def inversion_objective(params: np.ndarray, normals: np.ndarray,
     S = build_stress_tensor(sigma1, sigma3, R, shmax_az, regime)
     sigma_n, tau = resolve_stress_on_planes(S, normals)
 
-    misfit = mohr_coulomb_misfit(sigma_n, tau, mu, cohesion)
+    misfit = mohr_coulomb_misfit(sigma_n, tau, mu, cohesion, pore_pressure)
 
     # Penalize fractures that are far below the failure line
     # (they should all be near or on the line)
@@ -195,11 +202,13 @@ def invert_stress(
     regime: str = "strike_slip",
     depth_m: float = 3000.0,
     cohesion: float = 0.0,
+    pore_pressure: float = None,
 ) -> dict:
     """Run geostress inversion to estimate the stress tensor.
 
     Uses differential evolution (global optimization) followed by
-    local refinement.
+    local refinement.  Supports pore pressure correction for
+    effective stress analysis.
 
     Parameters
     ----------
@@ -207,13 +216,20 @@ def invert_stress(
     regime : Faulting regime assumption
     depth_m : Average depth (m) for initial stress magnitude bounds
     cohesion : Rock cohesion (MPa)
+    pore_pressure : Pore fluid pressure in MPa.
+        If None, estimates hydrostatic: ρ_water * g * depth.
 
     Returns
     -------
     result : dict with keys:
         sigma1, sigma3, R, shmax_azimuth_deg, mu, stress_tensor,
-        sigma_n, tau, slip_tend, dilation_tend, misfit
+        sigma_n, tau, slip_tend, dilation_tend, misfit,
+        pore_pressure, effective_sigma_n
     """
+    # Estimate pore pressure if not provided (hydrostatic assumption)
+    if pore_pressure is None:
+        pore_pressure = 1020.0 * 9.81 * depth_m / 1e6  # ρw*g*h in MPa
+
     # Estimate reasonable stress bounds from depth
     # Typical: σv ≈ ρgh ≈ 2500 * 9.81 * depth / 1e6 MPa
     sv_est = 2500 * 9.81 * depth_m / 1e6  # ~73 MPa at 3000m
@@ -230,7 +246,7 @@ def invert_stress(
     result = differential_evolution(
         inversion_objective,
         bounds,
-        args=(normals, regime, cohesion),
+        args=(normals, regime, cohesion, pore_pressure),
         maxiter=500,
         seed=42,
         tol=1e-8,
@@ -242,7 +258,7 @@ def invert_stress(
     # Build final stress tensor and compute all outputs
     S = build_stress_tensor(sigma1, sigma3, R, shmax_az, regime)
     sigma_n, tau = resolve_stress_on_planes(S, normals)
-    misfit = mohr_coulomb_misfit(sigma_n, tau, mu, cohesion)
+    misfit = mohr_coulomb_misfit(sigma_n, tau, mu, cohesion, pore_pressure)
 
     sigma2 = sigma3 + R * (sigma1 - sigma3)
 
@@ -260,6 +276,8 @@ def invert_stress(
         "slip_tend": slip_tendency(sigma_n, tau),
         "dilation_tend": dilation_tendency(sigma_n, sigma1, sigma3),
         "misfit": misfit,
+        "pore_pressure": pore_pressure,
+        "effective_sigma_n": sigma_n - pore_pressure,
         "optimization_result": result,
     }
 

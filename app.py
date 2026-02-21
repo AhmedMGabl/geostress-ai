@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application."""
+"""GeoStress AI - FastAPI Web Application (v2.0 - Industrial Grade)."""
 
 import os
 import io
@@ -8,6 +8,7 @@ import threading
 import tempfile
 from pathlib import Path
 from contextlib import asynccontextmanager
+from functools import lru_cache
 
 import matplotlib
 matplotlib.use("Agg")
@@ -29,6 +30,12 @@ from src.geostress import invert_stress
 from src.fracture_analysis import (
     classify_fracture_types, cluster_fracture_sets, identify_critically_stressed,
 )
+from src.enhanced_analysis import (
+    compare_models, classify_enhanced, cluster_enhanced,
+    critically_stressed_enhanced, generate_interpretation,
+    compute_pore_pressure, feedback_store,
+    engineer_enhanced_features,
+)
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
     plot_mohr_circle, plot_tendency, plot_depth_profile,
@@ -43,6 +50,10 @@ plot_lock = threading.Lock()
 # App state
 demo_df: pd.DataFrame = None
 uploaded_df: pd.DataFrame = None
+
+# Cache for expensive computations
+_model_comparison_cache = {}
+_inversion_cache = {}
 
 
 # ── Helpers ──────────────────────────────────────────
@@ -83,6 +94,22 @@ def get_df(source: str = "demo") -> pd.DataFrame:
     return demo_df
 
 
+def _sanitize_for_json(obj):
+    """Recursively convert numpy types to Python types for JSON."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, (np.integer,)):
+        return int(obj)
+    elif isinstance(obj, (np.floating,)):
+        v = float(obj)
+        return None if np.isnan(v) else v
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+
 # ── App lifecycle ────────────────────────────────────
 
 @asynccontextmanager
@@ -93,7 +120,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="2.0.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -113,7 +140,6 @@ async def data_summary(source: str = "demo"):
     summary = fracture_summary(df)
     summary_reset = summary.reset_index()
     rows = summary_reset.to_dict(orient="records")
-    # Replace NaN with None for JSON
     for row in rows:
         for k, v in row.items():
             if isinstance(v, float) and np.isnan(v):
@@ -143,7 +169,7 @@ async def list_wells(source: str = "demo"):
 
 @app.post("/api/data/upload")
 async def upload_file(file: UploadFile = File(...)):
-    global uploaded_df
+    global uploaded_df, _model_comparison_cache, _inversion_cache
     if not file.filename.endswith((".xls", ".xlsx")):
         raise HTTPException(400, "Only .xls and .xlsx files supported")
 
@@ -156,6 +182,9 @@ async def upload_file(file: UploadFile = File(...)):
     try:
         new_df = load_single_file(tmp_path)
         uploaded_df = new_df
+        # Clear caches when new data is uploaded
+        _model_comparison_cache.clear()
+        _inversion_cache.clear()
         return {
             "filename": file.filename,
             "rows": len(new_df),
@@ -216,7 +245,7 @@ async def viz_depth_profile(source: str = "demo"):
     return {"image": img}
 
 
-# ── Analysis API ─────────────────────────────────────
+# ── Analysis API (Original - kept for backward compat) ──
 
 @app.post("/api/analysis/inversion")
 async def run_inversion(request: Request):
@@ -226,6 +255,9 @@ async def run_inversion(request: Request):
     depth_m = float(body.get("depth_m", 3300.0))
     cohesion = float(body.get("cohesion", 0.0))
     source = body.get("source", "demo")
+    pore_pressure = body.get("pore_pressure", None)
+    if pore_pressure is not None:
+        pore_pressure = float(pore_pressure)
 
     df = get_df(source)
     df_well = df[df[WELL_COL] == well].reset_index(drop=True)
@@ -239,9 +271,10 @@ async def run_inversion(request: Request):
     if np.isnan(avg_depth):
         avg_depth = depth_m
 
-    # Run inversion in thread
+    # Run inversion with pore pressure support
     result = await asyncio.to_thread(
-        invert_stress, normals, regime=regime, depth_m=avg_depth, cohesion=cohesion
+        invert_stress, normals, regime=regime, depth_m=avg_depth,
+        cohesion=cohesion, pore_pressure=pore_pressure
     )
 
     # Generate plots
@@ -265,11 +298,16 @@ async def run_inversion(request: Request):
 
     dashboard_img = await asyncio.to_thread(make_dashboard)
 
-    cs_mask = identify_critically_stressed(
-        result["sigma_n"], result["tau"], result["mu"], cohesion
+    # Enhanced critically stressed analysis with pore pressure
+    pp = result.get("pore_pressure", 0.0)
+    cs_result = critically_stressed_enhanced(
+        result["sigma_n"], result["tau"], result["mu"], cohesion, pp
     )
 
-    return {
+    # Generate stakeholder interpretation
+    interpretation = generate_interpretation(result, cs_result, well)
+
+    return _sanitize_for_json({
         "sigma1": round(float(result["sigma1"]), 2),
         "sigma2": round(float(result["sigma2"]), 2),
         "sigma3": round(float(result["sigma3"]), 2),
@@ -278,14 +316,22 @@ async def run_inversion(request: Request):
         "mu": round(float(result["mu"]), 4),
         "regime": regime,
         "fracture_count": len(df_well),
+        "pore_pressure_mpa": round(pp, 2),
         "mohr_circle_img": mohr_img,
         "slip_tendency_img": slip_img,
         "dilation_tendency_img": dilation_img,
         "dashboard_img": dashboard_img,
-        "critically_stressed_count": int(cs_mask.sum()),
-        "critically_stressed_total": len(cs_mask),
-        "critically_stressed_pct": round(100 * float(cs_mask.sum()) / len(cs_mask), 1),
-    }
+        "critically_stressed_count": cs_result["count_critical"],
+        "critically_stressed_total": cs_result["total"],
+        "critically_stressed_pct": cs_result["pct_critical"],
+        "risk_level": cs_result.get("high_risk_count", 0),
+        "risk_categories": {
+            "high": cs_result["high_risk_count"],
+            "moderate": cs_result["moderate_risk_count"],
+            "low": cs_result["low_risk_count"],
+        },
+        "interpretation": interpretation,
+    })
 
 
 @app.post("/api/analysis/classify")
@@ -293,24 +339,37 @@ async def run_classification(request: Request):
     body = await request.json()
     classifier = body.get("classifier", "random_forest")
     source = body.get("source", "demo")
+    use_enhanced = body.get("enhanced", True)
 
     df = get_df(source)
 
-    clf_result = await asyncio.to_thread(
-        classify_fracture_types, df, classifier=classifier
-    )
+    if use_enhanced:
+        clf_result = await asyncio.to_thread(
+            classify_enhanced, df, classifier=classifier
+        )
+    else:
+        clf_result = await asyncio.to_thread(
+            classify_fracture_types, df, classifier=classifier
+        )
 
-    class_names = clf_result["label_encoder"].classes_.tolist()
-    cm = clf_result["confusion_matrix"].tolist()
-    feat_imp = {k: round(float(v), 4) for k, v in clf_result["feature_importances"].items()}
+    class_names = clf_result.get("class_names",
+                                  clf_result.get("label_encoder", {}).classes_.tolist()
+                                  if hasattr(clf_result.get("label_encoder", {}), "classes_")
+                                  else [])
+    cm = clf_result["confusion_matrix"]
+    if hasattr(cm, "tolist"):
+        cm = cm.tolist()
+    feat_imp = {k: round(float(v), 4)
+                for k, v in clf_result["feature_importances"].items()}
 
-    return {
+    return _sanitize_for_json({
         "cv_mean_accuracy": round(float(clf_result["cv_mean_accuracy"]), 4),
         "cv_std_accuracy": round(float(clf_result["cv_std_accuracy"]), 4),
+        "cv_f1_mean": round(float(clf_result.get("cv_f1_mean", 0)), 4),
         "feature_importances": feat_imp,
         "confusion_matrix": cm,
         "class_names": class_names,
-    }
+    })
 
 
 @app.post("/api/analysis/cluster")
@@ -379,4 +438,91 @@ async def run_clustering(request: Request):
         "cluster_stats": stats,
         "cluster_img": cluster_img,
         "well": well,
+    }
+
+
+# ── NEW: Multi-Model Comparison API ─────────────────
+
+@app.post("/api/analysis/compare-models")
+async def compare_all_models(request: Request):
+    """Compare all available ML models on fracture classification."""
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    df = get_df(source)
+
+    # Check cache
+    cache_key = f"{source}_{len(df)}"
+    if cache_key in _model_comparison_cache:
+        return _model_comparison_cache[cache_key]
+
+    result = await asyncio.to_thread(compare_models, df)
+    response = _sanitize_for_json(result)
+    _model_comparison_cache[cache_key] = response
+    return response
+
+
+# ── NEW: Feedback API ────────────────────────────────
+
+@app.post("/api/feedback/submit")
+async def submit_feedback(request: Request):
+    """Submit expert feedback on analysis results."""
+    body = await request.json()
+    well = body.get("well", "")
+    analysis_type = body.get("analysis_type", "general")
+    rating = int(body.get("rating", 3))
+    comment = body.get("comment", "")
+    expert_name = body.get("expert_name", "anonymous")
+
+    entry = feedback_store.add_feedback(
+        well, analysis_type, rating, comment, expert_name
+    )
+    return {"status": "ok", "entry": entry}
+
+
+@app.post("/api/feedback/flag")
+async def flag_fracture(request: Request):
+    """Flag a fracture for expert review."""
+    body = await request.json()
+    well = body.get("well", "")
+    fracture_idx = int(body.get("fracture_idx", 0))
+    reason = body.get("reason", "")
+    suggested_type = body.get("suggested_type", "")
+
+    entry = feedback_store.flag_fracture(
+        well, fracture_idx, reason, suggested_type
+    )
+    return {"status": "ok", "entry": entry}
+
+
+@app.get("/api/feedback/summary")
+async def get_feedback_summary():
+    """Get summary of all collected feedback."""
+    return _sanitize_for_json(feedback_store.get_summary())
+
+
+# ── NEW: Enhanced Features Info ──────────────────────
+
+@app.get("/api/analysis/features")
+async def get_feature_info(source: str = "demo"):
+    """Return the enhanced feature set computed from current data."""
+    df = get_df(source)
+    features = engineer_enhanced_features(df)
+
+    # Summary stats for each feature
+    stats = {}
+    for col in features.columns:
+        vals = features[col].dropna()
+        stats[col] = {
+            "mean": round(float(vals.mean()), 3),
+            "std": round(float(vals.std()), 3),
+            "min": round(float(vals.min()), 3),
+            "max": round(float(vals.max()), 3),
+        }
+
+    return {
+        "feature_count": len(features.columns),
+        "feature_names": features.columns.tolist(),
+        "stats": stats,
+        "n_samples": len(features),
     }
