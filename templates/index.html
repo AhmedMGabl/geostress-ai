@@ -928,6 +928,20 @@
                         </div>
                     </div>
 
+                    <!-- Depth-Zone Classification -->
+                    <div class="card mt-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-layers"></i> Depth-Zone Classification — Depth-Specific Models</span>
+                            <button class="btn btn-outline-primary btn-sm" onclick="runDepthZoneClassify()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Fracture behavior changes with depth (different stress regimes). Trains separate models per depth zone and compares to the global model. May improve accuracy for depth-variable datasets.</p>
+                            <div id="depthzone-results" class="d-none"></div>
+                        </div>
+                    </div>
+
                     <!-- Bootstrap Confidence Intervals -->
                     <div class="card mt-4">
                         <div class="card-header d-flex justify-content-between align-items-center">

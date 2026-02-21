@@ -7677,3 +7677,178 @@ def _anomaly_recommendation(n_flagged, n_total, severity_counts):
             ),
             "action": "PROCEED",
         }
+
+
+# ──────────────────────────────────────────────────────
+# Depth-Zone Classification
+# ──────────────────────────────────────────────────────
+
+def depth_zone_classify(
+    df: pd.DataFrame,
+    n_zones: int = 3,
+    classifier: str = "random_forest",
+    fast: bool = True,
+) -> dict:
+    """Train separate models for different depth zones, then compare.
+
+    Geological reality: fracture behavior changes with depth because
+    stress conditions change. A single model across all depths averages
+    out important depth-dependent patterns. This function:
+    1. Splits data into N depth zones (equal-count quantiles)
+    2. Trains a model for each zone
+    3. Compares zone-specific accuracy vs global model
+    4. Identifies which zones benefit from specialization
+
+    Returns per-zone metrics and a recommendation on whether to use
+    depth-zoning or a single global model.
+    """
+    if DEPTH_COL not in df.columns:
+        return {
+            "error": "No depth column in data — depth-zoning requires depth measurements.",
+            "suggestion": "Upload data with depth values for each fracture.",
+        }
+
+    depth_vals = pd.to_numeric(df[DEPTH_COL], errors="coerce")
+    valid_mask = ~depth_vals.isna()
+    n_valid = int(valid_mask.sum())
+    if n_valid < 30:
+        return {
+            "error": f"Only {n_valid} samples with valid depth — need at least 30.",
+            "suggestion": "Add depth measurements to your fracture data.",
+        }
+
+    # Use only rows with valid depth
+    df_valid = df[valid_mask].reset_index(drop=True)
+    depth_valid = depth_vals[valid_mask].values
+
+    # Create depth zones via quantiles
+    n_zones = min(n_zones, max(2, n_valid // 20))  # need >=20 per zone
+    zone_boundaries = np.quantile(depth_valid, np.linspace(0, 1, n_zones + 1))
+    zone_labels = np.digitize(depth_valid, zone_boundaries[1:-1])  # 0-indexed zones
+
+    # Global model baseline
+    features = engineer_enhanced_features(df_valid)
+    labels = df_valid[FRACTURE_TYPE_COL].values
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+    class_names = le.classes_.tolist()
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    all_models = _get_models(fast=fast)
+    if classifier not in all_models:
+        classifier = "random_forest"
+    model = all_models[classifier]
+
+    n_folds = 3 if fast else 5
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        # Global accuracy
+        cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+        try:
+            global_scores = cross_val_score(model, X, y, cv=cv, scoring="accuracy")
+            global_acc = float(global_scores.mean())
+        except Exception:
+            global_acc = 0.0
+
+    # Per-zone models
+    zones = []
+    zone_correct = 0
+    zone_total = 0
+
+    for z in range(n_zones):
+        zone_mask = zone_labels == z
+        n_zone = int(zone_mask.sum())
+        depth_range = [float(depth_valid[zone_mask].min()),
+                       float(depth_valid[zone_mask].max())]
+
+        zone_info = {
+            "zone": z,
+            "depth_range_m": [round(depth_range[0], 1), round(depth_range[1], 1)],
+            "n_samples": n_zone,
+        }
+
+        if n_zone < 10:
+            zone_info["accuracy"] = None
+            zone_info["note"] = "Too few samples for reliable zone model"
+            zones.append(zone_info)
+            continue
+
+        X_zone = X[zone_mask]
+        y_zone = y[zone_mask]
+
+        # Check we have at least 2 classes
+        n_classes_zone = len(np.unique(y_zone))
+        if n_classes_zone < 2:
+            zone_info["accuracy"] = 1.0
+            zone_info["n_classes"] = n_classes_zone
+            zone_info["note"] = "Only 1 class in this depth zone"
+            zone_correct += n_zone
+            zone_total += n_zone
+            zones.append(zone_info)
+            continue
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                cv_zone = StratifiedKFold(
+                    n_splits=min(n_folds, n_classes_zone, n_zone // 3),
+                    shuffle=True, random_state=42,
+                )
+                zone_scores = cross_val_score(model, X_zone, y_zone,
+                                              cv=cv_zone, scoring="accuracy")
+                zone_acc = float(zone_scores.mean())
+            except Exception:
+                zone_acc = 0.0
+
+        zone_info["accuracy"] = round(zone_acc, 3)
+        zone_info["n_classes"] = n_classes_zone
+        zone_info["class_names"] = [class_names[c] for c in np.unique(y_zone)]
+
+        zone_correct += int(round(zone_acc * n_zone))
+        zone_total += n_zone
+        zones.append(zone_info)
+
+    # Weighted zone accuracy
+    weighted_zone_acc = zone_correct / max(zone_total, 1)
+
+    # Improvement
+    improvement = weighted_zone_acc - global_acc
+
+    # Recommendation
+    if improvement > 0.03:
+        verdict = "ZONE_MODELS_BETTER"
+        message = (
+            f"Depth-zoned models are {improvement*100:.1f}% more accurate than the global model. "
+            f"Fracture classification should use zone-specific models."
+        )
+    elif improvement > -0.02:
+        verdict = "SIMILAR_PERFORMANCE"
+        message = (
+            f"Zone-specific and global models have similar accuracy "
+            f"({weighted_zone_acc*100:.1f}% vs {global_acc*100:.1f}%). "
+            f"Global model is simpler — use it unless you need depth-specific insights."
+        )
+    else:
+        verdict = "GLOBAL_MODEL_BETTER"
+        message = (
+            f"Global model ({global_acc*100:.1f}%) outperforms zone-specific ({weighted_zone_acc*100:.1f}%). "
+            f"Depth zones may have too few samples. Use the global model."
+        )
+
+    return {
+        "classifier": classifier,
+        "n_zones": n_zones,
+        "global_accuracy": round(global_acc, 3),
+        "weighted_zone_accuracy": round(weighted_zone_acc, 3),
+        "improvement": round(improvement, 3),
+        "zones": zones,
+        "class_names": class_names,
+        "recommendation": {
+            "verdict": verdict,
+            "message": message,
+        },
+    }

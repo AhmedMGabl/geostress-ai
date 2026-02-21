@@ -3680,6 +3680,70 @@ async function runDecisionMatrix() {
 }
 
 
+// ── Depth-Zone Classification ─────────────────────
+
+async function runDepthZoneClassify() {
+    showLoading("Running depth-zone classification...");
+    try {
+        var r = await apiPost("/api/analysis/depth-zone", {
+            source: currentSource, well: getWell(), n_zones: 3, classifier: "random_forest"
+        });
+        var el = document.getElementById("depthzone-results");
+        el.classList.remove("d-none");
+
+        if (r.error) {
+            el.innerHTML = '<div class="alert alert-warning">' + r.error + '</div>';
+            return;
+        }
+
+        var rec = r.recommendation || {};
+        var vColors = {
+            ZONE_MODELS_BETTER: "success", SIMILAR_PERFORMANCE: "info", GLOBAL_MODEL_BETTER: "warning"
+        };
+        var html = '<div class="alert alert-' + (vColors[rec.verdict] || "secondary") + ' p-3 mb-3">' +
+            '<h6>' + (rec.verdict || "").replace(/_/g, " ") + '</h6>' +
+            '<p class="mb-0">' + (rec.message || "") + '</p></div>';
+
+        // Accuracy comparison
+        html += '<div class="row g-2 mb-3">';
+        html += '<div class="col-md-4"><div class="card text-center"><div class="card-body py-2">' +
+            '<h4>' + (r.global_accuracy * 100).toFixed(1) + '%</h4>' +
+            '<small class="text-muted">Global Model</small></div></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center border-primary"><div class="card-body py-2">' +
+            '<h4 class="text-primary">' + (r.weighted_zone_accuracy * 100).toFixed(1) + '%</h4>' +
+            '<small class="text-muted">Zone-Weighted</small></div></div></div>';
+        var impColor = r.improvement > 0 ? "success" : "warning";
+        html += '<div class="col-md-4"><div class="card text-center border-' + impColor + '"><div class="card-body py-2">' +
+            '<h4 class="text-' + impColor + '">' + (r.improvement > 0 ? '+' : '') +
+            (r.improvement * 100).toFixed(1) + '%</h4>' +
+            '<small class="text-muted">Improvement</small></div></div></div>';
+        html += '</div>';
+
+        // Per-zone table
+        if (r.zones && r.zones.length > 0) {
+            html += '<h6><i class="bi bi-layers"></i> Depth Zones (' + r.n_zones + ')</h6>';
+            html += '<table class="table table-sm"><thead><tr>' +
+                '<th>Zone</th><th>Depth Range</th><th>Samples</th><th>Classes</th><th>Accuracy</th></tr></thead><tbody>';
+            r.zones.forEach(function(z) {
+                var acc = z.accuracy !== null ? (z.accuracy * 100).toFixed(1) + '%' : (z.note || 'N/A');
+                html += '<tr><td>' + z.zone + '</td>' +
+                    '<td>' + z.depth_range_m[0] + '–' + z.depth_range_m[1] + ' m</td>' +
+                    '<td>' + z.n_samples + '</td>' +
+                    '<td>' + (z.n_classes || '-') + '</td>' +
+                    '<td>' + acc + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+
+        el.innerHTML = html;
+        showToast("Depth-zone: " + (r.improvement > 0 ? '+' : '') + (r.improvement * 100).toFixed(1) + "% vs global");
+    } catch (err) {
+        showToast("Depth-zone error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 // ── Hierarchical Classification ───────────────────
 
 async function runHierarchical() {

@@ -56,7 +56,7 @@ from src.enhanced_analysis import (
     evidence_chain_analysis, model_bias_detection,
     prediction_reliability_report, guided_analysis_wizard,
     predict_with_abstention, detect_data_anomalies,
-    feedback_effectiveness,
+    feedback_effectiveness, depth_zone_classify,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -278,7 +278,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="2.8.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="2.9.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -2567,6 +2567,34 @@ async def run_hierarchical(request: Request):
                   source=source, elapsed_s=elapsed)
 
     result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Depth-Zone Classification ─────────────────────
+
+@app.post("/api/analysis/depth-zone")
+async def run_depth_zone_classify(request: Request):
+    """Train separate models for different depth zones, compare to global.
+
+    Fracture behavior changes with depth (different stress regimes).
+    Depth-zoning can improve accuracy by letting each zone specialize.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+    n_zones = int(body.get("n_zones", 3))
+    classifier = body.get("classifier", "random_forest")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well and WELL_COL in df.columns:
+        df = df[df[WELL_COL] == well].reset_index(drop=True)
+
+    result = await asyncio.to_thread(
+        depth_zone_classify, df,
+        n_zones=n_zones, classifier=classifier, fast=True,
+    )
     return _sanitize_for_json(result)
 
 
