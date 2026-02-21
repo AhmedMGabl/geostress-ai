@@ -1290,6 +1290,46 @@ async function exportPdfReport() {
     }
 }
 
+async function exportFullJsonReport() {
+    var taskId = generateTaskId();
+    showLoadingWithProgress("Generating full JSON report...", taskId);
+    try {
+        var r = await apiPost("/api/export/full-report", {
+            source: currentSource,
+            well: getWell(),
+            depth: getDepth(),
+            regime: getRegime(),
+            task_id: taskId
+        });
+        // Pretty-print and trigger download
+        var jsonStr = JSON.stringify(r, null, 2);
+        var blob = new Blob([jsonStr], { type: "application/json" });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "GeoStress_Report_" + (r.metadata && r.metadata.well || "all") + "_" +
+                     new Date().toISOString().slice(0, 10) + ".json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        // Summary toast
+        var sections = 0;
+        if (r.stress_inversion && !r.stress_inversion.error) sections++;
+        if (r.risk_assessment && !r.risk_assessment.error) sections++;
+        if (r.classification && !r.classification.error) sections++;
+        if (r.data_quality && !r.data_quality.error) sections++;
+        if (r.uncertainty && !r.uncertainty.error) sections++;
+        var sizeKb = Math.round(jsonStr.length / 1024);
+        showToast("JSON report downloaded — " + sections + "/5 sections, " + sizeKb + " KB");
+    } catch (err) {
+        showToast("JSON export error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 async function runAllRegimes() {
     showLoading("Comparing all stress regimes...");
     try {

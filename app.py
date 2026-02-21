@@ -3318,3 +3318,251 @@ async def export_audit_log():
     audit_df = pd.DataFrame(rows)
     csv_str = audit_df.to_csv(index=False)
     return {"csv": csv_str, "rows": len(rows), "filename": "audit_trail.csv"}
+
+
+# ── Full JSON Report Export ──────────────────────────
+
+@app.post("/api/export/full-report")
+async def export_full_report(request: Request):
+    """Export comprehensive analysis as a structured JSON for integration.
+
+    Runs stress inversion, classification, risk assessment, data anomalies,
+    and uncertainty analysis for the selected well, packages everything into
+    a single JSON document with metadata, provenance, and stakeholder
+    interpretations.  Designed for ingestion by external systems (SCADA,
+    Petrel, drilling-planning tools).
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+    regime = body.get("regime", "auto")
+    pore_pressure = body.get("pore_pressure", None)
+    if pore_pressure is not None:
+        pore_pressure = float(pore_pressure)
+    task_id = body.get("task_id", "")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+    avg_depth = df_well[DEPTH_COL].mean()
+    if np.isnan(avg_depth):
+        avg_depth = depth_m
+
+    report = {
+        "metadata": {
+            "report_type": "GeoStress AI Full Analysis Report",
+            "version": app.version,
+            "generated_utc": datetime.now(timezone.utc).isoformat(),
+            "well": well,
+            "source": source,
+            "parameters": {
+                "depth_m": depth_m,
+                "regime_requested": regime,
+                "pore_pressure_MPa": pore_pressure,
+            },
+            "data_summary": {
+                "n_fractures": len(df_well),
+                "depth_range_m": [
+                    round(float(df_well[DEPTH_COL].min()), 1)
+                    if not df_well[DEPTH_COL].isna().all() else None,
+                    round(float(df_well[DEPTH_COL].max()), 1)
+                    if not df_well[DEPTH_COL].isna().all() else None,
+                ],
+                "azimuth_range_deg": [
+                    round(float(df_well[AZIMUTH_COL].min()), 1),
+                    round(float(df_well[AZIMUTH_COL].max()), 1),
+                ],
+                "dip_range_deg": [
+                    round(float(df_well[DIP_COL].min()), 1),
+                    round(float(df_well[DIP_COL].max()), 1),
+                ],
+            },
+        },
+        "stress_inversion": None,
+        "risk_assessment": None,
+        "classification": None,
+        "data_quality": None,
+        "uncertainty": None,
+        "stakeholder_interpretation": None,
+    }
+
+    # ── 1. Stress inversion ────────────────────────
+    if task_id:
+        _emit_progress(task_id, "Stress inversion", 10, "Running...")
+    try:
+        if regime == "auto":
+            auto_res = await asyncio.to_thread(
+                auto_detect_regime, normals, avg_depth, 0.0, pore_pressure,
+            )
+            inv = auto_res["best_result"]
+            detected_regime = auto_res["best_regime"]
+        else:
+            inv = await _cached_inversion(
+                normals, well, regime, avg_depth, pore_pressure, source
+            )
+            detected_regime = regime
+
+        pp_val = inv.get("pore_pressure", 0.0)
+        report["stress_inversion"] = {
+            "regime_detected": detected_regime,
+            "sigma1_MPa": round(float(inv["sigma1"]), 2),
+            "sigma2_MPa": round(float(inv["sigma2"]), 2),
+            "sigma3_MPa": round(float(inv["sigma3"]), 2),
+            "R_ratio": round(float(inv["R"]), 4),
+            "SHmax_azimuth_deg": round(float(inv["shmax_azimuth_deg"]), 1),
+            "friction_coefficient": round(float(inv["mu"]), 4),
+            "total_misfit": round(float(np.sum(np.abs(inv.get("misfit", 0)))), 6),
+            "pore_pressure_MPa": round(pp_val, 2),
+            "per_fracture": {
+                "slip_tendency": [round(float(v), 4) for v in inv["slip_tend"]],
+                "dilation_tendency": [round(float(v), 4) for v in inv["dilation_tend"]],
+                "normal_stress_MPa": [round(float(v), 2) for v in inv["sigma_n"]],
+                "shear_stress_MPa": [round(float(v), 2) for v in inv["tau"]],
+            },
+        }
+    except Exception as e:
+        inv = None
+        pp_val = 0
+        report["stress_inversion"] = {"error": str(e)}
+
+    # ── 2. Risk assessment ─────────────────────────
+    if task_id:
+        _emit_progress(task_id, "Risk assessment", 30, "Critically stressed fractures...")
+    try:
+        if inv is not None:
+            cs = critically_stressed_enhanced(
+                inv["sigma_n"], inv["tau"],
+                mu=inv["mu"], pore_pressure=pp_val,
+            )
+            pct_cs = float(cs["pct_critical"])
+            risk = "GREEN" if pct_cs < 10 else ("AMBER" if pct_cs < 30 else "RED")
+            report["risk_assessment"] = {
+                "risk_level": risk,
+                "pct_critically_stressed": round(pct_cs, 1),
+                "count_critical": int(cs["count_critical"]),
+                "count_total": int(cs["total"]),
+                "per_fracture_critical": cs["is_critical"],
+                "interpretation": {
+                    "GREEN": "Low risk — fewer than 10% of fractures are critically stressed. Safe for continued operations.",
+                    "AMBER": "Moderate risk — 10-30% critically stressed fractures. Proceed with monitoring.",
+                    "RED": "High risk — over 30% critically stressed. Review before drilling decisions.",
+                }.get(risk, "Unknown risk level"),
+            }
+        else:
+            report["risk_assessment"] = {"error": "Stress inversion failed — cannot assess risk"}
+    except Exception as e:
+        report["risk_assessment"] = {"error": str(e)}
+
+    # ── 3. Classification ──────────────────────────
+    if task_id:
+        _emit_progress(task_id, "Classification", 50, "Running fracture classification...")
+    try:
+        cls_res = await asyncio.to_thread(
+            classify_enhanced, df_well, "random_forest", 3,
+        )
+        report["classification"] = {
+            "accuracy": round(float(cls_res["cv_mean_accuracy"]), 4),
+            "f1_score": round(float(cls_res["cv_f1_mean"]), 4),
+            "n_classes": len(cls_res["class_names"]),
+            "class_names": cls_res["class_names"],
+            "per_class_metrics": cls_res.get("class_report_dict", {}),
+            "predictions": cls_res.get("predictions", []),
+        }
+    except Exception as e:
+        report["classification"] = {"error": str(e)}
+
+    # ── 4. Data quality / anomalies ────────────────
+    if task_id:
+        _emit_progress(task_id, "Data quality", 70, "Scanning for anomalies...")
+    try:
+        anomalies = await asyncio.to_thread(detect_data_anomalies, df_well)
+        rec = anomalies.get("recommendation", {})
+        report["data_quality"] = {
+            "verdict": rec.get("verdict", "UNKNOWN"),
+            "total_checked": anomalies["total_samples"],
+            "total_flagged": anomalies["flagged_count"],
+            "pct_flagged": anomalies["flagged_pct"],
+            "severity_counts": anomalies["severity_counts"],
+            "flag_types": anomalies["flag_types"],
+        }
+    except Exception as e:
+        report["data_quality"] = {"error": str(e)}
+
+    # ── 5. Uncertainty ─────────────────────────────
+    if task_id:
+        _emit_progress(task_id, "Uncertainty", 85, "Computing uncertainty budget...")
+    try:
+        if inv is not None:
+            unc = await asyncio.to_thread(
+                compute_uncertainty_budget, inv,
+            )
+            report["uncertainty"] = {
+                "uncertainty_level": unc.get("uncertainty_level", "UNKNOWN"),
+                "total_score": unc.get("total_score", 0),
+                "dominant_source": unc.get("dominant_source"),
+                "sources": unc.get("sources", []),
+                "recommended_actions": unc.get("recommended_actions", []),
+                "stakeholder_summary": unc.get("stakeholder_summary", ""),
+            }
+        else:
+            report["uncertainty"] = {"error": "No inversion result for uncertainty analysis"}
+    except Exception as e:
+        report["uncertainty"] = {"error": str(e)}
+
+    # ── 6. Stakeholder interpretation ──────────────
+    inv_section = report["stress_inversion"]
+    risk_section = report["risk_assessment"]
+    qual_section = report["data_quality"]
+    unc_section = report["uncertainty"]
+
+    interpretation_lines = []
+    if isinstance(inv_section, dict) and "regime_detected" in inv_section:
+        interpretation_lines.append(
+            f"The dominant stress regime is {inv_section['regime_detected'].replace('_', ' ')} "
+            f"with maximum horizontal stress oriented at {inv_section['SHmax_azimuth_deg']}° "
+            f"(friction coefficient {inv_section['friction_coefficient']})."
+        )
+    if isinstance(risk_section, dict) and "risk_level" in risk_section:
+        interpretation_lines.append(risk_section["interpretation"])
+    if isinstance(qual_section, dict) and "verdict" in qual_section:
+        interpretation_lines.append(
+            f"Data quality assessment: {qual_section['verdict']}. "
+            f"{qual_section['total_flagged']}/{qual_section['total_checked']} "
+            f"measurements flagged ({qual_section['pct_flagged']:.1f}%)."
+        )
+    if isinstance(unc_section, dict) and "uncertainty_level" in unc_section:
+        interpretation_lines.append(
+            f"Uncertainty level: {unc_section['uncertainty_level']} "
+            f"(score {unc_section.get('total_score', '?')}/100)."
+        )
+
+    report["stakeholder_interpretation"] = {
+        "summary": " ".join(interpretation_lines),
+        "decision_guidance": (
+            "This report is generated by AI-assisted analysis. "
+            "All results should be reviewed by a qualified geomechanics engineer "
+            "before being used in drilling or completion decisions. "
+            "Critically stressed fracture counts directly impact wellbore stability "
+            "and fluid-flow risk assessments."
+        ),
+    }
+
+    elapsed = round(time.time() - t0, 2)
+    report["metadata"]["computation_time_s"] = elapsed
+
+    _audit_record(
+        "full_report_export", {"well": well, "regime": regime, "depth_m": depth_m},
+        {"sections": len([v for v in report.values() if v is not None])},
+        source, well, elapsed,
+    )
+
+    return _sanitize_for_json(report)
