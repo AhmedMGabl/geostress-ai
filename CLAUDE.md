@@ -129,6 +129,10 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/deep-ensemble` | Deep ensemble UQ: epistemic vs aleatoric uncertainty (5-10 models) |
 | POST | `/api/analysis/transfer-learning` | Well-to-well transfer learning evaluation (zero-shot + fine-tuned) |
 | POST | `/api/analysis/validity-prefilter` | Validity pre-filter: synthetic negatives catch data quality issues |
+| POST | `/api/analysis/expert-stress-ranking` | Expert RLHF: 3 regime solutions side-by-side with Mohr circles |
+| POST | `/api/analysis/expert-stress-select` | Record expert's preferred stress solution (RLHF signal) |
+| POST | `/api/analysis/uncertainty-dashboard` | 5-signal traffic-light confidence check for stakeholders |
+| POST | `/api/analysis/data-tracker` | Where/how much more data needed, with accuracy projections |
 
 ## Domain Concepts
 
@@ -257,9 +261,24 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Anomaly detection flags: physical impossibility, IQR outliers (2.5x), duplicates, depth gaps, low-dip uncertainty
 - Well 6P anomaly: 79.6% flagged (494 missing depths, 27 outliers) — data quality issue surfaced before analysis
 - Feedback effectiveness: shows per-class correction priority (Continuous 17%, Boundary 23% accuracy = HIGH priority)
-- 68 total API routes at v3.0
+- 72 total API routes at v3.1
 - Full JSON report bundles: stress, risk, classification, data quality, uncertainty + stakeholder interpretation
 - Worst-case analysis: auto-generates 5 scenarios (baseline, low friction, high Pp, wrong regime, combined)
 - Worst-case reuses cached baseline inversion + runs 2 parallel inversions for ~14s (cached) vs 32s (cold)
 - Batch comparison chart: 3-panel matplotlib (SHmax, accuracy, CS%) rendered server-side
 - Well 3P worst-case: CS ranges 53%-89% (HIGH_SENSITIVITY), friction is the biggest driver
+- Expert stress ranking: runs auto_detect_regime, returns 3 solutions with Mohr circle PNGs for geomechanist review
+- Expert selections stored in `_expert_preferences` deque(maxlen=100) — RLHF signal for stress inversion
+- `plot_mohr_circle()` takes full inversion result dict (not individual arrays) — returns Axes, use `.figure` to get Figure
+- Uncertainty dashboard: 5 signals (data quality, calibration, Pp sensitivity, sample size, regime confidence) → overall grade
+- `validate_data_quality()` returns `score` key (not `quality_score`) — range 0-100
+- Data tracker: per-class deficit analysis, 5 depth zones, learning curve projections, priority recommendations
+- Data tracker targets: min 30 samples/class or median count, whichever is larger
+- New features v3.1: pole_cluster_distance (KMeans on orientation normals), fracture_density_20m, fracture_density_per_m — 28 total features
+- CatBoost predict() returns 2D arrays — must use `np.asarray().ravel()` in _cv_with_smote and compare_models
+- Research endpoint now includes 7 cited 2025-2026 papers with finding + implementation status
+- Prewarm uses ThreadPoolExecutor for parallel well warm-up (~2x speedup)
+- Uncertainty dashboard: fast mode uses class balance ratio instead of full assess_calibration (avoids 30s model run)
+- Pp sensitivity in dashboard reuses single cached inversion (varies Pp in CS calc only, not full re-inversion)
+- Expert ranking caches full response (including Mohr circle PNGs) in _inversion_cache — 12s cold → 0.004s cached
+- Data tracker learning_curve uses fast=True with 5 splits and 5s timeout

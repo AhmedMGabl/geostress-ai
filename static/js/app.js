@@ -4883,6 +4883,24 @@ async function loadResearchMethods() {
             body.appendChild(facCard);
         }
 
+        // 2025-2026 Research Citations
+        if (r.research_2025_2026 && r.research_2025_2026.length > 0) {
+            var resCard = document.createElement("div");
+            resCard.className = "card mt-4 border-info";
+            var resHtml = '<div class="card-header bg-info text-white"><i class="bi bi-mortarboard"></i> 2025-2026 Research Integration</div><div class="card-body">';
+            r.research_2025_2026.forEach(function(p) {
+                resHtml += '<div class="mb-3 pb-2 border-bottom">';
+                resHtml += '<h6 class="mb-1"><span class="badge bg-primary me-1">' + p.year + '</span> ' + p.title + '</h6>';
+                resHtml += '<div class="small text-muted mb-1"><i class="bi bi-journal"></i> ' + p.source + '</div>';
+                resHtml += '<p class="small mb-1"><strong>Finding:</strong> ' + p.finding + '</p>';
+                resHtml += '<p class="small mb-0 text-success"><strong>Our implementation:</strong> ' + p.relevance + '</p>';
+                resHtml += '</div>';
+            });
+            resHtml += '</div>';
+            resCard.innerHTML = resHtml;
+            body.appendChild(resCard);
+        }
+
         // Limitations
         if (r.limitations && r.limitations.length > 0) {
             var limCard = document.createElement("div");
@@ -5472,6 +5490,242 @@ async function exportAuditLog() {
         }
     } catch (err) {
         showToast("Export error: " + err.message, "Error");
+    }
+}
+
+
+// ── Expert Stress Solution Ranking (RLHF) ─────────
+
+async function runExpertRanking() {
+    showLoading("Generating stress solutions for expert review...");
+    try {
+        var depth = document.getElementById("depth-input").value || 3000;
+        var pp = document.getElementById("pp-input").value || null;
+        var data = await apiPost("/api/analysis/expert-stress-ranking", {
+            source: currentSource, well: currentWell,
+            depth: parseFloat(depth), pore_pressure: pp ? parseFloat(pp) : null
+        });
+
+        document.getElementById("esr-results").classList.remove("d-none");
+
+        // Auto-detection summary
+        var confColors = { HIGH: "alert-success", MODERATE: "alert-warning", LOW: "alert-danger" };
+        var autoEl = document.getElementById("esr-auto-summary");
+        autoEl.className = "alert mb-3 " + (confColors[data.auto_confidence] || "alert-info");
+        document.getElementById("esr-auto-text").innerHTML =
+            "Best fit: <strong>" + (data.auto_best || "?").replace("_", " ") + "</strong> " +
+            "(confidence: <strong>" + (data.auto_confidence || "?") + "</strong>, " +
+            "misfit ratio: " + fmt(data.misfit_ratio, 2) + ")";
+
+        // Solution cards
+        var container = document.getElementById("esr-solutions");
+        clearChildren(container);
+        (data.solutions || []).forEach(function(sol) {
+            var borderClass = sol.is_auto_best ? "border-primary" : "border-secondary";
+            var card = document.createElement("div");
+            card.className = "col-md-4";
+            var csColor = sol.critically_stressed_pct > 50 ? "text-danger" :
+                          sol.critically_stressed_pct > 25 ? "text-warning" : "text-success";
+
+            var html = '<div class="card h-100 ' + borderClass + '">' +
+                '<div class="card-header d-flex justify-content-between align-items-center">' +
+                '<strong>#' + sol.rank + ' ' + sol.regime_label + '</strong>';
+            if (sol.is_auto_best) {
+                html += '<span class="badge bg-primary">Auto Best</span>';
+            }
+            html += '</div><div class="card-body">' +
+                '<table class="table table-sm mb-2">' +
+                '<tr><td class="text-muted">SHmax</td><td class="fw-bold">' + fmt(sol.shmax_azimuth_deg, 1) + '&deg;</td></tr>' +
+                '<tr><td class="text-muted">&sigma;1 / &sigma;3</td><td>' + fmt(sol.sigma1, 1) + ' / ' + fmt(sol.sigma3, 1) + ' MPa</td></tr>' +
+                '<tr><td class="text-muted">R-ratio</td><td>' + fmt(sol.R, 4) + '</td></tr>' +
+                '<tr><td class="text-muted">Friction (&mu;)</td><td>' + fmt(sol.mu, 3) + '</td></tr>' +
+                '<tr><td class="text-muted">Misfit</td><td>' + fmt(sol.misfit, 2) + '</td></tr>' +
+                '<tr><td class="text-muted">Crit. Stressed</td><td class="fw-bold ' + csColor + '">' + fmt(sol.critically_stressed_pct, 1) + '%</td></tr>' +
+                '<tr><td class="text-muted">Max Slip Tend.</td><td>' + fmt(sol.max_slip_tendency, 3) + '</td></tr>' +
+                '</table>';
+            if (sol.mohr_img) {
+                html += '<img src="' + sol.mohr_img + '" class="img-fluid rounded" alt="Mohr circle">';
+            }
+            html += '<div class="small text-muted mt-2">' + (sol.description || "") + '</div>';
+            html += '</div></div>';
+            card.innerHTML = html;
+            container.appendChild(card);
+        });
+
+        // Pre-select auto-best in the dropdown
+        var selectEl = document.getElementById("esr-select-regime");
+        selectEl.value = data.auto_best || "";
+
+        showToast("3 stress solutions ready for review (" + (data.elapsed_s || "?") + "s)");
+    } catch (err) {
+        showToast("Expert ranking error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+async function submitExpertSelection() {
+    var regime = document.getElementById("esr-select-regime").value;
+    if (!regime) { showToast("Please select a regime first", "Error"); return; }
+    try {
+        var data = await apiPost("/api/analysis/expert-stress-select", {
+            source: currentSource, well: currentWell,
+            regime: regime,
+            reason: document.getElementById("esr-reason").value || "",
+            expert_confidence: document.getElementById("esr-select-confidence").value
+        });
+        var msgEl = document.getElementById("esr-submit-msg");
+        msgEl.classList.remove("d-none");
+        msgEl.className = "small mt-2 text-success";
+        msgEl.textContent = data.message || "Selection recorded.";
+        showToast("Expert selection saved");
+    } catch (err) {
+        showToast("Submit error: " + err.message, "Error");
+    }
+}
+
+
+// ── Stakeholder Uncertainty Dashboard ─────────────
+
+async function runUncertaintyDashboard() {
+    showLoading("Running confidence assessment...");
+    try {
+        var depth = document.getElementById("depth-input").value || 3000;
+        var pp = document.getElementById("pp-input").value || null;
+        var regime = document.getElementById("regime-select").value || "auto";
+        var data = await apiPost("/api/analysis/uncertainty-dashboard", {
+            source: currentSource, well: currentWell,
+            depth: parseFloat(depth), pore_pressure: pp ? parseFloat(pp) : null,
+            regime: regime
+        });
+
+        document.getElementById("ud-results").classList.remove("d-none");
+
+        // Overall grade
+        var overall = data.overall || {};
+        var gradeColors = { HIGH: "success", MODERATE: "warning", LOW: "danger" };
+        var gc = gradeColors[overall.grade] || "secondary";
+        document.getElementById("ud-overall-card").className = "card mb-3 border-" + gc;
+        document.getElementById("ud-grade").textContent = overall.label || overall.grade;
+        document.getElementById("ud-grade").className = "display-4 fw-bold mb-1 text-" + gc;
+        document.getElementById("ud-score").textContent = "Score: " + (overall.score || "?") + " / 100";
+        document.getElementById("ud-advice").textContent = overall.advice || "";
+
+        // Signal cards
+        var container = document.getElementById("ud-signals");
+        clearChildren(container);
+        var signalColors = { GREEN: "success", AMBER: "warning", RED: "danger", UNKNOWN: "secondary" };
+        (data.signals || []).forEach(function(sig) {
+            var sc = signalColors[sig.grade] || "secondary";
+            var card = document.createElement("div");
+            card.className = "col-md-4 col-lg";
+            card.innerHTML =
+                '<div class="card h-100 border-' + sc + '">' +
+                '<div class="card-body text-center">' +
+                '<i class="bi ' + (sig.icon || "bi-question-circle") + ' fs-3 text-' + sc + '"></i>' +
+                '<div class="fw-bold mt-1">' + sig.name + '</div>' +
+                '<span class="badge bg-' + sc + ' mt-1">' + sig.grade + '</span>' +
+                '<div class="small text-muted mt-1">' + (sig.detail || "") + '</div>' +
+                '</div></div>';
+            container.appendChild(card);
+        });
+
+        showToast("Confidence check complete (" + (data.elapsed_s || "?") + "s)");
+    } catch (err) {
+        showToast("Dashboard error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Data Contribution Tracker ─────────────────────
+
+async function runDataTracker() {
+    showLoading("Analyzing data gaps...");
+    try {
+        var data = await apiPost("/api/analysis/data-tracker", {
+            source: currentSource, well: currentWell
+        });
+
+        document.getElementById("dt-results").classList.remove("d-none");
+
+        // Health grade
+        var h = data.health || {};
+        var hColors = { EXCELLENT: "success", GOOD: "info", FAIR: "warning", POOR: "danger" };
+        var hc = hColors[h.grade] || "secondary";
+        document.getElementById("dt-health-card").className = "card mb-3 border-" + hc;
+        document.getElementById("dt-health-grade").className = "fw-bold mb-1 text-" + hc;
+        document.getElementById("dt-health-grade").textContent = h.grade || "--";
+        document.getElementById("dt-health-summary").textContent = h.summary || "";
+
+        // Class analysis table
+        var tbody = document.getElementById("dt-class-tbody");
+        clearChildren(tbody);
+        var pColors = { CRITICAL: "danger", HIGH: "warning", MODERATE: "info", ADEQUATE: "success" };
+        (data.class_analysis || []).forEach(function(c) {
+            var tr = document.createElement("tr");
+            tr.appendChild(createCell("td", c.type, { fontWeight: "600" }));
+            tr.appendChild(createCell("td", c.current_count));
+            tr.appendChild(createCell("td", c.target_count));
+            var defStyle = c.deficit > 0 ? { color: "#dc2626", fontWeight: "600" } : { color: "#16a34a" };
+            tr.appendChild(createCell("td", c.deficit > 0 ? "+" + c.deficit + " needed" : "OK", defStyle));
+            var badge = document.createElement("td");
+            badge.innerHTML = '<span class="badge bg-' + (pColors[c.priority] || "secondary") + '">' + c.priority + '</span>';
+            tr.appendChild(badge);
+            tbody.appendChild(tr);
+        });
+
+        // Depth zones table
+        var dtbody = document.getElementById("dt-depth-tbody");
+        clearChildren(dtbody);
+        (data.depth_zones || []).forEach(function(z) {
+            var tr = document.createElement("tr");
+            tr.appendChild(createCell("td", z.zone, { fontWeight: "600" }));
+            tr.appendChild(createCell("td", z.count));
+            tr.appendChild(createCell("td", z.density_pct + "%"));
+            var badge = document.createElement("td");
+            badge.innerHTML = '<span class="badge bg-' + (pColors[z.priority] || "secondary") + '">' + z.priority + '</span>';
+            tr.appendChild(badge);
+            dtbody.appendChild(tr);
+        });
+
+        // Current accuracy
+        if (data.current_accuracy) {
+            document.getElementById("dt-current-acc").textContent = (data.current_accuracy * 100).toFixed(1) + "%";
+        }
+
+        // Projections
+        var projEl = document.getElementById("dt-projections");
+        clearChildren(projEl);
+        (data.projections || []).forEach(function(p) {
+            var div = document.createElement("div");
+            div.className = "d-flex justify-content-between align-items-center mb-2";
+            div.innerHTML =
+                '<span><strong>' + (p.multiplier || p.estimated_samples + " samples") + '</strong> (' +
+                (p.estimated_samples || "?") + ' samples)</span>' +
+                '<span class="badge bg-info">' + ((p.projected_accuracy || 0) * 100).toFixed(1) + '% projected</span>';
+            projEl.appendChild(div);
+        });
+
+        // Recommendations
+        var recEl = document.getElementById("dt-recommendations");
+        clearChildren(recEl);
+        (data.recommendations || []).forEach(function(r) {
+            var ic = r.impact === "HIGH" ? "danger" : "warning";
+            var div = document.createElement("div");
+            div.className = "alert alert-" + ic + " py-2 mb-2";
+            div.innerHTML = '<strong>' + r.action + '</strong>' +
+                ' <span class="badge bg-' + ic + '">' + r.impact + '</span>' +
+                '<div class="small mt-1">' + (r.detail || "") + '</div>';
+            recEl.appendChild(div);
+        });
+
+        showToast("Data gap analysis complete (" + (data.elapsed_s || "?") + "s)");
+    } catch (err) {
+        showToast("Data tracker error: " + err.message, "Error");
+    } finally {
+        hideLoading();
     }
 }
 

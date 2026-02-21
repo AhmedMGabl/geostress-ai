@@ -532,6 +532,67 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Data Contribution Tracker -->
+                    <hr class="my-4">
+                    <h5 class="mb-3"><i class="bi bi-graph-up-arrow"></i> Data Contribution Tracker</h5>
+                    <p class="text-muted small">Shows exactly where more data is needed and how much accuracy would improve. Tells your field team what to collect.</p>
+
+                    <button class="btn btn-info btn-sm mb-3" onclick="runDataTracker()">
+                        <i class="bi bi-bullseye"></i> Analyze Data Gaps
+                    </button>
+
+                    <div id="dt-results" class="d-none">
+                        <!-- Data Health Grade -->
+                        <div class="card mb-3" id="dt-health-card">
+                            <div class="card-body text-center py-3">
+                                <div class="small text-muted">DATA HEALTH</div>
+                                <h2 id="dt-health-grade" class="fw-bold mb-1">--</h2>
+                                <p id="dt-health-summary" class="mb-0"></p>
+                            </div>
+                        </div>
+
+                        <!-- Per-Class Sample Analysis -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-collection"></i> Fracture Type Sample Analysis</div>
+                            <div class="card-body p-0">
+                                <table class="table table-sm table-striped mb-0">
+                                    <thead><tr>
+                                        <th>Fracture Type</th><th>Current</th><th>Target</th><th>Deficit</th><th>Priority</th>
+                                    </tr></thead>
+                                    <tbody id="dt-class-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Depth Coverage -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-layers"></i> Depth Zone Coverage</div>
+                            <div class="card-body p-0">
+                                <table class="table table-sm table-striped mb-0">
+                                    <thead><tr>
+                                        <th>Depth Zone</th><th>Samples</th><th>Coverage %</th><th>Priority</th>
+                                    </tr></thead>
+                                    <tbody id="dt-depth-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Accuracy Projections -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-graph-up"></i> Accuracy Projections</div>
+                            <div class="card-body">
+                                <div class="mb-2">Current accuracy: <strong id="dt-current-acc">--</strong></div>
+                                <div id="dt-projections"></div>
+                            </div>
+                        </div>
+
+                        <!-- Recommendations -->
+                        <div class="card border-primary">
+                            <div class="card-header bg-primary text-white"><i class="bi bi-signpost-split"></i> Collection Recommendations</div>
+                            <div class="card-body" id="dt-recommendations"></div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- VISUALIZATIONS TAB -->
@@ -1721,6 +1782,30 @@
                             <div class="card-body" id="ub-actions-body"></div>
                         </div>
                     </div>
+
+                    <!-- Stakeholder Uncertainty Dashboard -->
+                    <hr class="my-4">
+                    <h5 class="mb-3"><i class="bi bi-speedometer"></i> Quick Confidence Dashboard</h5>
+                    <p class="text-muted small">One-glance confidence check across 5 key signals. Designed for non-technical stakeholders.</p>
+
+                    <button class="btn btn-warning btn-sm mb-3" onclick="runUncertaintyDashboard()">
+                        <i class="bi bi-lightning"></i> Run Quick Confidence Check
+                    </button>
+
+                    <div id="ud-results" class="d-none">
+                        <!-- Overall Confidence Grade -->
+                        <div class="card mb-3" id="ud-overall-card">
+                            <div class="card-body text-center py-4">
+                                <div class="small text-muted mb-1">OVERALL CONFIDENCE</div>
+                                <h1 id="ud-grade" class="display-4 fw-bold mb-1">--</h1>
+                                <div class="fs-5" id="ud-score">--</div>
+                                <p class="mt-2 mb-0" id="ud-advice"></p>
+                            </div>
+                        </div>
+
+                        <!-- Signal Cards -->
+                        <div class="row g-3 mb-3" id="ud-signals"></div>
+                    </div>
                 </div>
 
                 <!-- ═══════ Well Comparison Tab ═══════ -->
@@ -1937,6 +2022,62 @@
                         <div id="dm-tradeoffs" class="d-none">
                             <h6><i class="bi bi-exclamation-triangle"></i> Key Trade-offs</h6>
                             <div id="dm-tradeoff-list"></div>
+                        </div>
+                    </div>
+
+                    <!-- Expert Stress Ranking (RLHF) -->
+                    <hr class="my-4">
+                    <h5 class="mb-3"><i class="bi bi-award"></i> Expert Stress Solution Ranking</h5>
+                    <p class="text-muted small">Compare all 3 regime solutions with Mohr circles. Select the one you trust most — your feedback improves future auto-detection.</p>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-outline-primary btn-sm" onclick="runExpertRanking()">
+                            <i class="bi bi-play-fill"></i> Generate Solutions for Review
+                        </button>
+                    </div>
+
+                    <div id="esr-results" class="d-none">
+                        <div id="esr-auto-summary" class="alert alert-info mb-3">
+                            <i class="bi bi-robot me-1"></i>
+                            <strong>Auto-Detection:</strong> <span id="esr-auto-text"></span>
+                        </div>
+
+                        <div class="row g-3 mb-3" id="esr-solutions"></div>
+
+                        <!-- Expert Selection Form -->
+                        <div class="card border-primary mb-3">
+                            <div class="card-header bg-primary text-white">
+                                <i class="bi bi-hand-thumbs-up"></i> Your Expert Assessment
+                            </div>
+                            <div class="card-body">
+                                <div class="row g-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label fw-bold">Preferred Regime</label>
+                                        <select id="esr-select-regime" class="form-select">
+                                            <option value="">-- Select --</option>
+                                            <option value="normal">Normal</option>
+                                            <option value="strike_slip">Strike-Slip</option>
+                                            <option value="thrust">Thrust</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label fw-bold">Your Confidence</label>
+                                        <select id="esr-select-confidence" class="form-select">
+                                            <option value="LOW">Low — guessing</option>
+                                            <option value="MODERATE" selected>Moderate — plausible</option>
+                                            <option value="HIGH">High — field evidence supports this</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label fw-bold">Reason (optional)</label>
+                                        <input type="text" id="esr-reason" class="form-control" placeholder="e.g., Regional geology suggests normal faulting">
+                                    </div>
+                                </div>
+                                <button class="btn btn-primary btn-sm mt-3" onclick="submitExpertSelection()">
+                                    <i class="bi bi-check2-circle"></i> Submit Expert Selection
+                                </button>
+                                <div id="esr-submit-msg" class="small mt-2 d-none"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
