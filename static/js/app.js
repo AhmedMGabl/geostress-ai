@@ -2224,6 +2224,96 @@ async function runShapExplanation() {
     }
 }
 
+// ── Feedback Effectiveness ────────────────────────
+
+async function runFeedbackEffectiveness() {
+    showLoading("Computing feedback effectiveness...");
+    try {
+        var r = await apiPost("/api/feedback/effectiveness", {
+            source: currentSource, well: getWell(), classifier: "random_forest"
+        });
+        var el = document.getElementById("effectiveness-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("effectiveness-body");
+
+        var counts = r.feedback_counts || {};
+        var html = '<div class="row g-2 mb-3">';
+        html += '<div class="col-md-3"><div class="card text-center"><div class="card-body py-2">' +
+            '<h3>' + (counts.ratings || 0) + '</h3><small class="text-muted">Ratings</small></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center"><div class="card-body py-2">' +
+            '<h3>' + (counts.corrections || 0) + '</h3><small class="text-muted">Corrections</small></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center"><div class="card-body py-2">' +
+            '<h3>' + (counts.flagged || 0) + '</h3><small class="text-muted">Flagged</small></div></div></div>';
+        var baseAcc = r.baseline ? (r.baseline.accuracy * 100).toFixed(1) : "--";
+        html += '<div class="col-md-3"><div class="card text-center border-primary"><div class="card-body py-2">' +
+            '<h3 class="text-primary">' + baseAcc + '%</h3><small class="text-muted">Baseline Accuracy</small></div></div></div>';
+        html += '</div>';
+
+        // Before/After comparison
+        if (r.with_corrections) {
+            var wc = r.with_corrections;
+            var color = wc.improvement > 0 ? "success" : "warning";
+            html += '<div class="alert alert-' + color + ' p-3 mb-3">' +
+                '<h6><i class="bi bi-arrow-up-circle"></i> Impact of ' + wc.corrections_applied + ' corrections</h6>' +
+                '<p class="mb-0">Accuracy: ' + (r.baseline.accuracy * 100).toFixed(1) + '% → ' +
+                (wc.accuracy * 100).toFixed(1) + '% (' +
+                (wc.improvement > 0 ? '+' : '') + wc.improvement_pct.toFixed(2) + '%)</p></div>';
+        } else {
+            html += '<div class="alert alert-info p-3 mb-3">' +
+                '<i class="bi bi-info-circle"></i> No corrections submitted yet. ' +
+                'Submit label corrections on misclassified fractures to start improving the model.</div>';
+        }
+
+        // ROI
+        if (r.roi && r.roi.corrections_for_1pct) {
+            html += '<div class="alert alert-light p-2 mb-3">' +
+                '<small><strong>ROI:</strong> ~' + r.roi.corrections_for_1pct +
+                ' corrections needed per 1% accuracy improvement</small></div>';
+        }
+
+        // Per-class breakdown
+        if (r.per_class && r.per_class.length > 0) {
+            html += '<h6><i class="bi bi-list-check"></i> Per-Class Correction Priority</h6>';
+            html += '<table class="table table-sm"><thead><tr>' +
+                '<th>Class</th><th>Accuracy</th><th>Misclassified</th><th>Priority</th></tr></thead><tbody>';
+            r.per_class.forEach(function(pc) {
+                var pColor = pc.priority === "HIGH" ? "danger" : (pc.priority === "MEDIUM" ? "warning" : "success");
+                html += '<tr><td>' + pc["class"] + '</td>' +
+                    '<td>' + (pc.accuracy * 100).toFixed(0) + '%</td>' +
+                    '<td>' + pc.misclassified + ' / ' + pc.total + '</td>' +
+                    '<td><span class="badge bg-' + pColor + '">' + pc.priority + '</span></td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+
+        // Expert sentiment
+        if (r.expert_sentiment) {
+            var es = r.expert_sentiment;
+            var sentColor = es.satisfaction === "LOW" ? "danger" : (es.satisfaction === "HIGH" ? "success" : "warning");
+            html += '<div class="mt-2"><small><strong>Expert sentiment:</strong> ' +
+                '<span class="badge bg-' + sentColor + '">' + es.satisfaction + '</span> ' +
+                '(' + es.average_rating + '/5 from ' + es.n_ratings + ' ratings)</small></div>';
+        }
+
+        // Recommendations
+        if (r.recommendations && r.recommendations.length > 0) {
+            html += '<h6 class="mt-3"><i class="bi bi-lightbulb"></i> Next Steps</h6>';
+            r.recommendations.forEach(function(rec) {
+                var rColor = rec.priority === "HIGH" ? "danger" : "info";
+                html += '<div class="alert alert-' + rColor + ' py-2 px-3 mb-2">' +
+                    '<small>' + rec.message + '</small></div>';
+            });
+        }
+
+        body.innerHTML = html;
+        showToast("Effectiveness: " + counts.corrections + " corrections, baseline " + baseAcc + "%");
+    } catch (err) {
+        showToast("Effectiveness error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 // ── Active Learning ───────────────────────────────
 
 async function runActiveLearning() {

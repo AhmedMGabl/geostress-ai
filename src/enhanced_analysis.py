@@ -2069,6 +2069,136 @@ def retrain_with_corrections(
     }
 
 
+def feedback_effectiveness(
+    df: pd.DataFrame,
+    classifier: str = "random_forest",
+    fast: bool = True,
+) -> dict:
+    """Track the measurable impact of expert feedback on model performance.
+
+    Shows stakeholders that their corrections MATTER by reporting:
+    - Current feedback status (counts, types)
+    - Before/after accuracy when corrections are applied
+    - Per-class improvement breakdown
+    - Projection of how many more corrections would help
+    - Feedback ROI (improvement per correction)
+
+    This closes the RLHF loop: experts see their work having impact.
+    """
+    n_corrections = feedback_store.get_corrections_count()
+    n_feedback = len(feedback_store.feedback_log)
+    n_flagged = len(feedback_store.flagged_fractures)
+
+    result = {
+        "feedback_counts": {
+            "ratings": n_feedback,
+            "corrections": n_corrections,
+            "flagged": n_flagged,
+        },
+    }
+
+    # Run baseline classification
+    baseline = classify_enhanced(df, classifier=classifier, n_folds=3 if fast else 5)
+    baseline_acc = float(baseline["cv_mean_accuracy"])
+    baseline_f1 = float(baseline["cv_f1_mean"])
+    baseline_cm = baseline["confusion_matrix"]
+    class_names = baseline["class_names"]
+
+    result["baseline"] = {
+        "accuracy": round(baseline_acc, 4),
+        "f1": round(baseline_f1, 4),
+        "class_names": class_names,
+    }
+
+    # If corrections exist, show actual impact
+    if n_corrections > 0:
+        retrain_result = retrain_with_corrections(df, classifier=classifier)
+        result["with_corrections"] = {
+            "accuracy": retrain_result.get("corrected_accuracy", baseline_acc),
+            "improvement": retrain_result.get("improvement", 0),
+            "improvement_pct": retrain_result.get("improvement_pct", 0),
+            "corrections_applied": n_corrections,
+        }
+        # ROI: improvement per correction
+        imp = retrain_result.get("improvement", 0)
+        result["roi"] = {
+            "improvement_per_correction": round(imp / max(n_corrections, 1), 6),
+            "corrections_for_1pct": (
+                round(0.01 / max(imp / max(n_corrections, 1), 1e-9))
+                if imp > 0 else None
+            ),
+        }
+    else:
+        result["with_corrections"] = None
+        result["roi"] = None
+
+    # Per-class analysis: which classes need the most corrections
+    if hasattr(baseline_cm, "tolist"):
+        cm = np.array(baseline_cm)
+    else:
+        cm = np.array(baseline_cm)
+
+    per_class = []
+    for i, cls in enumerate(class_names):
+        total = int(cm[i].sum())
+        correct = int(cm[i, i]) if i < cm.shape[1] else 0
+        cls_acc = correct / max(total, 1)
+        misclassified = total - correct
+        per_class.append({
+            "class": cls,
+            "total": total,
+            "correct": correct,
+            "misclassified": misclassified,
+            "accuracy": round(cls_acc, 3),
+            "needs_corrections": misclassified > 0,
+            "priority": "HIGH" if cls_acc < 0.5 else ("MEDIUM" if cls_acc < 0.7 else "LOW"),
+        })
+    per_class.sort(key=lambda x: x["accuracy"])
+    result["per_class"] = per_class
+
+    # Expert feedback summary
+    if feedback_store.feedback_log:
+        ratings = [f["rating"] for f in feedback_store.feedback_log]
+        result["expert_sentiment"] = {
+            "average_rating": round(sum(ratings) / len(ratings), 2),
+            "n_ratings": len(ratings),
+            "satisfaction": "LOW" if sum(ratings) / len(ratings) < 2.5 else (
+                "MODERATE" if sum(ratings) / len(ratings) < 3.5 else "HIGH"
+            ),
+        }
+    else:
+        result["expert_sentiment"] = None
+
+    # Recommendations
+    recs = []
+    if n_corrections == 0 and n_feedback == 0:
+        recs.append({
+            "priority": "HIGH",
+            "message": "No expert feedback submitted yet. Submit ratings and "
+                       "corrections to start improving the model.",
+            "action": "START_FEEDBACK",
+        })
+    if n_corrections == 0 and n_feedback > 0:
+        recs.append({
+            "priority": "HIGH",
+            "message": f"{n_feedback} ratings received but no label corrections. "
+                       "Label corrections are what actually improve accuracy.",
+            "action": "SUBMIT_CORRECTIONS",
+        })
+    for pc in per_class[:3]:
+        if pc["misclassified"] > 5 and pc["accuracy"] < 0.7:
+            recs.append({
+                "priority": "MEDIUM",
+                "message": f"Class '{pc['class']}' has {pc['accuracy']*100:.0f}% accuracy. "
+                           f"Correcting {pc['misclassified']} misclassified samples would help.",
+                "action": f"CORRECT_{pc['class'].upper()}",
+            })
+
+    result["recommendations"] = recs
+
+    return result
+
+
 # ──────────────────────────────────────────────────────
 # Sensitivity Analysis
 # ──────────────────────────────────────────────────────

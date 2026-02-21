@@ -117,6 +117,9 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/what-if` | Quick single-inversion with user-specified friction/Pp/depth |
 | POST | `/api/export/pdf-report` | Multi-page PDF report for stakeholder distribution |
 | POST | `/api/analysis/predict-with-abstention` | Safety-critical: refuse prediction when confidence < threshold |
+| POST | `/api/analysis/batch` | Run stress+classification+risk for all wells at once |
+| POST | `/api/data/anomaly-detection` | Flag individual suspicious measurements (IQR, duplicates, gaps) |
+| POST | `/api/feedback/effectiveness` | Track measurable impact of expert corrections on accuracy |
 | GET | `/api/progress/{task_id}` | SSE progress streaming for long-running operations |
 
 ## Domain Concepts

@@ -56,6 +56,7 @@ from src.enhanced_analysis import (
     evidence_chain_analysis, model_bias_detection,
     prediction_reliability_report, guided_analysis_wizard,
     predict_with_abstention, detect_data_anomalies,
+    feedback_effectiveness,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -1085,6 +1086,32 @@ async def retrain_model(request: Request):
     df = get_df(source)
     result = await asyncio.to_thread(
         retrain_with_corrections, df, classifier=classifier
+    )
+    return _sanitize_for_json(result)
+
+
+@app.post("/api/feedback/effectiveness")
+async def run_feedback_effectiveness(request: Request):
+    """Track measurable impact of expert feedback on model accuracy.
+
+    Shows before/after metrics, per-class improvement, ROI per correction,
+    and recommendations for what to correct next. Closes the RLHF loop
+    by proving that expert input actually improves the system.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+    classifier = body.get("classifier", "random_forest")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well and WELL_COL in df.columns:
+        df = df[df[WELL_COL] == well].reset_index(drop=True)
+
+    result = await asyncio.to_thread(
+        feedback_effectiveness, df,
+        classifier=classifier, fast=True,
     )
     return _sanitize_for_json(result)
 
