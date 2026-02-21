@@ -93,6 +93,7 @@ var tabNames = {
     report: "Well Report",
     feedback: "Expert Feedback",
     scenarios: "Scenario Comparison",
+    decision: "Decision Support",
     audit: "Audit Trail"
 };
 
@@ -2601,6 +2602,106 @@ async function runBootstrapCI() {
         showToast("Bootstrap CIs computed (" + data.n_bootstrap + " resamples, " + (data.elapsed_s || "?") + "s)");
     } catch (err) {
         showToast("Bootstrap CI error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Decision Support Matrix ───────────────────────
+
+async function runDecisionMatrix() {
+    showLoading("Generating decision matrix (all regimes)...");
+    try {
+        var depth = document.getElementById("depth-input").value || 3000;
+        var data = await api("/api/analysis/decision-matrix", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                source: currentSource,
+                well: currentWell,
+                depth: parseFloat(depth)
+            })
+        });
+
+        document.getElementById("dm-results").classList.remove("d-none");
+
+        // Recommended action
+        document.getElementById("dm-action-text").textContent = data.recommended_action;
+
+        // Confidence
+        var conf = data.confidence || {};
+        var confColors = { HIGH: "text-success", MODERATE: "text-warning", LOW: "text-danger", UNKNOWN: "text-muted" };
+        var confEl = document.getElementById("dm-confidence");
+        confEl.textContent = conf.overall || "UNKNOWN";
+        confEl.className = "metric-value " + (confColors[conf.overall] || "");
+        val("dm-quality", "Grade " + (conf.data_quality || "?"));
+        val("dm-regime-cert", conf.regime_certainty || "?");
+        val("dm-n-frac", conf.n_fractures || 0);
+
+        // Options table
+        var tbody = document.querySelector("#dm-options-table tbody");
+        clearChildren(tbody);
+        (data.options || []).forEach(function(o) {
+            var tr = document.createElement("tr");
+            if (o.status === "ERROR") {
+                tr.appendChild(createCell("td", o.regime, { fontWeight: "600" }));
+                var errTd = document.createElement("td");
+                errTd.colSpan = 7;
+                errTd.textContent = "Error: " + o.error;
+                errTd.style.color = "#dc2626";
+                tr.appendChild(errTd);
+            } else {
+                tr.appendChild(createCell("td", o.regime_label || o.regime, { fontWeight: "600" }));
+                tr.appendChild(createCell("td", fmt(o.sigma1_mpa, 1)));
+                tr.appendChild(createCell("td", fmt(o.sigma3_mpa, 1)));
+                tr.appendChild(createCell("td", fmt(o.shmax_deg, 0) + "\u00B0"));
+                tr.appendChild(createCell("td", fmt(o.misfit, 4)));
+
+                var csStyle = {};
+                if (o.critically_stressed_pct > 50) csStyle.color = "#dc2626";
+                else if (o.critically_stressed_pct > 25) csStyle.color = "#d97706";
+                else csStyle.color = "#16a34a";
+                tr.appendChild(createCell("td", fmt(o.critically_stressed_pct, 1) + "%", csStyle));
+
+                var riskColors = { HIGH: "#dc2626", MODERATE: "#d97706", LOW: "#16a34a" };
+                tr.appendChild(createCell("td", o.risk_level, { color: riskColors[o.risk_level] || "#000", fontWeight: "600" }));
+
+                var goStyle = o.go_nogo && o.go_nogo.includes("NO-GO") ? { color: "#dc2626", fontWeight: "700" } :
+                              o.go_nogo && o.go_nogo.includes("CAUTION") ? { color: "#d97706", fontWeight: "600" } :
+                              { color: "#16a34a", fontWeight: "600" };
+                tr.appendChild(createCell("td", o.go_nogo || "?", goStyle));
+            }
+            tbody.appendChild(tr);
+        });
+
+        // Risk comparison
+        var rc = data.risk_comparison || {};
+        if (rc.safest || rc.best_fit) {
+            document.getElementById("dm-risk-comparison").classList.remove("d-none");
+            val("dm-safest", rc.safest || "N/A");
+            val("dm-best-fit", rc.best_fit || "N/A");
+            val("dm-conservative", rc.most_conservative || "N/A");
+        }
+
+        // Trade-offs
+        if (data.trade_offs && data.trade_offs.length > 0) {
+            document.getElementById("dm-tradeoffs").classList.remove("d-none");
+            var tfList = document.getElementById("dm-tradeoff-list");
+            clearChildren(tfList);
+            data.trade_offs.forEach(function(tf) {
+                var color = tf.impact === "HIGH" ? "danger" : "warning";
+                var div = document.createElement("div");
+                div.className = "alert alert-" + color + " py-2 mb-2";
+                div.innerHTML = '<strong>' + tf.factor + '</strong> (' + tf.range + ')<br>' +
+                    '<small>' + tf.implication + '</small>';
+                tfList.appendChild(div);
+            });
+        }
+
+        showToast("Decision matrix generated (" + (data.elapsed_s || "?") + "s)");
+    } catch (err) {
+        showToast("Decision matrix error: " + err.message, "Error");
     } finally {
         hideLoading();
     }

@@ -46,7 +46,7 @@ from src.enhanced_analysis import (
     compute_uncertainty_budget, active_learning_query,
     detect_ood, assess_calibration, data_collection_recommendations,
     compute_learning_curve, bootstrap_class_metrics, scenario_comparison,
-    hierarchical_classify,
+    hierarchical_classify, decision_support_matrix,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -1595,6 +1595,42 @@ async def run_scenarios(request: Request):
     _audit_record("scenario_comparison",
                   {"well": well, "n_scenarios": len(scenarios), "depth_m": depth_m},
                   {"recommendation": result.get("recommendation", "")[:100]},
+                  source=source, well=well, elapsed_s=elapsed)
+
+    result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Decision Support Matrix ────────────────────────────
+
+@app.post("/api/analysis/decision-matrix")
+async def run_decision_matrix(request: Request):
+    """Generate decision support matrix comparing all regime options.
+
+    Gives stakeholders OPTIONS with trade-offs rather than a single answer.
+    Includes go/no-go for each regime, risk comparison, and recommended action.
+    """
+    t0 = time.monotonic()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    result = await asyncio.to_thread(
+        decision_support_matrix, df_well, well or "All", depth_m
+    )
+    elapsed = round(time.monotonic() - t0, 2)
+
+    _audit_record("decision_matrix", {"well": well, "depth_m": depth_m},
+                  {"recommended_action": result.get("recommended_action", "")[:80],
+                   "confidence": result.get("confidence", {}).get("overall")},
                   source=source, well=well, elapsed_s=elapsed)
 
     result["elapsed_s"] = elapsed

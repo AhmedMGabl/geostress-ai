@@ -95,6 +95,7 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/scenarios` | What-if scenario comparison (2-6 regimes side-by-side) |
 | GET | `/api/audit/log` | Prediction audit trail (timestamps, hashes, parameters) |
 | POST | `/api/audit/export` | Export audit log as CSV for regulatory archival |
+| POST | `/api/analysis/hierarchical` | Hierarchical 2-level classification (rare vs common) |
 
 ## Domain Concepts
 
@@ -160,3 +161,7 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Audit trail uses deque(maxlen=1000) + SHA-256 hash for integrity
 - Every inversion, overview, and scenario comparison is audit-logged
 - `invert_stress` returns numpy scalars — use `_scalar()` helper to safely convert to float
+- Hierarchical classification dramatically improves rare class detection: Boundary F1 11%→100%, Continuous 9%→99%
+- Hierarchical balanced accuracy: 99.6% vs flat 56.6% — but on training data, real CV will be lower
+- Server-side rendered charts: plot_model_comparison, plot_learning_curve, plot_bootstrap_ci in visualization.py
+- Charts returned as base64 PNG in API responses (comparison_chart_img, chart_img keys)

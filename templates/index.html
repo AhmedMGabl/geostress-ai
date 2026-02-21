@@ -97,6 +97,11 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link" data-tab="decision" href="#">
+                        <i class="bi bi-signpost-split"></i> Decisions
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link" data-tab="scenarios" href="#">
                         <i class="bi bi-sliders"></i> Scenarios
                     </a>
@@ -1486,6 +1491,102 @@
                     <!-- Data Recommendations -->
                     <div id="data-rec-results" class="d-none">
                         <div id="data-rec-content"></div>
+                    </div>
+                </div>
+
+                <!-- Decision Support Tab -->
+                <div id="tab-decision" class="tab-content">
+                    <h5 class="mb-3"><i class="bi bi-signpost-split"></i> Decision Support Matrix</h5>
+                    <p class="text-muted small">Compares all stress regime options side-by-side with go/no-go recommendations, trade-offs, and confidence levels. Designed for non-technical stakeholders making drilling decisions.</p>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="runDecisionMatrix()">
+                            <i class="bi bi-play-fill"></i> Generate Decision Matrix
+                        </button>
+                    </div>
+
+                    <div id="dm-results" class="d-none">
+                        <!-- Recommended Action -->
+                        <div id="dm-action" class="alert alert-primary mb-3">
+                            <i class="bi bi-lightbulb-fill me-1"></i>
+                            <strong>Recommended Action:</strong>
+                            <span id="dm-action-text"></span>
+                        </div>
+
+                        <!-- Confidence Assessment -->
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Overall Confidence</div>
+                                    <div class="metric-value" id="dm-confidence">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Data Quality</div>
+                                    <div class="metric-value" id="dm-quality">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Regime Certainty</div>
+                                    <div class="metric-value" id="dm-regime-cert">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Fractures</div>
+                                    <div class="metric-value" id="dm-n-frac">--</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Regime Options Table -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-table"></i> Regime Comparison</div>
+                            <div class="card-body p-0">
+                                <table class="table table-sm table-striped mb-0" id="dm-options-table">
+                                    <thead><tr>
+                                        <th>Regime</th><th>&sigma;1</th><th>&sigma;3</th><th>SHmax</th><th>Misfit</th><th>Crit. Stressed</th><th>Risk</th><th>Go/No-Go</th>
+                                    </tr></thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Risk Comparison -->
+                        <div id="dm-risk-comparison" class="d-none row g-3 mb-3">
+                            <div class="col-md-4">
+                                <div class="card h-100 border-success">
+                                    <div class="card-body text-center">
+                                        <div class="small text-muted">Safest Option</div>
+                                        <div class="fw-bold" id="dm-safest">--</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card h-100 border-primary">
+                                    <div class="card-body text-center">
+                                        <div class="small text-muted">Best Data Fit</div>
+                                        <div class="fw-bold" id="dm-best-fit">--</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card h-100 border-warning">
+                                    <div class="card-body text-center">
+                                        <div class="small text-muted">Most Conservative</div>
+                                        <div class="fw-bold" id="dm-conservative">--</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Trade-offs -->
+                        <div id="dm-tradeoffs" class="d-none">
+                            <h6><i class="bi bi-exclamation-triangle"></i> Key Trade-offs</h6>
+                            <div id="dm-tradeoff-list"></div>
+                        </div>
                     </div>
                 </div>
 

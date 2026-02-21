@@ -4317,3 +4317,188 @@ def _hierarchical_recommendation(per_class, balanced_delta):
         msg += f"Degraded classes: {', '.join(degraded)}. "
 
     return {"approach": approach, "message": msg}
+
+
+# ═══════════════════════════════════════════════════════
+#  Decision Support Matrix
+# ═══════════════════════════════════════════════════════
+
+def decision_support_matrix(df, well_name="All", depth_m=3000):
+    """Generate a comprehensive decision support matrix for stakeholders.
+
+    Runs all 3 stress regimes, computes risk metrics for each, and presents
+    a structured comparison with go/no-go recommendations. This gives
+    decision-makers OPTIONS rather than a single answer.
+
+    Parameters
+    ----------
+    df : DataFrame with fracture data (single well preferred)
+    well_name : well identifier for reporting
+    depth_m : depth in meters
+
+    Returns
+    -------
+    dict with regime_options, risk_comparison, recommended_action, confidence_assessment
+    """
+    try:
+        from src.geostress import invert_stress, auto_detect_regime
+    except ImportError:
+        from geostress import invert_stress, auto_detect_regime
+
+    normals = fracture_plane_normal(
+        df[AZIMUTH_COL].values, df[DIP_COL].values
+    )
+
+    regimes = ["normal", "strike_slip", "thrust"]
+    options = []
+
+    for regime in regimes:
+        try:
+            inv = invert_stress(normals, regime=regime, depth_m=depth_m)
+            pp_val = inv.get("pore_pressure", 0.0)
+
+            cs = critically_stressed_enhanced(
+                inv["sigma_n"], inv["tau"],
+                mu=inv["mu"], pore_pressure=pp_val,
+            )
+
+            quality = validate_data_quality(df)
+            risk = compute_risk_matrix(inv, cs, quality)
+
+            def _s(v):
+                if isinstance(v, np.ndarray):
+                    return float(v.flat[0])
+                return float(v)
+
+            options.append({
+                "regime": regime,
+                "regime_label": {
+                    "normal": "Normal Faulting (extensional)",
+                    "strike_slip": "Strike-Slip Faulting (shear)",
+                    "thrust": "Thrust Faulting (compressional)",
+                }[regime],
+                "sigma1_mpa": round(_s(inv["sigma1"]), 1),
+                "sigma3_mpa": round(_s(inv["sigma3"]), 1),
+                "shmax_deg": round(_s(inv["shmax_azimuth_deg"]), 0),
+                "R_ratio": round(_s(inv["R"]), 3),
+                "mu": round(_s(inv["mu"]), 3),
+                "pore_pressure_mpa": round(_s(pp_val), 1),
+                "misfit": round(_s(inv["misfit"]), 4),
+                "critically_stressed_pct": round(cs["pct_critical"], 1),
+                "high_risk_fractures": cs["high_risk_count"],
+                "risk_score": risk["overall_score"],
+                "risk_level": risk["overall_level"],
+                "go_nogo": risk["go_nogo"],
+                "status": "OK",
+            })
+        except Exception as e:
+            options.append({
+                "regime": regime,
+                "status": "ERROR",
+                "error": str(e)[:100],
+            })
+
+    ok_options = [o for o in options if o["status"] == "OK"]
+
+    # Auto regime detection result
+    try:
+        auto = auto_detect_regime(normals, depth_m, 0.0, None)
+        auto_summary = {
+            "best_regime": auto["best_regime"],
+            "confidence": auto["confidence"],
+            "misfit_ratio": auto["misfit_ratio"],
+        }
+    except Exception:
+        auto_summary = None
+
+    # Risk comparison matrix
+    risk_comparison = {}
+    if ok_options:
+        risk_comparison = {
+            "safest": min(ok_options, key=lambda o: o["critically_stressed_pct"])["regime"],
+            "best_fit": min(ok_options, key=lambda o: o["misfit"])["regime"],
+            "most_conservative": max(ok_options, key=lambda o: o["risk_score"])["regime"],
+        }
+
+    # Key trade-offs for stakeholders
+    trade_offs = []
+    if len(ok_options) >= 2:
+        shmax_range = max(o["shmax_deg"] for o in ok_options) - min(o["shmax_deg"] for o in ok_options)
+        if shmax_range > 30:
+            trade_offs.append({
+                "factor": "SHmax Direction",
+                "range": f"{shmax_range:.0f}\u00B0 variation across regimes",
+                "impact": "HIGH",
+                "implication": (
+                    "Drilling direction depends heavily on regime assumption. "
+                    "Wrong assumption could lead to wellbore instability."
+                ),
+            })
+
+        cs_range = max(o["critically_stressed_pct"] for o in ok_options) - min(o["critically_stressed_pct"] for o in ok_options)
+        if cs_range > 10:
+            trade_offs.append({
+                "factor": "Critically Stressed %",
+                "range": f"{cs_range:.1f}% variation",
+                "impact": "HIGH" if cs_range > 20 else "MODERATE",
+                "implication": (
+                    "Fluid flow predictions vary significantly by regime. "
+                    "This affects completion and production forecasts."
+                ),
+            })
+
+        risk_levels = set(o["risk_level"] for o in ok_options)
+        if len(risk_levels) > 1:
+            trade_offs.append({
+                "factor": "Risk Assessment",
+                "range": f"Levels: {', '.join(sorted(risk_levels))}",
+                "impact": "HIGH",
+                "implication": (
+                    "Risk assessment changes with regime assumption. "
+                    "Consider the WORST CASE for safety-critical decisions."
+                ),
+            })
+
+    # Recommended action
+    if ok_options and auto_summary:
+        if auto_summary["confidence"] == "HIGH":
+            recommended_action = (
+                f"Data strongly favors {auto_summary['best_regime']} regime "
+                f"(confidence: HIGH). Proceed with this regime for planning."
+            )
+        elif auto_summary["confidence"] == "MODERATE":
+            recommended_action = (
+                f"Data moderately favors {auto_summary['best_regime']} regime. "
+                f"Run Bayesian analysis for uncertainty quantification before "
+                f"committing to a drilling plan."
+            )
+        else:
+            recommended_action = (
+                f"Data does NOT clearly distinguish between regimes "
+                f"(confidence: LOW). Run all scenarios and plan for the "
+                f"WORST CASE. Consider additional data collection before proceeding."
+            )
+    else:
+        recommended_action = "Unable to assess. Check input data."
+
+    # Confidence assessment
+    confidence = {
+        "data_quality": validate_data_quality(df)["grade"],
+        "regime_certainty": auto_summary["confidence"] if auto_summary else "UNKNOWN",
+        "n_fractures": len(df),
+        "sufficient_data": bool(len(df) >= 50),
+        "overall": "LOW" if len(df) < 50 or (auto_summary and auto_summary["confidence"] == "LOW") else
+                   "MODERATE" if (auto_summary and auto_summary["confidence"] != "HIGH") else "HIGH",
+    }
+
+    return {
+        "well": well_name,
+        "depth_m": depth_m,
+        "options": options,
+        "n_options": len(ok_options),
+        "auto_detection": auto_summary,
+        "risk_comparison": risk_comparison,
+        "trade_offs": trade_offs,
+        "recommended_action": recommended_action,
+        "confidence": confidence,
+    }
