@@ -1309,13 +1309,15 @@ class FeedbackStore:
     Tracks:
     - Expert ratings on result accuracy
     - Flagged fractures that need review
-    - Suggested corrections
+    - Label corrections (expert says fracture X is actually type Y)
     - Data quality scores
+    - Actionable analytics: which types are most misclassified
     """
 
     def __init__(self):
         self.feedback_log = []
         self.flagged_fractures = []
+        self.label_corrections = []  # Expert-corrected labels
         self.data_quality_scores = []
 
     def add_feedback(self, well: str, analysis_type: str,
@@ -1349,13 +1351,58 @@ class FeedbackStore:
         self.flagged_fractures.append(entry)
         return entry
 
+    def correct_label(self, well: str, fracture_idx: int,
+                      original_type: str, corrected_type: str,
+                      expert_name: str = "anonymous") -> dict:
+        """Record an expert's correction of a fracture classification.
+
+        This is the key feedback mechanism: experts tell us when the model
+        got it wrong, and we can retrain using these corrections.
+        """
+        entry = {
+            "well": well,
+            "fracture_idx": fracture_idx,
+            "original_type": original_type,
+            "corrected_type": corrected_type,
+            "expert_name": expert_name,
+            "timestamp": pd.Timestamp.now().isoformat(),
+        }
+        self.label_corrections.append(entry)
+        return entry
+
+    def get_corrections_count(self) -> int:
+        """Number of expert label corrections available."""
+        return len(self.label_corrections)
+
+    def apply_corrections(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply expert label corrections to a DataFrame.
+
+        Returns a copy with corrected labels. This is how expert feedback
+        actually improves the model - corrected labels lead to better training.
+        """
+        if not self.label_corrections:
+            return df
+
+        corrected = df.copy()
+        applied = 0
+        for corr in self.label_corrections:
+            mask = (corrected[WELL_COL] == corr["well"])
+            if corr["fracture_idx"] < len(corrected[mask]):
+                idx = corrected[mask].index[corr["fracture_idx"]]
+                corrected.at[idx, FRACTURE_TYPE_COL] = corr["corrected_type"]
+                applied += 1
+
+        return corrected
+
     def get_summary(self) -> dict:
         """Return summary of all feedback collected."""
-        if not self.feedback_log:
+        if not self.feedback_log and not self.label_corrections:
             return {
                 "total_feedback": 0,
                 "avg_rating": None,
                 "feedback_by_type": {},
+                "label_corrections": 0,
+                "accuracy_trend": [],
             }
 
         ratings = [f["rating"] for f in self.feedback_log]
@@ -1366,17 +1413,138 @@ class FeedbackStore:
                 by_type[t] = []
             by_type[t].append(f["rating"])
 
+        # Build accuracy trend (running average of last N ratings)
+        trend = []
+        window = 5
+        for i in range(len(ratings)):
+            start = max(0, i - window + 1)
+            avg = sum(ratings[start:i+1]) / len(ratings[start:i+1])
+            trend.append(round(avg, 2))
+
+        # Correction analytics
+        correction_summary = {}
+        for c in self.label_corrections:
+            key = f"{c['original_type']} -> {c['corrected_type']}"
+            correction_summary[key] = correction_summary.get(key, 0) + 1
+
         return {
             "total_feedback": len(self.feedback_log),
-            "avg_rating": round(sum(ratings) / len(ratings), 2),
+            "avg_rating": round(sum(ratings) / len(ratings), 2) if ratings else None,
             "feedback_by_type": {
                 k: {"count": len(v), "avg_rating": round(sum(v) / len(v), 2)}
                 for k, v in by_type.items()
             },
             "flagged_fractures": len(self.flagged_fractures),
+            "label_corrections": len(self.label_corrections),
+            "correction_patterns": correction_summary,
+            "accuracy_trend": trend,
             "recent_feedback": self.feedback_log[-5:],
+            "actionable_insights": self._generate_insights(),
         }
+
+    def _generate_insights(self) -> list:
+        """Generate actionable insights from feedback data."""
+        insights = []
+
+        if not self.feedback_log:
+            return insights
+
+        ratings = [f["rating"] for f in self.feedback_log]
+        avg = sum(ratings) / len(ratings)
+
+        if avg < 2.5:
+            insights.append({
+                "type": "critical",
+                "message": "Average expert rating is very low. Model predictions "
+                           "may be unreliable for this dataset. Consider uploading "
+                           "more training data or reviewing data quality.",
+            })
+        elif avg < 3.5:
+            insights.append({
+                "type": "warning",
+                "message": "Model accuracy is rated as moderate by experts. "
+                           "Review the most common correction patterns below to "
+                           "identify systematic biases.",
+            })
+
+        # Check for specific problem areas
+        by_type = {}
+        for f in self.feedback_log:
+            t = f["analysis_type"]
+            if t not in by_type:
+                by_type[t] = []
+            by_type[t].append(f["rating"])
+
+        for atype, type_ratings in by_type.items():
+            type_avg = sum(type_ratings) / len(type_ratings)
+            if type_avg < 3.0 and len(type_ratings) >= 2:
+                insights.append({
+                    "type": "warning",
+                    "message": f"{atype} analysis has low expert confidence "
+                               f"(avg {type_avg:.1f}/5). This analysis type "
+                               f"may need model retraining or parameter adjustment.",
+                })
+
+        if self.label_corrections:
+            insights.append({
+                "type": "info",
+                "message": f"{len(self.label_corrections)} expert corrections "
+                           f"available. Use 'Retrain with Corrections' to "
+                           f"incorporate expert knowledge into the model.",
+            })
+
+        return insights
 
 
 # Global feedback store
 feedback_store = FeedbackStore()
+
+
+def retrain_with_corrections(
+    df: pd.DataFrame,
+    classifier: str = "xgboost",
+) -> dict:
+    """Retrain a model using expert-corrected labels.
+
+    This is how the feedback loop actually improves predictions:
+    1. Expert flags misclassified fractures
+    2. Expert provides correct labels
+    3. Model is retrained with corrected labels
+    4. Comparison shows improvement vs original
+
+    Returns before/after accuracy comparison.
+    """
+    corrections_count = feedback_store.get_corrections_count()
+    if corrections_count == 0:
+        return {
+            "status": "no_corrections",
+            "message": "No expert corrections available yet. "
+                       "Use the label correction feature to flag "
+                       "misclassified fractures with their correct types.",
+        }
+
+    # Train on original data
+    original_result = classify_enhanced(df, classifier=classifier)
+
+    # Apply corrections and retrain
+    corrected_df = feedback_store.apply_corrections(df)
+    corrected_result = classify_enhanced(corrected_df, classifier=classifier)
+
+    improvement = (corrected_result["cv_mean_accuracy"]
+                   - original_result["cv_mean_accuracy"])
+
+    return {
+        "status": "retrained",
+        "corrections_applied": corrections_count,
+        "original_accuracy": round(original_result["cv_mean_accuracy"], 4),
+        "corrected_accuracy": round(corrected_result["cv_mean_accuracy"], 4),
+        "improvement": round(improvement, 4),
+        "improvement_pct": round(100 * improvement, 2),
+        "message": (
+            f"Applied {corrections_count} expert corrections. "
+            f"{'Accuracy improved' if improvement > 0 else 'Accuracy changed'} "
+            f"from {original_result['cv_mean_accuracy']*100:.1f}% to "
+            f"{corrected_result['cv_mean_accuracy']*100:.1f}% "
+            f"({'+' if improvement > 0 else ''}{100*improvement:.2f}%)."
+        ),
+    }

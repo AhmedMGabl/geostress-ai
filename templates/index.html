@@ -689,15 +689,94 @@
                                     <p class="text-muted">No feedback collected yet. Submit feedback to track accuracy over time.</p>
                                 </div>
                             </div>
-                            <div class="card mt-3">
-                                <div class="card-header"><i class="bi bi-question-circle"></i> Why Feedback Matters</div>
+
+                            <!-- Actionable Insights -->
+                            <div id="fb-insights-section" class="d-none mt-3">
+                                <div class="card border-info">
+                                    <div class="card-header bg-info text-white">
+                                        <i class="bi bi-lightbulb"></i> Actionable Insights
+                                    </div>
+                                    <div class="card-body" id="fb-insights-body"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Label Correction Section -->
+                    <div class="row g-3 mb-4">
+                        <div class="col-lg-6">
+                            <div class="card border-warning">
+                                <div class="card-header">
+                                    <i class="bi bi-pencil-square"></i> Correct a Classification
+                                    <small class="text-muted ms-2">(Closes the feedback loop)</small>
+                                </div>
                                 <div class="card-body">
-                                    <ul class="mb-0 small">
-                                        <li><strong>Accuracy tracking</strong>: Monitors how well predictions match field observations</li>
-                                        <li><strong>Model improvement</strong>: Low-rated analyses identify where models need retraining</li>
-                                        <li><strong>Data quality</strong>: Comments help identify data issues (missing fractures, wrong orientations)</li>
-                                        <li><strong>Decision audit trail</strong>: Records expert validation of AI-assisted decisions</li>
-                                    </ul>
+                                    <p class="text-muted small">
+                                        When you see a misclassified fracture, submit the correct label here.
+                                        After collecting corrections, click "Retrain" to update the model.
+                                    </p>
+                                    <div class="row g-2">
+                                        <div class="col-md-4">
+                                            <label class="form-label small">Fracture Index</label>
+                                            <input type="number" id="corr-idx" class="form-control form-control-sm" value="0" min="0">
+                                        </div>
+                                        <div class="col-md-4">
+                                            <label class="form-label small">Original Type</label>
+                                            <select id="corr-original" class="form-select form-select-sm">
+                                                <option value="">Model's prediction</option>
+                                                <option value="Boundary">Boundary</option>
+                                                <option value="Brecciated">Brecciated</option>
+                                                <option value="Continuous">Continuous</option>
+                                                <option value="Discontinuous">Discontinuous</option>
+                                                <option value="Vuggy">Vuggy</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <label class="form-label small">Correct Type</label>
+                                            <select id="corr-correct" class="form-select form-select-sm">
+                                                <option value="Boundary">Boundary</option>
+                                                <option value="Brecciated">Brecciated</option>
+                                                <option value="Continuous">Continuous</option>
+                                                <option value="Discontinuous">Discontinuous</option>
+                                                <option value="Vuggy">Vuggy</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="mt-2 d-flex gap-2">
+                                        <button class="btn btn-warning btn-sm" onclick="submitCorrection()">
+                                            <i class="bi bi-check-lg"></i> Submit Correction
+                                        </button>
+                                        <span class="small text-muted align-self-center" id="corr-count">0 corrections pending</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="card">
+                                <div class="card-header">
+                                    <i class="bi bi-arrow-repeat"></i> Retrain with Expert Corrections
+                                </div>
+                                <div class="card-body">
+                                    <p class="text-muted small">
+                                        After submitting label corrections, retrain the model to incorporate
+                                        expert knowledge. This is how the AI improves from human feedback.
+                                    </p>
+                                    <button class="btn btn-success btn-sm" onclick="retrainModel()" id="btn-retrain" disabled>
+                                        <i class="bi bi-arrow-repeat"></i> Retrain Model
+                                    </button>
+                                    <div id="retrain-result" class="mt-2 d-none"></div>
+                                </div>
+                            </div>
+                            <div class="card mt-3">
+                                <div class="card-header"><i class="bi bi-question-circle"></i> How the Feedback Loop Works</div>
+                                <div class="card-body">
+                                    <ol class="mb-0 small">
+                                        <li><strong>Rate analyses</strong> to track model accuracy over time</li>
+                                        <li><strong>Correct labels</strong> when you spot misclassified fractures</li>
+                                        <li><strong>Retrain</strong> to incorporate corrections into the model</li>
+                                        <li><strong>Compare</strong> before/after accuracy to verify improvement</li>
+                                        <li><strong>Repeat</strong> as more field data becomes available</li>
+                                    </ol>
                                 </div>
                             </div>
                         </div>

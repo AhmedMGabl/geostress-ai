@@ -862,8 +862,120 @@ async function loadFeedbackSummary() {
                 body.appendChild(row);
             });
         }
+
+        // Label corrections count
+        if (r.label_corrections > 0) {
+            correctionCount = r.label_corrections;
+            val("corr-count", correctionCount + " correction" + (correctionCount !== 1 ? "s" : "") + " pending");
+            document.getElementById("btn-retrain").disabled = false;
+
+            // Correction patterns
+            if (r.correction_patterns && Object.keys(r.correction_patterns).length > 0) {
+                var cpTitle = document.createElement("h6");
+                cpTitle.className = "small mt-3";
+                cpTitle.textContent = "Correction Patterns:";
+                body.appendChild(cpTitle);
+                Object.keys(r.correction_patterns).forEach(function(pattern) {
+                    var pLine = document.createElement("div");
+                    pLine.className = "d-flex justify-content-between small text-danger";
+                    var pName = document.createElement("span");
+                    pName.textContent = pattern;
+                    pLine.appendChild(pName);
+                    var pVal = document.createElement("span");
+                    pVal.textContent = r.correction_patterns[pattern] + "x";
+                    pLine.appendChild(pVal);
+                    body.appendChild(pLine);
+                });
+            }
+        }
+
+        // Actionable insights
+        var insightsSection = document.getElementById("fb-insights-section");
+        var insightsBody = document.getElementById("fb-insights-body");
+        clearChildren(insightsBody);
+        if (r.actionable_insights && r.actionable_insights.length > 0) {
+            insightsSection.classList.remove("d-none");
+            r.actionable_insights.forEach(function(insight) {
+                var div = document.createElement("div");
+                var typeMap = { critical: "alert-danger", warning: "alert-warning", info: "alert-info" };
+                div.className = "alert py-2 mb-2 small " + (typeMap[insight.type] || "alert-info");
+                div.textContent = insight.message;
+                insightsBody.appendChild(div);
+            });
+        } else {
+            insightsSection.classList.add("d-none");
+        }
     } catch (err) {
         // Silently fail - feedback summary is not critical
+    }
+}
+
+// ── Label Correction & Retrain (NEW) ──────────────
+
+var correctionCount = 0;
+
+async function submitCorrection() {
+    try {
+        var body = {
+            well: currentWell,
+            fracture_idx: parseInt(document.getElementById("corr-idx").value),
+            original_type: document.getElementById("corr-original").value,
+            corrected_type: document.getElementById("corr-correct").value,
+            expert_name: document.getElementById("fb-name").value || "anonymous"
+        };
+
+        var r = await api("/api/feedback/correct-label", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+        });
+
+        correctionCount = r.total_corrections;
+        val("corr-count", correctionCount + " correction" + (correctionCount !== 1 ? "s" : "") + " pending");
+        document.getElementById("btn-retrain").disabled = false;
+        showToast("Correction recorded: fracture #" + body.fracture_idx + " -> " + body.corrected_type);
+        loadFeedbackSummary();
+    } catch (err) {
+        showToast("Correction error: " + err.message, "Error");
+    }
+}
+
+async function retrainModel() {
+    showLoading("Retraining model with expert corrections...");
+    try {
+        var r = await api("/api/feedback/retrain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: currentSource, classifier: "xgboost" })
+        });
+
+        var resultDiv = document.getElementById("retrain-result");
+        resultDiv.classList.remove("d-none");
+        clearChildren(resultDiv);
+
+        if (r.status === "retrained") {
+            var alert = document.createElement("div");
+            alert.className = r.improvement > 0 ? "alert alert-success small" : "alert alert-info small";
+            alert.textContent = r.message;
+            resultDiv.appendChild(alert);
+
+            var stats = document.createElement("div");
+            stats.className = "small";
+            stats.textContent = "Original: " + (r.original_accuracy * 100).toFixed(1) +
+                "% -> Corrected: " + (r.corrected_accuracy * 100).toFixed(1) + "%";
+            resultDiv.appendChild(stats);
+        } else {
+            var noCorr = document.createElement("div");
+            noCorr.className = "alert alert-warning small";
+            noCorr.textContent = r.message;
+            resultDiv.appendChild(noCorr);
+        }
+
+        showToast("Retrain complete: " + r.message);
+    } catch (err) {
+        showToast("Retrain error: " + err.message, "Error");
+    } finally {
+        hideLoading();
     }
 }
 

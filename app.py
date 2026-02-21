@@ -35,7 +35,7 @@ from src.enhanced_analysis import (
     critically_stressed_enhanced, generate_interpretation,
     compute_pore_pressure, feedback_store,
     engineer_enhanced_features, compute_shap_explanations,
-    validate_data_quality,
+    validate_data_quality, retrain_with_corrections,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -510,6 +510,46 @@ async def flag_fracture(request: Request):
 async def get_feedback_summary():
     """Get summary of all collected feedback."""
     return _sanitize_for_json(feedback_store.get_summary())
+
+
+@app.post("/api/feedback/correct-label")
+async def correct_label(request: Request):
+    """Record an expert correction of a fracture classification."""
+    body = await request.json()
+    well = body.get("well", "")
+    fracture_idx = int(body.get("fracture_idx", 0))
+    original_type = body.get("original_type", "")
+    corrected_type = body.get("corrected_type", "")
+    expert_name = body.get("expert_name", "anonymous")
+
+    if not corrected_type:
+        raise HTTPException(400, "corrected_type is required")
+
+    entry = feedback_store.correct_label(
+        well, fracture_idx, original_type, corrected_type, expert_name
+    )
+    return {
+        "status": "ok",
+        "entry": entry,
+        "total_corrections": feedback_store.get_corrections_count(),
+    }
+
+
+@app.post("/api/feedback/retrain")
+async def retrain_model(request: Request):
+    """Retrain the model using expert-corrected labels.
+
+    This closes the feedback loop: expert corrections -> better model.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    classifier = body.get("classifier", "xgboost")
+
+    df = get_df(source)
+    result = await asyncio.to_thread(
+        retrain_with_corrections, df, classifier=classifier
+    )
+    return _sanitize_for_json(result)
 
 
 # ── NEW: Enhanced Features Info ──────────────────────
