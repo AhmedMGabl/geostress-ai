@@ -2102,4 +2102,10 @@ document.addEventListener("DOMContentLoaded", function() {
     loadFeedbackSummary();
     // Auto-run overview after a short delay (let summary load first)
     setTimeout(function() { runOverview(); }, 500);
+
+    // Enable Bootstrap tooltips for all info icons
+    var tooltipEls = document.querySelectorAll('[title]');
+    tooltipEls.forEach(function(el) {
+        new bootstrap.Tooltip(el, { trigger: 'hover', placement: 'top' });
+    });
 });
