@@ -49,6 +49,7 @@ from src.enhanced_analysis import (
     hierarchical_classify, decision_support_matrix,
     expert_weighted_ensemble, monte_carlo_uncertainty,
     cross_validate_wells, validate_domain_constraints,
+    executive_summary, data_sufficiency_check,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -1936,6 +1937,98 @@ async def run_domain_validation(request: Request):
         df = df[df[WELL_COL] == well]
 
     result = await asyncio.to_thread(validate_domain_constraints, df)
+    return _sanitize_for_json(result)
+
+
+# ── Executive Summary ────────────────────────────────
+
+@app.post("/api/analysis/executive-summary")
+async def run_executive_summary(request: Request):
+    """Generate a plain-language executive summary for non-technical stakeholders.
+
+    Synthesizes stress, classification, and trust data into traffic-light
+    risk communication with actionable recommendations.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+
+    # Gather inputs in parallel
+    async def _inversion():
+        from src.data_loader import fracture_plane_normal
+        normals = fracture_plane_normal(
+            df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+        )
+        # Use auto_detect_regime to find best regime, then invert
+        auto = await asyncio.to_thread(
+            auto_detect_regime, normals, depth_m
+        )
+        regime = auto["best_regime"]
+        result = await asyncio.to_thread(
+            invert_stress, normals, regime=regime, depth_m=depth_m
+        )
+        result["regime"] = regime
+        result["confidence"] = auto.get("confidence", "UNKNOWN")
+        return result
+
+    async def _trust():
+        try:
+            cal = await asyncio.to_thread(assess_calibration, df_well, 10, True)
+            quality = validate_data_quality(df_well)
+            summary = feedback_store.get_summary()
+            expert_rating = summary.get("avg_rating")
+            # Simplified trust calc
+            signals = [
+                quality["score"] * 0.25,
+                (min(100, len(df_well) / 2)) * 0.15,
+                max(0, 100 - cal.get("ece", 0.5) * 1000) * 0.15,
+            ]
+            if expert_rating:
+                signals.append(((expert_rating - 1) / 4 * 100) * 0.30)
+                signals.append((min(100, feedback_store.get_corrections_count() * 10)) * 0.15)
+                total_w = 1.0
+            else:
+                signals.append(50 * 0.10)  # neutral expert
+                signals.append(30 * 0.10)  # no corrections
+                total_w = 0.75
+            score = sum(signals) / total_w
+            level = "HIGH" if score >= 80 else "MODERATE" if score >= 60 else "LOW" if score >= 40 else "VERY LOW"
+            return score, level
+        except Exception:
+            return 50.0, "UNKNOWN"
+
+    inv_result, (trust_val, trust_lvl) = await asyncio.gather(
+        _inversion(), _trust()
+    )
+
+    result = executive_summary(
+        df_well, well_name=well,
+        inversion_result=inv_result,
+        trust_score=trust_val,
+        trust_level=trust_lvl,
+    )
+    return _sanitize_for_json(result)
+
+
+# ── Data Sufficiency ─────────────────────────────────
+
+@app.post("/api/data/sufficiency")
+async def run_sufficiency_check(request: Request):
+    """Assess whether current data is sufficient for each analysis type."""
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    result = data_sufficiency_check(df)
     return _sanitize_for_json(result)
 
 

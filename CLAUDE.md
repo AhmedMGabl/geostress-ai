@@ -101,6 +101,8 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/monte-carlo` | Monte Carlo uncertainty propagation (measurement errors) |
 | POST | `/api/analysis/cross-well-cv` | Leave-one-well-out cross-validation |
 | POST | `/api/data/validate-constraints` | Domain constraint validation (physical/geological) |
+| POST | `/api/analysis/executive-summary` | Plain-language executive summary for non-technical stakeholders |
+| POST | `/api/data/sufficiency` | Data sufficiency assessment per analysis type |
 
 ## Domain Concepts
 

@@ -5195,3 +5195,311 @@ def validate_domain_constraints(df: pd.DataFrame) -> dict:
         "n_records": n_total,
         "issues": all_issues,
     }
+
+
+# ──────────────────────────────────────────────────────
+# Executive Summary for Stakeholders
+# ──────────────────────────────────────────────────────
+
+def executive_summary(
+    df: pd.DataFrame,
+    well_name: str = None,
+    inversion_result: dict = None,
+    classification_result: dict = None,
+    trust_score: float = None,
+    trust_level: str = None,
+) -> dict:
+    """Generate a plain-language executive summary for non-technical stakeholders.
+
+    Translates all technical results into actionable business intelligence:
+    - Traffic-light risk rating
+    - Natural language summary of findings
+    - Key drilling recommendations
+    - Confidence assessment
+    - What the data does/doesn't tell us
+    - Recommended next steps
+    """
+    sections = []
+
+    # 1. Data overview in plain language
+    n_fractures = len(df)
+    n_wells = df[WELL_COL].nunique() if WELL_COL in df.columns else 1
+    well_str = well_name or "All wells"
+    depth_range = ""
+    if DEPTH_COL in df.columns:
+        dmin = df[DEPTH_COL].min()
+        dmax = df[DEPTH_COL].max()
+        depth_range = f" from {dmin:.0f}m to {dmax:.0f}m depth"
+
+    sections.append({
+        "title": "Data Available",
+        "icon": "database",
+        "text": (f"Analysis based on {n_fractures} fracture measurements "
+                 f"from {n_wells} well{'s' if n_wells > 1 else ''}{depth_range}. "
+                 f"{'This is a moderate dataset.' if n_fractures > 200 else 'This is a small dataset — results should be treated as preliminary.'}"),
+    })
+
+    # 2. Stress state finding
+    if inversion_result:
+        shmax = inversion_result.get("shmax_azimuth_deg")
+        regime = inversion_result.get("regime", "unknown")
+        cs_pct = inversion_result.get("critically_stressed_pct", 0)
+        if isinstance(cs_pct, (np.ndarray,)):
+            cs_pct = float(cs_pct.flat[0])
+        cs_pct = float(cs_pct) if cs_pct else 0
+
+        regime_plain = {
+            "normal": "extensional (normal faulting)",
+            "strike_slip": "horizontal shearing (strike-slip faulting)",
+            "thrust": "compressional (thrust faulting)",
+        }.get(regime, regime)
+
+        # Risk traffic light for critically stressed
+        if cs_pct > 30:
+            cs_risk = "RED"
+            cs_msg = (f"HIGH RISK: {cs_pct:.0f}% of fractures are critically stressed. "
+                      "These fractures are likely to slip or conduct fluids under current conditions. "
+                      "Drilling through these zones requires careful mud weight management.")
+        elif cs_pct > 10:
+            cs_risk = "AMBER"
+            cs_msg = (f"MODERATE RISK: {cs_pct:.0f}% of fractures are critically stressed. "
+                      "Some fractures may be active. Standard precautions recommended.")
+        else:
+            cs_risk = "GREEN"
+            cs_msg = (f"LOW RISK: Only {cs_pct:.0f}% of fractures are critically stressed. "
+                      "Fracture network is generally stable under current stress conditions.")
+
+        shmax_str = f"{shmax:.0f}°" if shmax is not None else "undetermined"
+        sections.append({
+            "title": "Stress State",
+            "icon": "compass",
+            "text": (f"The stress regime is {regime_plain}. "
+                     f"Maximum horizontal stress (SHmax) is oriented at {shmax_str} from North. "
+                     f"This means the rock is being squeezed hardest in the {_azimuth_to_direction(shmax)} direction."),
+            "risk": cs_risk,
+            "risk_text": cs_msg,
+        })
+
+    # 3. Model confidence
+    if trust_score is not None:
+        if trust_level == "HIGH":
+            conf_text = (f"Model trust is HIGH ({trust_score:.0f}/100). "
+                         "Predictions are well-calibrated and validated by experts. "
+                         "Results can inform operational decisions with standard monitoring.")
+        elif trust_level == "MODERATE":
+            conf_text = (f"Model trust is MODERATE ({trust_score:.0f}/100). "
+                         "Results are directionally correct but should be cross-checked by "
+                         "domain experts before critical decisions.")
+        else:
+            conf_text = (f"Model trust is {trust_level} ({trust_score:.0f}/100). "
+                         "Results have significant uncertainty. Do NOT use for operational "
+                         "decisions without comprehensive expert review.")
+        sections.append({
+            "title": "Model Confidence",
+            "icon": "shield-check",
+            "text": conf_text,
+        })
+
+    # 4. Classification findings
+    if classification_result:
+        n_classes = classification_result.get("n_classes", 0)
+        cv_acc = classification_result.get("cv_mean_accuracy", 0)
+        dominant = classification_result.get("dominant_class", "Unknown")
+        sections.append({
+            "title": "Fracture Types",
+            "icon": "layers",
+            "text": (f"Identified {n_classes} distinct fracture types. "
+                     f"The most common type is {dominant}. "
+                     f"Classification accuracy is {cv_acc*100:.0f}% "
+                     f"({'good' if cv_acc > 0.8 else 'moderate' if cv_acc > 0.6 else 'limited'}). "
+                     f"{'Different fracture types respond differently to drilling — knowing the type helps optimize completion strategy.' if n_classes > 2 else ''}"),
+        })
+
+    # 5. Limitations and caveats
+    limitations = []
+    if n_fractures < 100:
+        limitations.append("Small dataset (<100 fractures) — statistical reliability is limited.")
+    if n_wells < 3:
+        limitations.append(f"Only {n_wells} well{'s' if n_wells > 1 else ''} — cannot assess regional stress variability.")
+    if inversion_result and inversion_result.get("confidence") == "LOW":
+        limitations.append("Stress regime is not well-constrained by the data — all regimes fit similarly.")
+
+    if limitations:
+        sections.append({
+            "title": "Key Limitations",
+            "icon": "exclamation-triangle",
+            "text": " ".join(limitations) + " These findings should be treated as preliminary until more data is available.",
+        })
+
+    # 6. Recommended next steps
+    next_steps = []
+    if n_fractures < 500:
+        next_steps.append(f"Collect more fracture data (current: {n_fractures}, target: 500+) for statistically robust results.")
+    if n_wells < 3:
+        next_steps.append("Include data from additional wells to assess stress field consistency across the field.")
+    if trust_score is not None and trust_score < 60:
+        next_steps.append("Have domain experts review and rate analysis results to improve model trust score.")
+    if not next_steps:
+        next_steps.append("Continue monitoring and update analysis as new well data becomes available.")
+
+    sections.append({
+        "title": "Recommended Next Steps",
+        "icon": "arrow-right-circle",
+        "text": " ".join(f"({i+1}) {s}" for i, s in enumerate(next_steps)),
+    })
+
+    # Overall traffic light
+    if inversion_result:
+        cs_pct_val = float(inversion_result.get("critically_stressed_pct", 0))
+        if isinstance(cs_pct_val, np.ndarray):
+            cs_pct_val = float(cs_pct_val.flat[0])
+    else:
+        cs_pct_val = 0
+
+    if cs_pct_val > 30 or (trust_score is not None and trust_score < 40):
+        overall = "RED"
+        overall_msg = "Significant risks identified. Expert review required before operational decisions."
+    elif cs_pct_val > 10 or (trust_score is not None and trust_score < 60) or n_fractures < 100:
+        overall = "AMBER"
+        overall_msg = "Moderate confidence. Results are informative but require expert validation."
+    else:
+        overall = "GREEN"
+        overall_msg = "Results appear reliable for the current scope. Standard operational procedures apply."
+
+    return {
+        "well": well_str,
+        "overall_risk": overall,
+        "overall_message": overall_msg,
+        "sections": sections,
+        "generated_for": "non-technical stakeholders",
+    }
+
+
+def _azimuth_to_direction(azimuth):
+    """Convert azimuth in degrees to cardinal direction."""
+    if azimuth is None:
+        return "unknown"
+    az = float(azimuth) % 360
+    dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    idx = int((az + 11.25) / 22.5) % 16
+    return dirs[idx]
+
+
+def data_sufficiency_check(df: pd.DataFrame) -> dict:
+    """Assess whether current data is sufficient for each analysis type.
+
+    Returns per-analysis readiness with traffic lights and specific guidance
+    on what additional data would improve reliability.
+    """
+    n = len(df)
+    n_wells = df[WELL_COL].nunique() if WELL_COL in df.columns else 1
+
+    # Fracture type distribution
+    type_counts = {}
+    min_class = 0
+    n_classes = 0
+    if FRACTURE_TYPE_COL in df.columns:
+        type_counts = df[FRACTURE_TYPE_COL].value_counts().to_dict()
+        min_class = min(type_counts.values()) if type_counts else 0
+        n_classes = len(type_counts)
+
+    analyses = []
+
+    # Stress inversion
+    if n >= 30:
+        inv_status = "READY"
+        inv_msg = f"Sufficient fractures ({n}) for stress inversion. Results will be statistically meaningful."
+    elif n >= 10:
+        inv_status = "MARGINAL"
+        inv_msg = f"Only {n} fractures — inversion will run but results have wide uncertainty. Need ≥30."
+    else:
+        inv_status = "INSUFFICIENT"
+        inv_msg = f"Only {n} fractures — too few for reliable inversion. Need ≥10 minimum, ≥30 recommended."
+    analyses.append({"analysis": "Stress Inversion", "status": inv_status, "message": inv_msg, "min_needed": 30})
+
+    # ML Classification
+    if n >= 200 and min_class >= 30 and n_classes >= 3:
+        ml_status = "READY"
+        ml_msg = f"Good dataset for classification: {n} samples, {n_classes} classes, min class has {min_class} samples."
+    elif n >= 50 and min_class >= 10:
+        ml_status = "MARGINAL"
+        ml_msg = f"Classification will run but rare classes ({min_class} min samples) will have poor accuracy. Need ≥30 per class."
+    else:
+        ml_status = "INSUFFICIENT"
+        ml_msg = f"{'Too few total samples' if n < 50 else 'Smallest class only has ' + str(min_class) + ' samples'}. Need ≥200 total with ≥30 per class."
+    analyses.append({"analysis": "ML Classification", "status": ml_status, "message": ml_msg, "min_needed": 200})
+
+    # Cross-well validation
+    if n_wells >= 3:
+        cw_status = "READY"
+        cw_msg = f"{n_wells} wells available — cross-well validation will be meaningful."
+    elif n_wells == 2:
+        cw_status = "MARGINAL"
+        cw_msg = "Only 2 wells — cross-validation is limited. Each well is a single test fold."
+    else:
+        cw_status = "INSUFFICIENT"
+        cw_msg = "Only 1 well — cannot perform cross-well validation. Need ≥2 wells."
+    analyses.append({"analysis": "Cross-Well Validation", "status": cw_status, "message": cw_msg, "min_needed": "3 wells"})
+
+    # Bayesian MCMC
+    if n >= 50:
+        bay_status = "READY"
+        bay_msg = f"Sufficient data ({n}) for Bayesian posterior estimation."
+    elif n >= 20:
+        bay_status = "MARGINAL"
+        bay_msg = f"Bayesian analysis will run but posteriors will be wide. Need ≥50 for tighter constraints."
+    else:
+        bay_status = "INSUFFICIENT"
+        bay_msg = f"Only {n} samples — Bayesian posteriors will be poorly constrained. Need ≥20 minimum."
+    analyses.append({"analysis": "Bayesian MCMC", "status": bay_status, "message": bay_msg, "min_needed": 50})
+
+    # Monte Carlo uncertainty
+    mc_status = "READY" if n >= 10 else "INSUFFICIENT"
+    mc_msg = (f"Sufficient for Monte Carlo ({n} fractures)."
+              if n >= 10 else
+              f"Need ≥10 fractures for Monte Carlo. Currently have {n}.")
+    analyses.append({"analysis": "Monte Carlo Uncertainty", "status": mc_status, "message": mc_msg, "min_needed": 10})
+
+    # Overall readiness
+    ready_count = sum(1 for a in analyses if a["status"] == "READY")
+    total = len(analyses)
+    if ready_count == total:
+        overall = "FULLY READY"
+        overall_msg = "All analyses can run with current data."
+    elif ready_count >= total / 2:
+        overall = "PARTIALLY READY"
+        overall_msg = f"{ready_count}/{total} analyses ready. Some need more data."
+    else:
+        overall = "MORE DATA NEEDED"
+        overall_msg = f"Only {ready_count}/{total} analyses ready. Significant data gaps exist."
+
+    # Specific collection recommendations
+    recommendations = []
+    if n < 200:
+        recommendations.append({
+            "priority": "HIGH",
+            "action": f"Collect {200 - n} more fracture measurements to enable reliable ML classification.",
+        })
+    if min_class < 30 and n_classes >= 2:
+        smallest_class = min(type_counts, key=type_counts.get) if type_counts else "Unknown"
+        recommendations.append({
+            "priority": "HIGH",
+            "action": f"Target {smallest_class} fractures specifically — need {30 - min_class} more for reliable detection.",
+        })
+    if n_wells < 3:
+        recommendations.append({
+            "priority": "MEDIUM",
+            "action": f"Include data from {3 - n_wells} more well{'s' if 3 - n_wells > 1 else ''} for regional stress assessment.",
+        })
+
+    return {
+        "n_samples": n,
+        "n_wells": n_wells,
+        "n_classes": n_classes,
+        "class_distribution": type_counts,
+        "overall_readiness": overall,
+        "overall_message": overall_msg,
+        "analyses": analyses,
+        "recommendations": recommendations,
+    }

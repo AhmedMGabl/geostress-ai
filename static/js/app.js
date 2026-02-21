@@ -79,6 +79,7 @@ function getPorePresure() {
 // ── Tab Switching ─────────────────────────────────
 
 var tabNames = {
+    executive: "Executive Summary",
     data: "Data Overview",
     viz: "Visualizations",
     inversion: "Stress Inversion",
@@ -122,6 +123,114 @@ document.querySelectorAll("[data-tab]").forEach(function(link) {
 document.getElementById("well-select").addEventListener("change", function() {
     currentWell = this.value;
 });
+
+// ── Executive Summary ─────────────────────────────
+
+async function runExecutiveSummary() {
+    showLoading("Generating executive summary...");
+    try {
+        var r = await api("/api/analysis/executive-summary", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                source: currentSource,
+                well: currentWell || "3P",
+                depth: parseFloat(document.getElementById("depth-input").value) || 3000
+            })
+        });
+
+        // Risk banner
+        var banner = document.getElementById("exec-risk-banner");
+        banner.classList.remove("d-none");
+        var alertEl = document.getElementById("exec-risk-alert");
+        var riskColors = {RED: "danger", AMBER: "warning", GREEN: "success"};
+        alertEl.className = "alert alert-" + (riskColors[r.overall_risk] || "info") + " p-4";
+        alertEl.innerHTML = '<h4><i class="bi bi-' +
+            (r.overall_risk === "GREEN" ? "check-circle" : r.overall_risk === "RED" ? "exclamation-octagon" : "exclamation-triangle") +
+            '"></i> ' + r.overall_risk + ' — ' + (r.well || "All Wells") + '</h4>' +
+            '<p class="mb-0">' + r.overall_message + '</p>';
+
+        // Sections
+        var sectionsEl = document.getElementById("exec-sections");
+        clearChildren(sectionsEl);
+        (r.sections || []).forEach(function(sec) {
+            var card = document.createElement("div");
+            card.className = "card mb-3";
+            var html = '<div class="card-body"><h5 class="card-title"><i class="bi bi-' + sec.icon + '"></i> ' + sec.title + '</h5>';
+            html += '<p class="card-text">' + sec.text + '</p>';
+            if (sec.risk) {
+                var riskBg = sec.risk === "RED" ? "danger" : sec.risk === "AMBER" ? "warning" : "success";
+                html += '<div class="alert alert-' + riskBg + ' py-2 mb-0 small">' +
+                    '<strong>' + sec.risk + ':</strong> ' + sec.risk_text + '</div>';
+            }
+            html += '</div>';
+            card.innerHTML = html;
+            sectionsEl.appendChild(card);
+        });
+
+        showToast("Executive summary: " + r.overall_risk);
+    } catch (err) {
+        showToast("Executive summary error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+async function runSufficiencyCheck() {
+    showLoading("Checking data sufficiency...");
+    try {
+        var r = await api("/api/data/sufficiency", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource})
+        });
+
+        document.getElementById("suff-results").classList.remove("d-none");
+
+        // Overall
+        var overallColors = {"FULLY READY": "success", "PARTIALLY READY": "warning", "MORE DATA NEEDED": "danger"};
+        var overallEl = document.getElementById("suff-overall");
+        overallEl.className = "alert alert-" + (overallColors[r.overall_readiness] || "info") + " mb-3";
+        overallEl.innerHTML = '<strong>' + r.overall_readiness + '</strong> — ' + r.overall_message +
+            '<br><small>' + r.n_samples + ' samples, ' + r.n_wells + ' wells, ' + r.n_classes + ' fracture types</small>';
+
+        // Analysis table
+        var tbody = document.getElementById("suff-table-body");
+        clearChildren(tbody);
+        var statusColors = {READY: "success", MARGINAL: "warning", INSUFFICIENT: "danger"};
+        (r.analyses || []).forEach(function(a) {
+            var tr = document.createElement("tr");
+            tr.innerHTML = '<td>' + a.analysis + '</td>' +
+                '<td><span class="badge bg-' + (statusColors[a.status] || "secondary") + '">' + a.status + '</span></td>' +
+                '<td class="small">' + a.message + '</td>' +
+                '<td>' + a.min_needed + '</td>';
+            tbody.appendChild(tr);
+        });
+
+        // Recommendations
+        var recsEl = document.getElementById("suff-recs");
+        clearChildren(recsEl);
+        if (r.recommendations && r.recommendations.length > 0) {
+            var h6 = document.createElement("h6");
+            h6.textContent = "Recommended Actions";
+            recsEl.appendChild(h6);
+            r.recommendations.forEach(function(rec) {
+                var div = document.createElement("div");
+                var prioColors = {HIGH: "danger", MEDIUM: "warning", LOW: "info"};
+                div.className = "alert alert-" + (prioColors[rec.priority] || "info") + " py-2 mb-2 small";
+                div.innerHTML = '<strong>' + rec.priority + ':</strong> ' + rec.action;
+                recsEl.appendChild(div);
+            });
+        }
+
+        showToast("Data sufficiency: " + r.overall_readiness);
+    } catch (err) {
+        showToast("Sufficiency check error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 
 // ── Data Loading ──────────────────────────────────
 
