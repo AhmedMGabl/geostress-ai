@@ -1548,3 +1548,716 @@ def retrain_with_corrections(
             f"({'+' if improvement > 0 else ''}{100*improvement:.2f}%)."
         ),
     }
+
+
+# ──────────────────────────────────────────────────────
+# Sensitivity Analysis
+# ──────────────────────────────────────────────────────
+
+def sensitivity_analysis(
+    normals: np.ndarray,
+    base_result: dict,
+    depth_m: float = 3000.0,
+) -> dict:
+    """Run sensitivity analysis on stress inversion parameters.
+
+    Varies each key input parameter while holding others at best-fit values
+    to show how results change with assumptions. Essential for industrial
+    decision-making: quantifies how wrong we might be if assumptions are off.
+
+    Returns tornado diagram data, parameter ranges, and risk implications.
+    """
+    from src.geostress import (
+        build_stress_tensor, resolve_stress_on_planes,
+        invert_stress as _invert_stress,
+    )
+
+    base_sigma1 = base_result["sigma1"]
+    base_sigma3 = base_result["sigma3"]
+    base_R = base_result["R"]
+    base_shmax = base_result["shmax_azimuth_deg"]
+    base_mu = base_result["mu"]
+    base_regime = base_result["regime"]
+    base_pp = base_result.get("pore_pressure", 0.0)
+
+    parameter_ranges = {
+        "friction_coefficient": {
+            "label": "Friction Coefficient (μ)",
+            "values": [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+            "base": base_mu,
+            "unit": "",
+            "stakeholder_desc": "How easily rock surfaces slide against each other. "
+                                "Lower values mean weaker rock joints.",
+        },
+        "pore_pressure": {
+            "label": "Pore Pressure (MPa)",
+            "values": [
+                round(base_pp * f, 2)
+                for f in [0.5, 0.7, 0.85, 1.0, 1.15, 1.3, 1.5]
+            ],
+            "base": round(base_pp, 2),
+            "unit": "MPa",
+            "stakeholder_desc": "Fluid pressure inside the rock. Higher pore pressure "
+                                "makes fractures more likely to slip.",
+        },
+        "stress_regime": {
+            "label": "Stress Regime",
+            "values": ["normal", "strike_slip", "thrust"],
+            "base": base_regime,
+            "unit": "",
+            "stakeholder_desc": "The type of tectonic environment. Determines which "
+                                "direction the strongest stress acts.",
+        },
+    }
+
+    results = {}
+
+    # ── Friction coefficient sensitivity ──
+    mu_results = []
+    for mu_val in parameter_ranges["friction_coefficient"]["values"]:
+        S = build_stress_tensor(base_sigma1, base_sigma3, base_R, base_shmax, base_regime)
+        sigma_n, tau = resolve_stress_on_planes(S, normals)
+        sigma_n_eff = sigma_n - base_pp
+        tau_critical = mu_val * sigma_n_eff
+        is_critical = tau >= tau_critical
+        pct_critical = 100 * float(is_critical.sum()) / len(normals)
+        safe_denom = np.where(sigma_n_eff > 0, mu_val * sigma_n_eff, 1.0)
+        mean_slip = float(np.where(sigma_n_eff > 0, tau / safe_denom, 0).mean())
+
+        mu_results.append({
+            "value": mu_val,
+            "pct_critically_stressed": round(pct_critical, 1),
+            "mean_slip_tendency": round(mean_slip, 3),
+        })
+    results["friction_coefficient"] = mu_results
+
+    # ── Pore pressure sensitivity ──
+    pp_results = []
+    for pp_val in parameter_ranges["pore_pressure"]["values"]:
+        if pp_val <= 0:
+            pp_val = 0.1
+        S = build_stress_tensor(base_sigma1, base_sigma3, base_R, base_shmax, base_regime)
+        sigma_n, tau = resolve_stress_on_planes(S, normals)
+        sigma_n_eff = sigma_n - pp_val
+        tau_critical = base_mu * sigma_n_eff
+        is_critical = tau >= tau_critical
+        pct_critical = 100 * float(is_critical.sum()) / len(normals)
+
+        pp_results.append({
+            "value": round(pp_val, 2),
+            "pct_critically_stressed": round(pct_critical, 1),
+        })
+    results["pore_pressure"] = pp_results
+
+    # ── Stress regime sensitivity ──
+    regime_results = []
+    for regime_val in parameter_ranges["stress_regime"]["values"]:
+        try:
+            inv_result = _invert_stress(
+                normals, regime=regime_val, depth_m=depth_m,
+                pore_pressure=base_pp,
+            )
+            sigma_n = inv_result["sigma_n"]
+            tau = inv_result["tau"]
+            sigma_n_eff = sigma_n - base_pp
+            tau_critical = inv_result["mu"] * sigma_n_eff
+            is_critical = tau >= tau_critical
+            pct_critical = 100 * float(is_critical.sum()) / len(normals)
+
+            regime_results.append({
+                "regime": regime_val,
+                "sigma1": round(inv_result["sigma1"], 2),
+                "sigma3": round(inv_result["sigma3"], 2),
+                "R": round(inv_result["R"], 3),
+                "shmax": round(inv_result["shmax_azimuth_deg"], 1),
+                "mu": round(inv_result["mu"], 3),
+                "pct_critically_stressed": round(pct_critical, 1),
+                "misfit": round(float(np.sum(inv_result["misfit"] ** 2)), 2),
+            })
+        except Exception:
+            regime_results.append({
+                "regime": regime_val,
+                "error": "Inversion failed for this regime",
+            })
+    results["stress_regime"] = regime_results
+
+    # ── Tornado diagram data ──
+    tornado = []
+    for param_key in ["friction_coefficient", "pore_pressure"]:
+        param_results = results[param_key]
+        values = [r.get("pct_critically_stressed", 0) for r in param_results]
+        if values:
+            tornado.append({
+                "parameter": parameter_ranges[param_key]["label"],
+                "description": parameter_ranges[param_key]["stakeholder_desc"],
+                "min_pct_critical": round(min(values), 1),
+                "max_pct_critical": round(max(values), 1),
+                "range": round(max(values) - min(values), 1),
+                "base_value": parameter_ranges[param_key]["base"],
+            })
+    tornado.sort(key=lambda x: x["range"], reverse=True)
+
+    # ── Risk implications ──
+    risk_implications = []
+    regime_shmax_vals = [r.get("shmax", 0) for r in regime_results if "shmax" in r]
+    if len(regime_shmax_vals) > 1:
+        shmax_range = max(regime_shmax_vals) - min(regime_shmax_vals)
+        if shmax_range > 180:
+            shmax_range = 360 - shmax_range
+        if shmax_range > 30:
+            risk_implications.append({
+                "severity": "high",
+                "message": f"SHmax direction varies by {shmax_range:.0f}° across "
+                           f"regime assumptions. Regime choice significantly "
+                           f"affects drilling recommendations.",
+            })
+
+    pp_crits = [r["pct_critically_stressed"] for r in pp_results]
+    if max(pp_crits) - min(pp_crits) > 30:
+        risk_implications.append({
+            "severity": "high",
+            "message": f"Pore pressure uncertainty causes critically stressed "
+                       f"percentage to range from {min(pp_crits):.0f}% to "
+                       f"{max(pp_crits):.0f}%. Accurate pore pressure "
+                       f"measurement is critical.",
+        })
+
+    if not risk_implications:
+        risk_implications.append({
+            "severity": "low",
+            "message": "Results are relatively robust to parameter variations.",
+        })
+
+    return {
+        "parameters": parameter_ranges,
+        "results": results,
+        "tornado": tornado,
+        "risk_implications": risk_implications,
+        "base_result": {
+            "sigma1": round(base_sigma1, 2),
+            "sigma3": round(base_sigma3, 2),
+            "R": round(base_R, 3),
+            "shmax": round(base_shmax, 1),
+            "mu": round(base_mu, 3),
+            "pore_pressure": round(base_pp, 2),
+            "regime": base_regime,
+        },
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Risk Assessment Matrix
+# ──────────────────────────────────────────────────────
+
+def compute_risk_matrix(
+    inversion_result: dict,
+    cs_result: dict,
+    quality_result: dict,
+    model_comparison: dict = None,
+    sensitivity_result: dict = None,
+) -> dict:
+    """Compute comprehensive operational risk assessment matrix.
+
+    Combines all analysis results into a single risk framework for
+    drilling, completion, and stimulation decisions.
+
+    Each risk factor is scored 0-100 (0=lowest risk, 100=highest risk)
+    and categorized as low/moderate/high/critical.
+    """
+    factors = []
+
+    # ── 1. Critically Stressed Risk ──
+    cs_pct = cs_result.get("pct_critical", 0)
+    cs_score = min(100, cs_pct * 1.5)
+    factors.append({
+        "factor": "Critically Stressed Fractures",
+        "score": round(cs_score),
+        "detail": f"{cs_pct:.1f}% of fractures are critically stressed",
+        "impact": "Wellbore instability, lost circulation, induced seismicity",
+        "mitigation": "Managed pressure drilling, careful mud weight design"
+            if cs_score > 50 else "Standard drilling practices sufficient",
+    })
+
+    # ── 2. Data Quality Risk ──
+    dq_score = max(0, 100 - quality_result.get("score", 50))
+    factors.append({
+        "factor": "Data Quality",
+        "score": round(dq_score),
+        "detail": f"Quality grade: {quality_result.get('grade', '?')} "
+                  f"({quality_result.get('score', 0)}/100)",
+        "impact": "Unreliable predictions, wrong drilling decisions",
+        "mitigation": "; ".join(quality_result.get("recommendations", []))
+            or "Data quality is adequate",
+    })
+
+    # ── 3. Model Confidence Risk ──
+    if model_comparison:
+        best_acc = max(
+            (res.get("cv_accuracy_mean", 0)
+             for res in model_comparison.get("models", {}).values()),
+            default=0,
+        )
+        mc_score = max(0, 100 - best_acc * 100)
+        agreement = model_comparison.get("model_agreement_mean", 1.0)
+        low_conf_pct = model_comparison.get("low_confidence_pct", 0)
+
+        if agreement < 0.7:
+            mc_score = min(100, mc_score + 20)
+
+        factors.append({
+            "factor": "ML Classification Confidence",
+            "score": round(mc_score),
+            "detail": f"Best model: {best_acc*100:.1f}% accuracy, "
+                      f"{agreement*100:.0f}% model agreement",
+            "impact": "Incorrect fracture type identification",
+            "mitigation": "Use expert review for low-confidence samples"
+                if mc_score > 30 else "Model predictions are reliable",
+        })
+
+        conformal = model_comparison.get("conformal", {})
+        if conformal.get("available"):
+            uncertain_pct = conformal.get("uncertain_pct", 0)
+            if uncertain_pct > 15:
+                factors.append({
+                    "factor": "Prediction Uncertainty",
+                    "score": round(min(100, uncertain_pct * 3)),
+                    "detail": f"{uncertain_pct:.1f}% of samples have "
+                              f"<50% confidence",
+                    "impact": "Individual fracture predictions may be wrong",
+                    "mitigation": "Flag uncertain predictions for manual review",
+                })
+
+    # ── 4. Stress Field Uncertainty ──
+    if sensitivity_result:
+        tornado = sensitivity_result.get("tornado", [])
+        max_range = max(
+            (t.get("range", 0) for t in tornado), default=0
+        )
+        stress_score = min(100, max_range * 1.5)
+
+        risk_msgs = [
+            r["message"]
+            for r in sensitivity_result.get("risk_implications", [])
+            if r.get("severity") == "high"
+        ]
+
+        factors.append({
+            "factor": "Stress Field Sensitivity",
+            "score": round(stress_score),
+            "detail": f"Max sensitivity range: {max_range:.0f}% "
+                      f"(critically stressed varies with assumptions)",
+            "impact": "Design based on uncertain stress model",
+            "mitigation": "; ".join(risk_msgs) if risk_msgs
+                else "Stress results are robust",
+        })
+
+    # ── 5. Differential Stress Risk ──
+    diff_stress = inversion_result["sigma1"] - inversion_result["sigma3"]
+    if diff_stress > 40:
+        ds_score = 80
+    elif diff_stress > 25:
+        ds_score = 50
+    elif diff_stress > 15:
+        ds_score = 30
+    else:
+        ds_score = 10
+    factors.append({
+        "factor": "Differential Stress",
+        "score": ds_score,
+        "detail": f"σ1-σ3 = {diff_stress:.1f} MPa",
+        "impact": "High differential stress increases fracture reactivation",
+        "mitigation": "Monitor microseismicity during operations"
+            if ds_score > 50 else "Normal stress differential",
+    })
+
+    # ── 6. Friction Properties Risk ──
+    mu = inversion_result.get("mu", 0.6)
+    if mu < 0.4:
+        mu_score, mu_msg = 80, f"Very low μ={mu:.3f} (weak/clay-filled surfaces)"
+    elif mu < 0.5:
+        mu_score, mu_msg = 50, f"Low μ={mu:.3f} (below typical Byerlee range)"
+    else:
+        mu_score, mu_msg = 10, f"μ={mu:.3f} (within normal Byerlee range)"
+    factors.append({
+        "factor": "Rock Friction Properties",
+        "score": mu_score,
+        "detail": mu_msg,
+        "impact": "Low friction increases slip risk on all orientations",
+        "mitigation": "Lab testing to confirm friction coefficient"
+            if mu_score > 40 else "Properties within expected range",
+    })
+
+    # ── Compute overall risk ──
+    n_factors = len(factors)
+    overall_score = round(
+        sum(f["score"] for f in factors) / n_factors
+    ) if n_factors > 0 else 0
+
+    if overall_score >= 70:
+        overall_level, overall_color = "CRITICAL", "danger"
+        go_nogo = "NO-GO"
+        go_nogo_detail = (
+            "Multiple high-risk factors identified. Do NOT proceed with "
+            "standard operations. Requires additional data, expert review, "
+            "and risk mitigation before proceeding."
+        )
+    elif overall_score >= 50:
+        overall_level, overall_color = "HIGH", "danger"
+        go_nogo = "CONDITIONAL"
+        go_nogo_detail = (
+            "Proceed with caution. Implement all recommended mitigations. "
+            "Consider additional data acquisition before critical operations."
+        )
+    elif overall_score >= 30:
+        overall_level, overall_color = "MODERATE", "warning"
+        go_nogo = "GO (with monitoring)"
+        go_nogo_detail = (
+            "Safe to proceed with standard monitoring. Pay attention to "
+            "flagged risk factors during operations."
+        )
+    else:
+        overall_level, overall_color = "LOW", "success"
+        go_nogo = "GO"
+        go_nogo_detail = (
+            "Risk within acceptable limits. Proceed with standard "
+            "operational procedures."
+        )
+
+    return {
+        "overall_score": overall_score,
+        "overall_level": overall_level,
+        "overall_color": overall_color,
+        "go_nogo": go_nogo,
+        "go_nogo_detail": go_nogo_detail,
+        "factors": sorted(factors, key=lambda x: x["score"], reverse=True),
+        "n_factors": n_factors,
+        "high_risk_factors": [f for f in factors if f["score"] >= 60],
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Well Report Generation
+# ──────────────────────────────────────────────────────
+
+def generate_well_report(
+    well_name: str,
+    inversion_result: dict,
+    cs_result: dict,
+    quality_result: dict,
+    model_comparison: dict = None,
+    sensitivity_result: dict = None,
+    risk_matrix: dict = None,
+) -> dict:
+    """Generate a comprehensive stakeholder report for a single well.
+
+    Aggregates all analysis results into a structured report suitable
+    for non-technical decision-makers. Designed to be printed/exported.
+    """
+    report = {
+        "well_name": well_name,
+        "generated_at": pd.Timestamp.now().isoformat(),
+        "version": "2.2.0",
+    }
+
+    regime = inversion_result.get("regime", "unknown")
+    shmax = inversion_result.get("shmax_azimuth_deg", 0)
+    cs_pct = cs_result.get("pct_critical", 0)
+    risk_level = risk_matrix.get("overall_level", "UNKNOWN") if risk_matrix else "N/A"
+
+    # ── Executive Summary ──
+    exec_summary = (
+        f"Well {well_name}: {regime.replace('_', ' ')} stress regime with "
+        f"SHmax at {shmax:.0f}° ({_azimuth_to_compass(shmax)}). "
+        f"{cs_pct:.0f}% critically stressed fractures. "
+        f"Risk level: {risk_level}."
+    )
+    if risk_matrix:
+        exec_summary += f" Decision: {risk_matrix.get('go_nogo', 'N/A')}."
+    report["executive_summary"] = exec_summary
+
+    # ── Stress State ──
+    report["stress_state"] = {
+        "sigma1_mpa": round(inversion_result["sigma1"], 2),
+        "sigma2_mpa": round(inversion_result["sigma2"], 2),
+        "sigma3_mpa": round(inversion_result["sigma3"], 2),
+        "R_ratio": round(inversion_result["R"], 3),
+        "shmax_azimuth": round(shmax, 1),
+        "shmax_compass": _azimuth_to_compass(shmax),
+        "friction_coefficient": round(inversion_result["mu"], 3),
+        "regime": regime,
+        "pore_pressure_mpa": round(inversion_result.get("pore_pressure", 0), 2),
+        "differential_stress_mpa": round(
+            inversion_result["sigma1"] - inversion_result["sigma3"], 2
+        ),
+    }
+
+    # ── Critically Stressed ──
+    report["critically_stressed"] = {
+        "total_fractures": cs_result.get("total", 0),
+        "critically_stressed_count": cs_result.get("count_critical", 0),
+        "critically_stressed_pct": round(cs_pct, 1),
+        "high_risk_count": cs_result.get("high_risk_count", 0),
+        "moderate_risk_count": cs_result.get("moderate_risk_count", 0),
+        "mean_slip_ratio": round(cs_result.get("mean_slip_ratio", 0), 3),
+    }
+
+    # ── Data Quality ──
+    report["data_quality"] = {
+        "score": quality_result.get("score", 0),
+        "grade": quality_result.get("grade", "?"),
+        "issues": quality_result.get("issues", []),
+        "warnings": quality_result.get("warnings", []),
+    }
+
+    # ── Classification (if available) ──
+    if model_comparison:
+        best = model_comparison.get("best_model", "unknown")
+        best_acc = 0
+        for name, res in model_comparison.get("models", {}).items():
+            if name == best:
+                best_acc = res.get("cv_accuracy_mean", 0)
+        report["classification"] = {
+            "best_model": best,
+            "accuracy_pct": round(best_acc * 100, 1),
+            "n_models_compared": len(model_comparison.get("models", {})),
+            "model_agreement_pct": round(
+                model_comparison.get("model_agreement_mean", 0) * 100, 1
+            ),
+        }
+
+    # ── Sensitivity (if available) ──
+    if sensitivity_result:
+        report["sensitivity"] = {
+            "tornado": sensitivity_result.get("tornado", []),
+            "risk_implications": sensitivity_result.get("risk_implications", []),
+            "regime_comparison": sensitivity_result.get("results", {}).get(
+                "stress_regime", []
+            ),
+        }
+
+    # ── Risk Assessment ──
+    if risk_matrix:
+        report["risk_assessment"] = {
+            "overall_score": risk_matrix["overall_score"],
+            "overall_level": risk_matrix["overall_level"],
+            "go_nogo": risk_matrix["go_nogo"],
+            "go_nogo_detail": risk_matrix["go_nogo_detail"],
+            "factors": risk_matrix["factors"],
+        }
+
+    # ── Operational Recommendations ──
+    optimal_dir = (shmax + 90) % 360
+    drilling = [
+        f"Optimal horizontal well azimuth: {optimal_dir:.0f}° "
+        f"({_azimuth_to_compass(optimal_dir)}) — perpendicular to SHmax.",
+    ]
+    if regime == "thrust":
+        drilling.append(
+            "Thrust regime: high horizontal stresses may cause borehole "
+            "collapse. Consider higher mud weight."
+        )
+
+    completion = []
+    if cs_pct > 50:
+        completion.append(
+            "High critically stressed percentage: natural fracture "
+            "permeability may be sufficient. Consider reduced stimulation."
+        )
+    elif cs_pct < 20:
+        completion.append(
+            "Low critically stressed percentage: hydraulic fracturing "
+            "may be needed for adequate connectivity."
+        )
+
+    monitoring = []
+    if risk_matrix and risk_matrix["overall_score"] >= 50:
+        monitoring.append("Deploy real-time microseismic monitoring.")
+        monitoring.append("Establish pore pressure monitoring program.")
+
+    report["recommendations"] = {
+        "drilling": drilling,
+        "completion": completion,
+        "monitoring": monitoring,
+    }
+
+    return report
+
+
+# ──────────────────────────────────────────────────────
+# Multi-Well Comparison
+# ──────────────────────────────────────────────────────
+
+def compare_wells(
+    df: pd.DataFrame,
+    depth_m: float = 3000.0,
+) -> dict:
+    """Compare analysis results across all wells in the dataset.
+
+    Checks stress field consistency, classification transferability,
+    and flags spatial anomalies.
+    """
+    from src.geostress import invert_stress as _invert_stress
+    from src.data_loader import fracture_plane_normal
+
+    wells = df[WELL_COL].unique().tolist()
+    if len(wells) < 2:
+        return {
+            "status": "insufficient_wells",
+            "message": f"Only {len(wells)} well(s). Need ≥2 for comparison.",
+            "wells": wells,
+        }
+
+    well_results = {}
+    for well in wells:
+        wdf = df[df[WELL_COL] == well]
+        normals = fracture_plane_normal(
+            wdf[AZIMUTH_COL].values, wdf[DIP_COL].values
+        )
+
+        try:
+            inv = _invert_stress(normals, regime="strike_slip", depth_m=depth_m)
+        except Exception:
+            inv = None
+
+        quality = validate_data_quality(wdf)
+
+        try:
+            clf = classify_enhanced(wdf, classifier="xgboost", n_folds=3)
+            accuracy = clf["cv_mean_accuracy"]
+        except Exception:
+            accuracy = None
+
+        well_results[well] = {
+            "n_fractures": len(wdf),
+            "fracture_types": wdf[FRACTURE_TYPE_COL].value_counts().to_dict()
+                if FRACTURE_TYPE_COL in wdf.columns else {},
+            "mean_azimuth": round(float(wdf[AZIMUTH_COL].mean()), 1),
+            "mean_dip": round(float(wdf[DIP_COL].mean()), 1),
+            "std_azimuth": round(float(wdf[AZIMUTH_COL].std()), 1),
+            "std_dip": round(float(wdf[DIP_COL].std()), 1),
+            "data_quality_score": quality["score"],
+            "data_quality_grade": quality["grade"],
+            "classification_accuracy": round(accuracy * 100, 1) if accuracy else None,
+        }
+
+        if inv:
+            sigma_n_eff = inv["sigma_n"] - inv["pore_pressure"]
+            tau_critical = inv["mu"] * sigma_n_eff
+            is_critical = inv["tau"] >= tau_critical
+            pct_cs = 100 * float(is_critical.sum()) / len(normals)
+            well_results[well].update({
+                "sigma1": round(inv["sigma1"], 2),
+                "sigma3": round(inv["sigma3"], 2),
+                "R": round(inv["R"], 3),
+                "shmax": round(inv["shmax_azimuth_deg"], 1),
+                "mu": round(inv["mu"], 3),
+                "pct_critically_stressed": round(pct_cs, 1),
+            })
+
+    # ── Consistency checks ──
+    consistency = []
+
+    shmax_vals = [r["shmax"] for r in well_results.values() if "shmax" in r]
+    if len(shmax_vals) >= 2:
+        shmax_diff = max(shmax_vals) - min(shmax_vals)
+        if shmax_diff > 180:
+            shmax_diff = 360 - shmax_diff
+        status = "WARNING" if shmax_diff > 20 else "OK"
+        consistency.append({
+            "check": "SHmax Direction",
+            "status": status,
+            "detail": f"SHmax varies by {shmax_diff:.0f}° between wells."
+                + (" May indicate stress rotation." if status == "WARNING" else ""),
+        })
+
+    s1_vals = [r["sigma1"] for r in well_results.values() if "sigma1" in r]
+    if len(s1_vals) >= 2:
+        s1_range = max(s1_vals) - min(s1_vals)
+        status = "WARNING" if s1_range > 20 else "OK"
+        consistency.append({
+            "check": "Stress Magnitudes",
+            "status": status,
+            "detail": f"σ1 varies by {s1_range:.1f} MPa between wells.",
+        })
+
+    dq_scores = [r["data_quality_score"] for r in well_results.values()]
+    if min(dq_scores) < 60:
+        consistency.append({
+            "check": "Data Quality Balance",
+            "status": "WARNING",
+            "detail": "Some wells have poor data quality.",
+        })
+
+    # ── Cross-well classification ──
+    cross_val_results = {}
+    if len(wells) >= 2:
+        features_all = engineer_enhanced_features(df)
+        le = LabelEncoder()
+        all_labels = le.fit_transform(df[FRACTURE_TYPE_COL].values)
+        scaler = StandardScaler()
+        X_all = scaler.fit_transform(features_all.values)
+
+        for train_well in wells:
+            for test_well in wells:
+                if train_well == test_well:
+                    continue
+                train_mask = df[WELL_COL].values == train_well
+                test_mask = df[WELL_COL].values == test_well
+
+                # Check class overlap
+                train_classes = set(all_labels[train_mask])
+                test_classes = set(all_labels[test_mask])
+                unseen = test_classes - train_classes
+                if unseen:
+                    cross_val_results[f"{train_well} → {test_well}"] = {
+                        "accuracy": None,
+                        "error": f"Test has {len(unseen)} class(es) not in training",
+                        "note": "Wells have different fracture type populations",
+                        "train_size": int(train_mask.sum()),
+                        "test_size": int(test_mask.sum()),
+                    }
+                    continue
+
+                try:
+                    model = _get_models(fast=True).get(
+                        "xgboost",
+                        list(_get_models(fast=True).values())[0],
+                    )
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        model.fit(X_all[train_mask], all_labels[train_mask])
+                        acc = float(accuracy_score(
+                            all_labels[test_mask],
+                            model.predict(X_all[test_mask]),
+                        ))
+                    cross_val_results[f"{train_well} → {test_well}"] = {
+                        "accuracy": round(acc * 100, 1),
+                        "train_size": int(train_mask.sum()),
+                        "test_size": int(test_mask.sum()),
+                    }
+                except Exception:
+                    cross_val_results[f"{train_well} → {test_well}"] = {
+                        "accuracy": None, "error": "Failed",
+                    }
+
+        cv_accs = [r["accuracy"] for r in cross_val_results.values() if r.get("accuracy")]
+        if cv_accs and min(cv_accs) < 60:
+            consistency.append({
+                "check": "Model Transferability",
+                "status": "WARNING",
+                "detail": f"Accuracy drops to {min(cv_accs):.0f}% across wells.",
+            })
+        elif cv_accs:
+            consistency.append({
+                "check": "Model Transferability",
+                "status": "OK",
+                "detail": f"Cross-well accuracy: {min(cv_accs):.0f}%-{max(cv_accs):.0f}%.",
+            })
+
+    return {
+        "status": "compared",
+        "wells": well_results,
+        "consistency_checks": consistency,
+        "cross_validation": cross_val_results,
+        "n_wells": len(wells),
+    }

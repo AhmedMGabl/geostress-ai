@@ -22,7 +22,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v2.0</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v2.2</small>
             </div>
 
             <ul class="nav flex-column sidebar-nav">
@@ -59,6 +59,26 @@
                 <li class="nav-item">
                     <a class="nav-link" data-tab="cluster" href="#">
                         <i class="bi bi-bullseye"></i> Fracture Clustering
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="sensitivity" href="#">
+                        <i class="bi bi-sliders"></i> Sensitivity
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="risk" href="#">
+                        <i class="bi bi-shield-exclamation"></i> Risk Matrix
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="wells" href="#">
+                        <i class="bi bi-building"></i> Well Comparison
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="report" href="#">
+                        <i class="bi bi-file-earmark-text"></i> Well Report
                     </a>
                 </li>
                 <li class="nav-item">
@@ -779,6 +799,182 @@
                                     </ol>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══════ Sensitivity Tab ═══════ -->
+                <div id="tab-sensitivity" class="tab-content">
+                    <h5 class="mb-3">Parameter Sensitivity Analysis</h5>
+                    <p class="text-muted">How do results change when assumptions vary? Essential for understanding how robust your conclusions are.</p>
+
+                    <button class="btn btn-primary btn-sm mb-3" onclick="runSensitivity()">
+                        <i class="bi bi-sliders"></i> Run Sensitivity Analysis
+                    </button>
+
+                    <!-- Tornado Diagram -->
+                    <div id="sens-tornado" class="d-none mb-4">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-tornado"></i> Tornado Diagram — Impact on Critically Stressed %</div>
+                            <div class="card-body" id="sens-tornado-body"></div>
+                        </div>
+                    </div>
+
+                    <!-- Risk Implications -->
+                    <div id="sens-risks" class="d-none mb-4">
+                        <div class="card border-warning">
+                            <div class="card-header bg-warning text-dark"><i class="bi bi-exclamation-triangle"></i> Risk Implications</div>
+                            <div class="card-body" id="sens-risks-body"></div>
+                        </div>
+                    </div>
+
+                    <!-- Regime Comparison Table -->
+                    <div id="sens-regime" class="d-none mb-4">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-arrows-angle-expand"></i> Regime Comparison</div>
+                            <div class="card-body" id="sens-regime-body"></div>
+                        </div>
+                    </div>
+
+                    <!-- Friction & Pore Pressure Detail -->
+                    <div class="row g-3">
+                        <div class="col-lg-6">
+                            <div id="sens-friction" class="d-none">
+                                <div class="card">
+                                    <div class="card-header"><i class="bi bi-speedometer2"></i> Friction Coefficient Sensitivity</div>
+                                    <div class="card-body" id="sens-friction-body"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div id="sens-pp" class="d-none">
+                                <div class="card">
+                                    <div class="card-header"><i class="bi bi-droplet"></i> Pore Pressure Sensitivity</div>
+                                    <div class="card-body" id="sens-pp-body"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══════ Risk Matrix Tab ═══════ -->
+                <div id="tab-risk" class="tab-content">
+                    <h5 class="mb-3">Operational Risk Assessment</h5>
+                    <p class="text-muted">GO / NO-GO decision framework combining all analysis results.</p>
+
+                    <button class="btn btn-primary btn-sm mb-3" onclick="runRiskMatrix()">
+                        <i class="bi bi-shield-check"></i> Compute Risk Matrix
+                    </button>
+
+                    <!-- Overall Risk Banner -->
+                    <div id="risk-overall" class="d-none mb-4">
+                        <div class="card" id="risk-overall-card">
+                            <div class="card-body text-center py-4">
+                                <h2 id="risk-go-nogo" class="mb-2"></h2>
+                                <div id="risk-score-badge" class="fs-4 fw-bold mb-2"></div>
+                                <p id="risk-detail" class="text-muted mb-0"></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Risk Factors Table -->
+                    <div id="risk-factors" class="d-none">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-list-check"></i> Risk Factor Breakdown</div>
+                            <div class="card-body">
+                                <table class="table table-hover table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Risk Factor</th>
+                                            <th>Score</th>
+                                            <th>Detail</th>
+                                            <th>Mitigation</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="risk-factors-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══════ Well Comparison Tab ═══════ -->
+                <div id="tab-wells" class="tab-content">
+                    <h5 class="mb-3">Multi-Well Comparison</h5>
+                    <p class="text-muted">Compare stress fields, model performance, and data quality across wells.</p>
+
+                    <button class="btn btn-primary btn-sm mb-3" onclick="runWellComparison()">
+                        <i class="bi bi-building"></i> Compare Wells
+                    </button>
+
+                    <!-- Consistency Checks -->
+                    <div id="wells-consistency" class="d-none mb-4">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-check2-all"></i> Consistency Checks</div>
+                            <div class="card-body" id="wells-consistency-body"></div>
+                        </div>
+                    </div>
+
+                    <!-- Well Results Table -->
+                    <div id="wells-table" class="d-none mb-4">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-table"></i> Per-Well Results</div>
+                            <div class="card-body" id="wells-table-body"></div>
+                        </div>
+                    </div>
+
+                    <!-- Cross-Validation -->
+                    <div id="wells-crossval" class="d-none">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-arrow-left-right"></i> Cross-Well Classification Accuracy</div>
+                            <div class="card-body" id="wells-crossval-body"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══════ Well Report Tab ═══════ -->
+                <div id="tab-report" class="tab-content">
+                    <h5 class="mb-3">Stakeholder Well Report</h5>
+                    <p class="text-muted">Generate a comprehensive report for printing or stakeholder presentation.</p>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="generateReport()">
+                            <i class="bi bi-file-earmark-text"></i> Generate Report
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm d-none" id="btn-print-report" onclick="window.print()">
+                            <i class="bi bi-printer"></i> Print Report
+                        </button>
+                    </div>
+
+                    <div id="report-content" class="d-none">
+                        <!-- Executive Summary -->
+                        <div class="card mb-3 border-primary">
+                            <div class="card-header bg-primary text-white"><i class="bi bi-file-text"></i> Executive Summary</div>
+                            <div class="card-body fs-6" id="report-exec-summary"></div>
+                        </div>
+
+                        <!-- Stress State -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-arrows-angle-expand"></i> Stress State</div>
+                            <div class="card-body" id="report-stress"></div>
+                        </div>
+
+                        <!-- Risk Assessment -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-shield-exclamation"></i> Risk Assessment</div>
+                            <div class="card-body" id="report-risk"></div>
+                        </div>
+
+                        <!-- Recommendations -->
+                        <div class="card mb-3 border-success">
+                            <div class="card-header bg-success text-white"><i class="bi bi-signpost-split"></i> Operational Recommendations</div>
+                            <div class="card-body" id="report-recommendations"></div>
+                        </div>
+
+                        <!-- Data Quality -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-clipboard-data"></i> Data Quality</div>
+                            <div class="card-body" id="report-quality"></div>
                         </div>
                     </div>
                 </div>

@@ -281,6 +281,15 @@ body {
     animation: ellipsis 1.5s infinite;
 }
 
+/* Risk matrix colors */
+.border-danger .card-body h2 { font-size: 2rem; }
+.border-success .card-body h2 { font-size: 2rem; }
+.border-warning .card-body h2 { font-size: 2rem; }
+
+/* Report print-friendly section */
+#tab-report .card { break-inside: avoid; }
+#tab-report .lead { font-size: 1.1rem; line-height: 1.6; }
+
 /* Print styles for stakeholder reports */
 @media print {
     #sidebar, .topbar, .btn, #loading-overlay { display: none !important; }
@@ -288,6 +297,8 @@ body {
     .d-flex { display: block !important; }
     main { margin: 0; }
     .card { break-inside: avoid; margin-bottom: 1rem; }
+    .badge { border: 1px solid #333; }
+    .metric-card { border: 1px solid #999; }
 }
 
 /* Responsive */

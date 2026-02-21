@@ -36,6 +36,8 @@ from src.enhanced_analysis import (
     compute_pore_pressure, feedback_store,
     engineer_enhanced_features, compute_shap_explanations,
     validate_data_quality, retrain_with_corrections,
+    sensitivity_analysis, compute_risk_matrix,
+    generate_well_report, compare_wells,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -121,7 +123,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="2.1.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="2.2.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -626,3 +628,190 @@ async def shap_explanations(request: Request):
     response = _sanitize_for_json(result)
     _shap_cache[cache_key] = response
     return response
+
+
+# ── Sensitivity Analysis ─────────────────────────────
+
+_sensitivity_cache = {}
+
+
+@app.post("/api/analysis/sensitivity")
+async def run_sensitivity(request: Request):
+    """Run parameter sensitivity analysis on stress inversion results.
+
+    Shows how results change when friction, pore pressure, and regime
+    assumptions are varied. Returns tornado diagram data and risk implications.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", None)
+    regime = body.get("regime", "strike_slip")
+    depth_m = float(body.get("depth", 3000))
+    pore_pressure = body.get("pore_pressure", None)
+
+    df = get_df(source)
+    if well:
+        df = df[df[WELL_COL] == well]
+
+    cache_key = f"sens_{source}_{well}_{regime}_{depth_m}"
+    if cache_key in _sensitivity_cache:
+        return _sensitivity_cache[cache_key]
+
+    normals = fracture_plane_normal(
+        df[AZIMUTH_COL].values, df[DIP_COL].values
+    )
+    pp = float(pore_pressure) if pore_pressure else None
+
+    inv_result = await asyncio.to_thread(
+        invert_stress, normals, regime=regime,
+        depth_m=depth_m, pore_pressure=pp,
+    )
+
+    sens_result = await asyncio.to_thread(
+        sensitivity_analysis, normals, inv_result, depth_m=depth_m,
+    )
+
+    response = _sanitize_for_json(sens_result)
+    _sensitivity_cache[cache_key] = response
+    return response
+
+
+# ── Risk Assessment Matrix ───────────────────────────
+
+@app.post("/api/analysis/risk-matrix")
+async def run_risk_matrix(request: Request):
+    """Compute comprehensive operational risk assessment.
+
+    Combines all analysis results into a single go/no-go framework.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", None)
+    regime = body.get("regime", "strike_slip")
+    depth_m = float(body.get("depth", 3000))
+    pore_pressure = body.get("pore_pressure", None)
+
+    df = get_df(source)
+    if well:
+        df = df[df[WELL_COL] == well]
+
+    normals = fracture_plane_normal(
+        df[AZIMUTH_COL].values, df[DIP_COL].values
+    )
+    pp = float(pore_pressure) if pore_pressure else None
+
+    # Run all prerequisite analyses
+    inv_result = await asyncio.to_thread(
+        invert_stress, normals, regime=regime,
+        depth_m=depth_m, pore_pressure=pp,
+    )
+
+    pp_val = inv_result.get("pore_pressure", 0)
+    cs_result = critically_stressed_enhanced(
+        inv_result["sigma_n"], inv_result["tau"],
+        mu=inv_result["mu"], pore_pressure=pp_val,
+    )
+
+    quality_result = validate_data_quality(df)
+
+    # Try to get model comparison from cache
+    cache_key_mc = f"{source}_{len(df)}_fast"
+    model_comparison = _model_comparison_cache.get(cache_key_mc, None)
+
+    # Sensitivity analysis
+    sens_result = await asyncio.to_thread(
+        sensitivity_analysis, normals, inv_result, depth_m=depth_m,
+    )
+
+    risk = compute_risk_matrix(
+        inv_result, cs_result, quality_result,
+        model_comparison=model_comparison,
+        sensitivity_result=sens_result,
+    )
+
+    return _sanitize_for_json(risk)
+
+
+# ── Well Report Generation ───────────────────────────
+
+@app.post("/api/report/well")
+async def generate_report(request: Request):
+    """Generate a comprehensive stakeholder report for a well.
+
+    Aggregates all analyses into a single printable report.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", None)
+    regime = body.get("regime", "strike_slip")
+    depth_m = float(body.get("depth", 3000))
+    pore_pressure = body.get("pore_pressure", None)
+
+    df = get_df(source)
+    if well:
+        well_name = well
+        df_well = df[df[WELL_COL] == well]
+    else:
+        well_name = "All Wells"
+        df_well = df
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+    pp = float(pore_pressure) if pore_pressure else None
+
+    inv_result = await asyncio.to_thread(
+        invert_stress, normals, regime=regime,
+        depth_m=depth_m, pore_pressure=pp,
+    )
+
+    pp_val = inv_result.get("pore_pressure", 0)
+    cs_result = critically_stressed_enhanced(
+        inv_result["sigma_n"], inv_result["tau"],
+        mu=inv_result["mu"], pore_pressure=pp_val,
+    )
+
+    quality_result = validate_data_quality(df_well)
+
+    # Try cached model comparison
+    cache_key_mc = f"{source}_{len(df)}_fast"
+    model_comparison = _model_comparison_cache.get(cache_key_mc, None)
+
+    sens_result = await asyncio.to_thread(
+        sensitivity_analysis, normals, inv_result, depth_m=depth_m,
+    )
+
+    risk = compute_risk_matrix(
+        inv_result, cs_result, quality_result,
+        model_comparison=model_comparison,
+        sensitivity_result=sens_result,
+    )
+
+    report = generate_well_report(
+        well_name, inv_result, cs_result, quality_result,
+        model_comparison=model_comparison,
+        sensitivity_result=sens_result,
+        risk_matrix=risk,
+    )
+
+    return _sanitize_for_json(report)
+
+
+# ── Multi-Well Comparison ────────────────────────────
+
+@app.post("/api/analysis/compare-wells")
+async def run_well_comparison(request: Request):
+    """Compare analysis results across all wells.
+
+    Checks stress field consistency, model transferability,
+    and flags inter-well anomalies.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    result = await asyncio.to_thread(
+        compare_wells, df, depth_m=depth_m,
+    )
+    return _sanitize_for_json(result)

@@ -86,6 +86,10 @@ var tabNames = {
     shap: "Why It Predicts",
     classify: "ML Classification",
     cluster: "Fracture Clustering",
+    sensitivity: "Sensitivity Analysis",
+    risk: "Risk Assessment",
+    wells: "Well Comparison",
+    report: "Well Report",
     feedback: "Expert Feedback"
 };
 
@@ -1166,6 +1170,348 @@ async function runShapExplanation() {
         hideLoading();
     }
 }
+
+// ── Sensitivity Analysis ─────────────────────────
+
+async function runSensitivity() {
+    showLoading("Running sensitivity analysis");
+    try {
+        var well = document.getElementById("well-select").value || null;
+        var regime = document.getElementById("regime-select").value;
+        var depth = parseFloat(document.getElementById("depth-input").value) || 3000;
+        var pp = getPorePresure();
+
+        var r = await api("/api/analysis/sensitivity", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, well: well, regime: regime, depth: depth, pore_pressure: pp})
+        });
+
+        // Tornado diagram
+        var tornadoEl = document.getElementById("sens-tornado");
+        var tornadoBody = document.getElementById("sens-tornado-body");
+        clearChildren(tornadoBody);
+        if (r.tornado && r.tornado.length) {
+            tornadoEl.classList.remove("d-none");
+            r.tornado.forEach(function(t) {
+                var row = document.createElement("div");
+                row.className = "mb-3";
+                row.innerHTML = '<div class="d-flex justify-content-between"><strong>' + t.parameter + '</strong><span class="text-muted">' + t.min_pct_critical + '% – ' + t.max_pct_critical + '% (range: ' + t.range + '%)</span></div>' +
+                    '<div class="feat-bar-bg"><div class="feat-bar-fill" style="width:' + Math.min(100, t.range * 2) + '%;background:#dc3545"></div></div>' +
+                    '<small class="text-muted">' + t.description + '</small>';
+                tornadoBody.appendChild(row);
+            });
+        }
+
+        // Risk implications
+        var risksEl = document.getElementById("sens-risks");
+        var risksBody = document.getElementById("sens-risks-body");
+        clearChildren(risksBody);
+        if (r.risk_implications && r.risk_implications.length) {
+            risksEl.classList.remove("d-none");
+            r.risk_implications.forEach(function(ri) {
+                var div = document.createElement("div");
+                div.className = "mb-2";
+                var icon = ri.severity === "high" ? "exclamation-triangle text-danger" : "info-circle text-info";
+                div.innerHTML = '<i class="bi bi-' + icon + '"></i> ' + ri.message;
+                risksBody.appendChild(div);
+            });
+        }
+
+        // Regime comparison
+        var regimeEl = document.getElementById("sens-regime");
+        var regimeBody = document.getElementById("sens-regime-body");
+        clearChildren(regimeBody);
+        var regimes = (r.results || {}).stress_regime || [];
+        if (regimes.length) {
+            regimeEl.classList.remove("d-none");
+            var tbl = '<table class="table table-sm table-hover"><thead><tr><th>Regime</th><th>σ1</th><th>σ3</th><th>SHmax</th><th>μ</th><th>R</th><th>Crit. Stressed</th><th>Misfit</th></tr></thead><tbody>';
+            regimes.forEach(function(rg) {
+                if (rg.error) {
+                    tbl += '<tr><td>' + rg.regime + '</td><td colspan="7" class="text-danger">' + rg.error + '</td></tr>';
+                } else {
+                    var isBest = rg.regime === (r.base_result || {}).regime;
+                    tbl += '<tr' + (isBest ? ' class="table-active"' : '') + '><td><strong>' + rg.regime.replace("_"," ") + '</strong>' + (isBest ? ' ★' : '') + '</td>' +
+                        '<td>' + fmt(rg.sigma1) + '</td><td>' + fmt(rg.sigma3) + '</td><td>' + fmt(rg.shmax) + '°</td>' +
+                        '<td>' + fmt(rg.mu, 3) + '</td><td>' + fmt(rg.R, 3) + '</td><td>' + fmt(rg.pct_critically_stressed) + '%</td><td>' + fmt(rg.misfit) + '</td></tr>';
+                }
+            });
+            tbl += '</tbody></table>';
+            regimeBody.innerHTML = tbl;
+        }
+
+        // Friction detail
+        var frictionEl = document.getElementById("sens-friction");
+        var frictionBody = document.getElementById("sens-friction-body");
+        clearChildren(frictionBody);
+        var muData = (r.results || {}).friction_coefficient || [];
+        if (muData.length) {
+            frictionEl.classList.remove("d-none");
+            muData.forEach(function(m) {
+                var isBase = Math.abs(m.value - (r.base_result || {}).mu) < 0.01;
+                var bar = document.createElement("div");
+                bar.className = "mb-2" + (isBase ? " fw-bold" : "");
+                bar.innerHTML = '<div class="d-flex justify-content-between"><span>μ = ' + m.value.toFixed(1) + (isBase ? ' (current)' : '') + '</span><span>' + m.pct_critically_stressed + '%</span></div>' +
+                    '<div class="feat-bar-bg"><div class="feat-bar-fill" style="width:' + m.pct_critically_stressed + '%;background:' + (m.pct_critically_stressed > 50 ? '#dc3545' : '#3b82f6') + '"></div></div>';
+                frictionBody.appendChild(bar);
+            });
+        }
+
+        // PP detail
+        var ppEl = document.getElementById("sens-pp");
+        var ppBody = document.getElementById("sens-pp-body");
+        clearChildren(ppBody);
+        var ppData = (r.results || {}).pore_pressure || [];
+        if (ppData.length) {
+            ppEl.classList.remove("d-none");
+            ppData.forEach(function(p) {
+                var isBase = Math.abs(p.value - (r.base_result || {}).pore_pressure) < 0.5;
+                var bar = document.createElement("div");
+                bar.className = "mb-2" + (isBase ? " fw-bold" : "");
+                bar.innerHTML = '<div class="d-flex justify-content-between"><span>Pp = ' + p.value.toFixed(1) + ' MPa' + (isBase ? ' (current)' : '') + '</span><span>' + p.pct_critically_stressed + '%</span></div>' +
+                    '<div class="feat-bar-bg"><div class="feat-bar-fill" style="width:' + p.pct_critically_stressed + '%;background:' + (p.pct_critically_stressed > 50 ? '#dc3545' : '#3b82f6') + '"></div></div>';
+                ppBody.appendChild(bar);
+            });
+        }
+
+        showToast("Sensitivity analysis complete");
+    } catch (err) {
+        showToast("Sensitivity error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Risk Matrix ──────────────────────────────────
+
+async function runRiskMatrix() {
+    showLoading("Computing risk assessment");
+    try {
+        var well = document.getElementById("well-select").value || null;
+        var regime = document.getElementById("regime-select").value;
+        var depth = parseFloat(document.getElementById("depth-input").value) || 3000;
+        var pp = getPorePresure();
+
+        var r = await api("/api/analysis/risk-matrix", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, well: well, regime: regime, depth: depth, pore_pressure: pp})
+        });
+
+        // Overall banner
+        var overallEl = document.getElementById("risk-overall");
+        overallEl.classList.remove("d-none");
+        var card = document.getElementById("risk-overall-card");
+        card.className = "card border-" + (r.overall_color || "secondary");
+
+        document.getElementById("risk-go-nogo").textContent = r.go_nogo || "N/A";
+        document.getElementById("risk-go-nogo").className = "mb-2 text-" + (r.overall_color || "secondary");
+        document.getElementById("risk-score-badge").textContent = "Risk Score: " + r.overall_score + "/100 (" + r.overall_level + ")";
+        document.getElementById("risk-detail").textContent = r.go_nogo_detail || "";
+
+        // Factors table
+        var factorsEl = document.getElementById("risk-factors");
+        factorsEl.classList.remove("d-none");
+        var tbody = document.getElementById("risk-factors-tbody");
+        clearChildren(tbody);
+        (r.factors || []).forEach(function(f) {
+            var tr = document.createElement("tr");
+            var scoreColor = f.score >= 60 ? "danger" : f.score >= 40 ? "warning" : "success";
+            tr.innerHTML = '<td><strong>' + f.factor + '</strong><br><small class="text-muted">' + f.impact + '</small></td>' +
+                '<td><span class="badge bg-' + scoreColor + '">' + f.score + '</span></td>' +
+                '<td><small>' + f.detail + '</small></td>' +
+                '<td><small>' + f.mitigation + '</small></td>';
+            tbody.appendChild(tr);
+        });
+
+        showToast("Risk assessment: " + r.overall_level + " — " + r.go_nogo);
+    } catch (err) {
+        showToast("Risk matrix error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Well Comparison ──────────────────────────────
+
+async function runWellComparison() {
+    showLoading("Comparing wells (running inversions)");
+    try {
+        var depth = parseFloat(document.getElementById("depth-input").value) || 3000;
+        var r = await api("/api/analysis/compare-wells", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, depth: depth})
+        });
+
+        if (r.status === "insufficient_wells") {
+            showToast(r.message, "Info");
+            return;
+        }
+
+        // Consistency checks
+        var consEl = document.getElementById("wells-consistency");
+        var consBody = document.getElementById("wells-consistency-body");
+        clearChildren(consBody);
+        if (r.consistency_checks && r.consistency_checks.length) {
+            consEl.classList.remove("d-none");
+            r.consistency_checks.forEach(function(c) {
+                var div = document.createElement("div");
+                div.className = "mb-2";
+                var icon = c.status === "OK" ? "check-circle text-success" : "exclamation-triangle text-warning";
+                div.innerHTML = '<i class="bi bi-' + icon + '"></i> <strong>' + c.check + '</strong>: ' + c.detail;
+                consBody.appendChild(div);
+            });
+        }
+
+        // Well results table
+        var tableEl = document.getElementById("wells-table");
+        var tableBody = document.getElementById("wells-table-body");
+        clearChildren(tableBody);
+        if (r.wells) {
+            tableEl.classList.remove("d-none");
+            var tbl = '<table class="table table-sm table-hover"><thead><tr><th>Well</th><th>Fractures</th><th>Quality</th><th>σ1</th><th>SHmax</th><th>μ</th><th>Crit%</th><th>ML Acc</th></tr></thead><tbody>';
+            for (var wName in r.wells) {
+                var w = r.wells[wName];
+                tbl += '<tr><td><strong>' + wName + '</strong></td><td>' + w.n_fractures + '</td>' +
+                    '<td>' + w.data_quality_grade + ' (' + w.data_quality_score + ')</td>' +
+                    '<td>' + (w.sigma1 ? fmt(w.sigma1) : 'N/A') + '</td>' +
+                    '<td>' + (w.shmax ? fmt(w.shmax) + '°' : 'N/A') + '</td>' +
+                    '<td>' + (w.mu ? fmt(w.mu, 3) : 'N/A') + '</td>' +
+                    '<td>' + (w.pct_critically_stressed != null ? fmt(w.pct_critically_stressed) + '%' : 'N/A') + '</td>' +
+                    '<td>' + (w.classification_accuracy != null ? fmt(w.classification_accuracy) + '%' : 'N/A') + '</td></tr>';
+            }
+            tbl += '</tbody></table>';
+            tableBody.innerHTML = tbl;
+        }
+
+        // Cross-validation
+        var cvEl = document.getElementById("wells-crossval");
+        var cvBody = document.getElementById("wells-crossval-body");
+        clearChildren(cvBody);
+        if (r.cross_validation && Object.keys(r.cross_validation).length) {
+            cvEl.classList.remove("d-none");
+            var cvTbl = '<table class="table table-sm"><thead><tr><th>Train → Test</th><th>Accuracy</th><th>Train Size</th><th>Test Size</th></tr></thead><tbody>';
+            for (var key in r.cross_validation) {
+                var cv = r.cross_validation[key];
+                var accColor = cv.accuracy >= 70 ? "success" : cv.accuracy >= 50 ? "warning" : "danger";
+                cvTbl += '<tr><td>' + key + '</td>' +
+                    '<td><span class="badge bg-' + accColor + '">' + (cv.accuracy != null ? cv.accuracy + '%' : cv.error) + '</span></td>' +
+                    '<td>' + (cv.train_size || '') + '</td><td>' + (cv.test_size || '') + '</td></tr>';
+            }
+            cvTbl += '</tbody></table>';
+            cvBody.innerHTML = cvTbl;
+        }
+
+        showToast("Well comparison complete: " + r.n_wells + " wells analyzed");
+    } catch (err) {
+        showToast("Well comparison error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Well Report ──────────────────────────────────
+
+async function generateReport() {
+    showLoading("Generating stakeholder report");
+    try {
+        var well = document.getElementById("well-select").value || null;
+        var regime = document.getElementById("regime-select").value;
+        var depth = parseFloat(document.getElementById("depth-input").value) || 3000;
+        var pp = getPorePresure();
+
+        var r = await api("/api/report/well", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, well: well, regime: regime, depth: depth, pore_pressure: pp})
+        });
+
+        document.getElementById("report-content").classList.remove("d-none");
+        document.getElementById("btn-print-report").classList.remove("d-none");
+
+        // Executive summary
+        document.getElementById("report-exec-summary").innerHTML =
+            '<p class="lead">' + (r.executive_summary || '') + '</p>' +
+            '<small class="text-muted">Generated: ' + (r.generated_at || '') + ' | Version: ' + (r.version || '') + '</small>';
+
+        // Stress state
+        var ss = r.stress_state || {};
+        document.getElementById("report-stress").innerHTML =
+            '<div class="row g-3">' +
+            '<div class="col-md-4"><div class="metric-card"><div class="metric-label">σ1 (Max)</div><div class="metric-value">' + fmt(ss.sigma1_mpa) + ' MPa</div></div></div>' +
+            '<div class="col-md-4"><div class="metric-card"><div class="metric-label">σ2 (Int)</div><div class="metric-value">' + fmt(ss.sigma2_mpa) + ' MPa</div></div></div>' +
+            '<div class="col-md-4"><div class="metric-card"><div class="metric-label">σ3 (Min)</div><div class="metric-value">' + fmt(ss.sigma3_mpa) + ' MPa</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">SHmax</div><div class="metric-value">' + fmt(ss.shmax_azimuth) + '° ' + (ss.shmax_compass || '') + '</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">R Ratio</div><div class="metric-value">' + fmt(ss.R_ratio, 3) + '</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Regime</div><div class="metric-value">' + (ss.regime || '').replace('_',' ') + '</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Pore Pressure</div><div class="metric-value">' + fmt(ss.pore_pressure_mpa) + ' MPa</div></div></div>' +
+            '</div>';
+
+        // Risk assessment
+        var ra = r.risk_assessment || {};
+        var riskHtml = '<div class="text-center mb-3"><h3 class="text-' + (ra.overall_color || 'secondary') + '">' + (ra.go_nogo || 'N/A') + '</h3>' +
+            '<p>Risk Score: ' + (ra.overall_score || 0) + '/100 (' + (ra.overall_level || '') + ')</p>' +
+            '<p class="text-muted">' + (ra.go_nogo_detail || '') + '</p></div>';
+        if (ra.factors) {
+            riskHtml += '<table class="table table-sm"><thead><tr><th>Factor</th><th>Score</th><th>Detail</th></tr></thead><tbody>';
+            ra.factors.forEach(function(f) {
+                var sc = f.score >= 60 ? "danger" : f.score >= 40 ? "warning" : "success";
+                riskHtml += '<tr><td>' + f.factor + '</td><td><span class="badge bg-' + sc + '">' + f.score + '</span></td><td>' + f.detail + '</td></tr>';
+            });
+            riskHtml += '</tbody></table>';
+        }
+        document.getElementById("report-risk").innerHTML = riskHtml;
+
+        // Recommendations
+        var recs = r.recommendations || {};
+        var recHtml = '';
+        if (recs.drilling && recs.drilling.length) {
+            recHtml += '<h6><i class="bi bi-gear"></i> Drilling</h6><ul>';
+            recs.drilling.forEach(function(d) { recHtml += '<li>' + d + '</li>'; });
+            recHtml += '</ul>';
+        }
+        if (recs.completion && recs.completion.length) {
+            recHtml += '<h6><i class="bi bi-wrench"></i> Completion</h6><ul>';
+            recs.completion.forEach(function(c) { recHtml += '<li>' + c + '</li>'; });
+            recHtml += '</ul>';
+        }
+        if (recs.monitoring && recs.monitoring.length) {
+            recHtml += '<h6><i class="bi bi-eye"></i> Monitoring</h6><ul>';
+            recs.monitoring.forEach(function(m) { recHtml += '<li>' + m + '</li>'; });
+            recHtml += '</ul>';
+        }
+        if (!recHtml) recHtml = '<p class="text-muted">No specific recommendations.</p>';
+        document.getElementById("report-recommendations").innerHTML = recHtml;
+
+        // Data quality
+        var dq = r.data_quality || {};
+        var dqHtml = '<div class="d-flex align-items-center gap-3 mb-2">' +
+            '<span class="badge bg-' + (dq.grade === 'A' ? 'success' : dq.grade === 'B' ? 'primary' : dq.grade === 'C' ? 'warning' : 'danger') + ' fs-5">Grade: ' + (dq.grade || '?') + '</span>' +
+            '<span>Score: ' + (dq.score || 0) + '/100</span></div>';
+        if (dq.issues && dq.issues.length) {
+            dqHtml += '<div class="text-danger mb-1"><strong>Issues:</strong></div><ul>';
+            dq.issues.forEach(function(i) { dqHtml += '<li class="text-danger small">' + i + '</li>'; });
+            dqHtml += '</ul>';
+        }
+        if (dq.warnings && dq.warnings.length) {
+            dqHtml += '<div class="text-warning mb-1"><strong>Warnings:</strong></div><ul>';
+            dq.warnings.forEach(function(w) { dqHtml += '<li class="text-warning small">' + w + '</li>'; });
+            dqHtml += '</ul>';
+        }
+        document.getElementById("report-quality").innerHTML = dqHtml;
+
+        showToast("Report generated for " + (r.well_name || "well"));
+    } catch (err) {
+        showToast("Report error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 
 // ── Init ──────────────────────────────────────────
 

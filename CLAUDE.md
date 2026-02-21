@@ -76,6 +76,10 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/feedback/correct-label` | Expert label correction |
 | POST | `/api/feedback/retrain` | Retrain model with corrections |
 | POST | `/api/analysis/shap` | SHAP explainability (feature attribution) |
+| POST | `/api/analysis/sensitivity` | Parameter sensitivity analysis (tornado diagram) |
+| POST | `/api/analysis/risk-matrix` | Comprehensive operational risk assessment |
+| POST | `/api/analysis/compare-wells` | Multi-well comparison and cross-validation |
+| POST | `/api/report/well` | Generate stakeholder well report |
 | GET | `/api/analysis/features` | Enhanced feature info |
 
 ## Domain Concepts
@@ -106,3 +110,7 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Fast mode (100 estimators, 3-fold CV) gives ~3x speedup with <0.5% accuracy loss
 - All matplotlib plots use `threading.Lock` for thread safety + `asyncio.to_thread` for async
 - `matplotlib.use("Agg")` is required at app.py top for headless rendering on Render
+- Sensitivity analysis varies friction, pore pressure, and regime to produce tornado diagrams
+- Risk matrix combines critically stressed %, data quality, model confidence, sensitivity, and friction into go/no-go
+- Well 6P only has 2 fracture types (Vuggy, Brecciated) vs 5 in 3P — cross-well models don't transfer
+- SHmax varies ~134° between wells 3P and 6P — possible structural domain boundary
