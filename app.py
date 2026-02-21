@@ -848,9 +848,23 @@ async def generate_report(request: Request):
     )
     pp = float(pore_pressure) if pore_pressure else None
 
-    inv_result = await _cached_inversion(
-        normals, well, regime, depth_m, pp, source
-    )
+    # Auto-regime detection for report
+    auto_regime = None
+    if regime == "auto":
+        auto_cache_key = f"auto_{source}_{well_name}_{depth_m}"
+        if auto_cache_key in _auto_regime_cache:
+            auto_regime = _auto_regime_cache[auto_cache_key]
+        else:
+            auto_regime = await asyncio.to_thread(
+                auto_detect_regime, normals, depth_m, 0.0, pp,
+            )
+            _auto_regime_cache[auto_cache_key] = auto_regime
+        inv_result = auto_regime["best_result"]
+        regime = auto_regime["best_regime"]
+    else:
+        inv_result = await _cached_inversion(
+            normals, well, regime, depth_m, pp, source
+        )
 
     pp_val = inv_result.get("pore_pressure", 0)
     cs_result = critically_stressed_enhanced(
@@ -879,6 +893,7 @@ async def generate_report(request: Request):
         model_comparison=model_comparison,
         sensitivity_result=sens_result,
         risk_matrix=risk,
+        auto_regime_result=auto_regime,
     )
 
     return _sanitize_for_json(report)

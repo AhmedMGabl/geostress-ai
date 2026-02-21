@@ -2062,6 +2062,7 @@ def generate_well_report(
     model_comparison: dict = None,
     sensitivity_result: dict = None,
     risk_matrix: dict = None,
+    auto_regime_result: dict = None,
 ) -> dict:
     """Generate a comprehensive stakeholder report for a single well.
 
@@ -2071,7 +2072,7 @@ def generate_well_report(
     report = {
         "well_name": well_name,
         "generated_at": pd.Timestamp.now().isoformat(),
-        "version": "2.2.0",
+        "version": "2.4.0",
     }
 
     regime = inversion_result.get("regime", "unknown")
@@ -2124,20 +2125,53 @@ def generate_well_report(
         "warnings": quality_result.get("warnings", []),
     }
 
+    # ── Auto Regime Detection (if available) ──
+    if auto_regime_result:
+        report["regime_detection"] = {
+            "best_regime": auto_regime_result.get("best_regime", "unknown"),
+            "confidence": auto_regime_result.get("confidence", "N/A"),
+            "misfit_ratio": auto_regime_result.get("misfit_ratio", 0),
+            "comparison": auto_regime_result.get("comparison", []),
+            "summary": auto_regime_result.get("stakeholder_summary", ""),
+        }
+
     # ── Classification (if available) ──
     if model_comparison:
         best = model_comparison.get("best_model", "unknown")
         best_acc = 0
+        best_bal_acc = 0
+        best_per_class = {}
         for name, res in model_comparison.get("models", {}).items():
             if name == best:
                 best_acc = res.get("cv_accuracy_mean", 0)
+                best_bal_acc = res.get("balanced_accuracy", 0)
+                best_per_class = res.get("per_class_metrics", {})
+
+        imbalance_warning = None
+        if best_acc - best_bal_acc > 0.20:
+            imbalance_warning = (
+                f"SEVERE CLASS IMBALANCE: Standard accuracy ({best_acc:.1%}) masks "
+                f"poor balanced accuracy ({best_bal_acc:.1%}). The model fails on "
+                f"minority fracture types. Do NOT rely on classifications for "
+                f"under-represented types."
+            )
+        # Find failing classes
+        failing_classes = [
+            cls for cls, met in best_per_class.items()
+            if met.get("f1", 0) < 0.1
+        ]
+
         report["classification"] = {
             "best_model": best,
             "accuracy_pct": round(best_acc * 100, 1),
+            "balanced_accuracy_pct": round(best_bal_acc * 100, 1),
             "n_models_compared": len(model_comparison.get("models", {})),
             "model_agreement_pct": round(
                 model_comparison.get("model_agreement_mean", 0) * 100, 1
             ),
+            "imbalance_warning": imbalance_warning,
+            "failing_classes": failing_classes,
+            "per_class": best_per_class,
         }
 
     # ── Sensitivity (if available) ──

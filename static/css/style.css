@@ -292,13 +292,19 @@ body {
 
 /* Print styles for stakeholder reports */
 @media print {
-    #sidebar, .topbar, .btn, #loading-overlay { display: none !important; }
+    #sidebar, .topbar, .btn, #loading-overlay, .toast-container { display: none !important; }
     .content-area { max-width: 100%; padding: 0 !important; }
     .d-flex { display: block !important; }
-    main { margin: 0; }
-    .card { break-inside: avoid; margin-bottom: 1rem; }
+    main { margin: 0; width: 100%; }
+    .card { break-inside: avoid; margin-bottom: 1rem; border: 1px solid #999 !important; }
     .badge { border: 1px solid #333; }
     .metric-card { border: 1px solid #999; }
+    .tab-content:not(.active) { display: none !important; }
+    .alert { border: 1px solid #666; }
+    body { background: white; font-size: 11pt; }
+    h4, h5, h6 { page-break-after: avoid; }
+    table { page-break-inside: avoid; }
+    .plot-img { max-width: 100%; height: auto; }
 }
 
 /* Responsive */

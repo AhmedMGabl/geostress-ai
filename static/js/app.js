@@ -1726,9 +1726,26 @@ async function generateReport() {
         document.getElementById("btn-print-report").classList.remove("d-none");
 
         // Executive summary
-        document.getElementById("report-exec-summary").innerHTML =
-            '<p class="lead">' + (r.executive_summary || '') + '</p>' +
-            '<small class="text-muted">Generated: ' + (r.generated_at || '') + ' | Version: ' + (r.version || '') + '</small>';
+        var execHtml = '<p class="lead">' + (r.executive_summary || '') + '</p>';
+
+        // Auto-regime detection info
+        if (r.regime_detection) {
+            var rd = r.regime_detection;
+            var confBadge = rd.confidence === "HIGH" ? "bg-success" : rd.confidence === "MODERATE" ? "bg-warning text-dark" : "bg-danger";
+            execHtml += '<div class="alert alert-info py-2 mb-2"><i class="bi bi-robot me-1"></i>' +
+                '<strong>Auto-detected regime:</strong> ' + rd.best_regime.replace("_", "-") +
+                ' <span class="badge ' + confBadge + '">' + rd.confidence + '</span> ' +
+                '<span class="small text-muted">(' + rd.summary.substring(0, 200) + ')</span></div>';
+        }
+
+        // Classification warning
+        if (r.classification && r.classification.imbalance_warning) {
+            execHtml += '<div class="alert alert-danger py-2 mb-2"><i class="bi bi-exclamation-triangle me-1"></i>' +
+                r.classification.imbalance_warning + '</div>';
+        }
+
+        execHtml += '<small class="text-muted">Generated: ' + (r.generated_at || '') + ' | Version: ' + (r.version || '') + '</small>';
+        document.getElementById("report-exec-summary").innerHTML = execHtml;
 
         // Stress state
         var ss = r.stress_state || {};
