@@ -183,6 +183,42 @@ def engineer_enhanced_features(df: pd.DataFrame,
         else:
             feat["depth_normalized"] = 0.5
 
+        # ── 2025-2026 research features ──
+
+        # Fracture intensity per 10m (industry standard, per SPWLA 2025)
+        intensity_10m = np.zeros(len(depth))
+        for i, d in enumerate(depth):
+            intensity_10m[i] = np.sum(np.abs(depth - d) <= 5.0)  # ±5m = 10m window
+        feat["fracture_intensity_10m"] = intensity_10m
+
+        # Adjacent fracture spacing (up + down, not just nearest)
+        sort_idx = np.argsort(depth)
+        adj_spacing_up = np.full(len(depth), np.nan)
+        adj_spacing_down = np.full(len(depth), np.nan)
+        sorted_d = depth[sort_idx]
+        for j in range(len(sort_idx)):
+            orig_i = sort_idx[j]
+            if j > 0:
+                adj_spacing_up[orig_i] = sorted_d[j] - sorted_d[j - 1]
+            if j < len(sort_idx) - 1:
+                adj_spacing_down[orig_i] = sorted_d[j + 1] - sorted_d[j]
+        feat["adj_spacing_up"] = np.nan_to_num(adj_spacing_up, nan=0.0)
+        feat["adj_spacing_down"] = np.nan_to_num(adj_spacing_down, nan=0.0)
+
+        # Azimuth dispersion in 100m window (circular variance)
+        az_disp = np.zeros(len(depth))
+        az_sin = np.sin(az_rad).values
+        az_cos = np.cos(az_rad).values
+        for i, d in enumerate(depth):
+            mask = np.abs(depth - d) <= 50.0  # ±50m = 100m window
+            n_local = mask.sum()
+            if n_local > 1:
+                S = np.mean(az_sin[mask])
+                C = np.mean(az_cos[mask])
+                R = np.sqrt(S ** 2 + C ** 2)
+                az_disp[i] = 1.0 - R  # circular variance [0, 1]
+        feat["azimuth_dispersion_100m"] = az_disp
+
     # ── Orientation tensor (fabric strength) ──
     normals = np.column_stack([feat["nx"], feat["ny"], feat["nz"]])
     orientation_tensor = normals.T @ normals / len(normals)
