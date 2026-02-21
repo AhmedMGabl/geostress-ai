@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**GeoStress AI** - An AI-powered geostress inversion and fracture analysis tool for the oil & gas industry. It estimates the in-situ stress tensor from borehole fracture orientation data using Mohr-Coulomb theory, Bayesian inference, and machine learning.
+**GeoStress AI** - An AI-powered geostress inversion and fracture analysis tool for the oil & gas industry. It estimates the in-situ stress tensor from borehole fracture orientation data using Mohr-Coulomb theory (with pore pressure correction), multi-model ML comparison, and Bayesian inference.
+
+**Live**: https://geostress-ai.onrender.com/
+**Repo**: https://github.com/AhmedMGabl/geostress-ai
 
 ## Data
 
@@ -18,11 +21,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
+app.py              - FastAPI backend (v2.0), all API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
-  geostress.py      - Stress tensor construction, Mohr-Coulomb inversion, Bayesian MCMC
-  fracture_analysis.py - ML classification (Random Forest), clustering (KMeans), critically stressed ID
+  geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC
+  fracture_analysis.py - Original ML classification (RF, GB), clustering (KMeans)
+  enhanced_analysis.py - Multi-model comparison (6 models), physics-informed features,
+                         uncertainty quantification, decision support, feedback loop
   visualization.py  - Rose diagrams, stereonets, Mohr circles, tendency plots, dashboards
+templates/
+  index.html        - SPA frontend (Bootstrap 5)
+static/
+  css/style.css     - Dark sidebar, earth-tone theme
+  js/app.js         - All API calls, tab switching, result rendering
+render.yaml         - Render.com deployment config
 notebooks/
   01_full_analysis.ipynb - Complete analysis pipeline demo
 ```
@@ -33,21 +45,34 @@ notebooks/
 # Install dependencies
 pip install -r requirements.txt
 
+# Run web app locally
+uvicorn app:app --reload --port 8000
+
 # Run quick data load test
 cd src && python data_loader.py
 
-# Run geostress inversion
-cd src && python geostress.py
-
-# Run fracture classification + clustering
-cd src && python fracture_analysis.py
-
-# Generate dashboard visualizations
-cd src && python visualization.py
-
-# Launch Jupyter notebook
-jupyter notebook notebooks/01_full_analysis.ipynb
+# Test enhanced analysis module directly
+python -c "from src.enhanced_analysis import compare_models; from src.data_loader import load_all_fractures; print(compare_models(load_all_fractures('data/raw'))['ranking'])"
 ```
+
+## API Endpoints
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| GET | `/` | Serve SPA |
+| GET | `/api/data/summary` | Data summary |
+| GET | `/api/data/wells` | Well list with stats |
+| POST | `/api/data/upload` | Upload Excel file |
+| GET | `/api/viz/rose` | Rose diagram |
+| GET | `/api/viz/stereonet` | Stereonet plot |
+| GET | `/api/viz/depth-profile` | Depth profile |
+| POST | `/api/analysis/inversion` | Stress inversion (with Pp, interpretation) |
+| POST | `/api/analysis/classify` | ML classification (enhanced features) |
+| POST | `/api/analysis/cluster` | Fracture clustering |
+| POST | `/api/analysis/compare-models` | Multi-model comparison (6 models) |
+| POST | `/api/feedback/submit` | Expert feedback submission |
+| GET | `/api/feedback/summary` | Feedback analytics |
+| GET | `/api/analysis/features` | Enhanced feature info |
 
 ## Domain Concepts
 
@@ -56,7 +81,8 @@ jupyter notebook notebooks/01_full_analysis.ipynb
 - **Stress tensor**: 3x3 symmetric matrix with principal stresses σ1 > σ2 > σ3
 - **R ratio**: (σ2-σ3)/(σ1-σ3), shape of the stress ellipsoid, range [0,1]
 - **SHmax**: Maximum horizontal stress azimuth - key output for drilling decisions
-- **Mohr-Coulomb**: τ = c + μσn (failure criterion - fractures slip when shear exceeds friction)
+- **Mohr-Coulomb**: τ = c + μ(σn - Pp) (effective stress: pore pressure reduces friction)
+- **Pore pressure (Pp)**: Fluid pressure in rock pores, estimated hydrostatic = ρw·g·h
 - **Slip tendency**: τ/σn - how close a fracture is to sliding
 - **Dilation tendency**: (σ1-σn)/(σ1-σ3) - how likely a fracture is to open
 - **Critically stressed**: Fractures above the Mohr-Coulomb line - likely fluid conduits
@@ -66,5 +92,9 @@ jupyter notebook notebooks/01_full_analysis.ipynb
 - Azimuth data is circular (0° ≈ 360°) - use sin/cos decomposition for ML features
 - The `.xls` files (xlrd engine) have 3 columns (depth, azimuth, dip); `.xlsx` files sometimes have only 2
 - Column headers in Excel files are actually the first data row (numeric values used as column names)
-- Inversion uses `scipy.differential_evolution` for global optimization
+- Inversion uses `scipy.differential_evolution` with pore pressure in objective function
 - Bayesian MCMC uses `emcee` package with 5 parameters: σ1, σ3, R, SHmax_azimuth, μ
+- Enhanced features: 21 columns including pore pressure, overburden, temperature, fracture density, fabric eigenvalues
+- Model comparison caches results per data source to avoid redundant computation
+- All matplotlib plots use `threading.Lock` for thread safety + `asyncio.to_thread` for async
+- `matplotlib.use("Agg")` is required at app.py top for headless rendering on Render
