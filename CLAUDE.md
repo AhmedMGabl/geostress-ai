@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
-app.py              - FastAPI backend (v2.9), all API endpoints, serves templates
+app.py              - FastAPI backend (v3.0), all API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
   geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC, auto regime detection
@@ -121,6 +121,10 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/data/anomaly-detection` | Flag individual suspicious measurements (IQR, duplicates, gaps) |
 | POST | `/api/feedback/effectiveness` | Track measurable impact of expert corrections on accuracy |
 | GET | `/api/progress/{task_id}` | SSE progress streaming for long-running operations |
+| POST | `/api/analysis/depth-zone` | Depth-zone classification — separate models per depth interval |
+| POST | `/api/analysis/sensitivity-heatmap` | 2D friction × Pp heatmap with CS% contours |
+| POST | `/api/export/full-report` | Comprehensive JSON report for external system integration |
+| POST | `/api/analysis/worst-case` | Auto worst-case scenarios (5 scenarios, sensitivity verdict) |
 
 ## Domain Concepts
 
@@ -235,4 +239,9 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Anomaly detection flags: physical impossibility, IQR outliers (2.5x), duplicates, depth gaps, low-dip uncertainty
 - Well 6P anomaly: 79.6% flagged (494 missing depths, 27 outliers) — data quality issue surfaced before analysis
 - Feedback effectiveness: shows per-class correction priority (Continuous 17%, Boundary 23% accuracy = HIGH priority)
-- 66 total API routes at v2.9
+- 68 total API routes at v3.0
+- Full JSON report bundles: stress, risk, classification, data quality, uncertainty + stakeholder interpretation
+- Worst-case analysis: auto-generates 5 scenarios (baseline, low friction, high Pp, wrong regime, combined)
+- Worst-case reuses cached baseline inversion + runs 2 parallel inversions for ~14s (cached) vs 32s (cold)
+- Batch comparison chart: 3-panel matplotlib (SHmax, accuracy, CS%) rendered server-side
+- Well 3P worst-case: CS ranges 53%-89% (HIGH_SENSITIVITY), friction is the biggest driver

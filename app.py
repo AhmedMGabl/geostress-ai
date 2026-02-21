@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v2.6 - Industrial Grade)."""
+"""GeoStress AI - FastAPI Web Application (v3.0 - Industrial Grade)."""
 
 import os
 import io
@@ -279,7 +279,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="2.9.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.0.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
