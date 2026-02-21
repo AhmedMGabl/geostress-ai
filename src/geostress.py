@@ -153,6 +153,143 @@ def dilation_tendency(sigma_n: np.ndarray, sigma1: float, sigma3: float) -> np.n
 
 
 # ──────────────────────────────────────────────
+# Temperature Correction (2025 Research)
+# ──────────────────────────────────────────────
+# Deep wells experience elevated temperatures that reduce friction
+# coefficient through crystal plasticity and mineral phase transitions.
+# Based on Blanpied et al. (1998) and 2025 wellbore stability papers
+# (Nature Sci. Rep. 2025, doi:10.1038/s41598-025-87714-0).
+# Without correction, slip tendency is systematically UNDERESTIMATED
+# in deep hot wells — a safety-critical bias.
+
+# Constants
+GEOTHERMAL_GRADIENT = 0.030   # °C/m (typical 25-35 °C/km)
+SURFACE_TEMP = 25.0           # °C
+
+def compute_formation_temperature(depth_m: float,
+                                   gradient: float = GEOTHERMAL_GRADIENT,
+                                   surface_temp: float = SURFACE_TEMP) -> float:
+    """Estimate formation temperature at depth.
+
+    T = T_surface + gradient * depth
+    Typical gradient: 25-35 °C/km (0.025-0.035 °C/m).
+    Returns temperature in °C.
+    """
+    return surface_temp + gradient * depth_m
+
+
+def thermal_friction_correction(mu: float, temperature_c: float,
+                                 t_ref: float = 25.0,
+                                 t_onset: float = 150.0,
+                                 alpha: float = 0.15) -> dict:
+    """Correct friction coefficient for temperature effects.
+
+    At temperatures above t_onset (~150°C), friction decreases due
+    to crystal plasticity in quartz/feldspar and clay mineral
+    dehydration. The correction follows:
+
+        μ_eff = μ * (1 - α * max(0, T - T_onset) / T_scale)
+
+    where T_scale = 300°C normalizes the correction range.
+
+    Parameters
+    ----------
+    mu : Room-temperature friction coefficient (from inversion)
+    temperature_c : Formation temperature in °C
+    t_ref : Reference temperature for zero correction (°C)
+    t_onset : Temperature threshold for correction onset (°C)
+    alpha : Maximum friction reduction fraction at extreme temps
+
+    Returns
+    -------
+    dict with mu_effective, correction_factor, temperature_c, is_corrected
+    """
+    T_SCALE = 300.0  # normalization temperature
+
+    if temperature_c <= t_onset:
+        return {
+            "mu_effective": round(float(mu), 4),
+            "mu_original": round(float(mu), 4),
+            "correction_factor": 1.0,
+            "temperature_c": round(temperature_c, 1),
+            "is_corrected": False,
+            "explanation": (
+                f"Temperature {temperature_c:.0f}°C is below onset "
+                f"threshold ({t_onset:.0f}°C). No thermal correction needed."
+            ),
+        }
+
+    delta_T = temperature_c - t_onset
+    reduction = alpha * min(delta_T / T_SCALE, 1.0)  # cap at alpha
+    correction_factor = 1.0 - reduction
+    mu_eff = mu * correction_factor
+
+    return {
+        "mu_effective": round(mu_eff, 4),
+        "mu_original": mu,
+        "correction_factor": round(correction_factor, 4),
+        "temperature_c": round(temperature_c, 1),
+        "is_corrected": True,
+        "reduction_pct": round(reduction * 100, 1),
+        "explanation": (
+            f"Temperature {temperature_c:.0f}°C exceeds onset ({t_onset:.0f}°C). "
+            f"Friction reduced {reduction*100:.1f}% from μ={mu:.3f} to μ_eff={mu_eff:.3f}. "
+            f"Fractures are MORE likely to slip than room-temperature models predict."
+        ),
+    }
+
+
+def temperature_corrected_tendencies(
+    sigma_n: np.ndarray,
+    tau: np.ndarray,
+    sigma1: float,
+    sigma3: float,
+    mu: float,
+    depth_m: float,
+    cohesion: float = 0.0,
+    pore_pressure: float = 0.0,
+    geothermal_gradient: float = GEOTHERMAL_GRADIENT,
+) -> dict:
+    """Compute slip/dilation tendency with thermal friction correction.
+
+    Returns both corrected and uncorrected values for comparison,
+    plus the temperature correction metadata.
+    """
+    temp = compute_formation_temperature(depth_m, geothermal_gradient)
+    thermal = thermal_friction_correction(mu, temp)
+    mu_eff = thermal["mu_effective"]
+
+    # Original tendencies (room-temperature)
+    slip_orig = slip_tendency(sigma_n, tau)
+    dil_orig = dilation_tendency(sigma_n, sigma1, sigma3)
+
+    # Temperature-corrected Mohr-Coulomb line shifts DOWN
+    # (lower effective friction = more fractures are critically stressed)
+    sigma_n_eff = sigma_n - pore_pressure
+    tau_crit_orig = cohesion + mu * sigma_n_eff
+    tau_crit_corrected = cohesion + mu_eff * sigma_n_eff
+
+    # Critically stressed: τ > τ_critical (above Mohr-Coulomb line)
+    cs_orig = tau > tau_crit_orig
+    cs_corrected = tau > tau_crit_corrected
+
+    new_critical = int(cs_corrected.sum()) - int(cs_orig.sum())
+
+    return {
+        "temperature_c": round(temp, 1),
+        "thermal_correction": thermal,
+        "slip_tendency_original": slip_orig,
+        "dilation_tendency": dil_orig,
+        "cs_count_original": int(cs_orig.sum()),
+        "cs_count_corrected": int(cs_corrected.sum()),
+        "cs_total": len(sigma_n),
+        "new_critical_from_thermal": new_critical,
+        "cs_pct_original": round(100 * cs_orig.sum() / len(sigma_n), 1),
+        "cs_pct_corrected": round(100 * cs_corrected.sum() / len(sigma_n), 1),
+    }
+
+
+# ──────────────────────────────────────────────
 # Inversion: Objective Function
 # ──────────────────────────────────────────────
 

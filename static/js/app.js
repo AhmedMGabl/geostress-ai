@@ -1195,13 +1195,16 @@ async function runInversion() {
         : "Running stress inversion (with pore pressure correction)...";
     showLoading(loadingMsg);
     try {
+        var geoInput = document.getElementById("geothermal-input");
+        var geoGradient = geoInput ? parseFloat(geoInput.value) / 1000.0 : 0.030;  // Convert °C/km to °C/m
         var body = {
             well: currentWell,
             regime: selectedRegime,
             depth_m: parseFloat(document.getElementById("depth-input").value),
             cohesion: 0,
             source: currentSource,
-            pore_pressure: getPorePresure()
+            pore_pressure: getPorePresure(),
+            geothermal_gradient: geoGradient
         };
 
         var r = await api("/api/analysis/inversion", {
@@ -1265,6 +1268,39 @@ async function runInversion() {
                 rhtml += '</ul></div></div>';
                 recEl.innerHTML = rhtml;
                 recEl.classList.remove("d-none");
+            }
+        }
+
+        // Display temperature correction (2025 research)
+        if (r.thermal_correction) {
+            var thEl = document.getElementById("inv-thermal");
+            if (thEl) {
+                var tc = r.thermal_correction;
+                var bgClass = tc.is_corrected ? "border-warning" : "border-success";
+                var iconClass = tc.is_corrected ? "bi-thermometer-high text-warning" : "bi-thermometer-low text-success";
+                var thtml = '<div class="card ' + bgClass + ' mb-0">' +
+                    '<div class="card-header py-2"><i class="bi ' + iconClass + '"></i> ' +
+                    '<strong>Thermal Correction</strong> — Formation: ' + tc.temperature_c + '°C' +
+                    ' (gradient: ' + (tc.geothermal_gradient * 1000).toFixed(0) + ' °C/km)</div>' +
+                    '<div class="card-body py-2">';
+                if (tc.is_corrected) {
+                    thtml += '<div class="alert alert-warning py-1 mb-2"><strong>Deep well thermal effect detected.</strong> ' +
+                        tc.explanation + '</div>' +
+                        '<div class="row text-center">' +
+                        '<div class="col-4"><div class="metric-card"><div class="metric-label">μ original</div>' +
+                        '<div class="metric-value">' + tc.mu_original.toFixed(3) + '</div></div></div>' +
+                        '<div class="col-4"><div class="metric-card border-warning"><div class="metric-label">μ effective</div>' +
+                        '<div class="metric-value text-warning">' + tc.mu_effective.toFixed(3) + '</div></div></div>' +
+                        '<div class="col-4"><div class="metric-card"><div class="metric-label">New CS fractures</div>' +
+                        '<div class="metric-value text-danger">+' + tc.new_critical_from_thermal + '</div>' +
+                        '<div class="text-muted small">' + tc.cs_pct_original + '% → ' + tc.cs_pct_corrected + '% CS</div></div></div>' +
+                        '</div>';
+                } else {
+                    thtml += '<span class="text-success"><i class="bi bi-check-circle"></i> ' + tc.explanation + '</span>';
+                }
+                thtml += '</div></div>';
+                thEl.innerHTML = thtml;
+                thEl.classList.remove("d-none");
             }
         }
 
@@ -1990,6 +2026,146 @@ async function runClassification() {
         showToast("Classification: " + (r.cv_mean_accuracy * 100).toFixed(1) + "% accuracy (" + classifier + ")");
     } catch (err) {
         showToast("Classification error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Deep Ensemble UQ (2025 Research) ──────────────
+
+async function runDeepEnsemble() {
+    showLoading("Training 5-model deep ensemble for uncertainty quantification...");
+    try {
+        var classifier = document.getElementById("classifier-select").value;
+        var r = await api("/api/analysis/deep-ensemble", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ classifier: classifier, source: currentSource, n_ensemble: 5 })
+        });
+
+        var el = document.getElementById("ensemble-results");
+        if (!el) return;
+
+        var ep = r.epistemic_uncertainty;
+        var al = r.aleatoric_uncertainty;
+        var ag = r.agreement;
+        var ai = r.actionable_insights;
+
+        var html = '<div class="card border-info mb-0">' +
+            '<div class="card-header bg-info text-white py-2">' +
+            '<i class="bi bi-layers-fill"></i> <strong>Deep Ensemble Uncertainty</strong> — ' +
+            r.n_ensemble + ' models × ' + r.classifier.replace("_", " ") +
+            ' (accuracy: ' + (r.ensemble_accuracy * 100).toFixed(1) + '%)</div>' +
+            '<div class="card-body py-2">' +
+            '<div class="row g-2 mb-2">' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Epistemic (Reducible)</div>' +
+            '<div class="metric-value text-primary">' + ep.high_pct + '%</div>' +
+            '<div class="text-muted small">' + ep.high_count + ' high-uncertainty</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Aleatoric (Irreducible)</div>' +
+            '<div class="metric-value text-secondary">' + al.high_pct + '%</div>' +
+            '<div class="text-muted small">' + al.high_count + ' inherently noisy</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Full Agreement</div>' +
+            '<div class="metric-value text-success">' + ag.full_agreement_pct + '%</div>' +
+            '<div class="text-muted small">All ' + r.n_ensemble + ' models agree</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Low Agreement</div>' +
+            '<div class="metric-value text-danger">' + ag.low_agreement_count + '</div>' +
+            '<div class="text-muted small">&lt;60% model consensus</div></div></div>' +
+            '</div>';
+
+        // Actionable insights
+        html += '<div class="alert alert-light py-2 mb-0"><strong>What to do:</strong><ul class="mb-0 small">';
+        if (ai.needs_more_data_count > 0) {
+            html += '<li><span class="badge bg-primary me-1">' + ai.needs_more_data_count + '</span> fractures need more training data — collecting labels here would most improve accuracy</li>';
+        }
+        if (ai.measurement_noise_count > 0) {
+            html += '<li><span class="badge bg-secondary me-1">' + ai.measurement_noise_count + '</span> fractures have inherent measurement noise — more data won\'t help, consider manual expert review</li>';
+        }
+        if (ai.both_uncertain_count > 0) {
+            html += '<li><span class="badge bg-warning text-dark me-1">' + ai.both_uncertain_count + '</span> fractures are uncertain in both dimensions — highest priority for expert review</li>';
+        }
+        html += '</ul></div></div></div>';
+
+        el.innerHTML = html;
+        el.classList.remove("d-none");
+
+        showToast("Deep Ensemble: " + (r.ensemble_accuracy * 100).toFixed(1) + "% acc, " +
+            ep.high_count + " high-uncertainty samples identified");
+    } catch (err) {
+        showToast("Deep Ensemble error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Transfer Learning (2025 Research) ──────────────
+
+async function runTransferLearning() {
+    showLoading("Evaluating well-to-well transfer learning (train→adapt→compare)...");
+    try {
+        var classifier = document.getElementById("classifier-select").value;
+        // Determine source/target: train on current, test on the other
+        var srcWell = currentWell;
+        var tgtWell = srcWell === "3P" ? "6P" : "3P";
+
+        var r = await api("/api/analysis/transfer-learning", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_well: srcWell,
+                target_well: tgtWell,
+                classifier: classifier,
+                fine_tune_fraction: 0.2,
+                source: currentSource
+            })
+        });
+
+        var el = document.getElementById("transfer-results");
+        if (!el) return;
+
+        if (r.error) {
+            el.innerHTML = '<div class="alert alert-warning">' + r.error + '</div>';
+            el.classList.remove("d-none");
+            return;
+        }
+
+        var qColor = r.transfer_quality === "GOOD" ? "success" :
+                     r.transfer_quality === "MODERATE" ? "warning" : "danger";
+
+        var html = '<div class="card border-' + qColor + ' mb-0">' +
+            '<div class="card-header py-2"><i class="bi bi-arrow-left-right"></i> ' +
+            '<strong>Transfer Learning</strong>: ' + r.source_well + ' → ' + r.target_well +
+            ' <span class="badge bg-' + qColor + '">' + r.transfer_quality + '</span></div>' +
+            '<div class="card-body py-2">' +
+            '<div class="row g-2 mb-2">' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Source (' + r.source_well + ') CV</div>' +
+            '<div class="metric-value">' + (r.source_cv_accuracy * 100).toFixed(1) + '%</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Zero-Shot → ' + r.target_well + '</div>' +
+            '<div class="metric-value text-danger">' + (r.zero_shot_accuracy * 100).toFixed(1) + '%</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card border-' + qColor + '"><div class="metric-label">Fine-Tuned (' + r.fine_tune_n + ' samples)</div>' +
+            '<div class="metric-value text-' + qColor + '">' + (r.fine_tuned_accuracy * 100).toFixed(1) + '%</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Target-Only CV</div>' +
+            '<div class="metric-value">' + (r.target_only_accuracy * 100).toFixed(1) + '%</div></div></div>' +
+            '</div>';
+
+        html += '<div class="alert alert-' + qColor + ' py-1 mb-1 small">' + r.recommendation + '</div>';
+
+        // Class overlap info
+        if (r.source_only_classes && r.source_only_classes.length > 0) {
+            html += '<div class="text-muted small">Classes only in ' + r.source_well + ': ' + r.source_only_classes.join(", ") + '</div>';
+        }
+        if (r.target_only_classes && r.target_only_classes.length > 0) {
+            html += '<div class="text-muted small">Classes only in ' + r.target_well + ': ' + r.target_only_classes.join(", ") + '</div>';
+        }
+
+        html += '</div></div>';
+        el.innerHTML = html;
+        el.classList.remove("d-none");
+
+        showToast("Transfer: " + r.source_well + "→" + r.target_well + " = " + r.transfer_quality +
+            " (zero-shot " + (r.zero_shot_accuracy * 100).toFixed(0) + "%, fine-tuned " +
+            (r.fine_tuned_accuracy * 100).toFixed(0) + "%)");
+    } catch (err) {
+        showToast("Transfer Learning error: " + err.message, "Error");
     } finally {
         hideLoading();
     }

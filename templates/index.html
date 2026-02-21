@@ -170,6 +170,12 @@
                     </label>
                     <input type="number" id="pp-input" class="form-control form-control-sm" placeholder="Auto (hydrostatic)" step="0.1" min="0" max="200">
                 </div>
+                <div class="mb-2">
+                    <label class="form-label-sm">Geothermal Gradient (°C/km)
+                        <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Rate of temperature increase with depth. Default 30°C/km. Higher values (>35) indicate hot basins — friction correction activates at temperatures >150°C."></i>
+                    </label>
+                    <input type="number" id="geothermal-input" class="form-control form-control-sm" value="30" step="1" min="15" max="60">
+                </div>
             </div>
 
             <!-- Full Pipeline -->
@@ -677,6 +683,9 @@
                         <!-- Actionable Recommendations -->
                         <div id="inv-recommendations" class="d-none mb-3"></div>
 
+                        <!-- Temperature Correction (2025 Research) -->
+                        <div id="inv-thermal" class="d-none mb-3"></div>
+
                         <div class="row g-3">
                             <div class="col-lg-6">
                                 <div class="card"><div class="card-header">Mohr Circle</div>
@@ -1153,14 +1162,27 @@
                             <option value="gradient_boosting">Gradient Boosting</option>
                             <option value="xgboost">XGBoost</option>
                             <option value="lightgbm">LightGBM</option>
+                            <option value="catboost">CatBoost</option>
                             <option value="svm">SVM</option>
                             <option value="mlp">Neural Network</option>
                         </select>
                         <button class="btn btn-primary btn-sm" onclick="runClassification()">
                             <i class="bi bi-play-fill"></i> Run Classification
                         </button>
+                        <button class="btn btn-outline-info btn-sm" onclick="runDeepEnsemble()">
+                            <i class="bi bi-layers-fill"></i> Deep Ensemble UQ
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="runTransferLearning()">
+                            <i class="bi bi-arrow-left-right"></i> Transfer Learning
+                        </button>
                     </div>
                     <p class="text-muted small">Uses enhanced physics-informed features including pore pressure, overburden stress, temperature, fracture density, and fabric strength.</p>
+
+                    <!-- Deep Ensemble UQ Results -->
+                    <div id="ensemble-results" class="d-none mb-3"></div>
+
+                    <!-- Transfer Learning Results -->
+                    <div id="transfer-results" class="d-none mb-3"></div>
 
                     <div id="classify-results" class="d-none">
                         <div class="row g-3 mb-4">

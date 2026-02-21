@@ -31,7 +31,11 @@ from src.data_loader import (
     fracture_plane_normal, AZIMUTH_COL, DIP_COL, DEPTH_COL,
     WELL_COL, FRACTURE_TYPE_COL,
 )
-from src.geostress import invert_stress, bayesian_inversion, auto_detect_regime
+from src.geostress import (
+    invert_stress, bayesian_inversion, auto_detect_regime,
+    compute_formation_temperature, thermal_friction_correction,
+    temperature_corrected_tendencies,
+)
 from src.fracture_analysis import (
     classify_fracture_types, cluster_fracture_sets, identify_critically_stressed,
 )
@@ -57,6 +61,8 @@ from src.enhanced_analysis import (
     prediction_reliability_report, guided_analysis_wizard,
     predict_with_abstention, detect_data_anomalies,
     feedback_effectiveness, depth_zone_classify,
+    deep_ensemble_classify, transfer_learning_evaluate,
+    train_validity_prefilter,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -783,6 +789,16 @@ async def run_inversion(request: Request):
         result["sigma_n"], result["tau"], result["mu"], cohesion, pp
     )
 
+    # Temperature correction for deep wells (2025 research)
+    geothermal_grad = float(body.get("geothermal_gradient", 0.030))
+    thermal_result = temperature_corrected_tendencies(
+        result["sigma_n"], result["tau"],
+        float(result["sigma1"]), float(result["sigma3"]),
+        float(result["mu"]), avg_depth,
+        cohesion=cohesion, pore_pressure=pp,
+        geothermal_gradient=geothermal_grad,
+    )
+
     # Generate stakeholder interpretation
     interpretation = generate_interpretation(result, cs_result, well)
 
@@ -834,6 +850,18 @@ async def run_inversion(request: Request):
             "warnings": quality.get("warnings", []),
         },
         "recommendations": recommendations,
+        "thermal_correction": {
+            "temperature_c": thermal_result["temperature_c"],
+            "is_corrected": thermal_result["thermal_correction"]["is_corrected"],
+            "mu_original": round(float(result["mu"]), 4),
+            "mu_effective": thermal_result["thermal_correction"]["mu_effective"],
+            "correction_factor": thermal_result["thermal_correction"]["correction_factor"],
+            "explanation": thermal_result["thermal_correction"]["explanation"],
+            "cs_pct_original": thermal_result["cs_pct_original"],
+            "cs_pct_corrected": thermal_result["cs_pct_corrected"],
+            "new_critical_from_thermal": thermal_result["new_critical_from_thermal"],
+            "geothermal_gradient": geothermal_grad,
+        },
     }
 
     # Include auto-detection results if applicable
@@ -899,6 +927,54 @@ async def run_classification(request: Request):
         "confusion_matrix": cm,
         "class_names": class_names,
     })
+
+
+@app.post("/api/analysis/deep-ensemble")
+async def run_deep_ensemble(request: Request):
+    """Deep Ensemble UQ: train N models with different seeds to quantify
+    epistemic vs aleatoric uncertainty per sample (2025 research)."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    classifier = body.get("classifier", "gradient_boosting")
+    n_ensemble = int(body.get("n_ensemble", 5))
+    n_ensemble = max(3, min(n_ensemble, 10))  # clamp 3-10
+
+    df = get_df(source)
+    result = await asyncio.to_thread(
+        deep_ensemble_classify, df,
+        n_ensemble=n_ensemble, classifier=classifier,
+    )
+    return _sanitize_for_json(result)
+
+
+@app.post("/api/analysis/transfer-learning")
+async def run_transfer_learning(request: Request):
+    """Well-to-well transfer learning: train on source well, adapt to target."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    source_well = body.get("source_well", "3P")
+    target_well = body.get("target_well", "6P")
+    classifier = body.get("classifier", "gradient_boosting")
+    fine_tune_fraction = float(body.get("fine_tune_fraction", 0.2))
+
+    df = get_df(source)
+    result = await asyncio.to_thread(
+        transfer_learning_evaluate, df,
+        source_well=source_well, target_well=target_well,
+        fine_tune_fraction=fine_tune_fraction, classifier=classifier,
+    )
+    return _sanitize_for_json(result)
+
+
+@app.post("/api/analysis/validity-prefilter")
+async def run_validity_prefilter(request: Request):
+    """Train a validity pre-filter using synthetic negative examples.
+    Catches data quality issues BEFORE running classification."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    df = get_df(source)
+    result = await asyncio.to_thread(train_validity_prefilter, df)
+    return _sanitize_for_json(result)
 
 
 @app.post("/api/analysis/cluster")

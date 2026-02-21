@@ -75,6 +75,7 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | GET | `/api/feedback/summary` | Feedback analytics + insights |
 | POST | `/api/feedback/correct-label` | Expert label correction |
 | POST | `/api/feedback/retrain` | Retrain model with corrections |
+| POST | `/api/feedback/batch-corrections` | Batch expert corrections from review queue (RLHF loop) |
 | POST | `/api/analysis/shap` | SHAP explainability (feature attribution) |
 | POST | `/api/analysis/sensitivity` | Parameter sensitivity analysis (tornado diagram) |
 | POST | `/api/analysis/risk-matrix` | Comprehensive operational risk assessment |
@@ -125,6 +126,9 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/sensitivity-heatmap` | 2D friction × Pp heatmap with CS% contours |
 | POST | `/api/export/full-report` | Comprehensive JSON report for external system integration |
 | POST | `/api/analysis/worst-case` | Auto worst-case scenarios (5 scenarios, sensitivity verdict) |
+| POST | `/api/analysis/deep-ensemble` | Deep ensemble UQ: epistemic vs aleatoric uncertainty (5-10 models) |
+| POST | `/api/analysis/transfer-learning` | Well-to-well transfer learning evaluation (zero-shot + fine-tuned) |
+| POST | `/api/analysis/validity-prefilter` | Validity pre-filter: synthetic negatives catch data quality issues |
 
 ## Domain Concepts
 
@@ -146,7 +150,21 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Column headers in Excel files are actually the first data row (numeric values used as column names)
 - Inversion uses `scipy.differential_evolution` with pore pressure in objective function
 - Bayesian MCMC uses `emcee` package with 5 parameters: σ1, σ3, R, SHmax_azimuth, μ
-- Enhanced features: 21 columns including pore pressure, overburden, temperature, fracture density, fabric eigenvalues
+- Enhanced features: 25 columns including pore pressure, overburden, temperature, fracture density, fabric eigenvalues, fracture_intensity_10m, adj_spacing_up/down, azimuth_dispersion_100m
+- adj_spacing_down is #1 feature importance (19.0%), fracture_intensity_10m is #2 (12.1%) — spatial features dominate
+- Classification pre-warming at startup (~118s first time, 0.1s cached) — startup cache includes inversion + classify
+- Pre-warm cache keys MUST match endpoint cache keys exactly (format, depth rounding with `round()`)
+- Pipeline: 6-step sequential chain (Data Validation → Stress Inversion → ML Classification → Risk Assessment → Uncertainty Budget → Executive Summary)
+- MCMC 90% CIs injected into inversion metric cards after Bayesian runs — point estimates show hint badge
+- Batch corrections from review queue feed into feedback_store for retraining
+- Temperature correction: friction coefficient decreases above 150°C (Blanpied et al. 1998), thermal_friction_correction in geostress.py
+- Geothermal gradient input (°C/km): 30 default, 50-60 for hot basins (SE Asia, geothermal fields)
+- Deep ensemble trains 5 models with different seeds + 80% bootstrap; variance = epistemic, entropy = aleatoric uncertainty
+- CatBoost added as classifier: native categorical handling via ordered boosting, auto_class_weights="Balanced"
+- Transfer learning: train on source well → zero-shot test on target → fine-tune with 20% target data → compare
+- Wells 3P/6P: zero-shot 65%, fine-tuned 100% (trivial 2-class), confirms separate models needed
+- Validity pre-filter: 511 synthetic negatives (impossible/implausible) → binary RF → catches borderline real measurements
+- catboost>=1.2 added to requirements.txt
 - Stacking ensemble (RF+XGBoost+LightGBM with LR meta-learner) is typically the best model
 - SHAP TreeExplainer for XGBoost/LightGBM/RF; GradientBoosting only supports binary in SHAP
 - Conformal prediction provides calibrated per-sample confidence scores
