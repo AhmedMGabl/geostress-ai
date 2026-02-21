@@ -1806,6 +1806,36 @@
                         <!-- Signal Cards -->
                         <div class="row g-3 mb-3" id="ud-signals"></div>
                     </div>
+
+                    <!-- Prediction Trustworthiness Report -->
+                    <hr class="my-4">
+                    <h5 class="mb-3"><i class="bi bi-clipboard-check"></i> Prediction Trustworthiness Report</h5>
+                    <p class="text-muted small">Comprehensive reliability assessment across 5 dimensions: data quality, cross-validation stability, calibration, validity prefilter, and class balance. Answers: "Can I trust these predictions?"</p>
+
+                    <button class="btn btn-primary btn-sm mb-3" onclick="runTrustworthinessReport()">
+                        <i class="bi bi-search"></i> Run Full Trustworthiness Audit
+                    </button>
+
+                    <div id="tr-results" class="d-none">
+                        <!-- Overall trust level -->
+                        <div id="tr-overall" class="card mb-3">
+                            <div class="card-body text-center py-4">
+                                <div class="small text-muted mb-1">PREDICTION TRUSTWORTHINESS</div>
+                                <h2 id="tr-trust-level" class="fw-bold mb-1">--</h2>
+                                <div class="fs-5" id="tr-score">--</div>
+                                <p class="mt-2 mb-0" id="tr-advice"></p>
+                            </div>
+                        </div>
+
+                        <!-- Check cards -->
+                        <div class="row g-3 mb-3" id="tr-checks"></div>
+
+                        <!-- All issues list -->
+                        <div id="tr-issues-section" class="d-none">
+                            <h6 class="mt-3"><i class="bi bi-exclamation-triangle"></i> Issues Found</h6>
+                            <div id="tr-issues"></div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- ═══════ Well Comparison Tab ═══════ -->
@@ -2077,6 +2107,95 @@
                                     <i class="bi bi-check2-circle"></i> Submit Expert Selection
                                 </button>
                                 <div id="esr-submit-msg" class="small mt-2 d-none"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Preference-Weighted Regime (RLHF Loop) -->
+                    <hr class="my-4">
+                    <h5 class="mb-3"><i class="bi bi-arrow-repeat"></i> Preference-Weighted Recommendation</h5>
+                    <p class="text-muted small">Combines physics-based auto-detection with expert consensus. If enough experts have voted, their preferences influence the recommendation.</p>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-outline-success btn-sm" onclick="runPreferenceWeightedRegime()">
+                            <i class="bi bi-play-fill"></i> Get Weighted Recommendation
+                        </button>
+                    </div>
+
+                    <div id="pwr-results" class="d-none">
+                        <div id="pwr-recommendation" class="alert alert-info mb-3"></div>
+                        <div id="pwr-blend-source" class="small text-muted mb-3"></div>
+                        <div class="row g-3 mb-3" id="pwr-comparison"></div>
+                    </div>
+
+                    <!-- Regime Stability Check -->
+                    <hr class="my-4">
+                    <h5 class="mb-3"><i class="bi bi-shield-exclamation"></i> Regime Stability Check</h5>
+                    <p class="text-muted small">Tests if the recommended regime changes under realistic parameter variations (pore pressure ±5-10 MPa, depth ±200m). Unstable regimes should NOT be trusted for operational decisions.</p>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-outline-danger btn-sm" onclick="runRegimeStability()">
+                            <i class="bi bi-shield-check"></i> Run Stability Check
+                        </button>
+                    </div>
+
+                    <div id="rs-results" class="d-none">
+                        <div id="rs-grade" class="card mb-3">
+                            <div class="card-body text-center py-3">
+                                <div id="rs-stability-label" class="display-6 fw-bold">--</div>
+                                <div id="rs-baseline" class="text-muted mt-1"></div>
+                                <div id="rs-message" class="mt-2"></div>
+                                <div id="rs-summary" class="small text-muted mt-1"></div>
+                            </div>
+                        </div>
+
+                        <table class="table table-sm table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Perturbation</th>
+                                    <th>Regime</th>
+                                    <th>Confidence</th>
+                                    <th>Misfit Ratio</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="rs-perturbation-tbody"></tbody>
+                        </table>
+                    </div>
+
+                    <!-- Expert Preference History -->
+                    <hr class="my-4">
+                    <h5 class="mb-3"><i class="bi bi-clock-history"></i> Expert Preference History</h5>
+                    <p class="text-muted small">View accumulated expert selections and how consensus has evolved over time.</p>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-outline-info btn-sm" onclick="loadExpertHistory()">
+                            <i class="bi bi-list-check"></i> Load History
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="resetExpertPreferences()">
+                            <i class="bi bi-trash"></i> Reset Preferences
+                        </button>
+                    </div>
+
+                    <div id="eph-results" class="d-none">
+                        <div class="mb-3" id="eph-consensus"></div>
+                        <div class="row g-3 mb-3" id="eph-well-summaries"></div>
+
+                        <div class="card mb-3">
+                            <div class="card-header">Selection Timeline</div>
+                            <div class="card-body p-0">
+                                <table class="table table-sm mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Timestamp</th>
+                                            <th>Selected</th>
+                                            <th>Dominant</th>
+                                            <th>Consensus %</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="eph-timeline-tbody"></tbody>
+                                </table>
                             </div>
                         </div>
                     </div>

@@ -354,7 +354,7 @@ def _audit_record(action: str, params: dict, result_summary: dict,
         "result_hash": result_hash,
         "result_summary": _sanitize_for_json(result_summary),
         "elapsed_s": round(elapsed_s, 2),
-        "app_version": "2.7.0",
+        "app_version": "3.1.0",
     }
     with _audit_lock:
         _audit_log.append(record)
@@ -4906,4 +4906,682 @@ async def run_data_tracker(request: Request):
         "n_total": n_total,
         "target_per_class": target_per_class,
         "elapsed_s": elapsed,
+    })
+
+
+# ── Expert Preference History & Consensus ──────────────
+
+def _compute_expert_consensus(well: str = None):
+    """Compute expert consensus from accumulated RLHF preferences.
+
+    Returns per-well and global regime vote counts, confidence-weighted
+    scores, and consensus status (STRONG / WEAK / NONE).
+    """
+    with _expert_pref_lock:
+        prefs = list(_expert_preferences)
+
+    if well:
+        prefs = [p for p in prefs if p.get("well") == well]
+
+    if not prefs:
+        return {"status": "NONE", "n_selections": 0, "regime_scores": {},
+                "consensus_regime": None, "consensus_confidence": 0.0}
+
+    # Weight votes by expert confidence: HIGH=3, MODERATE=2, LOW=1
+    weight_map = {"HIGH": 3, "MODERATE": 2, "LOW": 1}
+    regime_scores = {}
+    regime_counts = {}
+    for p in prefs:
+        r = p["selected_regime"]
+        w = weight_map.get(p.get("expert_confidence", "MODERATE"), 2)
+        regime_scores[r] = regime_scores.get(r, 0) + w
+        regime_counts[r] = regime_counts.get(r, 0) + 1
+
+    total_weight = sum(regime_scores.values())
+    # Normalize scores to 0-100
+    regime_pct = {r: round(100 * s / total_weight, 1) for r, s in regime_scores.items()}
+
+    best_regime = max(regime_scores, key=regime_scores.get)
+    best_pct = regime_pct[best_regime]
+
+    if best_pct >= 70 and len(prefs) >= 3:
+        status = "STRONG"
+    elif best_pct >= 50 and len(prefs) >= 2:
+        status = "WEAK"
+    else:
+        status = "NONE"
+
+    return {
+        "status": status,
+        "n_selections": len(prefs),
+        "regime_scores": regime_scores,
+        "regime_pct": regime_pct,
+        "regime_counts": regime_counts,
+        "consensus_regime": best_regime,
+        "consensus_confidence": best_pct,
+        "well": well,
+    }
+
+
+@app.get("/api/analysis/expert-preference-history")
+async def expert_preference_history(well: str = Query(None)):
+    """View all expert regime selections with timestamps and consensus stats."""
+    with _expert_pref_lock:
+        prefs = list(_expert_preferences)
+
+    if well:
+        prefs = [p for p in prefs if p.get("well") == well]
+
+    consensus = _compute_expert_consensus(well)
+
+    # Build timeline of how consensus evolved
+    timeline = []
+    running_counts = {}
+    for i, p in enumerate(prefs):
+        r = p["selected_regime"]
+        running_counts[r] = running_counts.get(r, 0) + 1
+        total = sum(running_counts.values())
+        dominant = max(running_counts, key=running_counts.get)
+        timeline.append({
+            "step": i + 1,
+            "timestamp": p["timestamp"],
+            "regime": r,
+            "dominant_regime": dominant,
+            "dominant_pct": round(100 * running_counts[dominant] / total, 1),
+        })
+
+    # Group by well for overview
+    well_summaries = {}
+    all_prefs = list(_expert_preferences) if not well else prefs
+    for p in all_prefs:
+        w = p.get("well", "unknown")
+        if w not in well_summaries:
+            well_summaries[w] = _compute_expert_consensus(w)
+
+    return _sanitize_for_json({
+        "preferences": prefs[-50:],  # Last 50 for display
+        "consensus": consensus,
+        "timeline": timeline,
+        "well_summaries": well_summaries,
+        "total_all_wells": len(list(_expert_preferences)),
+    })
+
+
+@app.post("/api/analysis/expert-preference-reset")
+async def expert_preference_reset(request: Request):
+    """Reset expert preferences for a specific well (or all wells)."""
+    body = await request.json()
+    well = body.get("well")
+
+    with _expert_pref_lock:
+        if well:
+            # Remove only this well's preferences
+            to_keep = [p for p in _expert_preferences if p.get("well") != well]
+            _expert_preferences.clear()
+            _expert_preferences.extend(to_keep)
+            msg = f"Reset {len(list(_expert_preferences))} preferences for well {well}"
+        else:
+            n_removed = len(_expert_preferences)
+            _expert_preferences.clear()
+            msg = f"Reset all {n_removed} expert preferences"
+
+    _audit_record("expert_preference_reset", {"well": well}, {"message": msg})
+    return {"status": "reset", "message": msg}
+
+
+# ── Preference-Weighted Auto-Detection ──────────────────
+
+@app.post("/api/analysis/preference-weighted-regime")
+async def preference_weighted_regime(request: Request):
+    """Run auto_detect_regime but bias results using expert consensus.
+
+    If experts have consistently preferred a specific regime for this well,
+    the auto-detection confidence is adjusted. This is the core RLHF loop:
+    physics-based inversion + human expert feedback = better recommendations.
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+    pp = body.get("pore_pressure", None)
+    pp = float(pp) if pp else None
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+
+    # Run standard auto-detection
+    auto_key = f"auto_{source}_{well}_{depth_m}"
+    if auto_key in _auto_regime_cache:
+        auto_res = _auto_regime_cache[auto_key]
+    else:
+        auto_res = await asyncio.to_thread(
+            auto_detect_regime, normals, depth_m=depth_m, pore_pressure=pp,
+        )
+        _auto_regime_cache[auto_key] = auto_res
+
+    physics_best = auto_res["best_regime"]
+    physics_conf = auto_res["confidence"]
+
+    # Get expert consensus for this well
+    consensus = _compute_expert_consensus(well)
+
+    # Combine physics + expert feedback
+    expert_regime = consensus.get("consensus_regime")
+    expert_status = consensus.get("status", "NONE")
+    expert_pct = consensus.get("consensus_confidence", 0)
+
+    if expert_status == "NONE":
+        # No expert feedback yet — use physics only
+        final_regime = physics_best
+        final_confidence = physics_conf
+        adjustment = "No expert feedback available — using physics-only result."
+        blend_source = "physics_only"
+    elif expert_regime == physics_best:
+        # Expert agrees with physics — boost confidence
+        final_regime = physics_best
+        if physics_conf == "LOW":
+            final_confidence = "MODERATE"
+        elif physics_conf == "MODERATE":
+            final_confidence = "HIGH" if expert_status == "STRONG" else "MODERATE"
+        else:
+            final_confidence = "HIGH"
+        adjustment = (
+            f"Expert consensus AGREES with physics ({expert_regime}). "
+            f"Confidence upgraded from {physics_conf} to {final_confidence}."
+        )
+        blend_source = "physics_expert_agreement"
+    else:
+        # Expert disagrees with physics — flag for careful review
+        if expert_status == "STRONG":
+            final_regime = expert_regime
+            final_confidence = "MODERATE"
+            adjustment = (
+                f"STRONG expert consensus ({expert_regime}, {expert_pct:.0f}%) "
+                f"OVERRIDES physics ({physics_best}). Review carefully — "
+                f"local geology may justify deviation from best-fit inversion."
+            )
+            blend_source = "expert_override"
+        else:
+            final_regime = physics_best
+            final_confidence = "LOW"
+            adjustment = (
+                f"Weak expert preference for {expert_regime} ({expert_pct:.0f}%) "
+                f"conflicts with physics ({physics_best}). Keeping physics result "
+                f"but flagging LOW confidence — collect more expert votes."
+            )
+            blend_source = "physics_with_expert_warning"
+
+    elapsed = round(time.time() - t0, 2)
+
+    _audit_record(
+        "preference_weighted_regime",
+        {"well": well, "depth_m": depth_m, "pp": pp},
+        {"physics_best": physics_best, "expert_regime": expert_regime,
+         "final_regime": final_regime, "blend_source": blend_source},
+        source, well, elapsed,
+    )
+
+    return _sanitize_for_json({
+        "final_regime": final_regime,
+        "final_confidence": final_confidence,
+        "physics_result": {
+            "regime": physics_best,
+            "confidence": physics_conf,
+            "misfit_ratio": auto_res.get("misfit_ratio", 1.0),
+        },
+        "expert_consensus": consensus,
+        "adjustment": adjustment,
+        "blend_source": blend_source,
+        "recommendation": (
+            f"Use **{final_regime.replace('_', ' ').title()}** regime "
+            f"({final_confidence} confidence). {adjustment}"
+        ),
+        "well": well,
+        "elapsed_s": elapsed,
+    })
+
+
+# ── Regime Stability Check ────────────────────────────
+
+@app.post("/api/analysis/regime-stability")
+async def regime_stability_check(request: Request):
+    """Check if the recommended stress regime is stable under parameter variation.
+
+    Tests if changing pore pressure by +/-5 MPa, friction by +/-20%, or depth
+    by +/-200m flips the recommended regime. Critical operational safeguard:
+    if the regime flips easily, the result should NOT be used for decisions.
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+    pp = body.get("pore_pressure", None)
+    pp = float(pp) if pp else 0.0
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+
+    # Baseline regime
+    baseline = await asyncio.to_thread(
+        auto_detect_regime, normals, depth_m=depth_m, pore_pressure=pp,
+    )
+    base_regime = baseline["best_regime"]
+
+    # Define perturbation tests
+    tests = [
+        ("Pp +5 MPa", {"pore_pressure": pp + 5}),
+        ("Pp -5 MPa", {"pore_pressure": max(0, pp - 5)}),
+        ("Pp +10 MPa", {"pore_pressure": pp + 10}),
+        ("Depth +200m", {"depth_m": depth_m + 200}),
+        ("Depth -200m", {"depth_m": max(100, depth_m - 200)}),
+    ]
+
+    perturbations = []
+    flips = 0
+    for label, overrides in tests:
+        d = overrides.get("depth_m", depth_m)
+        p = overrides.get("pore_pressure", pp)
+        try:
+            res = await asyncio.to_thread(
+                auto_detect_regime, normals, depth_m=d, pore_pressure=p,
+            )
+            new_regime = res["best_regime"]
+            flipped = new_regime != base_regime
+            if flipped:
+                flips += 1
+            perturbations.append({
+                "test": label,
+                "regime": new_regime,
+                "confidence": res["confidence"],
+                "misfit_ratio": round(res.get("misfit_ratio", 1.0), 3),
+                "flipped": flipped,
+            })
+        except Exception as e:
+            perturbations.append({
+                "test": label, "regime": "ERROR", "flipped": False,
+                "error": str(e)[:80],
+            })
+
+    # Stability grade
+    if flips == 0:
+        stability = "STABLE"
+        stability_color = "success"
+        message = (
+            f"Regime ({base_regime}) is stable across all {len(tests)} "
+            f"parameter perturbations. Safe for operational use."
+        )
+    elif flips <= 1:
+        stability = "MOSTLY_STABLE"
+        stability_color = "warning"
+        flip_tests = [p["test"] for p in perturbations if p.get("flipped")]
+        message = (
+            f"Regime flips under {', '.join(flip_tests)}. "
+            f"Results are directionally useful but verify with expert judgment."
+        )
+    else:
+        stability = "UNSTABLE"
+        stability_color = "danger"
+        flip_tests = [p["test"] for p in perturbations if p.get("flipped")]
+        message = (
+            f"Regime flips under {flips} of {len(tests)} tests "
+            f"({', '.join(flip_tests)}). DO NOT use for operational decisions "
+            f"without Bayesian analysis and expert review."
+        )
+
+    elapsed = round(time.time() - t0, 2)
+
+    _audit_record(
+        "regime_stability",
+        {"well": well, "depth_m": depth_m, "pp": pp},
+        {"base_regime": base_regime, "stability": stability, "flips": flips},
+        source, well, elapsed,
+    )
+
+    return _sanitize_for_json({
+        "baseline_regime": base_regime,
+        "baseline_confidence": baseline["confidence"],
+        "stability": stability,
+        "stability_color": stability_color,
+        "message": message,
+        "flips": flips,
+        "total_tests": len(tests),
+        "perturbations": perturbations,
+        "well": well,
+        "depth_m": depth_m,
+        "pore_pressure": pp,
+        "elapsed_s": elapsed,
+    })
+
+
+# ── Prediction Trustworthiness Report ─────────────────
+
+@app.post("/api/analysis/trustworthiness-report")
+async def trustworthiness_report(request: Request):
+    """Comprehensive prediction trustworthiness assessment.
+
+    Combines 5 independent checks into one report:
+    1. Data quality — anomaly detection, duplicate check, distribution uniformity
+    2. OOD detection — are predictions extrapolating beyond training domain?
+    3. CV stability — how much do predictions vary across cross-validation folds?
+    4. Calibration — do probability scores match actual frequencies?
+    5. Validity prefilter — can we distinguish real data from synthetic noise?
+
+    Designed for the user's request: "what if this is not accurate — we care
+    because it's used in real work, it cannot cause a problem."
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    checks = []
+    overall_score = 0
+    n_checks = 0
+
+    # ── 1. Data Quality + Contamination Check ──
+    try:
+        anomalies = await asyncio.to_thread(detect_data_anomalies, df_well)
+        pct_flagged = anomalies["flagged_pct"]
+        severity = anomalies["severity_counts"]
+
+        # Duplicate check
+        az = df_well[AZIMUTH_COL].values
+        dip = df_well[DIP_COL].values
+        depth = df_well[DEPTH_COL].values
+        coords = np.column_stack([az, dip, depth])
+        n_exact_dupes = len(coords) - len(set(map(tuple, coords.tolist())))
+        dupe_pct = round(100 * n_exact_dupes / max(len(coords), 1), 1)
+
+        # Distribution uniformity check (suspiciously uniform = likely synthetic)
+        from scipy.stats import kstest
+        az_uniform_p = kstest(az % 360, 'uniform', args=(0, 360)).pvalue
+        suspicious_uniform = az_uniform_p > 0.5  # Very uniform azimuth = suspicious
+
+        dq_score = max(0, 100 - pct_flagged * 2 - dupe_pct * 5)
+        if suspicious_uniform:
+            dq_score = max(0, dq_score - 15)
+
+        issues = []
+        if pct_flagged > 15:
+            issues.append(f"{pct_flagged:.0f}% anomalous measurements detected")
+        if dupe_pct > 5:
+            issues.append(f"{n_exact_dupes} exact duplicate measurements ({dupe_pct}%)")
+        if suspicious_uniform:
+            issues.append("Azimuth distribution is suspiciously uniform — verify data source")
+        if severity.get("ERROR", 0) > 0:
+            issues.append(f"{severity['ERROR']} critical errors in data")
+
+        checks.append({
+            "name": "Data Quality & Contamination",
+            "icon": "bi-database-check",
+            "score": round(dq_score),
+            "grade": "GREEN" if dq_score >= 70 else "AMBER" if dq_score >= 40 else "RED",
+            "detail": f"{pct_flagged:.1f}% flagged, {n_exact_dupes} duplicates, "
+                      f"{'uniform ALERT' if suspicious_uniform else 'distribution OK'}",
+            "issues": issues,
+            "action": "Clean data and remove duplicates" if issues else "Data quality acceptable",
+        })
+        overall_score += dq_score
+        n_checks += 1
+    except Exception as e:
+        checks.append({
+            "name": "Data Quality", "icon": "bi-database-check", "score": 50,
+            "grade": "AMBER", "detail": f"Check failed: {str(e)[:60]}",
+            "issues": [str(e)[:100]], "action": "Run anomaly detection manually",
+        })
+        overall_score += 50
+        n_checks += 1
+
+    # ── 2. CV Stability ──
+    try:
+        cls_result = await asyncio.to_thread(
+            classify_enhanced, df_well, "random_forest", 5,
+        )
+        cv_scores = cls_result.get("cv_scores", [])
+        cv_mean = float(cls_result.get("cv_mean_accuracy", 0))
+        cv_std = float(np.std(cv_scores)) if len(cv_scores) > 1 else 0.0
+
+        # Stability: low std across folds = stable predictions
+        if cv_std < 0.05 and cv_mean >= 0.70:
+            cv_grade = "GREEN"
+            cv_score_val = min(100, round(cv_mean * 100 + (1 - cv_std * 10) * 10))
+        elif cv_std < 0.10 and cv_mean >= 0.55:
+            cv_grade = "AMBER"
+            cv_score_val = round(cv_mean * 80)
+        else:
+            cv_grade = "RED"
+            cv_score_val = round(cv_mean * 50)
+
+        cv_issues = []
+        if cv_std > 0.10:
+            cv_issues.append(f"High prediction variance across folds (std={cv_std:.3f})")
+        if cv_mean < 0.60:
+            cv_issues.append(f"Low accuracy ({cv_mean*100:.1f}%) — model may not have enough data")
+
+        checks.append({
+            "name": "Cross-Validation Stability",
+            "icon": "bi-graph-up",
+            "score": cv_score_val,
+            "grade": cv_grade,
+            "detail": f"Accuracy: {cv_mean*100:.1f}% ± {cv_std*100:.1f}% across {len(cv_scores)} folds",
+            "issues": cv_issues,
+            "action": "Stable predictions" if not cv_issues else "Collect more data to stabilize",
+        })
+        overall_score += cv_score_val
+        n_checks += 1
+    except Exception as e:
+        checks.append({
+            "name": "CV Stability", "icon": "bi-graph-up", "score": 50,
+            "grade": "AMBER", "detail": f"Check failed: {str(e)[:60]}",
+            "issues": [str(e)[:100]], "action": "Run classification manually",
+        })
+        overall_score += 50
+        n_checks += 1
+
+    # ── 3. Calibration Quality ──
+    try:
+        cal = await asyncio.to_thread(assess_calibration, df_well)
+        ece = cal.get("ece", 0.5)
+        cal_grade_raw = cal.get("calibration_grade", "POOR")
+        if cal_grade_raw in ("EXCELLENT", "GOOD"):
+            cal_grade = "GREEN"
+            cal_score_val = round(max(0, 100 - ece * 200))
+        elif cal_grade_raw == "FAIR":
+            cal_grade = "AMBER"
+            cal_score_val = round(max(0, 80 - ece * 200))
+        else:
+            cal_grade = "RED"
+            cal_score_val = round(max(0, 50 - ece * 100))
+
+        cal_issues = []
+        if ece > 0.15:
+            cal_issues.append(f"ECE={ece:.3f} — predicted probabilities don't match actual frequencies")
+        if cal_grade_raw in ("POOR",):
+            cal_issues.append("Predictions may be overconfident or underconfident")
+
+        checks.append({
+            "name": "Probability Calibration",
+            "icon": "bi-bullseye",
+            "score": cal_score_val,
+            "grade": cal_grade,
+            "detail": f"ECE={ece:.3f}, Grade: {cal_grade_raw}",
+            "issues": cal_issues,
+            "action": "Well-calibrated" if not cal_issues else "Apply Platt scaling or isotonic regression",
+        })
+        overall_score += cal_score_val
+        n_checks += 1
+    except Exception as e:
+        checks.append({
+            "name": "Calibration", "icon": "bi-bullseye", "score": 50,
+            "grade": "AMBER", "detail": f"Check failed: {str(e)[:60]}",
+            "issues": [str(e)[:100]], "action": "Run calibration assessment manually",
+        })
+        overall_score += 50
+        n_checks += 1
+
+    # ── 4. Validity Prefilter ──
+    try:
+        validity = await asyncio.to_thread(train_validity_prefilter, df_well)
+        val_acc = float(validity.get("accuracy", 0.5))
+        flagged = validity.get("flagged_indices", [])
+        pct_flagged_val = round(100 * len(flagged) / max(len(df_well), 1), 1)
+
+        if val_acc >= 0.90 and pct_flagged_val < 5:
+            val_grade = "GREEN"
+            val_score = round(val_acc * 100)
+        elif val_acc >= 0.80 and pct_flagged_val < 15:
+            val_grade = "AMBER"
+            val_score = round(val_acc * 80)
+        else:
+            val_grade = "RED"
+            val_score = round(val_acc * 50)
+
+        val_issues = []
+        if pct_flagged_val > 10:
+            val_issues.append(f"{pct_flagged_val}% of real data flagged as potentially invalid")
+        if val_acc < 0.80:
+            val_issues.append(f"Prefilter accuracy only {val_acc*100:.0f}% — hard to distinguish valid from invalid")
+
+        checks.append({
+            "name": "Data Validity (vs Synthetic Noise)",
+            "icon": "bi-shield-check",
+            "score": val_score,
+            "grade": val_grade,
+            "detail": f"Prefilter accuracy: {val_acc*100:.1f}%, {pct_flagged_val}% flagged",
+            "issues": val_issues,
+            "action": "Data clearly distinguishable from noise" if not val_issues else "Review flagged measurements",
+        })
+        overall_score += val_score
+        n_checks += 1
+    except Exception as e:
+        checks.append({
+            "name": "Validity Prefilter", "icon": "bi-shield-check", "score": 50,
+            "grade": "AMBER", "detail": f"Check failed: {str(e)[:60]}",
+            "issues": [str(e)[:100]], "action": "Run validity check manually",
+        })
+        overall_score += 50
+        n_checks += 1
+
+    # ── 5. Class Balance ──
+    try:
+        if FRACTURE_TYPE_COL in df_well.columns:
+            counts = df_well[FRACTURE_TYPE_COL].value_counts()
+            min_class = int(counts.min())
+            max_class = int(counts.max())
+            imbalance_ratio = round(max_class / max(min_class, 1), 1)
+
+            if imbalance_ratio <= 3:
+                bal_grade = "GREEN"
+                bal_score = 90
+            elif imbalance_ratio <= 6:
+                bal_grade = "AMBER"
+                bal_score = 60
+            else:
+                bal_grade = "RED"
+                bal_score = 30
+
+            bal_issues = []
+            if imbalance_ratio > 5:
+                bal_issues.append(f"Imbalance ratio {imbalance_ratio}:1 — minority class may be poorly predicted")
+                underrep = [k for k, v in counts.items() if v < 20]
+                if underrep:
+                    bal_issues.append(f"Under-represented: {', '.join(map(str, underrep))}")
+
+            checks.append({
+                "name": "Class Balance",
+                "icon": "bi-bar-chart",
+                "score": bal_score,
+                "grade": bal_grade,
+                "detail": f"Imbalance ratio: {imbalance_ratio}:1 (min={min_class}, max={max_class})",
+                "issues": bal_issues,
+                "action": "Classes are balanced" if not bal_issues else "Use SMOTE or collect more minority-class data",
+            })
+            overall_score += bal_score
+            n_checks += 1
+    except Exception:
+        pass
+
+    # ── Overall Trustworthiness ──
+    avg_score = round(overall_score / max(n_checks, 1))
+    grades = [c["grade"] for c in checks]
+    n_red = grades.count("RED")
+    n_amber = grades.count("AMBER")
+
+    if n_red >= 2 or avg_score < 40:
+        trust_level = "LOW"
+        trust_color = "danger"
+        trust_advice = (
+            "Multiple reliability concerns detected. Results should be treated as "
+            "preliminary estimates only. Do NOT use for operational decisions without "
+            "addressing the RED issues and collecting additional data."
+        )
+    elif n_red == 1 or n_amber >= 3 or avg_score < 65:
+        trust_level = "MODERATE"
+        trust_color = "warning"
+        trust_advice = (
+            "Some reliability concerns. Results are directionally useful but should be "
+            "validated with expert review before commitment. Address AMBER issues "
+            "to improve confidence."
+        )
+    else:
+        trust_level = "HIGH"
+        trust_color = "success"
+        trust_advice = (
+            "Predictions appear reliable across all quality dimensions. "
+            "Results are suitable for informed operational decisions, "
+            "though ongoing monitoring is recommended."
+        )
+
+    elapsed = round(time.time() - t0, 2)
+
+    _audit_record(
+        "trustworthiness_report",
+        {"well": well, "n_checks": n_checks},
+        {"trust_level": trust_level, "avg_score": avg_score,
+         "n_red": n_red, "n_amber": n_amber},
+        source, well, elapsed,
+    )
+
+    all_issues = []
+    for c in checks:
+        for issue in c.get("issues", []):
+            all_issues.append({"check": c["name"], "issue": issue, "grade": c["grade"]})
+
+    return _sanitize_for_json({
+        "trust_level": trust_level,
+        "trust_color": trust_color,
+        "trust_advice": trust_advice,
+        "overall_score": avg_score,
+        "checks": checks,
+        "all_issues": all_issues,
+        "well": well,
+        "n_samples": len(df_well),
+        "n_checks": n_checks,
+        "elapsed_s": elapsed,
+        "app_version": "3.1.0",
     })

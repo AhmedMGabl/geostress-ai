@@ -5730,6 +5730,316 @@ async function runDataTracker() {
 }
 
 
+// ── Preference-Weighted Regime (RLHF Loop) ────────
+
+async function runPreferenceWeightedRegime() {
+    showLoading("Computing preference-weighted regime...");
+    try {
+        var depth = document.getElementById("depth-input").value || 3000;
+        var pp = document.getElementById("pp-input").value || null;
+        var data = await apiPost("/api/analysis/preference-weighted-regime", {
+            source: currentSource, well: currentWell,
+            depth: parseFloat(depth), pore_pressure: pp ? parseFloat(pp) : null
+        });
+
+        document.getElementById("pwr-results").classList.remove("d-none");
+
+        // Final recommendation
+        var confColors = { HIGH: "success", MODERATE: "warning", LOW: "danger" };
+        var fc = confColors[data.final_confidence] || "secondary";
+        var recEl = document.getElementById("pwr-recommendation");
+        recEl.className = "alert alert-" + fc + " mb-3";
+        recEl.innerHTML =
+            '<i class="bi bi-shield-check me-1"></i>' +
+            '<strong>Recommended Regime: ' + (data.final_regime || "?").replace("_", " ").replace(/\b\w/g, function(l) { return l.toUpperCase(); }) + '</strong> ' +
+            '<span class="badge bg-' + fc + ' ms-2">' + (data.final_confidence || "?") + '</span>' +
+            '<div class="small mt-2">' + (data.adjustment || "") + '</div>';
+
+        // Physics vs Expert comparison
+        var physRes = data.physics_result || {};
+        var expCon = data.expert_consensus || {};
+        var compEl = document.getElementById("pwr-comparison");
+        clearChildren(compEl);
+
+        // Physics card
+        var physCard = document.createElement("div");
+        physCard.className = "col-md-6";
+        physCard.innerHTML =
+            '<div class="card h-100">' +
+            '<div class="card-header"><i class="bi bi-calculator me-1"></i> Physics (Auto-Detection)</div>' +
+            '<div class="card-body">' +
+            '<div class="fs-5 fw-bold">' + (physRes.regime || "?").replace("_", " ") + '</div>' +
+            '<div class="text-muted">Confidence: ' + (physRes.confidence || "?") + '</div>' +
+            '<div class="text-muted">Misfit ratio: ' + fmt(physRes.misfit_ratio, 3) + '</div>' +
+            '</div></div>';
+        compEl.appendChild(physCard);
+
+        // Expert card
+        var expCard = document.createElement("div");
+        expCard.className = "col-md-6";
+        var expStatus = expCon.status || "NONE";
+        var expBadge = expStatus === "STRONG" ? "bg-success" : expStatus === "WEAK" ? "bg-warning" : "bg-secondary";
+        var expHtml =
+            '<div class="card h-100">' +
+            '<div class="card-header"><i class="bi bi-people me-1"></i> Expert Consensus</div>' +
+            '<div class="card-body">';
+        if (expCon.n_selections > 0) {
+            expHtml +=
+                '<div class="fs-5 fw-bold">' + (expCon.consensus_regime || "none").replace("_", " ") + '</div>' +
+                '<div>Status: <span class="badge ' + expBadge + '">' + expStatus + '</span> (' + fmt(expCon.consensus_confidence, 0) + '%)</div>' +
+                '<div class="text-muted">' + expCon.n_selections + ' total selections</div>';
+            // Show regime breakdown
+            var pcts = expCon.regime_pct || {};
+            Object.keys(pcts).forEach(function(r) {
+                expHtml += '<div class="d-flex align-items-center mt-1">' +
+                    '<span class="me-2">' + r.replace("_", " ") + ':</span>' +
+                    '<div class="progress flex-grow-1" style="height:14px;">' +
+                    '<div class="progress-bar" style="width:' + pcts[r] + '%">' + pcts[r] + '%</div></div></div>';
+            });
+        } else {
+            expHtml += '<div class="text-muted">No expert selections yet.</div>' +
+                '<div class="small mt-2">Use <strong>Expert Stress Ranking</strong> above to submit your regime preference.</div>';
+        }
+        expHtml += '</div></div>';
+        expCard.innerHTML = expHtml;
+        compEl.appendChild(expCard);
+
+        // Blend source badge
+        var blendEl = document.getElementById("pwr-blend-source");
+        var blendLabels = {
+            "physics_only": ["Physics Only", "secondary"],
+            "physics_expert_agreement": ["Physics + Expert Agreement", "success"],
+            "expert_override": ["Expert Override", "warning"],
+            "physics_with_expert_warning": ["Physics (Expert Disagrees)", "danger"]
+        };
+        var bl = blendLabels[data.blend_source] || ["Unknown", "secondary"];
+        blendEl.innerHTML = 'Source: <span class="badge bg-' + bl[1] + '">' + bl[0] + '</span>';
+
+        showToast("Preference-weighted analysis done (" + (data.elapsed_s || "?") + "s)");
+    } catch (err) {
+        showToast("Error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Regime Stability Check ────────────────────────
+
+async function runRegimeStability() {
+    showLoading("Testing regime stability under parameter variation...");
+    try {
+        var depth = document.getElementById("depth-input").value || 3000;
+        var pp = document.getElementById("pp-input").value || 0;
+        var data = await apiPost("/api/analysis/regime-stability", {
+            source: currentSource, well: currentWell,
+            depth: parseFloat(depth), pore_pressure: parseFloat(pp)
+        });
+
+        document.getElementById("rs-results").classList.remove("d-none");
+
+        // Stability grade
+        var colorMap = { success: "success", warning: "warning", danger: "danger" };
+        var sc = data.stability_color || "secondary";
+        var gradeEl = document.getElementById("rs-grade");
+        gradeEl.className = "card mb-3 border-" + sc;
+        document.getElementById("rs-stability-label").textContent = (data.stability || "?").replace("_", " ");
+        document.getElementById("rs-stability-label").className = "display-6 fw-bold text-" + sc;
+        document.getElementById("rs-baseline").textContent =
+            "Baseline: " + (data.baseline_regime || "?").replace("_", " ") +
+            " (" + (data.baseline_confidence || "?") + ")";
+        document.getElementById("rs-message").textContent = data.message || "";
+
+        // Perturbation table
+        var tbody = document.getElementById("rs-perturbation-tbody");
+        clearChildren(tbody);
+        (data.perturbations || []).forEach(function(p) {
+            var tr = document.createElement("tr");
+            if (p.flipped) tr.className = "table-danger";
+            tr.appendChild(createCell("td", p.test, { fontWeight: "600" }));
+            tr.appendChild(createCell("td", (p.regime || "?").replace("_", " ")));
+            tr.appendChild(createCell("td", p.confidence || "?"));
+            tr.appendChild(createCell("td", fmt(p.misfit_ratio, 3)));
+            var flipTd = document.createElement("td");
+            if (p.flipped) {
+                flipTd.innerHTML = '<span class="badge bg-danger">FLIPPED</span>';
+            } else {
+                flipTd.innerHTML = '<span class="badge bg-success">Stable</span>';
+            }
+            tr.appendChild(flipTd);
+            tbody.appendChild(tr);
+        });
+
+        // Summary
+        document.getElementById("rs-summary").textContent =
+            data.flips + " of " + data.total_tests + " tests caused regime flip";
+
+        showToast("Stability check done — " + (data.stability || "?") + " (" + (data.elapsed_s || "?") + "s)");
+    } catch (err) {
+        showToast("Stability check error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Expert Preference History ─────────────────────
+
+async function loadExpertHistory() {
+    showLoading("Loading expert preference history...");
+    try {
+        var url = "/api/analysis/expert-preference-history";
+        if (currentWell) url += "?well=" + encodeURIComponent(currentWell);
+        var data = await api(url);
+
+        document.getElementById("eph-results").classList.remove("d-none");
+
+        // Consensus summary
+        var con = data.consensus || {};
+        var statusBadge = con.status === "STRONG" ? "bg-success" :
+                          con.status === "WEAK" ? "bg-warning" : "bg-secondary";
+        document.getElementById("eph-consensus").innerHTML =
+            '<span class="badge ' + statusBadge + ' me-2">' + (con.status || "NONE") + '</span>' +
+            (con.consensus_regime ? con.consensus_regime.replace("_", " ") + ' (' + fmt(con.consensus_confidence, 0) + '%)' : 'No selections yet') +
+            ' &mdash; ' + (con.n_selections || 0) + ' total selections';
+
+        // Timeline
+        var tbody = document.getElementById("eph-timeline-tbody");
+        clearChildren(tbody);
+        (data.timeline || []).slice(-20).forEach(function(t) {
+            var tr = document.createElement("tr");
+            tr.appendChild(createCell("td", t.step));
+            tr.appendChild(createCell("td", (t.timestamp || "").substring(0, 19).replace("T", " ")));
+            tr.appendChild(createCell("td", (t.regime || "").replace("_", " ")));
+            tr.appendChild(createCell("td", (t.dominant_regime || "").replace("_", " ")));
+            var pctTd = document.createElement("td");
+            pctTd.innerHTML = '<div class="progress" style="height:16px;min-width:60px">' +
+                '<div class="progress-bar" style="width:' + t.dominant_pct + '%">' + t.dominant_pct + '%</div></div>';
+            tr.appendChild(pctTd);
+            tbody.appendChild(tr);
+        });
+
+        // Well summaries
+        var wsEl = document.getElementById("eph-well-summaries");
+        clearChildren(wsEl);
+        var ws = data.well_summaries || {};
+        Object.keys(ws).forEach(function(w) {
+            var s = ws[w];
+            var badge = s.status === "STRONG" ? "bg-success" : s.status === "WEAK" ? "bg-warning" : "bg-secondary";
+            var div = document.createElement("div");
+            div.className = "col-md-4";
+            div.innerHTML =
+                '<div class="card">' +
+                '<div class="card-body text-center">' +
+                '<div class="fw-bold">Well ' + w + '</div>' +
+                '<span class="badge ' + badge + '">' + s.status + '</span>' +
+                '<div class="small text-muted">' + (s.consensus_regime || "none").replace("_", " ") +
+                ' (' + fmt(s.consensus_confidence, 0) + '%), ' + s.n_selections + ' votes</div>' +
+                '</div></div>';
+            wsEl.appendChild(div);
+        });
+
+        showToast("Expert history loaded (" + (data.total_all_wells || 0) + " total selections)");
+    } catch (err) {
+        showToast("Error loading history: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+async function resetExpertPreferences() {
+    if (!confirm("Reset all expert preferences for Well " + currentWell + "? This cannot be undone.")) return;
+    try {
+        var data = await apiPost("/api/analysis/expert-preference-reset", {
+            well: currentWell
+        });
+        showToast(data.message || "Preferences reset");
+        loadExpertHistory(); // Refresh
+    } catch (err) {
+        showToast("Reset error: " + err.message, "Error");
+    }
+}
+
+
+// ── Prediction Trustworthiness Report ──────────────
+
+async function runTrustworthinessReport() {
+    showLoading("Running comprehensive trustworthiness audit (5 checks)...");
+    try {
+        var data = await apiPost("/api/analysis/trustworthiness-report", {
+            source: currentSource, well: currentWell
+        });
+
+        document.getElementById("tr-results").classList.remove("d-none");
+
+        // Overall trust level
+        var colorMap = { success: "success", warning: "warning", danger: "danger" };
+        var tc = data.trust_color || "secondary";
+        document.getElementById("tr-overall").className = "card mb-3 border-" + tc;
+        document.getElementById("tr-trust-level").textContent = (data.trust_level || "?") + " Trustworthiness";
+        document.getElementById("tr-trust-level").className = "fw-bold mb-1 text-" + tc;
+        document.getElementById("tr-score").textContent = "Score: " + (data.overall_score || "?") + " / 100";
+        document.getElementById("tr-advice").textContent = data.trust_advice || "";
+
+        // Check cards
+        var container = document.getElementById("tr-checks");
+        clearChildren(container);
+        var gradeColors = { GREEN: "success", AMBER: "warning", RED: "danger" };
+        (data.checks || []).forEach(function(c) {
+            var gc = gradeColors[c.grade] || "secondary";
+            var card = document.createElement("div");
+            card.className = "col-md-6 col-lg-4";
+            var issuesHtml = "";
+            if (c.issues && c.issues.length > 0) {
+                issuesHtml = '<ul class="small mb-0 mt-2">';
+                c.issues.forEach(function(i) {
+                    issuesHtml += '<li class="text-danger">' + i + '</li>';
+                });
+                issuesHtml += '</ul>';
+            }
+            card.innerHTML =
+                '<div class="card h-100 border-' + gc + '">' +
+                '<div class="card-body">' +
+                '<div class="d-flex justify-content-between align-items-start">' +
+                '<div><i class="bi ' + (c.icon || "bi-check") + ' me-1"></i><strong>' + c.name + '</strong></div>' +
+                '<span class="badge bg-' + gc + '">' + c.score + '</span>' +
+                '</div>' +
+                '<div class="small text-muted mt-1">' + (c.detail || "") + '</div>' +
+                '<div class="small mt-1 fw-bold">' + (c.action || "") + '</div>' +
+                issuesHtml +
+                '</div></div>';
+            container.appendChild(card);
+        });
+
+        // All issues (aggregated)
+        var issues = data.all_issues || [];
+        var issuesSection = document.getElementById("tr-issues-section");
+        var issuesEl = document.getElementById("tr-issues");
+        clearChildren(issuesEl);
+        if (issues.length > 0) {
+            issuesSection.classList.remove("d-none");
+            issues.forEach(function(i) {
+                var ic = gradeColors[i.grade] || "secondary";
+                var div = document.createElement("div");
+                div.className = "alert alert-" + ic + " py-2 mb-2";
+                div.innerHTML =
+                    '<span class="badge bg-' + ic + ' me-1">' + i.grade + '</span>' +
+                    '<strong>' + i.check + ':</strong> ' + i.issue;
+                issuesEl.appendChild(div);
+            });
+        } else {
+            issuesSection.classList.add("d-none");
+        }
+
+        showToast("Trustworthiness audit complete — " + (data.trust_level || "?") + " (" + (data.elapsed_s || "?") + "s)");
+    } catch (err) {
+        showToast("Trustworthiness report error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
 // ── Glossary Tooltips ─────────────────────────────
 
 var GLOSSARY = {
