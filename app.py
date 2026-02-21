@@ -38,6 +38,7 @@ from src.enhanced_analysis import (
     validate_data_quality, retrain_with_corrections,
     sensitivity_analysis, compute_risk_matrix,
     generate_well_report, compare_wells,
+    compute_uncertainty_budget,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -123,7 +124,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="2.2.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="2.3.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -940,3 +941,80 @@ async def run_overview(request: Request):
         overview["risk"] = {"level": "UNKNOWN", "go_nogo": "Cannot assess"}
 
     return _sanitize_for_json(overview)
+
+
+# ── Uncertainty Budget ────────────────────────────────
+
+@app.post("/api/analysis/uncertainty-budget")
+async def run_uncertainty_budget(request: Request):
+    """Compute an uncertainty budget ranking all analysis uncertainty sources.
+
+    Aggregates uncertainties from the entire analysis pipeline — parameter
+    sensitivity, Bayesian posteriors, data quality, ML confidence, cross-well
+    consistency, and pore pressure estimation — into a single ranked view.
+
+    Tells stakeholders where to invest next to reduce uncertainty.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", None)
+    regime = body.get("regime", "strike_slip")
+    depth_m = float(body.get("depth", 3000))
+    pore_pressure = body.get("pore_pressure", None)
+    run_bayesian_flag = body.get("include_bayesian", False)
+
+    df = get_df(source)
+    df_well = df
+    if well:
+        df_well = df[df[WELL_COL] == well]
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+    pp = float(pore_pressure) if pore_pressure else None
+
+    # 1. Stress inversion (always needed)
+    inv_result = await asyncio.to_thread(
+        invert_stress, normals, regime=regime,
+        depth_m=depth_m, pore_pressure=pp,
+    )
+
+    # 2. Sensitivity analysis
+    sens_result = await asyncio.to_thread(
+        sensitivity_analysis, normals, inv_result, depth_m=depth_m,
+    )
+
+    # 3. Data quality
+    quality_result = validate_data_quality(df_well)
+
+    # 4. Bayesian (optional — expensive)
+    bayes_result = None
+    if run_bayesian_flag:
+        pp_val = inv_result.get("pore_pressure", 0.0)
+        bayes_result = await asyncio.to_thread(
+            bayesian_inversion, normals, inv_result,
+            regime=regime, pore_pressure=pp_val,
+            depth_m=depth_m, fast=True,
+        )
+
+    # 5. Model comparison from cache (don't re-run)
+    cache_key_mc = f"{source}_{len(df)}_fast"
+    model_comparison = _model_comparison_cache.get(cache_key_mc, None)
+
+    # 6. Well comparison (only if multiple wells)
+    well_comparison = None
+    if df[WELL_COL].nunique() >= 2:
+        well_comparison = await asyncio.to_thread(
+            compare_wells, df, depth_m=depth_m,
+        )
+
+    budget = compute_uncertainty_budget(
+        inv_result,
+        sensitivity_result=sens_result,
+        bayesian_result=bayes_result,
+        quality_result=quality_result,
+        model_comparison=model_comparison,
+        well_comparison=well_comparison,
+    )
+
+    return _sanitize_for_json(budget)

@@ -88,6 +88,7 @@ var tabNames = {
     cluster: "Fracture Clustering",
     sensitivity: "Sensitivity Analysis",
     risk: "Risk Assessment",
+    uncertainty: "Uncertainty Budget",
     wells: "Well Comparison",
     report: "Well Report",
     feedback: "Expert Feedback"
@@ -1508,6 +1509,99 @@ async function generateReport() {
         showToast("Report generated for " + (r.well_name || "well"));
     } catch (err) {
         showToast("Report error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Uncertainty Budget ────────────────────────────
+
+async function runUncertaintyBudget(includeBayesian) {
+    showLoading(includeBayesian ? "Computing uncertainty budget with Bayesian MCMC..." : "Computing uncertainty budget...");
+    try {
+        var well = document.getElementById("well-select").value || null;
+        var regime = document.getElementById("regime-select").value;
+        var depth = parseFloat(document.getElementById("depth-input").value) || 3000;
+        var pp = getPorePresure();
+
+        var r = await api("/api/analysis/uncertainty-budget", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                source: currentSource, well: well, regime: regime,
+                depth: depth, pore_pressure: pp,
+                include_bayesian: !!includeBayesian
+            })
+        });
+
+        // Overall banner
+        var overallEl = document.getElementById("ub-overall");
+        overallEl.classList.remove("d-none");
+        var card = document.getElementById("ub-overall-card");
+        var levelColor = r.uncertainty_level === "LOW" ? "success" : r.uncertainty_level === "MODERATE" ? "warning" : "danger";
+        card.className = "card border-" + levelColor;
+
+        document.getElementById("ub-level").textContent = r.uncertainty_level + " UNCERTAINTY";
+        document.getElementById("ub-level").className = "mb-2 text-" + levelColor;
+        document.getElementById("ub-total-score").textContent = "Score: " + r.total_score + "/100";
+        document.getElementById("ub-dominant").textContent = r.dominant_source ? "Largest contributor: " + r.dominant_source : "";
+
+        // Stakeholder summary
+        var summaryEl = document.getElementById("ub-summary");
+        summaryEl.classList.remove("d-none");
+        document.getElementById("ub-summary-body").innerHTML = '<p class="lead mb-0">' + (r.stakeholder_summary || '') + '</p>';
+
+        // Source rankings
+        var sourcesEl = document.getElementById("ub-sources");
+        var sourcesBody = document.getElementById("ub-sources-body");
+        clearChildren(sourcesBody);
+        if (r.sources && r.sources.length) {
+            sourcesEl.classList.remove("d-none");
+            var maxScore = r.sources[0].score || 1;
+
+            r.sources.forEach(function(s, idx) {
+                var scoreColor = s.score >= 60 ? "#dc3545" : s.score >= 40 ? "#ffc107" : "#198754";
+                var row = document.createElement("div");
+                row.className = "mb-4 p-3 rounded " + (idx === 0 ? "bg-light border" : "");
+
+                var header = '<div class="d-flex justify-content-between align-items-center mb-1">' +
+                    '<strong>' + (idx + 1) + '. ' + s.source + '</strong>' +
+                    '<span class="badge" style="background:' + scoreColor + '">' + s.score + '/100</span></div>';
+
+                var bar = '<div class="feat-bar-bg mb-2"><div class="feat-bar-fill" style="width:' +
+                    Math.round(s.score / maxScore * 100) + '%;background:' + scoreColor + '"></div></div>';
+
+                var detail = '<div class="small text-muted mb-1">' + s.detail + '</div>';
+                var driver = '<div class="small"><strong>Key driver:</strong> ' + s.driver + '</div>';
+                var rec = '<div class="small text-primary mt-1"><i class="bi bi-arrow-right-circle"></i> ' + s.recommendation + '</div>';
+
+                row.innerHTML = header + bar + detail + driver + rec;
+                sourcesBody.appendChild(row);
+            });
+        }
+
+        // Recommended actions
+        var actionsEl = document.getElementById("ub-actions");
+        var actionsBody = document.getElementById("ub-actions-body");
+        clearChildren(actionsBody);
+        if (r.recommended_actions && r.recommended_actions.length) {
+            actionsEl.classList.remove("d-none");
+            r.recommended_actions.forEach(function(a) {
+                var div = document.createElement("div");
+                div.className = "mb-3 p-3 bg-light rounded d-flex gap-3 align-items-start";
+                div.innerHTML = '<div class="badge bg-success fs-6 px-3 py-2">#' + a.priority + '</div>' +
+                    '<div><strong>' + a.source + '</strong><br>' +
+                    '<span>' + a.action + '</span>' +
+                    (a.impact ? '<br><small class="text-muted">' + a.impact + '</small>' : '') +
+                    '</div>';
+                actionsBody.appendChild(div);
+            });
+        }
+
+        showToast("Uncertainty budget: " + r.uncertainty_level + " (" + r.total_score + "/100)");
+    } catch (err) {
+        showToast("Uncertainty budget error: " + err.message, "Error");
     } finally {
         hideLoading();
     }

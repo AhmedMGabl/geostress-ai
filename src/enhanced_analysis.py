@@ -2261,3 +2261,324 @@ def compare_wells(
         "cross_validation": cross_val_results,
         "n_wells": len(wells),
     }
+
+
+# ──────────────────────────────────────────────────────
+# Uncertainty Budget
+# ──────────────────────────────────────────────────────
+
+def compute_uncertainty_budget(
+    inversion_result: dict,
+    sensitivity_result: dict = None,
+    bayesian_result: dict = None,
+    quality_result: dict = None,
+    model_comparison: dict = None,
+    well_comparison: dict = None,
+) -> dict:
+    """Compute an uncertainty budget ranking all sources of uncertainty.
+
+    Aggregates uncertainties from the entire analysis pipeline into a
+    single ranked view showing where the most uncertainty comes from and
+    what stakeholders should invest in to reduce it.
+
+    Each source is quantified as a normalized 0-100 score (100 = maximum
+    uncertainty) with actionable recommendations.
+
+    Returns
+    -------
+    dict with:
+        sources : list of dicts, ranked by contribution
+        total_score : weighted aggregate
+        dominant_source : name of the largest contributor
+        stakeholder_summary : plain-language narrative
+        recommended_actions : prioritized list
+    """
+    sources = []
+
+    # ── 1. Parameter Sensitivity Uncertainty ──
+    if sensitivity_result:
+        tornado = sensitivity_result.get("tornado", [])
+        if tornado:
+            # Range of critically stressed % across parameter variations
+            max_range = max(t.get("range", 0) for t in tornado)
+            param_names = [t["parameter"] for t in tornado]
+            sens_score = min(100, max_range * 1.2)
+
+            detail_parts = []
+            for t in tornado:
+                detail_parts.append(
+                    f"{t['parameter']}: {t['min_pct_critical']}%-"
+                    f"{t['max_pct_critical']}% (range {t['range']}%)"
+                )
+
+            sources.append({
+                "source": "Parameter Assumptions",
+                "score": round(sens_score),
+                "detail": "; ".join(detail_parts),
+                "driver": f"Largest driver: {param_names[0]}" if param_names else "",
+                "recommendation": (
+                    f"Measure {param_names[0].lower()} directly to reduce "
+                    f"the {max_range:.0f}% range in critically stressed predictions."
+                    if param_names else "Run sensitivity analysis."
+                ),
+                "category": "input_parameters",
+                "weight": 0.25,
+            })
+
+    # ── 2. Bayesian Posterior Uncertainty ──
+    if bayesian_result and bayesian_result.get("available"):
+        params = bayesian_result.get("parameters", {})
+
+        # SHmax uncertainty is the most operationally critical
+        shmax = params.get("SHmax_azimuth", {})
+        shmax_range = 0
+        if shmax.get("ci_90"):
+            shmax_range = shmax["ci_90"][1] - shmax["ci_90"][0]
+            if shmax_range > 180:
+                shmax_range = 360 - shmax_range
+
+        # Mu uncertainty
+        mu = params.get("mu", {})
+        mu_range = 0
+        if mu.get("ci_90"):
+            mu_range = mu["ci_90"][1] - mu["ci_90"][0]
+
+        # Score: SHmax direction is the key operational parameter
+        # >60° range is very uncertain; >120° is essentially unconstrained
+        bayes_score = min(100, shmax_range * 0.8)
+
+        converged = bayesian_result.get("converged", False)
+        if not converged:
+            bayes_score = min(100, bayes_score + 15)
+
+        ci_details = []
+        for pname, pdata in params.items():
+            if pdata.get("ci_90"):
+                ci_details.append(
+                    f"{pname}: {pdata['ci_90'][0]:.1f}-{pdata['ci_90'][1]:.1f}"
+                )
+
+        sources.append({
+            "source": "Stress Model Uncertainty (Bayesian)",
+            "score": round(bayes_score),
+            "detail": f"SHmax 90% CI: {shmax_range:.0f} degrees; "
+                      f"Friction 90% CI width: {mu_range:.2f}" +
+                      ("" if converged else " (chain not fully converged)"),
+            "driver": (
+                "SHmax direction is poorly constrained" if shmax_range > 60
+                else "SHmax direction is well constrained"
+            ),
+            "recommendation": (
+                "Add more fracture orientation data or independent stress "
+                "indicators (breakouts, drilling-induced fractures) to "
+                "constrain SHmax direction."
+                if shmax_range > 60 else
+                "Bayesian uncertainty is acceptable for operational decisions."
+            ),
+            "category": "model_uncertainty",
+            "weight": 0.30,
+        })
+    else:
+        # No Bayesian run: high uncertainty by default
+        sources.append({
+            "source": "Stress Model Uncertainty (Bayesian)",
+            "score": 70,
+            "detail": "Bayesian MCMC not yet run; only point estimates available",
+            "driver": "No confidence intervals on stress parameters",
+            "recommendation": (
+                "Run Bayesian MCMC inversion to quantify uncertainty "
+                "on all 5 stress parameters."
+            ),
+            "category": "model_uncertainty",
+            "weight": 0.30,
+        })
+
+    # ── 3. Data Quality Uncertainty ──
+    if quality_result:
+        dq_score = max(0, 100 - quality_result.get("score", 50))
+        grade = quality_result.get("grade", "?")
+        issues = quality_result.get("issues", [])
+        warnings_list = quality_result.get("warnings", [])
+        recs = quality_result.get("recommendations", [])
+
+        sources.append({
+            "source": "Data Quality",
+            "score": round(dq_score),
+            "detail": f"Grade {grade} ({quality_result.get('score', 0)}/100). "
+                      f"{len(issues)} critical issues, "
+                      f"{len(warnings_list)} warnings.",
+            "driver": issues[0] if issues else (
+                warnings_list[0] if warnings_list else "No critical issues"
+            ),
+            "recommendation": recs[0] if recs else "Data quality is adequate.",
+            "category": "data",
+            "weight": 0.20,
+        })
+
+    # ── 4. ML Model Uncertainty ──
+    if model_comparison:
+        # Model disagreement
+        agreement = model_comparison.get("model_agreement_mean", 1.0)
+        low_conf = model_comparison.get("low_confidence_pct", 0)
+        best_acc = 0
+        if model_comparison.get("ranking"):
+            best_acc = model_comparison["ranking"][0].get("accuracy", 0)
+
+        ml_score = max(0, 100 - best_acc * 100) + (100 - agreement * 100) * 0.3
+        ml_score = min(100, ml_score)
+
+        conformal = model_comparison.get("conformal", {})
+        conf_detail = ""
+        if conformal.get("available"):
+            uncertain_pct = conformal.get("uncertain_pct", 0)
+            conf_detail = f" | {uncertain_pct:.0f}% low-confidence predictions"
+
+        sources.append({
+            "source": "ML Classification Confidence",
+            "score": round(ml_score),
+            "detail": (
+                f"Best accuracy: {best_acc*100:.1f}%, "
+                f"model agreement: {agreement*100:.0f}%, "
+                f"low confidence: {low_conf}%{conf_detail}"
+            ),
+            "driver": (
+                f"Models disagree on {low_conf}% of fractures"
+                if low_conf > 10 else "Model agreement is acceptable"
+            ),
+            "recommendation": (
+                "Review low-confidence fractures with domain experts. "
+                "Consider adding more training data for ambiguous types."
+                if ml_score > 30 else "Classification is reliable."
+            ),
+            "category": "classification",
+            "weight": 0.15,
+        })
+
+    # ── 5. Cross-Well Consistency ──
+    if well_comparison and well_comparison.get("consistency_checks"):
+        checks = well_comparison["consistency_checks"]
+        n_warnings = sum(1 for c in checks if c["status"] == "WARNING")
+        n_checks = len(checks)
+        well_score = min(100, n_warnings * 35)
+
+        warning_details = [
+            c["detail"] for c in checks if c["status"] == "WARNING"
+        ]
+
+        sources.append({
+            "source": "Cross-Well Consistency",
+            "score": round(well_score),
+            "detail": f"{n_warnings}/{n_checks} checks flagged warnings. " +
+                      (" ".join(warning_details[:2]) if warning_details
+                       else "All checks passed."),
+            "driver": (
+                warning_details[0] if warning_details
+                else "Wells show consistent stress field"
+            ),
+            "recommendation": (
+                "Investigate structural domain boundaries between wells. "
+                "Consider well-specific stress models instead of a single model."
+                if well_score > 40 else "Cross-well consistency is acceptable."
+            ),
+            "category": "spatial",
+            "weight": 0.10,
+        })
+
+    # ── 6. Pore Pressure Uncertainty (always relevant) ──
+    pp = inversion_result.get("pore_pressure", 0.0)
+    pp_source = "estimated (hydrostatic)" if pp > 0 else "unknown"
+    # If pore pressure is estimated rather than measured, it's inherently uncertain
+    pp_score = 60 if pp > 0 else 80  # assumed hydrostatic = moderate uncertainty
+    sources.append({
+        "source": "Pore Pressure Estimate",
+        "score": pp_score,
+        "detail": f"Pp = {pp:.1f} MPa ({pp_source}). "
+                  f"Hydrostatic assumption may not hold in overpressured zones.",
+        "driver": "Using estimated rather than measured pore pressure",
+        "recommendation": (
+            "Obtain direct pore pressure measurements (MDT/RFT) or "
+            "use drilling mud weight records to constrain Pp. "
+            "This is the single most impactful data acquisition."
+        ),
+        "category": "input_parameters",
+        "weight": 0.15,
+    })
+
+    # ── Sort by contribution ──
+    sources.sort(key=lambda x: x["score"], reverse=True)
+
+    # ── Weighted total ──
+    total_weight = sum(s["weight"] for s in sources)
+    if total_weight > 0:
+        total_score = round(
+            sum(s["score"] * s["weight"] for s in sources) / total_weight
+        )
+    else:
+        total_score = 0
+
+    dominant = sources[0] if sources else None
+
+    # ── Recommended actions (top 3 by impact) ──
+    recommended_actions = []
+    for i, s in enumerate(sources[:3]):
+        if s["score"] > 20:
+            recommended_actions.append({
+                "priority": i + 1,
+                "action": s["recommendation"],
+                "source": s["source"],
+                "impact": (
+                    f"Could reduce overall uncertainty by ~"
+                    f"{round(s['score'] * s['weight'] / total_weight / max(total_score, 1) * 100)}%"
+                    if total_weight > 0 and total_score > 0 else ""
+                ),
+            })
+
+    # ── Stakeholder summary ──
+    if dominant:
+        summary_parts = [
+            f"The largest source of uncertainty is '{dominant['source']}' "
+            f"(score: {dominant['score']}/100). "
+            f"{dominant['driver']}. ",
+        ]
+        if len(sources) > 1 and sources[1]["score"] > 40:
+            summary_parts.append(
+                f"The second largest concern is '{sources[1]['source']}' "
+                f"(score: {sources[1]['score']}/100). "
+            )
+        summary_parts.append(
+            f"Overall uncertainty: {total_score}/100. "
+        )
+        if total_score >= 60:
+            summary_parts.append(
+                "This uncertainty level is HIGH — results should be treated "
+                "as preliminary. Additional data acquisition is strongly "
+                "recommended before committing to operational decisions."
+            )
+        elif total_score >= 40:
+            summary_parts.append(
+                "This uncertainty level is MODERATE — results provide useful "
+                "guidance but should be validated with additional data "
+                "before final decisions."
+            )
+        else:
+            summary_parts.append(
+                "This uncertainty level is ACCEPTABLE — results are suitable "
+                "for operational planning with standard safety margins."
+            )
+        stakeholder_summary = "".join(summary_parts)
+    else:
+        stakeholder_summary = "Insufficient data to compute uncertainty budget."
+
+    return {
+        "sources": sources,
+        "total_score": total_score,
+        "uncertainty_level": (
+            "HIGH" if total_score >= 60
+            else "MODERATE" if total_score >= 40
+            else "LOW"
+        ),
+        "dominant_source": dominant["source"] if dominant else None,
+        "recommended_actions": recommended_actions,
+        "stakeholder_summary": stakeholder_summary,
+        "n_sources": len(sources),
+    }

@@ -80,6 +80,9 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/risk-matrix` | Comprehensive operational risk assessment |
 | POST | `/api/analysis/compare-wells` | Multi-well comparison and cross-validation |
 | POST | `/api/report/well` | Generate stakeholder well report |
+| POST | `/api/analysis/bayesian` | Bayesian MCMC uncertainty (posterior CIs) |
+| POST | `/api/analysis/overview` | Quick auto-analysis on page load |
+| POST | `/api/analysis/uncertainty-budget` | Uncertainty source ranking + recommendations |
 | GET | `/api/analysis/features` | Enhanced feature info |
 
 ## Domain Concepts
@@ -114,3 +117,8 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Risk matrix combines critically stressed %, data quality, model confidence, sensitivity, and friction into go/no-go
 - Well 6P only has 2 fracture types (Vuggy, Brecciated) vs 5 in 3P — cross-well models don't transfer
 - SHmax varies ~134° between wells 3P and 6P — possible structural domain boundary
+- Bayesian MCMC fast mode: 500 steps/150 burnin/16 walkers (~1-2s); full: 3000 steps/500 burnin/32 walkers (~8s)
+- Bayesian SHmax 90% CI can be very wide (>300°) — point estimates are over-confident
+- Uncertainty budget aggregates 6 sources: parameter sensitivity, Bayesian, data quality, ML confidence, cross-well, pore pressure
+- Pore pressure is consistently the #1 uncertainty driver (0-100% critically stressed range)
+- Including Bayesian in uncertainty budget reduces that source's score from 70 to ~42
