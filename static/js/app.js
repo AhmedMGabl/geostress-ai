@@ -652,6 +652,14 @@ async function runModelComparison(fast) {
                 tdName.appendChild(nameStrong);
                 tr.appendChild(tdName);
                 tr.appendChild(createCell("td", (row.accuracy * 100).toFixed(1) + "%"));
+                // Balanced accuracy (accounts for class imbalance)
+                var balAcc = row.balanced_accuracy ? (row.balanced_accuracy * 100).toFixed(1) + "%" : "--";
+                var balCell = createCell("td", balAcc);
+                if (row.balanced_accuracy && row.accuracy - row.balanced_accuracy > 0.15) {
+                    balCell.className = "text-danger fw-bold";
+                    balCell.title = "Large gap between standard and balanced accuracy = model ignores minority classes";
+                }
+                tr.appendChild(balCell);
                 tr.appendChild(createCell("td", (row.f1 * 100).toFixed(1) + "%"));
                 tbody.appendChild(tr);
             });

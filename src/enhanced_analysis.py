@@ -21,8 +21,9 @@ from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import (
     classification_report, confusion_matrix, accuracy_score,
-    f1_score, precision_score, recall_score,
+    f1_score, precision_score, recall_score, balanced_accuracy_score,
 )
+from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score, calinski_harabasz_score
@@ -237,6 +238,7 @@ def _get_models(fast: bool = False) -> dict:
             n_estimators=n_est, max_depth=6,
             learning_rate=0.1 if fast else 0.05,
             subsample=0.8, colsample_bytree=0.8,
+            class_weight="balanced",
             random_state=42, verbose=-1,
         )
 
@@ -274,25 +276,33 @@ def compare_models(
 
     results = {}
     all_preds = {}  # Collect predictions for agreement analysis
+    sample_weights = compute_sample_weight("balanced", y)
 
     for name, model in all_models.items():
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
+
+            # Use sample_weight for models without native class_weight support
+            needs_weight = name in ("gradient_boosting", "xgboost")
+            sw_params = {"sample_weight": sample_weights} if needs_weight else {}
 
             # Single-pass cross_validate for both metrics at once
             cv_result = cross_validate(
                 model, X, y, cv=cv,
                 scoring={"accuracy": "accuracy", "f1": "f1_weighted"},
                 return_estimator=False,
+                params=sw_params if sw_params else None,
             )
             acc_scores = cv_result["test_accuracy"]
             f1_scores = cv_result["test_f1"]
 
             # cross_val_predict for confusion matrix (separate, but only 1 extra CV)
-            y_pred_cv = cross_val_predict(model, X, y, cv=cv)
+            y_pred_cv = cross_val_predict(
+                model, X, y, cv=cv, params=sw_params if sw_params else None,
+            )
 
             # Fit on full data for feature importances + predictions
-            model.fit(X, y)
+            model.fit(X, y, **sw_params)
             y_pred_full = model.predict(X)
             all_preds[name] = y_pred_full
 
@@ -342,6 +352,9 @@ def compare_models(
                 "class_names": le.classes_.tolist(),
                 "train_accuracy": train_acc,
                 "overfit_gap": round(train_acc - cv_acc, 3),
+                "balanced_accuracy": round(float(
+                    balanced_accuracy_score(y, y_pred_cv)
+                ), 3),
                 "per_class_metrics": per_class,
             }
 
@@ -357,7 +370,8 @@ def compare_models(
     )
     ranking = [
         {"rank": i + 1, "model": name, "accuracy": r["cv_accuracy_mean"],
-         "f1": r["cv_f1_mean"], "overfit_gap": r.get("overfit_gap", 0)}
+         "f1": r["cv_f1_mean"], "overfit_gap": r.get("overfit_gap", 0),
+         "balanced_accuracy": r.get("balanced_accuracy", 0)}
         for i, (name, r) in enumerate(ranked)
     ]
 
@@ -389,10 +403,30 @@ def compare_models(
             f"have fewer than 30 samples. Per-class metrics for these types "
             f"are unreliable. Collecting more samples will improve accuracy."
         )
+    # Check balanced accuracy gap (class imbalance severity)
+    best_bal_acc = best_res.get("balanced_accuracy", 0) if best_res else 0
+    best_std_acc = best_res.get("cv_accuracy_mean", 0) if best_res else 0
+    imbalance_gap = best_std_acc - best_bal_acc
+    if imbalance_gap > 0.20:
+        gen_warnings.append(
+            f"SEVERE CLASS IMBALANCE: Standard accuracy ({best_std_acc:.1%}) is much "
+            f"higher than balanced accuracy ({best_bal_acc:.1%}). The model correctly "
+            f"classifies majority types (Vuggy, Brecciated) but fails on minority types. "
+            f"Do NOT rely on predictions for under-represented fracture types."
+        )
+    elif imbalance_gap > 0.10:
+        gen_warnings.append(
+            f"Moderate class imbalance: Balanced accuracy ({best_bal_acc:.1%}) is notably "
+            f"lower than standard accuracy ({best_std_acc:.1%}). Predictions for smaller "
+            f"fracture type classes may be unreliable."
+        )
+
     generalization = {
         "overfit_gap": round(gap, 3),
         "cv_stability": round(best_cv_std, 3),
         "min_class_count": int(class_counts.min()),
+        "imbalance_gap": round(imbalance_gap, 3),
+        "balanced_accuracy": round(best_bal_acc, 3),
         "warnings": gen_warnings,
         "recommendation": (
             "Model generalizes well." if not gen_warnings
@@ -508,6 +542,9 @@ def _build_stacking_ensemble(X, y, cv, feature_names, le, fast=False) -> dict | 
                 "class_names": le.classes_.tolist(),
                 "train_accuracy": train_acc,
                 "overfit_gap": round(train_acc - cv_acc, 3),
+                "balanced_accuracy": round(float(
+                    balanced_accuracy_score(y, y_pred_cv)
+                ), 3),
                 "per_class_metrics": per_class,
                 "base_learners": [name for name, _ in base_estimators],
             }
