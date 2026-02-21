@@ -462,6 +462,37 @@
                         </div>
                     </div>
 
+                    <!-- One-Click Comprehensive Report -->
+                    <div class="card mb-4 border-dark">
+                        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-file-earmark-medical"></i> Comprehensive Analysis Report</span>
+                            <button class="btn btn-sm btn-warning" onclick="runComprehensiveReport()">
+                                <i class="bi bi-lightning-fill"></i> Generate Full Report
+                            </button>
+                        </div>
+                        <div id="cr-results" class="d-none">
+                            <div class="card-body">
+                                <!-- Verdict banner -->
+                                <div id="cr-verdict" class="alert mb-3 text-center">
+                                    <h4 id="cr-verdict-label" class="fw-bold mb-1">--</h4>
+                                    <div id="cr-signal-summary" class="small"></div>
+                                </div>
+
+                                <!-- Executive brief -->
+                                <div class="card mb-3">
+                                    <div class="card-header"><i class="bi bi-chat-square-text"></i> Executive Brief</div>
+                                    <div class="card-body" id="cr-brief" style="white-space:pre-wrap;"></div>
+                                </div>
+
+                                <!-- Module summary cards -->
+                                <div class="row g-3 mb-3" id="cr-modules"></div>
+
+                                <!-- Errors if any -->
+                                <div id="cr-errors" class="d-none"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Quick Navigation for Stakeholders -->
                     <div class="card mb-4 border-info">
                         <div class="card-header bg-info bg-opacity-10">

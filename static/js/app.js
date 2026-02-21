@@ -5961,6 +5961,125 @@ async function resetExpertPreferences() {
 }
 
 
+// ── One-Click Comprehensive Report ─────────────────
+
+async function runComprehensiveReport() {
+    showLoading("Generating comprehensive report (7 modules)...");
+    try {
+        var depth = document.getElementById("depth-input").value || 3000;
+        var pp = document.getElementById("pp-input").value || 0;
+        var data = await apiPost("/api/report/comprehensive", {
+            source: currentSource, well: currentWell,
+            depth: parseFloat(depth), pore_pressure: parseFloat(pp)
+        });
+
+        document.getElementById("cr-results").classList.remove("d-none");
+
+        // Verdict banner
+        var vc = data.verdict_color || "secondary";
+        var verdictEl = document.getElementById("cr-verdict");
+        verdictEl.className = "alert alert-" + vc + " mb-3 text-center";
+        var verdictLabels = { "GO": "GO \u2014 Safe for Operational Use", "CAUTION": "CAUTION \u2014 Validate Before Commitment", "NO_GO": "NO-GO \u2014 Do Not Use for Decisions" };
+        document.getElementById("cr-verdict-label").textContent = verdictLabels[data.verdict] || data.verdict;
+        var ss = data.signal_summary || {};
+        document.getElementById("cr-signal-summary").innerHTML =
+            '<span class="badge bg-success me-1">' + (ss.GREEN || 0) + ' GREEN</span>' +
+            '<span class="badge bg-warning me-1">' + (ss.AMBER || 0) + ' AMBER</span>' +
+            '<span class="badge bg-danger">' + (ss.RED || 0) + ' RED</span>';
+
+        // Executive brief (render markdown bold)
+        var brief = data.executive_brief || "";
+        brief = brief.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        document.getElementById("cr-brief").innerHTML = brief;
+
+        // Module cards
+        var container = document.getElementById("cr-modules");
+        clearChildren(container);
+        var modules = data.modules || {};
+
+        if (modules.data_quality) {
+            var dq = modules.data_quality;
+            var dqc = dq.score >= 70 ? "success" : dq.score >= 40 ? "warning" : "danger";
+            addModuleCard(container, "Data Quality", "bi-database-check", dqc,
+                "Score: " + dq.score + "/100 (" + dq.grade + ")",
+                dq.anomaly_pct > 0 ? dq.anomaly_pct.toFixed(1) + "% anomalous" : "Clean data");
+        }
+        if (modules.stress_inversion) {
+            var si = modules.stress_inversion;
+            var sic = si.confidence === "HIGH" ? "success" : si.confidence === "MODERATE" ? "warning" : "danger";
+            addModuleCard(container, "Stress Field", "bi-compass", sic,
+                si.best_regime.replace("_", " ") + " regime, SHmax " + si.shmax_azimuth + "\u00B0",
+                si.confidence + " confidence (misfit " + si.misfit_ratio + ")");
+        }
+        if (modules.classification) {
+            var cl = modules.classification;
+            var clc = cl.accuracy >= 0.75 ? "success" : cl.accuracy >= 0.55 ? "warning" : "danger";
+            addModuleCard(container, "ML Classification", "bi-cpu", clc,
+                (cl.accuracy * 100).toFixed(1) + "% accuracy",
+                cl.n_classes + " fracture types classified");
+        }
+        if (modules.critically_stressed) {
+            var cs = modules.critically_stressed;
+            var csc = cs.risk_level === "LOW" ? "success" : cs.risk_level === "MODERATE" ? "warning" : "danger";
+            addModuleCard(container, "Critically Stressed", "bi-exclamation-triangle", csc,
+                cs.pct_critical + "% critical (" + cs.risk_level + " risk)",
+                cs.count_critical + " of " + cs.n_total + " fractures");
+        }
+        if (modules.regime_stability) {
+            var rs = modules.regime_stability;
+            var rsc = rs.stability === "STABLE" ? "success" : rs.stability === "MOSTLY_STABLE" ? "warning" : "danger";
+            addModuleCard(container, "Regime Stability", "bi-shield-check", rsc,
+                rs.stability.replace("_", " "),
+                rs.flips + " of " + rs.total_tests + " perturbations flip regime");
+        }
+        if (modules.expert_consensus && modules.expert_consensus.n_selections > 0) {
+            var ec = modules.expert_consensus;
+            var ecc = ec.status === "STRONG" ? "success" : ec.status === "WEAK" ? "warning" : "secondary";
+            addModuleCard(container, "Expert Consensus", "bi-people", ecc,
+                (ec.regime || "none").replace("_", " ") + " (" + ec.status + ")",
+                ec.n_selections + " selections, " + ec.confidence_pct.toFixed(0) + "% agreement");
+        }
+
+        // Errors
+        var errEl = document.getElementById("cr-errors");
+        clearChildren(errEl);
+        if (data.errors && data.errors.length > 0) {
+            errEl.classList.remove("d-none");
+            data.errors.forEach(function(e) {
+                var div = document.createElement("div");
+                div.className = "alert alert-warning py-1 mb-1 small";
+                div.textContent = e;
+                errEl.appendChild(div);
+            });
+        } else {
+            errEl.classList.add("d-none");
+        }
+
+        showToast("Comprehensive report: " + data.verdict + " (" + (data.elapsed_s || "?") + "s)");
+    } catch (err) {
+        showToast("Report error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+function addModuleCard(container, title, icon, color, main, detail) {
+    var card = document.createElement("div");
+    card.className = "col-md-4 col-lg-3";
+    card.innerHTML =
+        '<div class="card h-100 border-' + color + '">' +
+        '<div class="card-body p-2">' +
+        '<div class="d-flex align-items-center mb-1">' +
+        '<i class="bi ' + icon + ' text-' + color + ' me-1"></i>' +
+        '<strong class="small">' + title + '</strong>' +
+        '</div>' +
+        '<div class="fw-bold text-' + color + '">' + main + '</div>' +
+        '<div class="small text-muted">' + detail + '</div>' +
+        '</div></div>';
+    container.appendChild(card);
+}
+
+
 // ── Prediction Trustworthiness Report ──────────────
 
 async function runTrustworthinessReport() {

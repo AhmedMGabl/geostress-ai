@@ -5585,3 +5585,294 @@ async def trustworthiness_report(request: Request):
         "elapsed_s": elapsed,
         "app_version": "3.1.0",
     })
+
+
+# ── One-Click Comprehensive Report ────────────────────
+
+@app.post("/api/report/comprehensive")
+async def comprehensive_report(request: Request):
+    """One-click comprehensive analysis — everything a decision maker needs.
+
+    Runs 7 analysis modules in parallel where possible, then synthesizes
+    into a single structured report with plain-language executive brief.
+
+    Modules:
+    1. Data quality assessment
+    2. Stress inversion (auto-regime detection)
+    3. ML classification (best model)
+    4. Critically stressed analysis
+    5. Regime stability check
+    6. Expert consensus (if available)
+    7. Decision readiness verdict
+
+    Returns structured JSON with executive_brief, all module results,
+    and a final GO/CAUTION/NO-GO recommendation.
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+    pp = body.get("pore_pressure", None)
+    pp = float(pp) if pp else 0.0
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+    n_fractures = len(df_well)
+
+    modules = {}
+    errors = []
+
+    # ── Module 1: Data Quality ──
+    try:
+        quality = validate_data_quality(df_well)
+        anomalies = await asyncio.to_thread(detect_data_anomalies, df_well)
+        modules["data_quality"] = {
+            "score": quality.get("score", 0),
+            "grade": quality.get("grade", "UNKNOWN"),
+            "issues": quality.get("issues", [])[:5],
+            "anomaly_pct": anomalies.get("flagged_pct", 0),
+            "n_errors": anomalies.get("severity_counts", {}).get("ERROR", 0),
+        }
+    except Exception as e:
+        errors.append(f"Data quality: {str(e)[:80]}")
+        modules["data_quality"] = {"score": 0, "grade": "ERROR"}
+
+    # ── Module 2: Stress Inversion ──
+    try:
+        auto_key = f"auto_{source}_{well}_{depth_m}"
+        if auto_key in _auto_regime_cache:
+            auto_res = _auto_regime_cache[auto_key]
+        else:
+            auto_res = await asyncio.to_thread(
+                auto_detect_regime, normals, depth_m=depth_m, pore_pressure=pp,
+            )
+            _auto_regime_cache[auto_key] = auto_res
+
+        best_regime = auto_res["best_regime"]
+        inv = auto_res["best_result"]
+        modules["stress_inversion"] = {
+            "best_regime": best_regime,
+            "confidence": auto_res.get("confidence", "UNKNOWN"),
+            "misfit_ratio": round(auto_res.get("misfit_ratio", 1.0), 3),
+            "sigma1": round(float(inv.get("sigma1", inv.get("sigma_1", 0))), 1),
+            "sigma3": round(float(inv.get("sigma3", inv.get("sigma_3", 0))), 1),
+            "R_ratio": round(float(inv.get("R", 0)), 4),
+            "shmax_azimuth": round(float(inv.get("shmax_azimuth_deg", inv.get("SHmax_azimuth", 0))), 1),
+            "mu": round(float(inv.get("mu", 0.6)), 3),
+        }
+    except Exception as e:
+        errors.append(f"Stress inversion: {str(e)[:80]}")
+        modules["stress_inversion"] = {"best_regime": "ERROR", "confidence": "NONE"}
+
+    # ── Module 3: ML Classification ──
+    try:
+        cls_key = f"clf_{source}_{well}_gradient_boosting_enh"
+        if cls_key in _classify_cache:
+            cls = _classify_cache[cls_key]
+        else:
+            cls = await asyncio.to_thread(
+                classify_enhanced, df_well, "gradient_boosting", 5,
+            )
+            _classify_cache[cls_key] = cls
+
+        acc = float(cls.get("cv_mean_accuracy", 0))
+        class_names = cls.get("class_names", cls.get("unique_types", []))
+        modules["classification"] = {
+            "accuracy": round(acc, 3),
+            "model": "gradient_boosting",
+            "n_classes": len(class_names),
+            "unique_types": class_names,
+        }
+    except Exception as e:
+        errors.append(f"Classification: {str(e)[:80]}")
+        modules["classification"] = {"accuracy": 0, "model": "ERROR"}
+
+    # ── Module 4: Critically Stressed ──
+    try:
+        if "stress_inversion" in modules and modules["stress_inversion"].get("best_regime") != "ERROR":
+            pp_val = inv.get("pore_pressure", pp)
+            cs = critically_stressed_enhanced(
+                inv["sigma_n"], inv["tau"], mu=inv["mu"], pore_pressure=pp_val,
+            )
+            modules["critically_stressed"] = {
+                "pct_critical": round(float(cs.get("percent_critical", cs.get("pct_critical", 0))), 1),
+                "count_critical": int(cs.get("count_critical", 0)),
+                "n_total": int(cs.get("n_total", n_fractures)),
+                "risk_level": "HIGH" if cs.get("percent_critical", cs.get("pct_critical", 0)) > 40 else
+                              "MODERATE" if cs.get("percent_critical", cs.get("pct_critical", 0)) > 15 else "LOW",
+            }
+    except Exception as e:
+        errors.append(f"Critically stressed: {str(e)[:80]}")
+
+    # ── Module 5: Regime Stability (fast: reuse cached inversions) ──
+    try:
+        baseline_regime = modules.get("stress_inversion", {}).get("best_regime", "unknown")
+        # Quick check: only vary Pp by ±5 MPa (most impactful parameter)
+        flips = 0
+        total_tests = 2
+        for pp_delta in [5, -5]:
+            pp_test = max(0, pp + pp_delta)
+            test_key = f"auto_{source}_{well}_{depth_m}_{pp_test}"
+            if test_key in _auto_regime_cache:
+                res = _auto_regime_cache[test_key]
+            else:
+                try:
+                    res = await asyncio.to_thread(
+                        auto_detect_regime, normals, depth_m=depth_m, pore_pressure=pp_test,
+                    )
+                    _auto_regime_cache[test_key] = res
+                except Exception:
+                    continue
+            if res["best_regime"] != baseline_regime:
+                flips += 1
+
+        modules["regime_stability"] = {
+            "stability": "STABLE" if flips == 0 else "MOSTLY_STABLE" if flips == 1 else "UNSTABLE",
+            "flips": flips,
+            "total_tests": total_tests,
+        }
+    except Exception as e:
+        errors.append(f"Regime stability: {str(e)[:80]}")
+
+    # ── Module 6: Expert Consensus ──
+    consensus = _compute_expert_consensus(well)
+    modules["expert_consensus"] = {
+        "status": consensus.get("status", "NONE"),
+        "regime": consensus.get("consensus_regime"),
+        "confidence_pct": consensus.get("consensus_confidence", 0),
+        "n_selections": consensus.get("n_selections", 0),
+    }
+
+    # ── Module 7: Decision Readiness ──
+    signals = []
+    for mod_name, mod in modules.items():
+        if mod_name == "data_quality":
+            score = mod.get("score", 0)
+            grade = "GREEN" if score >= 70 else "AMBER" if score >= 40 else "RED"
+            signals.append(grade)
+        elif mod_name == "stress_inversion":
+            conf = mod.get("confidence", "LOW")
+            grade = "GREEN" if conf == "HIGH" else "AMBER" if conf == "MODERATE" else "RED"
+            signals.append(grade)
+        elif mod_name == "classification":
+            acc = mod.get("accuracy", 0)
+            grade = "GREEN" if acc >= 0.75 else "AMBER" if acc >= 0.55 else "RED"
+            signals.append(grade)
+        elif mod_name == "regime_stability":
+            stab = mod.get("stability", "UNSTABLE")
+            grade = "GREEN" if stab == "STABLE" else "AMBER" if stab == "MOSTLY_STABLE" else "RED"
+            signals.append(grade)
+
+    n_red = signals.count("RED")
+    n_amber = signals.count("AMBER")
+    n_green = signals.count("GREEN")
+
+    if n_red >= 2:
+        verdict = "NO_GO"
+        verdict_color = "danger"
+    elif n_red == 1 or n_amber >= 3:
+        verdict = "CAUTION"
+        verdict_color = "warning"
+    else:
+        verdict = "GO"
+        verdict_color = "success"
+
+    # ── Executive Brief (plain language) ──
+    inv_mod = modules.get("stress_inversion", {})
+    cls_mod = modules.get("classification", {})
+    cs_mod = modules.get("critically_stressed", {})
+    stab_mod = modules.get("regime_stability", {})
+    exp_mod = modules.get("expert_consensus", {})
+
+    regime_name = inv_mod.get("best_regime", "unknown").replace("_", " ").title()
+    shmax = inv_mod.get("shmax_azimuth", "?")
+
+    brief_parts = [
+        f"Analysis of {n_fractures} fractures from Well {well} at ~{depth_m:.0f}m depth.",
+    ]
+
+    # Stress summary
+    conf = inv_mod.get("confidence", "UNKNOWN")
+    brief_parts.append(
+        f"The stress field indicates a **{regime_name}** faulting regime "
+        f"with SHmax oriented at **{shmax}deg** ({conf} confidence)."
+    )
+
+    # Classification summary
+    if cls_mod.get("accuracy", 0) > 0:
+        acc_pct = cls_mod["accuracy"] * 100
+        n_types = cls_mod.get("n_classes", 0)
+        brief_parts.append(
+            f"ML classification of {n_types} fracture types achieves {acc_pct:.0f}% accuracy."
+        )
+
+    # Critically stressed
+    if cs_mod:
+        cs_pct = cs_mod.get("pct_critical", 0)
+        risk = cs_mod.get("risk_level", "UNKNOWN")
+        brief_parts.append(
+            f"{cs_pct:.0f}% of fractures are critically stressed ({risk} risk)."
+        )
+
+    # Stability
+    if stab_mod:
+        stab = stab_mod.get("stability", "UNKNOWN")
+        brief_parts.append(f"Regime stability: {stab}.")
+
+    # Expert consensus
+    if exp_mod.get("n_selections", 0) > 0:
+        exp_regime = (exp_mod.get("regime") or "").replace("_", " ")
+        exp_status = exp_mod.get("status", "NONE")
+        brief_parts.append(
+            f"Expert consensus: {exp_status} preference for {exp_regime} "
+            f"({exp_mod.get('n_selections', 0)} selections)."
+        )
+
+    # Final recommendation
+    if verdict == "GO":
+        brief_parts.append(
+            "**RECOMMENDATION:** Analysis is sufficiently reliable for operational decisions."
+        )
+    elif verdict == "CAUTION":
+        brief_parts.append(
+            "**RECOMMENDATION:** Results are directionally useful but should be "
+            "validated before commitment. Address flagged concerns."
+        )
+    else:
+        brief_parts.append(
+            "**RECOMMENDATION:** Do NOT use these results for operational decisions "
+            "without addressing the critical issues identified above."
+        )
+
+    elapsed = round(time.time() - t0, 2)
+
+    _audit_record(
+        "comprehensive_report",
+        {"well": well, "depth_m": depth_m, "pp": pp},
+        {"verdict": verdict, "n_modules": len(modules), "n_errors": len(errors)},
+        source, well, elapsed,
+    )
+
+    return _sanitize_for_json({
+        "verdict": verdict,
+        "verdict_color": verdict_color,
+        "signal_summary": {"GREEN": n_green, "AMBER": n_amber, "RED": n_red},
+        "executive_brief": "\n\n".join(brief_parts),
+        "modules": modules,
+        "errors": errors if errors else None,
+        "well": well,
+        "depth_m": depth_m,
+        "pore_pressure": pp,
+        "n_fractures": n_fractures,
+        "elapsed_s": elapsed,
+        "app_version": "3.1.1",
+    })
