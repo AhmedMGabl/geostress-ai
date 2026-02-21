@@ -62,6 +62,7 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | GET | `/` | Serve SPA |
 | GET | `/api/data/summary` | Data summary |
 | GET | `/api/data/wells` | Well list with stats |
+| GET | `/api/data/quality` | Data quality validation (score/grade) |
 | POST | `/api/data/upload` | Upload Excel file |
 | GET | `/api/viz/rose` | Rose diagram |
 | GET | `/api/viz/stereonet` | Stereonet plot |
@@ -96,6 +97,10 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Inversion uses `scipy.differential_evolution` with pore pressure in objective function
 - Bayesian MCMC uses `emcee` package with 5 parameters: σ1, σ3, R, SHmax_azimuth, μ
 - Enhanced features: 21 columns including pore pressure, overburden, temperature, fracture density, fabric eigenvalues
+- Stacking ensemble (RF+XGBoost+LightGBM with LR meta-learner) is typically the best model
+- SHAP TreeExplainer for XGBoost/LightGBM/RF; GradientBoosting only supports binary in SHAP
+- Conformal prediction provides calibrated per-sample confidence scores
 - Model comparison caches results per data source to avoid redundant computation
+- Fast mode (100 estimators, 3-fold CV) gives ~3x speedup with <0.5% accuracy loss
 - All matplotlib plots use `threading.Lock` for thread safety + `asyncio.to_thread` for async
 - `matplotlib.use("Agg")` is required at app.py top for headless rendering on Render
