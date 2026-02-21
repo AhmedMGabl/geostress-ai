@@ -1071,6 +1071,75 @@ async def run_sensitivity(request: Request):
     return response
 
 
+@app.post("/api/analysis/what-if")
+async def run_what_if(request: Request):
+    """Quick what-if: run a single inversion with user-specified parameters.
+
+    Returns key metrics (SHmax, critically stressed %, risk level) so
+    stakeholders can explore parameter sensitivity interactively.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    friction = float(body.get("friction", 0.6))
+    pore_pressure = float(body.get("pore_pressure", 0))
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+
+    # Auto-detect regime
+    auto = await asyncio.to_thread(
+        auto_detect_regime, normals, depth_m, 0.0, pore_pressure,
+    )
+    regime = auto["best_regime"]
+
+    # Run inversion with specified parameters
+    inv = await asyncio.to_thread(
+        invert_stress, normals,
+        regime=regime, depth_m=depth_m, pore_pressure=pore_pressure,
+    )
+
+    def _s(v):
+        return float(v.flat[0]) if isinstance(v, np.ndarray) else float(v)
+
+    shmax = _s(inv["shmax_azimuth_deg"])
+    pp = pore_pressure if pore_pressure else _s(inv.get("pore_pressure", 0))
+
+    # Compute critically stressed with the user's friction
+    cs = critically_stressed_enhanced(
+        inv["sigma_n"], inv["tau"],
+        mu=friction, pore_pressure=pp,
+    )
+
+    risk_level = "GREEN" if cs["pct_critical"] < 10 else (
+        "AMBER" if cs["pct_critical"] < 30 else "RED"
+    )
+
+    return _sanitize_for_json({
+        "well": well,
+        "regime": regime,
+        "regime_confidence": auto["confidence"],
+        "shmax_deg": round(shmax, 1),
+        "sigma1": round(_s(inv["sigma1"]), 1),
+        "sigma3": round(_s(inv["sigma3"]), 1),
+        "R_ratio": round(_s(inv["R"]), 3),
+        "friction_used": friction,
+        "pore_pressure_mpa": round(pp, 1),
+        "depth_m": depth_m,
+        "critically_stressed_pct": round(cs["pct_critical"], 1),
+        "high_risk_count": cs["high_risk_count"],
+        "risk_level": risk_level,
+        "n_fractures": len(df_well),
+    })
+
+
 # ── Bayesian MCMC Inversion ──────────────────────────
 
 @app.post("/api/analysis/bayesian")

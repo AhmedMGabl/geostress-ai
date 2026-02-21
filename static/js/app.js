@@ -2086,6 +2086,83 @@ async function runActiveLearning() {
 
 // ── Sensitivity Analysis ─────────────────────────
 
+// ── What-If Interactive Explorer ──────────────────────
+
+// Update slider value displays
+document.addEventListener("DOMContentLoaded", function() {
+    var frictionSlider = document.getElementById("whatif-friction");
+    var ppSlider = document.getElementById("whatif-pp");
+    var depthSlider = document.getElementById("whatif-depth");
+    if (frictionSlider) {
+        frictionSlider.oninput = function() {
+            document.getElementById("whatif-friction-val").textContent = this.value;
+        };
+    }
+    if (ppSlider) {
+        ppSlider.oninput = function() {
+            document.getElementById("whatif-pp-val").textContent = this.value + " MPa";
+        };
+    }
+    if (depthSlider) {
+        depthSlider.oninput = function() {
+            document.getElementById("whatif-depth-val").textContent = this.value + " m";
+        };
+    }
+});
+
+async function runWhatIf() {
+    var friction = parseFloat(document.getElementById("whatif-friction").value);
+    var pp = parseFloat(document.getElementById("whatif-pp").value);
+    var depth = parseFloat(document.getElementById("whatif-depth").value);
+
+    showLoading("Running what-if scenario...");
+    try {
+        var r = await apiPost("/api/analysis/what-if", {
+            source: currentSource, well: getWell(),
+            friction: friction, pore_pressure: pp, depth: depth
+        });
+
+        var container = document.getElementById("whatif-results");
+        container.classList.remove("d-none");
+
+        var riskColors = {GREEN: "success", AMBER: "warning", RED: "danger"};
+        var riskColor = riskColors[r.risk_level] || "secondary";
+
+        var html = '<div class="alert alert-' + riskColor + ' py-2">' +
+            '<div class="d-flex justify-content-between align-items-center">' +
+            '<span><strong>Risk: ' + r.risk_level + '</strong> — ' +
+            r.critically_stressed_pct + '% critically stressed</span>' +
+            '<span class="badge bg-' + riskColor + ' fs-6">' + r.risk_level + '</span></div></div>';
+
+        html += '<div class="row g-2">';
+        html += '<div class="col-md-3"><div class="card text-center"><div class="card-body py-2">' +
+            '<div class="small text-muted">SHmax</div>' +
+            '<div class="fw-bold">' + r.shmax_deg + '°</div></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center"><div class="card-body py-2">' +
+            '<div class="small text-muted">Regime</div>' +
+            '<div class="fw-bold">' + r.regime + '</div></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center"><div class="card-body py-2">' +
+            '<div class="small text-muted">Critically Stressed</div>' +
+            '<div class="fw-bold text-' + riskColor + '">' + r.critically_stressed_pct + '%</div></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center"><div class="card-body py-2">' +
+            '<div class="small text-muted">High Risk</div>' +
+            '<div class="fw-bold">' + r.high_risk_count + ' fractures</div></div></div></div>';
+        html += '</div>';
+
+        html += '<div class="small text-muted mt-2">σ1=' + r.sigma1 + ' MPa, σ3=' + r.sigma3 +
+            ' MPa, R=' + r.R_ratio + ' | μ=' + r.friction_used + ', Pp=' + r.pore_pressure_mpa +
+            ' MPa, depth=' + r.depth_m + 'm</div>';
+
+        container.innerHTML = html;
+        showToast("What-if: " + r.risk_level + " (" + r.critically_stressed_pct + "% CS)");
+    } catch (err) {
+        showToast("What-if error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
 async function runSensitivity() {
     showLoading("Running sensitivity analysis");
     try {
