@@ -3576,3 +3576,159 @@ async def export_full_report(request: Request):
     )
 
     return _sanitize_for_json(report)
+
+
+# ── Negative Scenario / Worst-Case Analysis ──────────
+
+@app.post("/api/analysis/worst-case")
+async def run_worst_case(request: Request):
+    """Automatically run worst-case scenarios to show decision-makers
+    what happens when key assumptions are wrong.
+
+    Generates 5 scenarios: baseline (best fit), low friction,
+    high pore pressure, wrong regime, and combined worst-case.
+    Returns a range of outcomes so stakeholders can gauge downside risk.
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+    avg_depth = df_well[DEPTH_COL].mean()
+    if np.isnan(avg_depth):
+        avg_depth = depth_m
+
+    # Get baseline from auto regime detection
+    auto_key = f"auto_{source}_{well}_{depth_m}"
+    if auto_key in _auto_regime_cache:
+        auto_res = _auto_regime_cache[auto_key]
+    else:
+        auto_res = await asyncio.to_thread(
+            auto_detect_regime, normals, avg_depth, 0.0, None,
+        )
+        _auto_regime_cache[auto_key] = auto_res
+
+    baseline_inv = auto_res["best_result"]
+    best_regime = auto_res["best_regime"]
+    baseline_pp = baseline_inv.get("pore_pressure", 0.0)
+    baseline_mu = float(baseline_inv["mu"])
+
+    # Define automatic scenarios
+    scenarios = [
+        {"name": "Baseline (Best Fit)", "regime": best_regime, "pore_pressure": None},
+        {"name": "Low Friction (mu-30%)", "regime": best_regime, "pore_pressure": None,
+         "override_mu": max(0.1, baseline_mu * 0.7)},
+        {"name": "High Pore Pressure (+50%)", "regime": best_regime,
+         "pore_pressure": baseline_pp * 1.5 if baseline_pp > 0 else avg_depth * 0.015},
+        {"name": "Wrong Regime (thrust)" if best_regime != "thrust" else "Wrong Regime (normal)",
+         "regime": "thrust" if best_regime != "thrust" else "normal",
+         "pore_pressure": None},
+        {"name": "Combined Worst-Case", "regime": best_regime,
+         "pore_pressure": baseline_pp * 1.5 if baseline_pp > 0 else avg_depth * 0.015,
+         "override_mu": max(0.1, baseline_mu * 0.7)},
+    ]
+
+    results = []
+    for sc in scenarios:
+        try:
+            pp = sc.get("pore_pressure", None)
+            inv = await asyncio.to_thread(
+                invert_stress, normals, regime=sc["regime"],
+                depth_m=avg_depth, pore_pressure=pp,
+            )
+            pp_val = inv.get("pore_pressure", 0.0)
+            mu_use = sc.get("override_mu", inv["mu"])
+
+            cs = critically_stressed_enhanced(
+                inv["sigma_n"], inv["tau"],
+                mu=mu_use, pore_pressure=pp_val,
+            )
+            pct = float(cs["pct_critical"])
+            risk = "GREEN" if pct < 10 else ("AMBER" if pct < 30 else "RED")
+
+            results.append({
+                "name": sc["name"],
+                "regime": sc["regime"],
+                "sigma1": round(float(inv["sigma1"]), 1),
+                "sigma3": round(float(inv["sigma3"]), 1),
+                "shmax": round(float(inv["shmax_azimuth_deg"]), 1),
+                "mu": round(float(mu_use), 3),
+                "pore_pressure": round(float(pp_val), 1),
+                "pct_critical": round(pct, 1),
+                "n_critical": int(cs["count_critical"]),
+                "risk_level": risk,
+            })
+        except Exception as e:
+            results.append({"name": sc["name"], "error": str(e)[:100]})
+
+    # Compute range across successful scenarios
+    ok = [r for r in results if "error" not in r]
+    cs_vals = [r["pct_critical"] for r in ok]
+    risk_levels = [r["risk_level"] for r in ok]
+
+    worst = max(cs_vals) if cs_vals else 0
+    best = min(cs_vals) if cs_vals else 0
+    worst_risk = "RED" if "RED" in risk_levels else ("AMBER" if "AMBER" in risk_levels else "GREEN")
+
+    spread = worst - best
+    if spread > 30:
+        sensitivity_verdict = "HIGH_SENSITIVITY"
+        interpretation = (
+            f"Results are HIGHLY SENSITIVE to assumptions. Critically stressed "
+            f"ranges from {best:.0f}% to {worst:.0f}% ({spread:.0f} percentage point spread). "
+            f"Decision-makers should NOT rely on a single scenario. "
+            f"Additional data (direct pore pressure measurements, rock mechanics tests) "
+            f"is strongly recommended before committing resources."
+        )
+    elif spread > 15:
+        sensitivity_verdict = "MODERATE_SENSITIVITY"
+        interpretation = (
+            f"Results show MODERATE sensitivity. Critically stressed "
+            f"ranges from {best:.0f}% to {worst:.0f}% ({spread:.0f} pp spread). "
+            f"The overall risk direction is consistent but magnitudes vary. "
+            f"Consider the worst-case scenario in your risk planning."
+        )
+    else:
+        sensitivity_verdict = "LOW_SENSITIVITY"
+        interpretation = (
+            f"Results are ROBUST to assumption changes. Critically stressed "
+            f"stays within {best:.0f}%-{worst:.0f}% ({spread:.0f} pp spread) "
+            f"across all scenarios. Confidence in the baseline result is high."
+        )
+
+    elapsed = round(time.time() - t0, 2)
+
+    _audit_record(
+        "worst_case_analysis", {"well": well, "depth_m": depth_m, "n_scenarios": len(scenarios)},
+        {"cs_range": [best, worst], "sensitivity": sensitivity_verdict},
+        source, well, elapsed,
+    )
+
+    return _sanitize_for_json({
+        "scenarios": results,
+        "summary": {
+            "cs_range_pct": [best, worst],
+            "cs_spread_pp": round(spread, 1),
+            "worst_risk": worst_risk,
+            "sensitivity": sensitivity_verdict,
+        },
+        "interpretation": interpretation,
+        "guidance": (
+            "These scenarios represent plausible alternative assumptions. "
+            "If the worst-case scenario is unacceptable, invest in reducing "
+            "the most uncertain parameters (pore pressure, friction coefficient) "
+            "through direct measurement before proceeding."
+        ),
+        "computation_time_s": elapsed,
+    })

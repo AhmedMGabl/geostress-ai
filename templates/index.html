@@ -1486,6 +1486,17 @@
                         <button class="btn btn-outline-danger btn-sm" onclick="runSensitivityHeatmap()">
                             <i class="bi bi-grid-3x3"></i> Sensitivity Heatmap
                         </button>
+                        <button class="btn btn-danger btn-sm" onclick="runWorstCase()">
+                            <i class="bi bi-exclamation-octagon"></i> Worst-Case Scenarios
+                        </button>
+                    </div>
+                    <div id="worst-case-results" class="d-none mb-4">
+                        <div class="card border-danger">
+                            <div class="card-header bg-danger text-white">
+                                <i class="bi bi-exclamation-octagon"></i> Worst-Case Scenario Analysis
+                            </div>
+                            <div class="card-body" id="worst-case-body"></div>
+                        </div>
                     </div>
                     <div id="heatmap-results" class="d-none mb-4">
                         <div class="card border-danger">

@@ -2568,6 +2568,65 @@ async function runSensitivityHeatmap() {
     }
 }
 
+async function runWorstCase() {
+    showLoading("Running worst-case scenario analysis (5 scenarios)...");
+    try {
+        var r = await apiPost("/api/analysis/worst-case", {
+            source: currentSource, well: getWell(), depth: getDepth()
+        });
+        var el = document.getElementById("worst-case-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("worst-case-body");
+
+        var s = r.summary || {};
+        var sensColor = s.sensitivity === "HIGH_SENSITIVITY" ? "danger" :
+                        (s.sensitivity === "MODERATE_SENSITIVITY" ? "warning" : "success");
+
+        // Verdict banner
+        var html = '<div class="alert alert-' + sensColor + ' p-3 mb-3">' +
+            '<h6><i class="bi bi-exclamation-octagon"></i> ' + (s.sensitivity || "").replace(/_/g, " ") + '</h6>' +
+            '<p class="mb-1">' + (r.interpretation || "") + '</p>' +
+            '<small class="text-muted">' + (r.guidance || "") + '</small></div>';
+
+        // Summary metrics
+        html += '<div class="row g-2 mb-3">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><small class="text-muted">CS Range</small>' +
+            '<div class="fw-bold">' + (s.cs_range_pct ? s.cs_range_pct[0] + '% – ' + s.cs_range_pct[1] + '%' : '--') + '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><small class="text-muted">Spread</small>' +
+            '<div class="fw-bold">' + (s.cs_spread_pp || 0) + ' pp</div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><small class="text-muted">Worst Risk</small>' +
+            '<div class="fw-bold"><span class="badge bg-' + (s.worst_risk === "RED" ? "danger" : s.worst_risk === "AMBER" ? "warning" : "success") + '">' +
+            (s.worst_risk || "--") + '</span></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><small class="text-muted">Scenarios</small>' +
+            '<div class="fw-bold">' + (r.scenarios || []).length + '</div></div></div>';
+        html += '</div>';
+
+        // Scenario table
+        html += '<div class="table-responsive"><table class="table table-sm table-hover">';
+        html += '<thead class="table-dark"><tr><th>Scenario</th><th>Regime</th><th>SHmax</th>' +
+            '<th>mu</th><th>Pp (MPa)</th><th>CS %</th><th>Risk</th></tr></thead><tbody>';
+        (r.scenarios || []).forEach(function(sc) {
+            if (sc.error) {
+                html += '<tr class="table-danger"><td>' + sc.name + '</td><td colspan="6" class="text-danger">' + sc.error + '</td></tr>';
+            } else {
+                var rc = sc.risk_level === "RED" ? "danger" : (sc.risk_level === "AMBER" ? "warning" : "success");
+                html += '<tr><td><strong>' + sc.name + '</strong></td><td>' + sc.regime + '</td>' +
+                    '<td>' + sc.shmax + '°</td><td>' + sc.mu + '</td><td>' + sc.pore_pressure + '</td>' +
+                    '<td>' + sc.pct_critical + '%</td>' +
+                    '<td><span class="badge bg-' + rc + '">' + sc.risk_level + '</span></td></tr>';
+            }
+        });
+        html += '</tbody></table></div>';
+
+        body.innerHTML = html;
+        showToast("Worst-case: CS ranges " + s.cs_range_pct[0] + "%-" + s.cs_range_pct[1] + "% (" + s.sensitivity + ")");
+    } catch (err) {
+        showToast("Worst-case error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 async function runSensitivity() {
     showLoading("Running sensitivity analysis");
     try {
