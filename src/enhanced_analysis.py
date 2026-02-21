@@ -40,6 +40,12 @@ except ImportError:
     HAS_LGB = False
 
 try:
+    import shap
+    HAS_SHAP = True
+except ImportError:
+    HAS_SHAP = False
+
+try:
     from data_loader import (
         DEPTH_COL, AZIMUTH_COL, DIP_COL, WELL_COL, FRACTURE_TYPE_COL,
         fracture_plane_normal,
@@ -764,6 +770,226 @@ def _azimuth_to_compass(az: float) -> str:
     ]
     idx = round(az / 22.5) % 16
     return directions[idx]
+
+
+# ──────────────────────────────────────────────────────
+# SHAP Explainability
+# ──────────────────────────────────────────────────────
+
+def compute_shap_explanations(
+    df: pd.DataFrame,
+    classifier: str = "gradient_boosting",
+    max_display: int = 10,
+) -> dict:
+    """Compute SHAP feature importance explanations for stakeholders.
+
+    Uses TreeExplainer for tree-based models (fast, exact) and falls back
+    to permutation-based importance when SHAP is unavailable.
+
+    Returns:
+        - global_importance: feature-level mean |SHAP| values
+        - top_features: ranked list with plain-language explanations
+        - sample_explanations: per-sample SHAP values for top samples
+        - feature_interactions: top feature interaction pairs
+    """
+    features = engineer_enhanced_features(df)
+    labels = df[FRACTURE_TYPE_COL].values
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+    feature_names = features.columns.tolist()
+
+    # Pick a tree-based model supported by SHAP TreeExplainer.
+    # Note: GradientBoostingClassifier only supports binary in SHAP,
+    # so we prefer RF / XGBoost / LightGBM for multiclass SHAP.
+    shap_preferred = ["xgboost", "lightgbm", "random_forest"]
+    all_models = _get_models()
+
+    if classifier == "gradient_boosting" and len(np.unique(y)) > 2:
+        # GBM not supported for multiclass SHAP - pick best alternative
+        for alt in shap_preferred:
+            if alt in all_models:
+                classifier = alt
+                break
+
+    if classifier not in all_models:
+        classifier = list(all_models.keys())[0]
+    model = all_models[classifier]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model.fit(X, y)
+
+    class_names = le.classes_.tolist()
+
+    # Plain-language feature descriptions for stakeholders
+    feature_descriptions = {
+        "nx": "Fracture orientation (East-West component)",
+        "ny": "Fracture orientation (North-South component)",
+        "nz": "Fracture steepness (vertical component)",
+        "az_sin": "Fracture direction (sine encoding)",
+        "az_cos": "Fracture direction (cosine encoding)",
+        "az2_sin": "Fracture direction periodicity (2x sine)",
+        "az2_cos": "Fracture direction periodicity (2x cosine)",
+        "dip": "Fracture dip angle from horizontal",
+        "depth": "Depth below surface",
+        "pore_pressure_mpa": "Pore fluid pressure at depth",
+        "overburden_mpa": "Weight of overlying rock",
+        "temperature_c": "Formation temperature at depth",
+        "fracture_density": "Number of nearby fractures",
+        "fracture_spacing": "Distance to nearest fracture",
+        "log_spacing": "Log-transformed fracture spacing",
+        "depth_normalized": "Relative position within well",
+        "fabric_e1": "Primary fabric orientation strength",
+        "fabric_e2": "Secondary fabric orientation strength",
+        "fabric_e3": "Tertiary fabric orientation strength",
+        "woodcock_K": "Fabric shape (clustered vs girdle)",
+        "woodcock_C": "Overall fabric strength",
+    }
+
+    result = {
+        "classifier": classifier,
+        "class_names": class_names,
+        "n_samples": len(y),
+        "n_features": len(feature_names),
+        "feature_names": feature_names,
+        "has_shap": False,
+    }
+
+    if HAS_SHAP:
+        try:
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X)
+
+            # shap_values shape varies by model/SHAP version:
+            #   - list of (n_samples, n_features) arrays, one per class
+            #   - 3D array (n_samples, n_features, n_classes) from XGBoost
+            #   - 2D array (n_samples, n_features) for binary
+            if isinstance(shap_values, list):
+                abs_shap = np.mean(
+                    [np.abs(sv) for sv in shap_values], axis=0
+                )
+            elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
+                # (n_samples, n_features, n_classes) -> mean abs across classes
+                abs_shap = np.abs(shap_values).mean(axis=2)
+            else:
+                abs_shap = np.abs(shap_values)
+
+            # Global importance: mean |SHAP| per feature
+            global_importance = abs_shap.mean(axis=0)
+            sorted_idx = np.argsort(global_importance)[::-1]
+
+            # Build ranked feature list with descriptions
+            top_features = []
+            for rank, idx in enumerate(sorted_idx[:max_display]):
+                fname = feature_names[idx]
+                top_features.append({
+                    "rank": rank + 1,
+                    "feature": fname,
+                    "importance": round(float(global_importance[idx]), 4),
+                    "description": feature_descriptions.get(
+                        fname, f"Feature: {fname}"
+                    ),
+                })
+
+            # Per-class importance (which features matter for each class)
+            class_importance = {}
+            if isinstance(shap_values, list):
+                for ci, cls_name in enumerate(class_names):
+                    cls_abs = np.abs(shap_values[ci]).mean(axis=0)
+                    cls_sorted = np.argsort(cls_abs)[::-1][:5]
+                    class_importance[cls_name] = [
+                        {
+                            "feature": feature_names[i],
+                            "importance": round(float(cls_abs[i]), 4),
+                        }
+                        for i in cls_sorted
+                    ]
+            elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
+                # (n_samples, n_features, n_classes)
+                for ci, cls_name in enumerate(class_names):
+                    cls_abs = np.abs(shap_values[:, :, ci]).mean(axis=0)
+                    cls_sorted = np.argsort(cls_abs)[::-1][:5]
+                    class_importance[cls_name] = [
+                        {
+                            "feature": feature_names[i],
+                            "importance": round(float(cls_abs[i]), 4),
+                        }
+                        for i in cls_sorted
+                    ]
+
+            # Sample explanations for most uncertain samples
+            # (highest max SHAP spread = most interesting to review)
+            sample_shap_spread = abs_shap.max(axis=1)
+            top_sample_idx = np.argsort(sample_shap_spread)[::-1][:5]
+
+            sample_explanations = []
+            for si in top_sample_idx:
+                sample_feats = []
+                if isinstance(shap_values, list):
+                    sample_abs = np.mean(
+                        [np.abs(sv[si]) for sv in shap_values], axis=0
+                    )
+                elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
+                    sample_abs = np.abs(shap_values[si]).mean(axis=1)
+                else:
+                    sample_abs = abs_shap[si]
+                top_feat_idx = np.argsort(sample_abs)[::-1][:3]
+                for fi in top_feat_idx:
+                    sample_feats.append({
+                        "feature": feature_names[fi],
+                        "shap_value": round(float(sample_abs[fi]), 4),
+                    })
+                sample_explanations.append({
+                    "sample_index": int(si),
+                    "predicted_class": class_names[int(model.predict(X[si:si+1])[0])],
+                    "top_drivers": sample_feats,
+                })
+
+            result.update({
+                "has_shap": True,
+                "global_importance": {
+                    feature_names[i]: round(float(global_importance[i]), 4)
+                    for i in sorted_idx
+                },
+                "top_features": top_features,
+                "class_importance": class_importance,
+                "sample_explanations": sample_explanations,
+            })
+        except Exception:
+            # Fall through to permutation-based fallback
+            pass
+
+    # Fallback: use model's built-in feature importance
+    if not result["has_shap"]:
+        feat_imp = {}
+        if hasattr(model, "feature_importances_"):
+            feat_imp = dict(zip(feature_names, model.feature_importances_))
+        elif hasattr(model, "coef_"):
+            coef = np.abs(model.coef_).mean(axis=0)
+            feat_imp = dict(zip(feature_names, coef))
+
+        sorted_feats = sorted(feat_imp.items(), key=lambda x: x[1], reverse=True)
+        top_features = [
+            {
+                "rank": i + 1,
+                "feature": fname,
+                "importance": round(float(imp), 4),
+                "description": feature_descriptions.get(fname, f"Feature: {fname}"),
+            }
+            for i, (fname, imp) in enumerate(sorted_feats[:max_display])
+        ]
+        result.update({
+            "global_importance": {k: round(float(v), 4) for k, v in feat_imp.items()},
+            "top_features": top_features,
+            "class_importance": {},
+            "sample_explanations": [],
+            "fallback_method": "model_native",
+        })
+
+    return result
 
 
 # ──────────────────────────────────────────────────────

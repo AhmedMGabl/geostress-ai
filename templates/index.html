@@ -47,6 +47,11 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link" data-tab="shap" href="#">
+                        <i class="bi bi-lightbulb"></i> Why It Predicts
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link" data-tab="classify" href="#">
                         <i class="bi bi-diagram-3"></i> ML Classification
                     </a>
@@ -358,6 +363,98 @@
 
                         <!-- Per-model details -->
                         <div id="mc-details-container"></div>
+                    </div>
+                </div>
+
+                <!-- SHAP EXPLAINABILITY TAB (NEW) -->
+                <div id="tab-shap" class="tab-content">
+                    <div class="d-flex gap-2 mb-3">
+                        <select id="shap-classifier-select" class="form-select form-select-sm" style="width:auto">
+                            <option value="gradient_boosting" selected>Gradient Boosting</option>
+                            <option value="random_forest">Random Forest</option>
+                            <option value="xgboost">XGBoost</option>
+                            <option value="lightgbm">LightGBM</option>
+                        </select>
+                        <button class="btn btn-primary btn-sm" onclick="runShapExplanation()">
+                            <i class="bi bi-play-fill"></i> Explain Predictions
+                        </button>
+                    </div>
+                    <p class="text-muted small">
+                        Uses SHAP (SHapley Additive exPlanations) to show <strong>why</strong> the model makes its predictions.
+                        Each feature gets an importance score based on its actual contribution, not just correlation.
+                        This helps stakeholders understand and trust the AI's fracture classifications.
+                    </p>
+
+                    <div id="shap-results" class="d-none">
+                        <!-- SHAP summary metrics -->
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Explanation Method</div>
+                                    <div class="metric-value" id="shap-method">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Model Used</div>
+                                    <div class="metric-value" id="shap-model">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Features Analyzed</div>
+                                    <div class="metric-value" id="shap-n-features">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card">
+                                    <div class="metric-label">Samples Explained</div>
+                                    <div class="metric-value" id="shap-n-samples">--</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Global feature importance -->
+                        <div class="row g-3 mb-4">
+                            <div class="col-lg-7">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <i class="bi bi-bar-chart"></i> Global Feature Importance (What Drives Predictions Most)
+                                    </div>
+                                    <div class="card-body" id="shap-global-container"></div>
+                                </div>
+                            </div>
+                            <div class="col-lg-5">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <i class="bi bi-info-circle"></i> What This Means for Decisions
+                                    </div>
+                                    <div class="card-body" id="shap-explanation-text">
+                                        <p class="text-muted">Run the explanation to see feature importance insights.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Per-class importance -->
+                        <div id="shap-class-section" class="d-none mb-4">
+                            <div class="card">
+                                <div class="card-header">
+                                    <i class="bi bi-diagram-3"></i> What Drives Each Fracture Type Classification
+                                </div>
+                                <div class="card-body" id="shap-class-container"></div>
+                            </div>
+                        </div>
+
+                        <!-- Sample explanations -->
+                        <div id="shap-sample-section" class="d-none">
+                            <div class="card">
+                                <div class="card-header">
+                                    <i class="bi bi-search"></i> Individual Fracture Explanations (Most Distinctive Samples)
+                                </div>
+                                <div class="card-body" id="shap-sample-container"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

@@ -34,7 +34,7 @@ from src.enhanced_analysis import (
     compare_models, classify_enhanced, cluster_enhanced,
     critically_stressed_enhanced, generate_interpretation,
     compute_pore_pressure, feedback_store,
-    engineer_enhanced_features,
+    engineer_enhanced_features, compute_shap_explanations,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -526,3 +526,32 @@ async def get_feature_info(source: str = "demo"):
         "stats": stats,
         "n_samples": len(features),
     }
+
+
+# ── NEW: SHAP Explainability API ─────────────────────
+
+_shap_cache = {}
+
+
+@app.post("/api/analysis/shap")
+async def shap_explanations(request: Request):
+    """Compute SHAP explanations for stakeholder-friendly feature importance.
+
+    Returns global importance, per-class drivers, and sample-level explanations.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    classifier = body.get("classifier", "gradient_boosting")
+
+    df = get_df(source)
+
+    cache_key = f"{source}_{len(df)}_{classifier}"
+    if cache_key in _shap_cache:
+        return _shap_cache[cache_key]
+
+    result = await asyncio.to_thread(
+        compute_shap_explanations, df, classifier=classifier
+    )
+    response = _sanitize_for_json(result)
+    _shap_cache[cache_key] = response
+    return response

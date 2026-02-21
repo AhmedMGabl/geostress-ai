@@ -72,6 +72,7 @@ var tabNames = {
     viz: "Visualizations",
     inversion: "Stress Inversion",
     models: "Model Comparison",
+    shap: "Why It Predicts",
     classify: "ML Classification",
     cluster: "Fracture Clustering",
     feedback: "Expert Feedback"
@@ -774,6 +775,183 @@ async function loadFeedbackSummary() {
         }
     } catch (err) {
         // Silently fail - feedback summary is not critical
+    }
+}
+
+// ── SHAP Explainability (NEW) ─────────────────────
+
+async function runShapExplanation() {
+    showLoading("Computing SHAP explanations (analyzing feature contributions)...");
+    try {
+        var classifier = document.getElementById("shap-classifier-select").value;
+        var r = await api("/api/analysis/shap", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: currentSource, classifier: classifier })
+        });
+
+        document.getElementById("shap-results").classList.remove("d-none");
+        val("shap-method", r.has_shap ? "SHAP (TreeExplainer)" : "Feature Importance");
+        val("shap-model", r.classifier ? r.classifier.replace("_", " ") : "--");
+        val("shap-n-features", r.n_features);
+        val("shap-n-samples", r.n_samples);
+
+        // Global importance bars
+        var container = document.getElementById("shap-global-container");
+        clearChildren(container);
+        if (r.top_features && r.top_features.length > 0) {
+            var maxImp = r.top_features[0].importance || 1;
+            r.top_features.forEach(function(feat) {
+                var pct = (feat.importance / maxImp * 100).toFixed(0);
+
+                var wrapper = document.createElement("div");
+                wrapper.className = "feat-bar-container";
+
+                var label = document.createElement("div");
+                label.className = "feat-bar-label";
+                label.textContent = "#" + feat.rank + " " + feat.feature;
+                wrapper.appendChild(label);
+
+                var desc = document.createElement("div");
+                desc.className = "small text-muted mb-1";
+                desc.textContent = feat.description;
+                wrapper.appendChild(desc);
+
+                var bg = document.createElement("div");
+                bg.className = "feat-bar-bg";
+
+                var fill = document.createElement("div");
+                fill.className = "feat-bar-fill";
+                fill.style.width = pct + "%";
+                fill.style.backgroundColor = "#6366f1";
+                bg.appendChild(fill);
+
+                var valSpan = document.createElement("span");
+                valSpan.className = "feat-bar-value";
+                valSpan.textContent = feat.importance.toFixed(4);
+                bg.appendChild(valSpan);
+
+                wrapper.appendChild(bg);
+                container.appendChild(wrapper);
+            });
+        }
+
+        // Generate stakeholder explanation text
+        var explainDiv = document.getElementById("shap-explanation-text");
+        clearChildren(explainDiv);
+
+        if (r.top_features && r.top_features.length >= 3) {
+            var intro = document.createElement("p");
+            intro.textContent = "The AI model makes fracture classification decisions based on these factors, ranked by actual impact:";
+            explainDiv.appendChild(intro);
+
+            var ol = document.createElement("ol");
+            r.top_features.slice(0, 5).forEach(function(feat) {
+                var li = document.createElement("li");
+                li.className = "mb-2";
+                var strong = document.createElement("strong");
+                strong.textContent = feat.description;
+                li.appendChild(strong);
+                var detail = document.createElement("span");
+                detail.textContent = " (importance: " + feat.importance.toFixed(4) + ")";
+                li.appendChild(detail);
+                ol.appendChild(li);
+            });
+            explainDiv.appendChild(ol);
+
+            var note = document.createElement("div");
+            note.className = "alert alert-info mt-3 small";
+            var noteIcon = document.createElement("i");
+            noteIcon.className = "bi bi-info-circle";
+            note.appendChild(noteIcon);
+            var noteText = document.createTextNode(
+                " These importance values are based on " + (r.has_shap ? "SHAP Shapley values" : "model-native feature importance") +
+                ". Higher values mean the feature has more influence on the classification decision. " +
+                "If a critical feature seems wrong (e.g., depth shouldn't matter for your field), " +
+                "submit feedback on the Feedback tab."
+            );
+            note.appendChild(noteText);
+            explainDiv.appendChild(note);
+        }
+
+        // Per-class importance
+        var classSection = document.getElementById("shap-class-section");
+        var classContainer = document.getElementById("shap-class-container");
+        clearChildren(classContainer);
+        if (r.class_importance && Object.keys(r.class_importance).length > 0) {
+            classSection.classList.remove("d-none");
+
+            Object.keys(r.class_importance).forEach(function(className) {
+                var feats = r.class_importance[className];
+                var div = document.createElement("div");
+                div.className = "mb-3 p-3 bg-light rounded";
+
+                var title = document.createElement("h6");
+                title.className = "mb-2";
+                title.textContent = className + " fractures are driven by:";
+                div.appendChild(title);
+
+                feats.forEach(function(f) {
+                    var line = document.createElement("div");
+                    line.className = "d-flex justify-content-between small";
+                    var nameSpan = document.createElement("span");
+                    nameSpan.textContent = f.feature;
+                    line.appendChild(nameSpan);
+                    var valSpan = document.createElement("span");
+                    valSpan.className = "text-muted";
+                    valSpan.textContent = f.importance.toFixed(4);
+                    line.appendChild(valSpan);
+                    div.appendChild(line);
+                });
+
+                classContainer.appendChild(div);
+            });
+        } else {
+            classSection.classList.add("d-none");
+        }
+
+        // Sample explanations
+        var sampleSection = document.getElementById("shap-sample-section");
+        var sampleContainer = document.getElementById("shap-sample-container");
+        clearChildren(sampleContainer);
+        if (r.sample_explanations && r.sample_explanations.length > 0) {
+            sampleSection.classList.remove("d-none");
+
+            r.sample_explanations.forEach(function(sample) {
+                var card = document.createElement("div");
+                card.className = "mb-2 p-2 border rounded d-flex align-items-start gap-3";
+
+                var badge = document.createElement("span");
+                badge.className = "badge bg-secondary";
+                badge.textContent = "Fracture #" + sample.sample_index;
+                card.appendChild(badge);
+
+                var predBadge = document.createElement("span");
+                predBadge.className = "badge bg-primary";
+                predBadge.textContent = sample.predicted_class;
+                card.appendChild(predBadge);
+
+                var drivers = document.createElement("div");
+                drivers.className = "small";
+                sample.top_drivers.forEach(function(d) {
+                    var line = document.createElement("span");
+                    line.className = "me-3";
+                    line.textContent = d.feature + ": " + d.shap_value.toFixed(4);
+                    drivers.appendChild(line);
+                });
+                card.appendChild(drivers);
+
+                sampleContainer.appendChild(card);
+            });
+        } else {
+            sampleSection.classList.add("d-none");
+        }
+
+        showToast("SHAP explanations computed for " + r.n_samples + " samples using " + classifier.replace("_", " "));
+    } catch (err) {
+        showToast("SHAP error: " + err.message, "Error");
+    } finally {
+        hideLoading();
     }
 }
 
