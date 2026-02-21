@@ -22,7 +22,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v2.4</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v2.7</small>
             </div>
 
             <ul class="nav flex-column sidebar-nav">
@@ -104,6 +104,16 @@
                 <li class="nav-item">
                     <a class="nav-link" data-tab="scenarios" href="#">
                         <i class="bi bi-sliders"></i> Scenarios
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="montecarlo" href="#">
+                        <i class="bi bi-dice-5"></i> Monte Carlo
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="validation" href="#">
+                        <i class="bi bi-check2-all"></i> Data Validation
                     </a>
                 </li>
                 <li class="nav-item">
@@ -1034,6 +1044,25 @@
 
                 <!-- FEEDBACK TAB (NEW) -->
                 <div id="tab-feedback" class="tab-content">
+
+                    <!-- Trust Score Banner -->
+                    <div class="card mb-4 border-0 shadow-sm" id="trust-score-card">
+                        <div class="card-body p-4">
+                            <div class="d-flex justify-content-between align-items-start mb-3">
+                                <div>
+                                    <h5 class="mb-1"><i class="bi bi-shield-check"></i> Model Trust Score</h5>
+                                    <p class="text-muted small mb-0">Composite confidence metric combining expert feedback, calibration, data quality, corrections, and sample size.</p>
+                                </div>
+                                <button class="btn btn-outline-primary btn-sm" onclick="runTrustScore()">
+                                    <i class="bi bi-arrow-clockwise"></i> Compute
+                                </button>
+                            </div>
+                            <div id="trust-score-body">
+                                <p class="text-muted small">Click "Compute" to assess overall model trustworthiness. The trust score updates as you submit feedback and corrections.</p>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="row g-3 mb-4">
                         <div class="col-lg-6">
                             <div class="card">
@@ -1667,6 +1696,138 @@
                                         <thead><tr><th>Parameter</th><th>Min</th><th>Max</th><th>Range</th><th>CV %</th></tr></thead>
                                         <tbody></tbody>
                                     </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Monte Carlo Tab -->
+                <div id="tab-montecarlo" class="tab-content">
+                    <h5 class="mb-3"><i class="bi bi-dice-5"></i> Monte Carlo Uncertainty Propagation</h5>
+                    <p class="text-muted">How do measurement errors affect your results? This propagates realistic uncertainties (azimuth ±5°, dip ±3°, depth ±2m) through the full inversion to quantify output precision.</p>
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-2">
+                            <label class="form-label small">Simulations</label>
+                            <input type="number" id="mc-nsims" class="form-control form-control-sm" value="200" min="50" max="1000">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Az σ (°)</label>
+                            <input type="number" id="mc-az-std" class="form-control form-control-sm" value="5" min="1" max="20" step="0.5">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Dip σ (°)</label>
+                            <input type="number" id="mc-dip-std" class="form-control form-control-sm" value="3" min="1" max="15" step="0.5">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Depth σ (m)</label>
+                            <input type="number" id="mc-dep-std" class="form-control form-control-sm" value="2" min="0.5" max="20" step="0.5">
+                        </div>
+                        <div class="col-md-2 d-flex align-items-end">
+                            <button class="btn btn-primary btn-sm w-100" onclick="runMonteCarlo()">
+                                <i class="bi bi-dice-5"></i> Run
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="mc-results" class="d-none">
+                        <!-- Reliability Banner -->
+                        <div id="mc-reliability" class="alert mb-3"></div>
+
+                        <!-- Statistics Table -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-table"></i> Output Distributions (95% CI)</div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-sm small">
+                                        <thead><tr><th>Parameter</th><th>Mean</th><th>Median</th><th>Std Dev</th><th>95% CI Lower</th><th>95% CI Upper</th><th>CI Width</th></tr></thead>
+                                        <tbody id="mc-stats-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Sensitivity Ranking -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-sort-down"></i> Input Sensitivity Ranking</div>
+                            <div class="card-body" id="mc-sensitivity-body"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Data Validation Tab -->
+                <div id="tab-validation" class="tab-content">
+                    <h5 class="mb-3"><i class="bi bi-check2-all"></i> Domain Constraint Validation</h5>
+                    <p class="text-muted">Validates your data against physical and geological constraints before analysis. Catches impossible values, unusual combinations, and data anomalies.</p>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="runDomainValidation()">
+                            <i class="bi bi-check2-all"></i> Validate Data
+                        </button>
+                        <button class="btn btn-outline-primary btn-sm" onclick="runCrossWellCV()">
+                            <i class="bi bi-building"></i> Cross-Well Validation
+                        </button>
+                        <button class="btn btn-outline-primary btn-sm" onclick="runExpertEnsemble()">
+                            <i class="bi bi-people"></i> Expert Ensemble
+                        </button>
+                    </div>
+
+                    <!-- Domain Validation Results -->
+                    <div id="val-results" class="d-none mb-4">
+                        <div id="val-status" class="alert mb-3"></div>
+                        <div id="val-issues-body"></div>
+                    </div>
+
+                    <!-- Cross-Well CV Results -->
+                    <div id="cwcv-results" class="d-none mb-4">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-building"></i> Leave-One-Well-Out Cross-Validation</div>
+                            <div class="card-body">
+                                <div id="cwcv-transfer" class="alert mb-3"></div>
+                                <div class="table-responsive">
+                                    <table class="table table-sm small">
+                                        <thead><tr><th>Well (Held Out)</th><th>Train</th><th>Test</th><th>Accuracy</th><th>Balanced Acc</th><th>Per-Class F1</th></tr></thead>
+                                        <tbody id="cwcv-table-body"></tbody>
+                                    </table>
+                                </div>
+                                <h6 class="small fw-bold mt-3">Within-Well Performance</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-sm small">
+                                        <thead><tr><th>Well</th><th>Samples</th><th>Classes</th><th>CV Accuracy</th></tr></thead>
+                                        <tbody id="cwcv-within-body"></tbody>
+                                    </table>
+                                </div>
+                                <div id="cwcv-recommendation" class="mt-3 small text-muted"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Expert Ensemble Results -->
+                    <div id="ee-results" class="d-none mb-4">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-people"></i> Expert-Weighted Ensemble (RLHF-style)</div>
+                            <div class="card-body">
+                                <div id="ee-summary" class="mb-3"></div>
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-6">
+                                        <h6 class="small fw-bold">Model Weights</h6>
+                                        <div class="table-responsive">
+                                            <table class="table table-sm small">
+                                                <thead><tr><th>Model</th><th>Base Weight</th><th>Expert Weight</th><th>CV Accuracy</th></tr></thead>
+                                                <tbody id="ee-weights-body"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <h6 class="small fw-bold">Per-Class Impact</h6>
+                                        <div class="table-responsive">
+                                            <table class="table table-sm small">
+                                                <thead><tr><th>Class</th><th>Equal F1</th><th>Expert F1</th><th>Delta</th></tr></thead>
+                                                <tbody id="ee-class-body"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

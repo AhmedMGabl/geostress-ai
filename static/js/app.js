@@ -94,6 +94,8 @@ var tabNames = {
     feedback: "Expert Feedback",
     scenarios: "Scenario Comparison",
     decision: "Decision Support",
+    montecarlo: "Monte Carlo Uncertainty",
+    validation: "Data Validation",
     audit: "Audit Trail"
 };
 
@@ -1177,6 +1179,82 @@ async function loadFeedbackSummary() {
         }
     } catch (err) {
         // Silently fail - feedback summary is not critical
+    }
+}
+
+// ── Trust Score ──────────────────────────────────
+
+async function runTrustScore() {
+    showLoading("Computing trust score...");
+    try {
+        var r = await api("/api/feedback/trust-score", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, well: currentWell || null})
+        });
+
+        var body = document.getElementById("trust-score-body");
+
+        // Color by trust level
+        var levelColors = {HIGH: "success", MODERATE: "warning", LOW: "danger", "VERY LOW": "danger"};
+        var levelColor = levelColors[r.trust_level] || "secondary";
+
+        var html = '<div class="row g-3 mb-3">';
+        // Main score
+        html += '<div class="col-md-4"><div class="text-center p-3 rounded bg-' + levelColor + ' bg-opacity-10">';
+        html += '<div class="display-4 fw-bold text-' + levelColor + '">' + r.trust_score + '</div>';
+        html += '<div class="small text-muted">out of 100</div>';
+        html += '<span class="badge bg-' + levelColor + ' mt-1">' + r.trust_level + ' TRUST</span>';
+        html += '</div></div>';
+
+        // Trust message + feedback status
+        html += '<div class="col-md-8"><div class="alert alert-' + levelColor + ' py-2 mb-2 small">';
+        html += '<i class="bi bi-info-circle"></i> ' + r.trust_message + '</div>';
+        if (r.feedback_loop_active) {
+            html += '<div class="small text-success"><i class="bi bi-check-circle"></i> Expert feedback loop ACTIVE (' + r.corrections_count + ' corrections applied)</div>';
+        } else {
+            html += '<div class="small text-muted"><i class="bi bi-dash-circle"></i> No expert feedback yet. Submit ratings below to activate the feedback loop.</div>';
+        }
+        html += '</div></div>';
+
+        // Signal breakdown
+        html += '<div class="col-12"><h6 class="small fw-bold mb-2">Trust Signal Breakdown</h6>';
+        html += '<table class="table table-sm small"><thead><tr><th>Signal</th><th>Score</th><th>Weight</th><th>Detail</th></tr></thead><tbody>';
+        var signals = r.signals || {};
+        Object.keys(signals).forEach(function(key) {
+            var s = signals[key];
+            var barColor = s.score >= 70 ? "success" : s.score >= 40 ? "warning" : "danger";
+            html += '<tr><td class="fw-semibold">' + key.replace(/_/g, ' ').replace(/\b\w/g, function(l) { return l.toUpperCase(); }) + '</td>';
+            html += '<td><div class="d-flex align-items-center gap-2">';
+            html += '<div class="progress flex-grow-1" style="height:6px;width:60px"><div class="progress-bar bg-' + barColor + '" style="width:' + s.score + '%"></div></div>';
+            html += '<span>' + s.score + '</span></div></td>';
+            html += '<td>' + (s.weight * 100).toFixed(0) + '%</td>';
+            html += '<td class="text-muted">' + s.detail + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+
+        // Improvements
+        if (r.improvements && r.improvements.length > 0) {
+            html += '<div class="col-12"><h6 class="small fw-bold mb-2"><i class="bi bi-arrow-up-circle"></i> How to Improve Trust</h6>';
+            r.improvements.forEach(function(imp) {
+                html += '<div class="alert alert-light py-2 mb-1 small border-start border-3 border-warning">';
+                html += '<strong>' + imp.factor + '</strong> (score: ' + imp.current_score + '): ' + imp.action + '</div>';
+            });
+            html += '</div>';
+        }
+
+        html += '</div>';
+        body.innerHTML = html;
+
+        // Update card border based on trust level
+        var card = document.getElementById("trust-score-card");
+        card.className = "card mb-4 shadow-sm border-" + levelColor;
+
+        showToast("Trust score: " + r.trust_score + " (" + r.trust_level + ")");
+    } catch (err) {
+        showToast("Trust score error: " + err.message, "Error");
+    } finally {
+        hideLoading();
     }
 }
 
@@ -2900,6 +2978,255 @@ async function runScenarios() {
         showToast("Compared " + data.n_successful + "/" + data.n_scenarios + " scenarios in " + (data.elapsed_s || "?") + "s");
     } catch (err) {
         showToast("Scenario error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Monte Carlo Uncertainty ───────────────────────
+
+async function runMonteCarlo() {
+    showLoading("Running Monte Carlo uncertainty propagation...");
+    try {
+        var r = await api("/api/analysis/monte-carlo", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                source: currentSource,
+                well: currentWell || null,
+                regime: document.getElementById("regime-select").value === "auto" ? "normal" : document.getElementById("regime-select").value,
+                depth: parseFloat(document.getElementById("depth-input").value) || 3000,
+                n_simulations: parseInt(document.getElementById("mc-nsims").value) || 200,
+                azimuth_std: parseFloat(document.getElementById("mc-az-std").value) || 5,
+                dip_std: parseFloat(document.getElementById("mc-dip-std").value) || 3,
+                depth_std: parseFloat(document.getElementById("mc-dep-std").value) || 2,
+            })
+        });
+
+        if (r.error) { showToast(r.error, "Error"); return; }
+
+        document.getElementById("mc-results").classList.remove("d-none");
+
+        // Reliability
+        var relColors = {HIGH: "success", MODERATE: "warning", LOW: "danger"};
+        var relEl = document.getElementById("mc-reliability");
+        relEl.className = "alert alert-" + (relColors[r.reliability] || "secondary") + " mb-3";
+        relEl.innerHTML = '<strong>' + r.reliability + ' RELIABILITY</strong> — ' + r.reliability_message +
+            '<br><small class="text-muted">' + r.n_successful + '/' + r.n_simulations + ' simulations completed</small>';
+
+        // Stats table
+        var tbody = document.getElementById("mc-stats-body");
+        clearChildren(tbody);
+        var paramLabels = {shmax: "SHmax (°)", sigma1: "σ1 (MPa)", sigma3: "σ3 (MPa)", R: "R ratio", mu: "Friction μ", cs_pct: "Critically Stressed %", misfit: "Misfit"};
+        var stats = r.statistics || {};
+        Object.keys(stats).forEach(function(key) {
+            var s = stats[key];
+            var tr = document.createElement("tr");
+            tr.innerHTML = '<td class="fw-semibold">' + (paramLabels[key] || key) + '</td>' +
+                '<td>' + s.mean + '</td><td>' + s.median + '</td><td>' + s.std + '</td>' +
+                '<td>' + s.ci_lower + '</td><td>' + s.ci_upper + '</td>' +
+                '<td><span class="badge bg-' + (s.ci_width < 20 ? 'success' : s.ci_width < 45 ? 'warning' : 'danger') + '">' + s.ci_width + '</span></td>';
+            tbody.appendChild(tr);
+        });
+
+        // Sensitivity ranking
+        var sensBody = document.getElementById("mc-sensitivity-body");
+        clearChildren(sensBody);
+        if (r.sensitivity_ranking && r.sensitivity_ranking.length > 0) {
+            var maxStd = Math.max.apply(null, r.sensitivity_ranking.map(function(s) { return s.shmax_std; }));
+            r.sensitivity_ranking.forEach(function(s, i) {
+                var pct = maxStd > 0 ? (s.shmax_std / maxStd * 100) : 0;
+                var div = document.createElement("div");
+                div.className = "mb-2";
+                div.innerHTML = '<div class="d-flex justify-content-between small"><span>' + (i + 1) + '. ' + s.label + '</span>' +
+                    '<span>SHmax σ = ' + s.shmax_std + '°, range = ' + s.shmax_range + '°</span></div>' +
+                    '<div class="progress" style="height:8px"><div class="progress-bar bg-' + (i === 0 ? 'danger' : 'warning') +
+                    '" style="width:' + pct + '%"></div></div>';
+                sensBody.appendChild(div);
+            });
+        }
+
+        showToast("Monte Carlo: " + r.reliability + " reliability, SHmax ±" + (stats.shmax ? stats.shmax.ci_width / 2 : "?") + "°");
+    } catch (err) {
+        showToast("Monte Carlo error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Domain Validation ────────────────────────────
+
+async function runDomainValidation() {
+    showLoading("Validating domain constraints...");
+    try {
+        var r = await api("/api/data/validate-constraints", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, well: currentWell || null})
+        });
+
+        document.getElementById("val-results").classList.remove("d-none");
+
+        var statusColors = {PASS: "success", OK: "success", CAUTION: "warning", FAIL: "danger"};
+        var statusEl = document.getElementById("val-status");
+        statusEl.className = "alert alert-" + (statusColors[r.status] || "info") + " mb-3";
+        statusEl.innerHTML = '<strong>' + r.status + '</strong> — ' + r.status_message +
+            ' (' + r.n_records + ' records, ' + r.n_errors + ' errors, ' + r.n_warnings + ' warnings)';
+
+        var issuesBody = document.getElementById("val-issues-body");
+        clearChildren(issuesBody);
+        if (r.issues && r.issues.length > 0) {
+            r.issues.forEach(function(issue) {
+                var sevColors = {ERROR: "danger", WARNING: "warning", INFO: "info"};
+                var div = document.createElement("div");
+                div.className = "alert alert-" + (sevColors[issue.severity] || "info") + " py-2 mb-2 small";
+                div.innerHTML = '<strong>' + issue.severity + ' [' + issue.field + ']:</strong> ' + issue.message;
+                issuesBody.appendChild(div);
+            });
+        }
+
+        showToast("Validation: " + r.status + " — " + r.n_errors + " errors, " + r.n_warnings + " warnings");
+    } catch (err) {
+        showToast("Validation error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Cross-Well Validation ────────────────────────
+
+async function runCrossWellCV() {
+    showLoading("Running leave-one-well-out cross-validation...");
+    try {
+        var r = await api("/api/analysis/cross-well-cv", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, classifier: "random_forest"})
+        });
+
+        if (r.error) { showToast(r.error, "Error"); return; }
+
+        document.getElementById("cwcv-results").classList.remove("d-none");
+
+        var tColors = {GOOD: "success", MODERATE: "warning", POOR: "danger", UNKNOWN: "secondary"};
+        var transEl = document.getElementById("cwcv-transfer");
+        transEl.className = "alert alert-" + (tColors[r.transferability] || "info") + " mb-3";
+        transEl.innerHTML = '<strong>Transferability: ' + r.transferability + '</strong> — ' + r.transferability_message;
+
+        // LOWO table
+        var tbody = document.getElementById("cwcv-table-body");
+        clearChildren(tbody);
+        (r.leave_one_well_out || []).forEach(function(row) {
+            var tr = document.createElement("tr");
+            if (row.error) {
+                tr.innerHTML = '<td>' + row.well + '</td><td colspan="5" class="text-danger">' + row.error + '</td>';
+            } else {
+                var f1html = '';
+                if (row.per_class_f1) {
+                    Object.keys(row.per_class_f1).forEach(function(c) {
+                        f1html += c + ': ' + (row.per_class_f1[c] * 100).toFixed(0) + '% ';
+                    });
+                }
+                tr.innerHTML = '<td>' + row.well + '</td><td>' + row.n_train + '</td><td>' + row.n_test + '</td>' +
+                    '<td>' + (row.accuracy * 100).toFixed(1) + '%</td>' +
+                    '<td>' + (row.balanced_accuracy * 100).toFixed(1) + '%</td>' +
+                    '<td class="small">' + f1html + '</td>';
+            }
+            tbody.appendChild(tr);
+        });
+
+        // Within-well table
+        var withinBody = document.getElementById("cwcv-within-body");
+        clearChildren(withinBody);
+        (r.within_well_cv || []).forEach(function(row) {
+            var tr = document.createElement("tr");
+            if (row.error) {
+                tr.innerHTML = '<td>' + row.well + '</td><td>' + row.n_samples + '</td><td colspan="2" class="text-muted">' + row.error + '</td>';
+            } else {
+                tr.innerHTML = '<td>' + row.well + '</td><td>' + row.n_samples + '</td><td>' + row.n_classes + '</td>' +
+                    '<td>' + (row.cv_accuracy * 100).toFixed(1) + '% ± ' + (row.cv_std * 100).toFixed(1) + '%</td>';
+            }
+            withinBody.appendChild(tr);
+        });
+
+        val("cwcv-recommendation", r.recommendation || '');
+
+        showToast("Cross-well: " + r.transferability + " transferability");
+    } catch (err) {
+        showToast("Cross-well CV error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Expert Ensemble ──────────────────────────────
+
+async function runExpertEnsemble() {
+    showLoading("Training expert-weighted ensemble...");
+    try {
+        var r = await api("/api/analysis/expert-ensemble", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource})
+        });
+
+        document.getElementById("ee-results").classList.remove("d-none");
+
+        // Summary
+        var summaryEl = document.getElementById("ee-summary");
+        var impColor = r.improvement > 0 ? "success" : r.improvement < 0 ? "danger" : "info";
+        summaryEl.innerHTML = '<div class="row g-2">' +
+            '<div class="col-md-3"><div class="text-center p-2 bg-light rounded">' +
+            '<div class="small text-muted">Equal-Weight Acc</div><div class="fw-bold">' + (r.equal_weight_accuracy * 100).toFixed(1) + '%</div></div></div>' +
+            '<div class="col-md-3"><div class="text-center p-2 bg-light rounded">' +
+            '<div class="small text-muted">Expert-Weight Acc</div><div class="fw-bold">' + (r.expert_weight_accuracy * 100).toFixed(1) + '%</div></div></div>' +
+            '<div class="col-md-3"><div class="text-center p-2 bg-light rounded">' +
+            '<div class="small text-muted">Disagreement Rate</div><div class="fw-bold">' + (r.disagreement_rate * 100).toFixed(1) + '%</div></div></div>' +
+            '<div class="col-md-3"><div class="text-center p-2 bg-light rounded">' +
+            '<div class="small text-muted">Low Confidence</div><div class="fw-bold">' + r.n_low_confidence + '/' + r.n_total + '</div></div></div>' +
+            '</div>' +
+            (r.expert_weights_applied ?
+                '<div class="alert alert-success py-2 mt-2 small"><i class="bi bi-check-circle"></i> Expert feedback incorporated into ensemble weights.</div>' :
+                '<div class="alert alert-info py-2 mt-2 small"><i class="bi bi-info-circle"></i> No expert feedback yet — using accuracy-proportional weights. Submit 3+ feedback ratings to activate RLHF-style weighting.</div>');
+
+        // Weights table
+        var wBody = document.getElementById("ee-weights-body");
+        clearChildren(wBody);
+        var weights = r.model_weights || {};
+        var accs = r.model_accuracies || {};
+        Object.keys(weights).forEach(function(name) {
+            var w = weights[name];
+            var a = accs[name] || {};
+            var tr = document.createElement("tr");
+            tr.innerHTML = '<td>' + name + '</td>' +
+                '<td>' + (w.base * 100).toFixed(1) + '%</td>' +
+                '<td>' + (w.adjusted * 100).toFixed(1) + '%</td>' +
+                '<td>' + ((a.cv_accuracy || 0) * 100).toFixed(1) + '%</td>';
+            wBody.appendChild(tr);
+        });
+
+        // Per-class table
+        var cBody = document.getElementById("ee-class-body");
+        clearChildren(cBody);
+        var perClass = r.per_class || {};
+        Object.keys(perClass).forEach(function(cname) {
+            var c = perClass[cname];
+            var deltaColor = c.delta_f1 > 0 ? "text-success" : c.delta_f1 < 0 ? "text-danger" : "";
+            var tr = document.createElement("tr");
+            tr.innerHTML = '<td>' + cname + '</td>' +
+                '<td>' + (c.equal_f1 * 100).toFixed(1) + '%</td>' +
+                '<td>' + (c.expert_f1 * 100).toFixed(1) + '%</td>' +
+                '<td class="' + deltaColor + '">' + (c.delta_f1 > 0 ? '+' : '') + (c.delta_f1 * 100).toFixed(1) + '%</td>';
+            cBody.appendChild(tr);
+        });
+
+        showToast("Expert ensemble: " + (r.expert_weight_accuracy * 100).toFixed(1) + "% accuracy, " + r.n_models + " models");
+    } catch (err) {
+        showToast("Expert ensemble error: " + err.message, "Error");
     } finally {
         hideLoading();
     }

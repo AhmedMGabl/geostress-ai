@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
-app.py              - FastAPI backend (v2.6), all API endpoints, serves templates
+app.py              - FastAPI backend (v2.7), all API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
   geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC, auto regime detection
@@ -96,6 +96,11 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | GET | `/api/audit/log` | Prediction audit trail (timestamps, hashes, parameters) |
 | POST | `/api/audit/export` | Export audit log as CSV for regulatory archival |
 | POST | `/api/analysis/hierarchical` | Hierarchical 2-level classification (rare vs common) |
+| POST | `/api/feedback/trust-score` | Composite trust score from 5 signals (RLHF-style) |
+| POST | `/api/analysis/expert-ensemble` | Expert-weighted ensemble with feedback adjustment |
+| POST | `/api/analysis/monte-carlo` | Monte Carlo uncertainty propagation (measurement errors) |
+| POST | `/api/analysis/cross-well-cv` | Leave-one-well-out cross-validation |
+| POST | `/api/data/validate-constraints` | Domain constraint validation (physical/geological) |
 
 ## Domain Concepts
 
@@ -165,3 +170,13 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Hierarchical balanced accuracy: 99.6% vs flat 56.6% — but on training data, real CV will be lower
 - Server-side rendered charts: plot_model_comparison, plot_learning_curve, plot_bootstrap_ci in visualization.py
 - Charts returned as base64 PNG in API responses (comparison_chart_img, chart_img keys)
+- Trust score: weighted combination of expert_feedback(30%), data_quality(25%), corrections(15%), sample_size(15%), calibration(15%)
+- Trust score without expert feedback: ~73.6 (MODERATE) — feedback shifts it significantly
+- Expert ensemble: 6 models with accuracy-proportional weights; expert feedback adjusts via rating_factor * model_bias
+- Cross-well CV: Wells 3P and 6P show POOR transferability (7.5% cross vs 81.6% within) — completely different fracture populations
+- Monte Carlo: each simulation runs full differential_evolution inversion (~7s), fast mode limited to 30 sims
+- Monte Carlo SHmax CI is very wide (~185°) for Well 3P Normal — SHmax direction is poorly constrained
+- Dip uncertainty is #1 sensitivity driver for SHmax (>azimuth), depth has no effect on direction
+- Domain validation catches: depth gaps, class imbalance, physically impossible values, distribution anomalies
+- `fracture_plane_normal()` takes DEGREES (not radians) — don't double-convert
+- Cross-well model fails because 6P only has 2 fracture types vs 5 in 3P — well-specific models needed

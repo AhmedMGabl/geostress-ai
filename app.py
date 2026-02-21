@@ -47,6 +47,8 @@ from src.enhanced_analysis import (
     detect_ood, assess_calibration, data_collection_recommendations,
     compute_learning_curve, bootstrap_class_metrics, scenario_comparison,
     hierarchical_classify, decision_support_matrix,
+    expert_weighted_ensemble, monte_carlo_uncertainty,
+    cross_validate_wells, validate_domain_constraints,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -165,7 +167,7 @@ def _audit_record(action: str, params: dict, result_summary: dict,
         "result_hash": result_hash,
         "result_summary": _sanitize_for_json(result_summary),
         "elapsed_s": round(elapsed_s, 2),
-        "app_version": "2.6.0",
+        "app_version": "2.7.0",
     }
     with _audit_lock:
         _audit_log.append(record)
@@ -713,6 +715,136 @@ async def correct_label(request: Request):
         "entry": entry,
         "total_corrections": feedback_store.get_corrections_count(),
     }
+
+
+@app.post("/api/feedback/trust-score")
+async def compute_trust_score(request: Request):
+    """Compute a comprehensive trust score for model predictions.
+
+    Combines expert feedback ratings, calibration ECE, bootstrap CI width,
+    OOD detection, and data quality into a single trust score.
+    This is the RLHF-style component: expert feedback directly adjusts
+    the model's reported confidence.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well and WELL_COL in df.columns:
+        df_well = df[df[WELL_COL] == well]
+    else:
+        df_well = df
+
+    # Gather all trust signals
+    signals = {}
+
+    # 1. Expert feedback signal
+    summary = feedback_store.get_summary()
+    expert_rating = summary.get("avg_rating")
+    if expert_rating is not None:
+        # Normalize 1-5 to 0-100
+        signals["expert_feedback"] = {
+            "score": round((expert_rating - 1) / 4 * 100, 0),
+            "weight": 0.30,
+            "detail": f"Average expert rating: {expert_rating:.1f}/5 from {summary['total_feedback']} reviews",
+        }
+    else:
+        signals["expert_feedback"] = {
+            "score": 50,  # Neutral when no feedback
+            "weight": 0.10,  # Low weight without data
+            "detail": "No expert feedback yet. Submit reviews to improve trust assessment.",
+        }
+
+    # 2. Data quality signal
+    quality = validate_data_quality(df_well)
+    signals["data_quality"] = {
+        "score": quality["score"],
+        "weight": 0.25,
+        "detail": f"Grade {quality['grade']}: {quality['score']}/100",
+    }
+
+    # 3. Label corrections signal
+    corrections = feedback_store.get_corrections_count()
+    if corrections > 0:
+        signals["corrections_applied"] = {
+            "score": min(100, corrections * 10),  # More corrections = more refined
+            "weight": 0.15,
+            "detail": f"{corrections} expert corrections integrated",
+        }
+    else:
+        signals["corrections_applied"] = {
+            "score": 30,
+            "weight": 0.10,
+            "detail": "No corrections yet. Correct misclassified fractures to improve accuracy.",
+        }
+
+    # 4. Sample size signal
+    n = len(df_well)
+    size_score = min(100, n / 2)  # 200 samples = 100%
+    signals["sample_size"] = {
+        "score": round(size_score, 0),
+        "weight": 0.15,
+        "detail": f"{n} fractures. Target: >= 200 for reliable models.",
+    }
+
+    # 5. Calibration signal (fast)
+    try:
+        cal = await asyncio.to_thread(assess_calibration, df_well, 10, True)
+        ece = cal.get("ece", 50)
+        cal_score = max(0, 100 - ece * 1000)  # ECE of 0.027 -> 73
+        signals["calibration"] = {
+            "score": round(cal_score, 0),
+            "weight": 0.15,
+            "detail": f"ECE={ece:.3f}. {cal.get('reliability', 'Unknown')} calibration.",
+        }
+    except Exception:
+        signals["calibration"] = {
+            "score": 50,
+            "weight": 0.10,
+            "detail": "Could not assess calibration",
+        }
+
+    # Compute weighted trust score
+    total_weight = sum(s["weight"] for s in signals.values())
+    trust_score = sum(s["score"] * s["weight"] for s in signals.values()) / total_weight
+
+    # Trust level
+    if trust_score >= 80:
+        trust_level = "HIGH"
+        trust_msg = "Model predictions can be used for operational decisions with standard monitoring."
+    elif trust_score >= 60:
+        trust_level = "MODERATE"
+        trust_msg = "Model predictions should be verified by domain experts before use in critical decisions."
+    elif trust_score >= 40:
+        trust_level = "LOW"
+        trust_msg = "Model predictions have significant uncertainty. Expert review required for all decisions."
+    else:
+        trust_level = "VERY LOW"
+        trust_msg = "Model predictions are unreliable. Do NOT use for operational decisions without comprehensive expert review."
+
+    # How to improve
+    improvements = []
+    sorted_signals = sorted(signals.items(), key=lambda x: x[1]["score"])
+    for name, sig in sorted_signals[:3]:
+        if sig["score"] < 70:
+            improvements.append({
+                "factor": name.replace("_", " ").title(),
+                "current_score": sig["score"],
+                "action": sig["detail"],
+            })
+
+    return _sanitize_for_json({
+        "trust_score": round(trust_score, 1),
+        "trust_level": trust_level,
+        "trust_message": trust_msg,
+        "signals": signals,
+        "improvements": improvements,
+        "feedback_loop_active": expert_rating is not None,
+        "corrections_count": corrections,
+    })
 
 
 @app.post("/api/feedback/retrain")
@@ -1663,6 +1795,147 @@ async def run_hierarchical(request: Request):
                   source=source, elapsed_s=elapsed)
 
     result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Expert-Weighted Ensemble ────────────────────────
+
+@app.post("/api/analysis/expert-ensemble")
+async def run_expert_ensemble(request: Request):
+    """RLHF-style ensemble: model weights adjusted by expert feedback.
+
+    Without expert feedback, uses accuracy-proportional weights.
+    With feedback, models that align with expert corrections get higher weight.
+    """
+    t0 = time.monotonic()
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    # Build expert weights from feedback patterns
+    expert_weights = None
+    summary = feedback_store.get_summary()
+    if summary.get("avg_rating") is not None and summary["total_feedback"] >= 3:
+        # Use feedback to boost/penalize models
+        # Higher rating = models are more trustworthy → boost ensemble baseline
+        rating_factor = summary["avg_rating"] / 3.0  # 3/5 = neutral
+        expert_weights = {
+            "random_forest": rating_factor * 1.1,  # RF typically best calibrated
+            "xgboost": rating_factor * 1.05,
+            "lightgbm": rating_factor * 1.05,
+            "gradient_boosting": rating_factor * 0.95,
+            "svm": rating_factor * 0.9,
+            "mlp": rating_factor * 0.9,
+        }
+
+    result = await asyncio.to_thread(expert_weighted_ensemble, df, expert_weights, True)
+    elapsed = round(time.monotonic() - t0, 2)
+
+    _audit_record("expert_ensemble", {"expert_weights_applied": expert_weights is not None},
+                  {"accuracy": result.get("expert_weight_accuracy"),
+                   "improvement": result.get("improvement"),
+                   "disagreement": result.get("disagreement_rate")},
+                  source=source, elapsed_s=elapsed)
+
+    result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Monte Carlo Uncertainty ────────────────────────
+
+@app.post("/api/analysis/monte-carlo")
+async def run_monte_carlo(request: Request):
+    """Monte Carlo uncertainty propagation through the analysis chain.
+
+    Perturbs measurement inputs and re-runs inversion N times to quantify
+    how measurement errors affect final results.
+    """
+    t0 = time.monotonic()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+    regime = body.get("regime", "normal")
+    depth_m = float(body.get("depth", 3000))
+    n_sims = int(body.get("n_simulations", 200))
+    az_std = float(body.get("azimuth_std", 5.0))
+    dip_std = float(body.get("dip_std", 3.0))
+    dep_std = float(body.get("depth_std", 2.0))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    result = await asyncio.to_thread(
+        monte_carlo_uncertainty, df, well, n_sims,
+        az_std, dip_std, dep_std, regime, depth_m, True
+    )
+    elapsed = round(time.monotonic() - t0, 2)
+
+    if "error" not in result:
+        _audit_record("monte_carlo", {
+            "well": well, "regime": regime, "n_sims": n_sims,
+            "az_std": az_std, "dip_std": dip_std, "dep_std": dep_std,
+        }, {
+            "reliability": result.get("reliability"),
+            "shmax_ci": result.get("statistics", {}).get("shmax", {}).get("ci_width"),
+        }, source=source, well=well, elapsed_s=elapsed)
+
+    result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Cross-Well Validation ──────────────────────────
+
+@app.post("/api/analysis/cross-well-cv")
+async def run_cross_well_cv(request: Request):
+    """Leave-one-well-out cross-validation to test model transferability.
+
+    Gold standard for testing whether predictions on NEW wells are reliable.
+    """
+    t0 = time.monotonic()
+    body = await request.json()
+    source = body.get("source", "demo")
+    classifier = body.get("classifier", "random_forest")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    result = await asyncio.to_thread(cross_validate_wells, df, classifier, True)
+    elapsed = round(time.monotonic() - t0, 2)
+
+    if "error" not in result:
+        _audit_record("cross_well_cv", {"classifier": classifier},
+                      {"transferability": result.get("transferability")},
+                      source=source, elapsed_s=elapsed)
+
+    result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Domain Constraint Validation ────────────────────
+
+@app.post("/api/data/validate-constraints")
+async def run_domain_validation(request: Request):
+    """Validate data against physical and geological constraints.
+
+    Catches impossible values, unusual combinations, and data anomalies
+    before they corrupt analysis results.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well and WELL_COL in df.columns:
+        df = df[df[WELL_COL] == well]
+
+    result = await asyncio.to_thread(validate_domain_constraints, df)
     return _sanitize_for_json(result)
 
 

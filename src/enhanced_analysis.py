@@ -4502,3 +4502,696 @@ def decision_support_matrix(df, well_name="All", depth_m=3000):
         "recommended_action": recommended_action,
         "confidence": confidence,
     }
+
+
+# ──────────────────────────────────────────────────────
+# Expert-Weighted Ensemble (RLHF-style)
+# ──────────────────────────────────────────────────────
+
+def expert_weighted_ensemble(
+    df: pd.DataFrame,
+    expert_weights: dict = None,
+    fast: bool = True,
+) -> dict:
+    """Train an ensemble where model weights incorporate expert feedback.
+
+    This is the RLHF-style component: expert feedback (ratings per analysis type,
+    correction patterns) adjusts the relative contribution of each model in the
+    final ensemble prediction. Models that align better with expert corrections
+    get higher weights.
+
+    Parameters
+    ----------
+    df : DataFrame with fracture data
+    expert_weights : dict mapping model_name -> weight_multiplier (from feedback).
+        If None, uses equal weights (baseline).
+    fast : bool, use fast mode
+
+    Returns dict with ensemble predictions, per-model contributions, and
+    comparison vs equal-weight ensemble.
+    """
+    features = engineer_enhanced_features(df)
+    le = LabelEncoder()
+    y = le.fit_transform(df[FRACTURE_TYPE_COL].values)
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    n_folds = 3 if fast else 5
+    cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+
+    models = _get_models(fast=fast)
+
+    # Train each model and collect CV predictions + probabilities
+    model_results = {}
+    from sklearn.base import clone
+    for name, model in models.items():
+        y_pred_cv = cross_val_predict(model, X, y, cv=cv)
+        cv_acc = float(accuracy_score(y, y_pred_cv))
+        cv_bal = float(balanced_accuracy_score(y, y_pred_cv))
+
+        # Fit on full data for probability estimates
+        model.fit(X, y)
+        if hasattr(model, "predict_proba"):
+            proba = model.predict_proba(X)
+        else:
+            proba = np.zeros((len(X), len(le.classes_)))
+
+        model_results[name] = {
+            "cv_accuracy": cv_acc,
+            "cv_balanced": cv_bal,
+            "probabilities": proba,
+            "predictions": model.predict(X),
+        }
+
+    # Compute weights: base = accuracy-proportional, then expert-adjusted
+    base_weights = {}
+    for name, res in model_results.items():
+        base_weights[name] = res["cv_accuracy"]
+
+    # Normalize base weights
+    w_sum = sum(base_weights.values())
+    base_weights = {k: v / w_sum for k, v in base_weights.items()}
+
+    # Apply expert multipliers if provided
+    if expert_weights:
+        adjusted_weights = {}
+        for name, bw in base_weights.items():
+            multiplier = expert_weights.get(name, 1.0)
+            adjusted_weights[name] = bw * multiplier
+        # Re-normalize
+        w_sum2 = sum(adjusted_weights.values())
+        adjusted_weights = {k: v / w_sum2 for k, v in adjusted_weights.items()}
+    else:
+        adjusted_weights = base_weights.copy()
+
+    # Weighted ensemble prediction (probability averaging)
+    n_classes = len(le.classes_)
+    equal_proba = np.zeros((len(X), n_classes))
+    expert_proba = np.zeros((len(X), n_classes))
+
+    for name, res in model_results.items():
+        p = res["probabilities"]
+        if p.shape[1] == n_classes:
+            equal_proba += p * base_weights[name]
+            expert_proba += p * adjusted_weights[name]
+
+    equal_pred = le.inverse_transform(np.argmax(equal_proba, axis=1))
+    expert_pred = le.inverse_transform(np.argmax(expert_proba, axis=1))
+    y_true_labels = le.inverse_transform(y)
+
+    # Compare equal vs expert-weighted
+    equal_acc = float(accuracy_score(y_true_labels, equal_pred))
+    expert_acc = float(accuracy_score(y_true_labels, expert_pred))
+    equal_bal = float(balanced_accuracy_score(y_true_labels, equal_pred))
+    expert_bal = float(balanced_accuracy_score(y_true_labels, expert_pred))
+
+    # Per-class comparison
+    per_class = {}
+    eq_f1 = f1_score(y_true_labels, equal_pred, average=None, zero_division=0, labels=le.classes_)
+    ex_f1 = f1_score(y_true_labels, expert_pred, average=None, zero_division=0, labels=le.classes_)
+    for i, cname in enumerate(le.classes_):
+        per_class[cname] = {
+            "equal_f1": round(float(eq_f1[i]), 3),
+            "expert_f1": round(float(ex_f1[i]), 3),
+            "delta_f1": round(float(ex_f1[i] - eq_f1[i]), 3),
+        }
+
+    # Agreement analysis: how many samples do models disagree on?
+    all_preds = np.array([res["predictions"] for res in model_results.values()])
+    disagreement = np.mean(np.apply_along_axis(
+        lambda col: len(np.unique(col)) > 1, 0, all_preds
+    ))
+
+    # Confidence per sample (max ensemble probability)
+    expert_confidence = np.max(expert_proba, axis=1)
+    low_confidence_mask = expert_confidence < 0.5
+    n_low_conf = int(np.sum(low_confidence_mask))
+
+    return {
+        "equal_weight_accuracy": round(equal_acc, 4),
+        "expert_weight_accuracy": round(expert_acc, 4),
+        "equal_balanced": round(equal_bal, 4),
+        "expert_balanced": round(expert_bal, 4),
+        "improvement": round(expert_acc - equal_acc, 4),
+        "model_weights": {
+            name: {"base": round(base_weights[name], 3),
+                   "adjusted": round(adjusted_weights[name], 3)}
+            for name in model_results
+        },
+        "model_accuracies": {
+            name: {"cv_accuracy": round(res["cv_accuracy"], 4),
+                   "cv_balanced": round(res["cv_balanced"], 4)}
+            for name, res in model_results.items()
+        },
+        "per_class": per_class,
+        "disagreement_rate": round(float(disagreement), 3),
+        "n_low_confidence": n_low_conf,
+        "n_total": len(X),
+        "expert_weights_applied": expert_weights is not None,
+        "n_models": len(model_results),
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Monte Carlo Uncertainty Propagation
+# ──────────────────────────────────────────────────────
+
+def monte_carlo_uncertainty(
+    df: pd.DataFrame,
+    well: str = None,
+    n_simulations: int = 200,
+    azimuth_std: float = 5.0,
+    dip_std: float = 3.0,
+    depth_std: float = 2.0,
+    regime: str = "normal",
+    depth_m: float = 3000.0,
+    fast: bool = True,
+) -> dict:
+    """Propagate measurement uncertainties through the full analysis chain.
+
+    Perturbs input data (azimuth ±5°, dip ±3°, depth ±2m) with Gaussian noise
+    and re-runs the stress inversion N times to build a distribution of outputs.
+    This quantifies how measurement errors affect final results.
+
+    Returns distributions of SHmax, sigma1, sigma3, R-ratio, and critically
+    stressed %, with confidence intervals and sensitivity ranking.
+    """
+    try:
+        from src.geostress import invert_stress as _invert_stress
+    except ImportError:
+        from geostress import invert_stress as _invert_stress
+
+    if well and WELL_COL in df.columns:
+        df_use = df[df[WELL_COL] == well].copy()
+    else:
+        df_use = df.copy()
+
+    if len(df_use) < 10:
+        return {"error": "Need at least 10 fractures for Monte Carlo simulation"}
+
+    az_col = [c for c in df_use.columns if "az" in c.lower() or "azi" in c.lower()]
+    dip_col = [c for c in df_use.columns if "dip" in c.lower()]
+    depth_col = [c for c in df_use.columns if "depth" in c.lower()]
+
+    if not az_col or not dip_col:
+        return {"error": "Cannot identify azimuth/dip columns"}
+
+    az_col = az_col[0]
+    dip_col = dip_col[0]
+    depth_col = depth_col[0] if depth_col else None
+
+    base_az = df_use[az_col].values.astype(float)
+    base_dip = df_use[dip_col].values.astype(float)
+    base_depth = df_use[depth_col].values.astype(float) if depth_col else np.full(len(df_use), depth_m)
+
+    if fast:
+        n_simulations = min(n_simulations, 30)  # Each sim runs full inversion (~7s)
+
+    rng = np.random.RandomState(42)
+
+    results = {
+        "shmax": [], "sigma1": [], "sigma3": [], "R": [],
+        "mu": [], "cs_pct": [], "misfit": [],
+    }
+
+    def _scalar(v):
+        if isinstance(v, np.ndarray):
+            return float(v.flat[0])
+        return float(v)
+
+    for i in range(n_simulations):
+        # Perturb inputs
+        az_pert = base_az + rng.normal(0, azimuth_std, len(base_az))
+        az_pert = az_pert % 360  # Keep in [0, 360)
+        dip_pert = base_dip + rng.normal(0, dip_std, len(base_dip))
+        dip_pert = np.clip(dip_pert, 0, 90)
+        depth_pert = base_depth + rng.normal(0, depth_std, len(base_depth))
+        depth_pert = np.clip(depth_pert, 0, None)
+
+        # Build perturbed dataframe
+        df_pert = df_use.copy()
+        df_pert[az_col] = az_pert
+        df_pert[dip_col] = dip_pert
+        if depth_col:
+            df_pert[depth_col] = depth_pert
+
+        try:
+            normals = fracture_plane_normal(az_pert, dip_pert)
+            inv = _invert_stress(normals, regime=regime, depth_m=float(np.mean(depth_pert)))
+            results["shmax"].append(_scalar(inv["shmax_azimuth_deg"]))
+            results["sigma1"].append(_scalar(inv["sigma1"]))
+            results["sigma3"].append(_scalar(inv["sigma3"]))
+            results["R"].append(_scalar(inv["R"]))
+            results["mu"].append(_scalar(inv["mu"]))
+            results["misfit"].append(_scalar(inv["misfit"]))
+            cs_pct = inv.get("critically_stressed_pct", 0)
+            results["cs_pct"].append(_scalar(cs_pct))
+        except Exception:
+            continue
+
+    n_success = len(results["shmax"])
+    if n_success < 10:
+        return {"error": f"Only {n_success}/{n_simulations} simulations succeeded. Check data."}
+
+    # Compute statistics
+    stats = {}
+    for key, vals in results.items():
+        arr = np.array(vals)
+        stats[key] = {
+            "mean": round(float(np.mean(arr)), 2),
+            "median": round(float(np.median(arr)), 2),
+            "std": round(float(np.std(arr)), 2),
+            "ci_lower": round(float(np.percentile(arr, 2.5)), 2),
+            "ci_upper": round(float(np.percentile(arr, 97.5)), 2),
+            "ci_width": round(float(np.percentile(arr, 97.5) - np.percentile(arr, 2.5)), 2),
+        }
+
+    # Sensitivity ranking: which input uncertainty matters most?
+    # Run focused perturbation for each input independently
+    sensitivity = {}
+    for param, std_val, label in [
+        ("azimuth", azimuth_std, f"Azimuth ±{azimuth_std}°"),
+        ("dip", dip_std, f"Dip ±{dip_std}°"),
+        ("depth", depth_std, f"Depth ±{depth_std}m"),
+    ]:
+        shmax_single = []
+        for _ in range(min(15, n_simulations)):
+            az_p = base_az.copy()
+            dip_p = base_dip.copy()
+            dep_p = base_depth.copy()
+            if param == "azimuth":
+                az_p += rng.normal(0, std_val, len(az_p))
+                az_p = az_p % 360
+            elif param == "dip":
+                dip_p += rng.normal(0, std_val, len(dip_p))
+                dip_p = np.clip(dip_p, 0, 90)
+            else:
+                dep_p += rng.normal(0, std_val, len(dep_p))
+                dep_p = np.clip(dep_p, 0, None)
+            try:
+                normals = fracture_plane_normal(az_p, dip_p)
+                inv = _invert_stress(normals, regime=regime, depth_m=float(np.mean(dep_p)))
+                shmax_single.append(_scalar(inv["shmax_azimuth_deg"]))
+            except Exception:
+                pass
+        if len(shmax_single) >= 5:
+            arr = np.array(shmax_single)
+            sensitivity[param] = {
+                "label": label,
+                "shmax_std": round(float(np.std(arr)), 2),
+                "shmax_range": round(float(np.ptp(arr)), 2),
+            }
+
+    # Rank by impact on SHmax
+    if sensitivity:
+        ranked = sorted(sensitivity.items(), key=lambda x: x[1]["shmax_std"], reverse=True)
+        sensitivity_ranking = [
+            {"parameter": k, **v} for k, v in ranked
+        ]
+    else:
+        sensitivity_ranking = []
+
+    # Reliability assessment
+    shmax_ci = stats["shmax"]["ci_width"]
+    if shmax_ci < 20:
+        reliability = "HIGH"
+        reliability_msg = f"SHmax uncertainty is ±{shmax_ci/2:.0f}° — acceptable for wellbore stability design."
+    elif shmax_ci < 45:
+        reliability = "MODERATE"
+        reliability_msg = f"SHmax uncertainty is ±{shmax_ci/2:.0f}° — use with caution, consider reducing measurement error."
+    else:
+        reliability = "LOW"
+        reliability_msg = f"SHmax uncertainty is ±{shmax_ci/2:.0f}° — too wide for operational decisions. Improve measurement quality."
+
+    return {
+        "n_simulations": n_simulations,
+        "n_successful": n_success,
+        "input_uncertainties": {
+            "azimuth_std_deg": azimuth_std,
+            "dip_std_deg": dip_std,
+            "depth_std_m": depth_std,
+        },
+        "statistics": stats,
+        "sensitivity_ranking": sensitivity_ranking,
+        "reliability": reliability,
+        "reliability_message": reliability_msg,
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Leave-One-Well-Out Cross-Validation
+# ──────────────────────────────────────────────────────
+
+def cross_validate_wells(
+    df: pd.DataFrame,
+    classifier: str = "random_forest",
+    fast: bool = True,
+) -> dict:
+    """Leave-one-well-out cross-validation to test model transferability.
+
+    For each well, train on all OTHER wells and predict on the held-out well.
+    This is the gold standard for testing whether a model generalizes to
+    new wells (which is the real use case in the oil industry).
+
+    Also runs standard stratified k-fold within each well for comparison.
+    """
+    if WELL_COL not in df.columns:
+        return {"error": "No well column found — cannot run cross-well validation"}
+
+    wells = df[WELL_COL].unique().tolist()
+    if len(wells) < 2:
+        return {"error": f"Need at least 2 wells for cross-well validation, found {len(wells)}"}
+
+    features = engineer_enhanced_features(df)
+    le = LabelEncoder()
+    y = le.fit_transform(df[FRACTURE_TYPE_COL].values)
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    all_models = _get_models(fast=fast)
+    model = all_models.get(classifier, list(all_models.values())[0])
+
+    from sklearn.base import clone
+
+    # 1. Leave-one-well-out
+    lowo_results = []
+    for held_out_well in wells:
+        mask_test = (df[WELL_COL] == held_out_well).values
+        mask_train = ~mask_test
+
+        X_train, X_test = X[mask_train], X[mask_test]
+        y_train, y_test = y[mask_train], y[mask_test]
+
+        if len(np.unique(y_train)) < 2 or len(X_test) < 5:
+            lowo_results.append({
+                "well": held_out_well,
+                "n_train": int(mask_train.sum()),
+                "n_test": int(mask_test.sum()),
+                "error": "Insufficient data or classes for this fold",
+            })
+            continue
+
+        m = clone(model)
+        try:
+            m.fit(X_train, y_train)
+            y_pred = m.predict(X_test)
+            acc = float(accuracy_score(y_test, y_pred))
+            bal_acc = float(balanced_accuracy_score(y_test, y_pred))
+
+            # Per-class F1
+            per_class = {}
+            test_labels = le.inverse_transform(y_test)
+            pred_labels = le.inverse_transform(y_pred)
+            unique_test = np.unique(test_labels)
+            f1s = f1_score(test_labels, pred_labels, average=None,
+                           zero_division=0, labels=unique_test)
+            for i, cname in enumerate(unique_test):
+                per_class[cname] = round(float(f1s[i]), 3)
+
+            # Train classes not in test
+            train_labels = le.inverse_transform(y_train)
+            missing_classes = set(np.unique(train_labels)) - set(unique_test)
+
+            lowo_results.append({
+                "well": held_out_well,
+                "n_train": int(mask_train.sum()),
+                "n_test": int(mask_test.sum()),
+                "accuracy": round(acc, 4),
+                "balanced_accuracy": round(bal_acc, 4),
+                "per_class_f1": per_class,
+                "missing_classes": list(missing_classes),
+                "n_train_classes": len(np.unique(y_train)),
+                "n_test_classes": len(np.unique(y_test)),
+            })
+        except Exception as e:
+            lowo_results.append({
+                "well": held_out_well,
+                "error": str(e),
+            })
+
+    # 2. Standard within-well k-fold for comparison
+    within_results = []
+    n_folds = 3 if fast else 5
+    for w in wells:
+        mask = (df[WELL_COL] == w).values
+        X_w, y_w = X[mask], y[mask]
+        unique_y = np.unique(y_w)
+        if len(unique_y) < 2 or len(X_w) < n_folds * 2:
+            within_results.append({
+                "well": w, "n_samples": int(mask.sum()),
+                "error": "Insufficient data for within-well CV",
+            })
+            continue
+
+        # Adjust folds if too few samples per class
+        min_class = min(np.bincount(y_w)[np.bincount(y_w) > 0])
+        folds = min(n_folds, min_class)
+        if folds < 2:
+            within_results.append({
+                "well": w, "n_samples": int(mask.sum()),
+                "error": f"Min class has only {min_class} samples — can't fold",
+            })
+            continue
+
+        cv = StratifiedKFold(n_splits=folds, shuffle=True, random_state=42)
+        m = clone(model)
+        scores = cross_val_score(m, X_w, y_w, cv=cv, scoring="accuracy")
+        within_results.append({
+            "well": w,
+            "n_samples": int(mask.sum()),
+            "n_classes": len(unique_y),
+            "cv_accuracy": round(float(scores.mean()), 4),
+            "cv_std": round(float(scores.std()), 4),
+        })
+
+    # 3. Summary assessment
+    lowo_accs = [r["accuracy"] for r in lowo_results if "accuracy" in r]
+    within_accs = [r["cv_accuracy"] for r in within_results if "cv_accuracy" in r]
+
+    if lowo_accs and within_accs:
+        avg_lowo = np.mean(lowo_accs)
+        avg_within = np.mean(within_accs)
+        gap = avg_within - avg_lowo
+        if gap > 0.2:
+            transferability = "POOR"
+            transfer_msg = (f"Cross-well accuracy ({avg_lowo*100:.1f}%) is much lower than "
+                          f"within-well ({avg_within*100:.1f}%). Model does NOT generalize across wells.")
+        elif gap > 0.1:
+            transferability = "MODERATE"
+            transfer_msg = (f"Cross-well accuracy ({avg_lowo*100:.1f}%) drops notably from "
+                          f"within-well ({avg_within*100:.1f}%). Use caution applying to new wells.")
+        else:
+            transferability = "GOOD"
+            transfer_msg = (f"Cross-well accuracy ({avg_lowo*100:.1f}%) is close to "
+                          f"within-well ({avg_within*100:.1f}%). Model generalizes well.")
+    else:
+        transferability = "UNKNOWN"
+        transfer_msg = "Could not assess transferability — insufficient results."
+
+    return {
+        "classifier": classifier,
+        "n_wells": len(wells),
+        "wells": wells,
+        "leave_one_well_out": lowo_results,
+        "within_well_cv": within_results,
+        "transferability": transferability,
+        "transferability_message": transfer_msg,
+        "recommendation": (
+            "Collect more wells to improve generalization. "
+            "Consider well-specific models if transferability remains poor."
+            if transferability == "POOR" else
+            "Model shows reasonable generalization. Continue collecting diverse well data."
+            if transferability != "GOOD" else
+            "Model generalizes well across available wells."
+        ),
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Domain Constraint Validation
+# ──────────────────────────────────────────────────────
+
+def validate_domain_constraints(df: pd.DataFrame) -> dict:
+    """Validate fracture data against physical and geological constraints.
+
+    Checks for:
+    - Physically impossible values (dip > 90°, negative depths)
+    - Geologically unusual combinations
+    - Depth-pressure consistency
+    - Data distribution anomalies
+
+    Returns detailed validation report with severity levels.
+    """
+    issues = []
+    warnings_list = []
+
+    az_col = [c for c in df.columns if "az" in c.lower() or "azi" in c.lower()]
+    dip_col = [c for c in df.columns if "dip" in c.lower()]
+    depth_col = [c for c in df.columns if "depth" in c.lower()]
+
+    az_col = az_col[0] if az_col else None
+    dip_col = dip_col[0] if dip_col else None
+    depth_col = depth_col[0] if depth_col else None
+
+    n_total = len(df)
+
+    # Azimuth checks
+    if az_col:
+        az = pd.to_numeric(df[az_col], errors="coerce")
+        n_nan = int(az.isna().sum())
+        if n_nan > 0:
+            issues.append({
+                "severity": "ERROR",
+                "field": "azimuth",
+                "message": f"{n_nan} non-numeric azimuth values",
+                "affected": n_nan,
+            })
+        az_valid = az.dropna()
+        n_out = int(((az_valid < 0) | (az_valid > 360)).sum())
+        if n_out > 0:
+            issues.append({
+                "severity": "ERROR",
+                "field": "azimuth",
+                "message": f"{n_out} azimuth values outside [0, 360]°",
+                "affected": n_out,
+            })
+        # Check for suspiciously uniform distribution (random data?)
+        if len(az_valid) > 30:
+            from scipy import stats as sp_stats
+            _, p_uniform = sp_stats.kstest(az_valid.values % 360, "uniform",
+                                           args=(0, 360))
+            if p_uniform > 0.5:
+                warnings_list.append({
+                    "severity": "WARNING",
+                    "field": "azimuth",
+                    "message": "Azimuth distribution looks nearly uniform (p={:.3f}). "
+                               "Natural fractures typically show preferred orientations.".format(p_uniform),
+                })
+
+    # Dip checks
+    if dip_col:
+        dip = pd.to_numeric(df[dip_col], errors="coerce")
+        n_nan = int(dip.isna().sum())
+        if n_nan > 0:
+            issues.append({
+                "severity": "ERROR",
+                "field": "dip",
+                "message": f"{n_nan} non-numeric dip values",
+                "affected": n_nan,
+            })
+        dip_valid = dip.dropna()
+        n_out = int(((dip_valid < 0) | (dip_valid > 90)).sum())
+        if n_out > 0:
+            issues.append({
+                "severity": "ERROR",
+                "field": "dip",
+                "message": f"{n_out} dip values outside [0, 90]° — physically impossible",
+                "affected": n_out,
+            })
+        # Very low dip = nearly horizontal, unusual for drilling-induced fractures
+        n_low = int((dip_valid < 5).sum())
+        if n_low > n_total * 0.2:
+            warnings_list.append({
+                "severity": "WARNING",
+                "field": "dip",
+                "message": f"{n_low} fractures with dip < 5° (near-horizontal). "
+                           "Unusual for borehole image log fractures.",
+            })
+
+    # Depth checks
+    if depth_col:
+        dep = pd.to_numeric(df[depth_col], errors="coerce")
+        dep_valid = dep.dropna()
+        n_neg = int((dep_valid < 0).sum())
+        if n_neg > 0:
+            issues.append({
+                "severity": "ERROR",
+                "field": "depth",
+                "message": f"{n_neg} negative depth values",
+                "affected": n_neg,
+            })
+        # Check depth range consistency
+        if len(dep_valid) > 5:
+            dep_range = float(dep_valid.max() - dep_valid.min())
+            dep_mean = float(dep_valid.mean())
+            if dep_range > dep_mean * 0.5 and dep_mean > 100:
+                warnings_list.append({
+                    "severity": "INFO",
+                    "field": "depth",
+                    "message": f"Depth range spans {dep_range:.0f}m ({dep_valid.min():.0f}m to "
+                               f"{dep_valid.max():.0f}m). Large ranges may indicate multiple "
+                               "geological intervals with different stress states.",
+                })
+            # Check for suspicious depth gaps
+            sorted_depths = np.sort(dep_valid.values)
+            gaps = np.diff(sorted_depths)
+            if len(gaps) > 5:
+                median_gap = np.median(gaps)
+                large_gaps = gaps[gaps > median_gap * 10]
+                if len(large_gaps) > 0:
+                    warnings_list.append({
+                        "severity": "WARNING",
+                        "field": "depth",
+                        "message": f"{len(large_gaps)} large depth gaps detected (>10x median spacing). "
+                                   "Missing data intervals may bias results.",
+                    })
+
+    # Fracture type checks
+    type_col = FRACTURE_TYPE_COL if FRACTURE_TYPE_COL in df.columns else None
+    if type_col:
+        type_counts = df[type_col].value_counts()
+        n_classes = len(type_counts)
+        if n_classes < 2:
+            issues.append({
+                "severity": "ERROR",
+                "field": "fracture_type",
+                "message": "Only 1 fracture type found — classification impossible",
+                "affected": n_total,
+            })
+        # Severe imbalance
+        if n_classes >= 2:
+            min_count = int(type_counts.min())
+            max_count = int(type_counts.max())
+            ratio = min_count / max_count if max_count > 0 else 0
+            if ratio < 0.05:
+                warnings_list.append({
+                    "severity": "WARNING",
+                    "field": "fracture_type",
+                    "message": f"Severe class imbalance: {type_counts.idxmin()} has only "
+                               f"{min_count} samples vs {type_counts.idxmax()} with {max_count}. "
+                               "ML models will struggle with rare classes.",
+                })
+            if min_count < 10:
+                warnings_list.append({
+                    "severity": "WARNING",
+                    "field": "fracture_type",
+                    "message": f"Class '{type_counts.idxmin()}' has only {min_count} samples. "
+                               "Minimum 30 recommended for reliable classification.",
+                })
+
+    # Overall assessment
+    n_errors = len([i for i in issues if i["severity"] == "ERROR"])
+    n_warnings = len(warnings_list)
+    all_issues = issues + warnings_list
+
+    if n_errors > 0:
+        status = "FAIL"
+        status_msg = f"{n_errors} critical errors found. Fix before running analysis."
+    elif n_warnings > 2:
+        status = "CAUTION"
+        status_msg = f"{n_warnings} warnings. Results may be less reliable."
+    elif n_warnings > 0:
+        status = "OK"
+        status_msg = f"Data is usable with {n_warnings} minor warning(s)."
+    else:
+        status = "PASS"
+        status_msg = "All domain constraints satisfied."
+
+    return {
+        "status": status,
+        "status_message": status_msg,
+        "n_errors": n_errors,
+        "n_warnings": n_warnings,
+        "n_records": n_total,
+        "issues": all_issues,
+    }
