@@ -1218,6 +1218,20 @@ async function runInversion() {
         val("inv-shmax", r.shmax_azimuth_deg.toFixed(1) + "\u00b0");
         val("inv-pp", (r.pore_pressure_mpa || 0).toFixed(1) + " MPa");
 
+        // Data quality badge
+        if (r.data_quality) {
+            var dq = r.data_quality;
+            var qc = dq.confidence_level === "HIGH" ? "success" : dq.confidence_level === "MODERATE" ? "warning" : "danger";
+            var qBadge = document.getElementById("inv-quality-badge");
+            if (qBadge) {
+                qBadge.className = "badge bg-" + qc + " ms-2";
+                qBadge.textContent = "Data: " + dq.grade + " (" + dq.score + "/100)";
+                qBadge.title = dq.confidence_level + " confidence" +
+                    (dq.issues.length > 0 ? " | Issues: " + dq.issues.join("; ") : "") +
+                    (dq.warnings.length > 0 ? " | Warnings: " + dq.warnings.join("; ") : "");
+            }
+        }
+
         // Risk categories
         if (r.risk_categories) {
             val("inv-high-risk", r.risk_categories.high);

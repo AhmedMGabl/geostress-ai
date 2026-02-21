@@ -701,6 +701,17 @@ async def run_inversion(request: Request):
     # Generate stakeholder interpretation
     interpretation = generate_interpretation(result, cs_result, well)
 
+    # Data quality score (fast: ~3ms)
+    quality = validate_data_quality(df_well)
+    q_score = quality.get("score", 0)
+    q_grade = quality.get("grade", "?")
+    if q_score >= 80:
+        q_confidence = "HIGH"
+    elif q_score >= 60:
+        q_confidence = "MODERATE"
+    else:
+        q_confidence = "LOW"
+
     response = {
         "sigma1": round(float(result["sigma1"]), 2),
         "sigma2": round(float(result["sigma2"]), 2),
@@ -725,6 +736,13 @@ async def run_inversion(request: Request):
             "low": cs_result["low_risk_count"],
         },
         "interpretation": interpretation,
+        "data_quality": {
+            "score": q_score,
+            "grade": q_grade,
+            "confidence_level": q_confidence,
+            "issues": quality.get("issues", []),
+            "warnings": quality.get("warnings", []),
+        },
     }
 
     # Include auto-detection results if applicable
