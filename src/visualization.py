@@ -366,3 +366,168 @@ if __name__ == "__main__":
         plt.close(fig)
 
     print("Dashboards saved to outputs/")
+
+
+# ──────────────────────────────────────────────
+# Model Comparison Charts
+# ──────────────────────────────────────────────
+
+def plot_model_comparison(ranking_data: list, title: str = "Model Comparison") -> plt.Figure:
+    """Bar chart comparing model accuracies and balanced accuracies.
+
+    Parameters
+    ----------
+    ranking_data : list of dicts with keys: model, cv_accuracy_mean, balanced_accuracy
+    title : chart title
+
+    Returns
+    -------
+    matplotlib Figure
+    """
+    if not ranking_data:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, "No model data", ha="center", va="center")
+        return fig
+
+    models = [d.get("model", "?") for d in ranking_data]
+    acc = [d.get("cv_accuracy_mean", 0) * 100 for d in ranking_data]
+    bal = [d.get("balanced_accuracy", 0) * 100 for d in ranking_data]
+
+    x = np.arange(len(models))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bars1 = ax.bar(x - width / 2, acc, width, label="Standard Accuracy",
+                   color="#3b82f6", alpha=0.8)
+    bars2 = ax.bar(x + width / 2, bal, width, label="Balanced Accuracy",
+                   color="#f59e0b", alpha=0.8)
+
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.set_xticklabels(models, rotation=30, ha="right", fontsize=9)
+    ax.legend()
+    ax.set_ylim(0, 105)
+    ax.axhline(y=90, color="#16a34a", linestyle="--", alpha=0.3, label="90% target")
+    ax.grid(axis="y", alpha=0.3)
+
+    # Value labels
+    for bar in bars1:
+        h = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2, h + 1,
+                f"{h:.1f}", ha="center", va="bottom", fontsize=8)
+    for bar in bars2:
+        h = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2, h + 1,
+                f"{h:.1f}", ha="center", va="bottom", fontsize=8)
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_learning_curve(train_sizes, train_scores, val_scores,
+                        balanced_scores=None,
+                        title="Learning Curve") -> plt.Figure:
+    """Line chart showing accuracy vs training set size.
+
+    Parameters
+    ----------
+    train_sizes : list of ints
+    train_scores : list of floats (0-1)
+    val_scores : list of floats (0-1)
+    balanced_scores : optional list of balanced accuracy scores
+    title : chart title
+
+    Returns
+    -------
+    matplotlib Figure
+    """
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    ax.plot(train_sizes, [s * 100 for s in train_scores],
+            "o-", color="#3b82f6", label="Training", linewidth=2, markersize=6)
+    ax.plot(train_sizes, [s * 100 for s in val_scores],
+            "s-", color="#dc2626", label="Validation", linewidth=2, markersize=6)
+    if balanced_scores:
+        ax.plot(train_sizes, [s * 100 for s in balanced_scores],
+                "^-", color="#16a34a", label="Balanced (Val)", linewidth=2, markersize=6)
+
+    # Fill between train and val to show overfitting gap
+    ax.fill_between(train_sizes,
+                    [s * 100 for s in train_scores],
+                    [s * 100 for s in val_scores],
+                    alpha=0.1, color="#6366f1")
+
+    ax.set_xlabel("Training Set Size")
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_title(title)
+    ax.legend(loc="lower right")
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, 105)
+
+    # Annotate the gap
+    if len(train_scores) > 0:
+        gap = (train_scores[-1] - val_scores[-1]) * 100
+        ax.annotate(f"Gap: {gap:.1f}%",
+                    xy=(train_sizes[-1], val_scores[-1] * 100),
+                    xytext=(train_sizes[-1] * 0.7, val_scores[-1] * 100 - 10),
+                    arrowprops=dict(arrowstyle="->", color="#6366f1"),
+                    fontsize=9, color="#6366f1")
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_bootstrap_ci(class_names, per_class_data,
+                      title="Per-Class F1 with 95% CI") -> plt.Figure:
+    """Horizontal bar chart with error bars showing bootstrap CIs.
+
+    Parameters
+    ----------
+    class_names : list of str
+    per_class_data : dict of {class: {f1: {mean, ci_low, ci_high}}}
+    title : chart title
+
+    Returns
+    -------
+    matplotlib Figure
+    """
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    y_pos = np.arange(len(class_names))
+    means = []
+    lows = []
+    highs = []
+
+    for cls in class_names:
+        f1 = per_class_data.get(cls, {}).get("f1")
+        if f1:
+            means.append(f1["mean"] * 100)
+            lows.append(f1["mean"] * 100 - f1["ci_low"] * 100)
+            highs.append(f1["ci_high"] * 100 - f1["mean"] * 100)
+        else:
+            means.append(0)
+            lows.append(0)
+            highs.append(0)
+
+    colors = ["#dc2626" if m < 30 else "#d97706" if m < 60 else "#16a34a"
+              for m in means]
+
+    ax.barh(y_pos, means, xerr=[lows, highs], align="center",
+            color=colors, alpha=0.8, capsize=5, ecolor="#374151")
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(class_names)
+    ax.set_xlabel("F1 Score (%)")
+    ax.set_title(title)
+    ax.set_xlim(0, 105)
+    ax.axvline(x=50, color="#6b7280", linestyle="--", alpha=0.3)
+    ax.grid(axis="x", alpha=0.3)
+
+    # Value labels
+    for i, (m, l, h) in enumerate(zip(means, lows, highs)):
+        ax.text(min(m + h + 2, 100), i,
+                f"{m:.1f}% [{m - l:.0f}-{m + h:.0f}]",
+                va="center", fontsize=8)
+
+    fig.tight_layout()
+    return fig

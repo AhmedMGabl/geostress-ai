@@ -4082,3 +4082,238 @@ def scenario_comparison(df, scenarios, depth_m=3000):
         "sensitivity_message": sensitivity_msg,
         "recommendation": recommendation,
     }
+
+
+# ═══════════════════════════════════════════════════════
+#  Hierarchical Classification for Rare Fracture Types
+# ═══════════════════════════════════════════════════════
+
+def hierarchical_classify(df, min_class_samples=20, fast=True):
+    """Two-level hierarchical classification for imbalanced fracture data.
+
+    Level 1: Binary — classify as 'common' (Brecciated/Discontinuous/Vuggy)
+             vs 'rare' (Boundary/Continuous)
+    Level 2: Within-group multi-class classification
+
+    This approach helps rare classes because:
+    1. The binary detector is a simpler task (easier to learn)
+    2. Within-group classifiers have more balanced data
+    3. Stakeholders get explicit "confidence" for rare types
+
+    Parameters
+    ----------
+    df : DataFrame with fracture data
+    min_class_samples : minimum samples to attempt classification (per class)
+    fast : use fewer estimators
+
+    Returns
+    -------
+    dict with hierarchical results, per-class metrics, and comparison to flat
+    """
+    features = engineer_enhanced_features(df)
+    le = LabelEncoder()
+    y_orig = le.fit_transform(df[FRACTURE_TYPE_COL].values)
+    class_names = list(le.classes_)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    n_est = 50 if fast else 200
+    n_samples = len(X)
+
+    # Determine rare vs common classes
+    counts = pd.Series(y_orig).value_counts()
+    median_count = counts.median()
+    rare_classes = []
+    common_classes = []
+    for i, cls in enumerate(class_names):
+        if counts.get(i, 0) < median_count * 0.5:
+            rare_classes.append(cls)
+        else:
+            common_classes.append(cls)
+
+    if len(rare_classes) == 0 or len(common_classes) == 0:
+        return {
+            "applicable": False,
+            "reason": "No clear rare/common split exists in this data",
+        }
+
+    rare_indices = [class_names.index(c) for c in rare_classes]
+    common_indices = [class_names.index(c) for c in common_classes]
+
+    # Level 1: Binary classification (common vs rare)
+    y_binary = np.array(["rare" if yi in rare_indices else "common" for yi in y_orig])
+
+    from sklearn.model_selection import cross_val_predict
+
+    model_l1 = RandomForestClassifier(
+        n_estimators=n_est, class_weight="balanced",
+        random_state=42, n_jobs=-1,
+    )
+    cv = StratifiedKFold(n_splits=min(5 if not fast else 3, n_samples // 2),
+                         shuffle=True, random_state=42)
+
+    l1_pred = cross_val_predict(model_l1, X, y_binary, cv=cv)
+    l1_acc = accuracy_score(y_binary, l1_pred)
+    l1_report = classification_report(y_binary, l1_pred, output_dict=True,
+                                      zero_division=0)
+
+    # Level 2a: Within-common classification
+    common_mask = np.array([yi in common_indices for yi in y_orig])
+    l2_common_results = {}
+    if common_mask.sum() >= 10 and len(set(y_orig[common_mask])) >= 2:
+        X_common = X[common_mask]
+        y_common = y_orig[common_mask]
+        model_l2c = RandomForestClassifier(
+            n_estimators=n_est, class_weight="balanced",
+            random_state=42, n_jobs=-1,
+        )
+        cv_c = StratifiedKFold(n_splits=min(5 if not fast else 3, len(X_common) // 2),
+                               shuffle=True, random_state=42)
+        l2c_pred = cross_val_predict(model_l2c, X_common, y_common, cv=cv_c)
+        l2c_report = classification_report(y_common, l2c_pred, output_dict=True,
+                                           zero_division=0, target_names=[
+                                               class_names[i] for i in sorted(set(y_common))
+                                           ])
+        l2_common_results = l2c_report
+
+    # Level 2b: Within-rare classification
+    rare_mask = np.array([yi in rare_indices for yi in y_orig])
+    l2_rare_results = {}
+    if rare_mask.sum() >= 6 and len(set(y_orig[rare_mask])) >= 2:
+        X_rare = X[rare_mask]
+        y_rare = y_orig[rare_mask]
+        model_l2r = RandomForestClassifier(
+            n_estimators=n_est, class_weight="balanced",
+            random_state=42, n_jobs=-1,
+        )
+        cv_r = StratifiedKFold(n_splits=min(3, len(X_rare) // 2),
+                               shuffle=True, random_state=42)
+        l2r_pred = cross_val_predict(model_l2r, X_rare, y_rare, cv=cv_r)
+        l2r_report = classification_report(y_rare, l2r_pred, output_dict=True,
+                                           zero_division=0, target_names=[
+                                               class_names[i] for i in sorted(set(y_rare))
+                                           ])
+        l2_rare_results = l2r_report
+    elif rare_mask.sum() > 0 and len(set(y_orig[rare_mask])) == 1:
+        # Only 1 rare class present
+        l2_rare_results = {"note": "Only 1 rare class present — no sub-classification needed"}
+
+    # Combined hierarchical prediction
+    # For each sample: if L1 predicts "rare", use L2r; if "common", use L2c
+    model_l1.fit(X, y_binary)
+    l1_full_pred = model_l1.predict(X)
+
+    hierarchical_pred = np.zeros(n_samples, dtype=int)
+    # For common predictions, use L2c
+    common_pred_mask = l1_full_pred == "common"
+    if common_pred_mask.sum() > 0 and common_mask.sum() >= 10:
+        model_l2c_full = RandomForestClassifier(
+            n_estimators=n_est, class_weight="balanced",
+            random_state=42, n_jobs=-1,
+        )
+        model_l2c_full.fit(X[common_mask], y_orig[common_mask])
+        hierarchical_pred[common_pred_mask] = model_l2c_full.predict(X[common_pred_mask])
+
+    # For rare predictions, use L2r
+    rare_pred_mask = l1_full_pred == "rare"
+    if rare_pred_mask.sum() > 0 and rare_mask.sum() >= 6 and len(set(y_orig[rare_mask])) >= 2:
+        model_l2r_full = RandomForestClassifier(
+            n_estimators=n_est, class_weight="balanced",
+            random_state=42, n_jobs=-1,
+        )
+        model_l2r_full.fit(X[rare_mask], y_orig[rare_mask])
+        hierarchical_pred[rare_pred_mask] = model_l2r_full.predict(X[rare_pred_mask])
+    elif rare_pred_mask.sum() > 0 and len(rare_indices) == 1:
+        hierarchical_pred[rare_pred_mask] = rare_indices[0]
+
+    # Compare flat vs hierarchical
+    flat_model = RandomForestClassifier(
+        n_estimators=n_est, class_weight="balanced",
+        random_state=42, n_jobs=-1,
+    )
+    flat_pred = cross_val_predict(flat_model, X, y_orig, cv=cv)
+    flat_report = classification_report(y_orig, flat_pred, output_dict=True,
+                                        zero_division=0, target_names=class_names)
+
+    # Per-class comparison
+    per_class_comparison = {}
+    for cls in class_names:
+        cls_idx = class_names.index(cls)
+        flat_f1 = flat_report.get(cls, {}).get("f1-score", 0)
+
+        # Hierarchical F1 for this class
+        y_bin = (y_orig == cls_idx).astype(int)
+        h_bin = (hierarchical_pred == cls_idx).astype(int)
+        h_f1 = f1_score(y_bin, h_bin, zero_division=0)
+
+        improvement = h_f1 - flat_f1
+        per_class_comparison[cls] = {
+            "flat_f1": round(float(flat_f1), 4),
+            "hierarchical_f1": round(float(h_f1), 4),
+            "improvement": round(float(improvement), 4),
+            "is_rare": cls in rare_classes,
+            "n_samples": int(counts.get(cls_idx, 0)),
+        }
+
+    # Overall comparison
+    flat_acc = accuracy_score(y_orig, flat_pred)
+    flat_bal = balanced_accuracy_score(y_orig, flat_pred)
+    h_acc = accuracy_score(y_orig, hierarchical_pred)
+    h_bal = balanced_accuracy_score(y_orig, hierarchical_pred)
+
+    return {
+        "applicable": True,
+        "rare_classes": rare_classes,
+        "common_classes": common_classes,
+        "level1": {
+            "task": "Binary (common vs rare)",
+            "accuracy": round(float(l1_acc), 4),
+            "report": {k: v for k, v in l1_report.items()
+                       if k in ("common", "rare", "accuracy", "macro avg")},
+        },
+        "level2_common": l2_common_results,
+        "level2_rare": l2_rare_results,
+        "comparison": {
+            "flat_accuracy": round(float(flat_acc), 4),
+            "flat_balanced": round(float(flat_bal), 4),
+            "hierarchical_accuracy": round(float(h_acc), 4),
+            "hierarchical_balanced": round(float(h_bal), 4),
+            "accuracy_delta": round(float(h_acc - flat_acc), 4),
+            "balanced_delta": round(float(h_bal - flat_bal), 4),
+        },
+        "per_class": per_class_comparison,
+        "recommendation": _hierarchical_recommendation(per_class_comparison, h_bal - flat_bal),
+    }
+
+
+def _hierarchical_recommendation(per_class, balanced_delta):
+    """Generate stakeholder-friendly recommendation about classification approach."""
+    improved = [c for c, v in per_class.items() if v["improvement"] > 0.05]
+    degraded = [c for c, v in per_class.items() if v["improvement"] < -0.05]
+
+    if balanced_delta > 0.03:
+        approach = "HIERARCHICAL RECOMMENDED"
+        msg = (
+            f"Hierarchical approach improves balanced accuracy by "
+            f"{balanced_delta * 100:.1f}%. "
+        )
+    elif balanced_delta < -0.03:
+        approach = "FLAT RECOMMENDED"
+        msg = (
+            f"Flat approach is better overall (balanced accuracy "
+            f"difference: {balanced_delta * 100:.1f}%). "
+        )
+    else:
+        approach = "SIMILAR PERFORMANCE"
+        msg = (
+            f"Both approaches perform similarly (balanced accuracy "
+            f"difference: {abs(balanced_delta) * 100:.1f}%). "
+        )
+
+    if improved:
+        msg += f"Improved classes: {', '.join(improved)}. "
+    if degraded:
+        msg += f"Degraded classes: {', '.join(degraded)}. "
+
+    return {"approach": approach, "message": msg}

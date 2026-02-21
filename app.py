@@ -46,11 +46,13 @@ from src.enhanced_analysis import (
     compute_uncertainty_budget, active_learning_query,
     detect_ood, assess_calibration, data_collection_recommendations,
     compute_learning_curve, bootstrap_class_metrics, scenario_comparison,
+    hierarchical_classify,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
     plot_mohr_circle, plot_tendency, plot_depth_profile,
     plot_analysis_dashboard,
+    plot_model_comparison, plot_learning_curve, plot_bootstrap_ci,
 )
 
 # ── Globals ──────────────────────────────────────────
@@ -620,6 +622,32 @@ async def compare_all_models(request: Request):
         return _model_comparison_cache[cache_key]
 
     result = await asyncio.to_thread(compare_models, df, fast=fast)
+
+    # Generate comparison chart
+    try:
+        ranking = result.get("ranking", [])
+        if isinstance(ranking, list) and len(ranking) > 0:
+            # ranking is a list of dicts with 'model', 'accuracy', 'balanced_accuracy'
+            chart_data = []
+            for item in ranking:
+                if isinstance(item, dict):
+                    chart_data.append({
+                        "model": item.get("model", "?"),
+                        "cv_accuracy_mean": item.get("accuracy", 0),
+                        "balanced_accuracy": item.get("balanced_accuracy", 0),
+                    })
+            if chart_data:
+                chart_img = await asyncio.to_thread(
+                    render_plot, plot_model_comparison, chart_data, "Model Comparison"
+                )
+                result["comparison_chart_img"] = chart_img
+            else:
+                result["comparison_chart_img"] = None
+        else:
+            result["comparison_chart_img"] = None
+    except Exception:
+        result["comparison_chart_img"] = None
+
     response = _sanitize_for_json(result)
     _model_comparison_cache[cache_key] = response
     return response
@@ -1460,6 +1488,20 @@ async def run_learning_curve(request: Request):
         df = df[df[WELL_COL] == well]
 
     result = await asyncio.to_thread(compute_learning_curve, df, 8, True)
+
+    # Generate learning curve chart
+    if "error" not in result:
+        try:
+            chart_img = await asyncio.to_thread(
+                render_plot, plot_learning_curve,
+                result["train_sizes"], result["train_scores"],
+                result["val_scores"], result.get("balanced_scores"),
+                f"Learning Curve — {well or 'All Wells'}",
+            )
+            result["chart_img"] = chart_img
+        except Exception:
+            result["chart_img"] = None
+
     elapsed = round(time.monotonic() - t0, 2)
 
     _audit_record("learning_curve", {"well": well, "n_points": 8},
@@ -1493,6 +1535,19 @@ async def run_bootstrap_ci(request: Request):
     result = await asyncio.to_thread(
         bootstrap_class_metrics, df, n_bootstrap, 0.95, True
     )
+
+    # Generate CI chart
+    if "error" not in result and result.get("per_class"):
+        try:
+            chart_img = await asyncio.to_thread(
+                render_plot, plot_bootstrap_ci,
+                result["class_names"], result["per_class"],
+                f"Per-Class F1 with 95% CI — {well or 'All Wells'}",
+            )
+            result["chart_img"] = chart_img
+        except Exception:
+            result["chart_img"] = None
+
     elapsed = round(time.monotonic() - t0, 2)
 
     _audit_record("bootstrap_ci", {"well": well, "n_bootstrap": n_bootstrap},
@@ -1541,6 +1596,35 @@ async def run_scenarios(request: Request):
                   {"well": well, "n_scenarios": len(scenarios), "depth_m": depth_m},
                   {"recommendation": result.get("recommendation", "")[:100]},
                   source=source, well=well, elapsed_s=elapsed)
+
+    result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Hierarchical Classification ────────────────────────
+
+@app.post("/api/analysis/hierarchical")
+async def run_hierarchical(request: Request):
+    """Two-level hierarchical classification for rare fracture types.
+
+    Splits classes into common vs rare, then classifies within each group.
+    Compares hierarchical vs flat approach and recommends best strategy.
+    """
+    t0 = time.monotonic()
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    result = await asyncio.to_thread(hierarchical_classify, df, 20, True)
+    elapsed = round(time.monotonic() - t0, 2)
+
+    _audit_record("hierarchical_classify", {},
+                  {"applicable": result.get("applicable"),
+                   "recommendation": result.get("recommendation", {}).get("approach")},
+                  source=source, elapsed_s=elapsed)
 
     result["elapsed_s"] = elapsed
     return _sanitize_for_json(result)

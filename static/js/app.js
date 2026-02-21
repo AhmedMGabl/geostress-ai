@@ -868,6 +868,12 @@ async function runModelComparison(fast) {
             smoteEl.innerHTML = smoteHtml;
         }
 
+        // Show comparison chart
+        if (r.comparison_chart_img) {
+            setImg("mc-chart-img", r.comparison_chart_img);
+            document.getElementById("mc-chart-container").classList.remove("d-none");
+        }
+
         showToast("Model comparison complete: " + (r.ranking ? r.ranking.length : 0) + " models evaluated" +
             (r.conformal && r.conformal.available ? " | Confidence: " + (r.conformal.mean_confidence * 100).toFixed(0) + "%" : ""));
     } catch (err) {
@@ -2507,6 +2513,12 @@ async function runLearningCurve() {
             }
         }
 
+        // Show chart image
+        if (data.chart_img) {
+            setImg("lc-chart-img", data.chart_img);
+            document.getElementById("lc-chart-container").classList.remove("d-none");
+        }
+
         showToast("Learning curve computed in " + (data.elapsed_s || "?") + "s");
     } catch (err) {
         showToast("Learning curve error: " + err.message, "Error");
@@ -2580,9 +2592,77 @@ async function runBootstrapCI() {
             tbody.appendChild(tr);
         });
 
+        // Show CI chart
+        if (data.chart_img) {
+            setImg("ci-chart-img", data.chart_img);
+            document.getElementById("ci-chart-container").classList.remove("d-none");
+        }
+
         showToast("Bootstrap CIs computed (" + data.n_bootstrap + " resamples, " + (data.elapsed_s || "?") + "s)");
     } catch (err) {
         showToast("Bootstrap CI error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Hierarchical Classification ───────────────────
+
+async function runHierarchical() {
+    showLoading("Running hierarchical classification...");
+    try {
+        var data = await api("/api/analysis/hierarchical", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ source: currentSource })
+        });
+
+        if (!data.applicable) {
+            showToast(data.reason || "Not applicable", "Info");
+            return;
+        }
+
+        document.getElementById("hier-results").classList.remove("d-none");
+
+        var rec = data.recommendation || {};
+        var recEl = document.getElementById("hier-recommendation");
+        var recColor = rec.approach === "HIERARCHICAL RECOMMENDED" ? "alert-success" :
+                       rec.approach === "FLAT RECOMMENDED" ? "alert-info" : "alert-warning";
+        recEl.className = "alert mb-3 " + recColor;
+        recEl.innerHTML = '<strong>' + rec.approach + ':</strong> ' + rec.message;
+
+        val("hier-approach", rec.approach);
+        var comp = data.comparison || {};
+        val("hier-flat-bal", (comp.flat_balanced * 100).toFixed(1) + "%");
+        val("hier-hier-bal", (comp.hierarchical_balanced * 100).toFixed(1) + "%");
+        val("hier-l1-acc", ((data.level1 || {}).accuracy * 100).toFixed(1) + "%");
+
+        // Per-class table
+        var tbody = document.querySelector("#hier-class-table tbody");
+        clearChildren(tbody);
+        if (data.per_class) {
+            for (var cls in data.per_class) {
+                var pc = data.per_class[cls];
+                var tr = document.createElement("tr");
+                tr.appendChild(createCell("td", cls, { fontWeight: "600" }));
+                tr.appendChild(createCell("td", pc.n_samples));
+                var typeStyle = pc.is_rare ? { color: "#dc2626", fontWeight: "600" } : {};
+                tr.appendChild(createCell("td", pc.is_rare ? "RARE" : "Common", typeStyle));
+                tr.appendChild(createCell("td", (pc.flat_f1 * 100).toFixed(1) + "%"));
+                tr.appendChild(createCell("td", (pc.hierarchical_f1 * 100).toFixed(1) + "%"));
+                var impStyle = {};
+                if (pc.improvement > 0.05) impStyle.color = "#16a34a";
+                else if (pc.improvement < -0.05) impStyle.color = "#dc2626";
+                var impText = (pc.improvement >= 0 ? "+" : "") + (pc.improvement * 100).toFixed(1) + "%";
+                tr.appendChild(createCell("td", impText, impStyle));
+                tbody.appendChild(tr);
+            }
+        }
+
+        showToast("Hierarchical classification completed (" + (data.elapsed_s || "?") + "s)");
+    } catch (err) {
+        showToast("Hierarchical error: " + err.message, "Error");
     } finally {
         hideLoading();
     }

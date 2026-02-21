@@ -639,6 +639,14 @@
                         <!-- SMOTE Info -->
                         <div id="mc-smote-info" class="d-none alert alert-info py-2 mb-3 small"></div>
 
+                        <!-- Model Comparison Chart -->
+                        <div id="mc-chart-container" class="d-none card mb-4">
+                            <div class="card-header"><i class="bi bi-bar-chart-fill"></i> Accuracy Comparison Chart</div>
+                            <div class="card-body text-center">
+                                <img id="mc-chart-img" class="plot-img" src="" alt="Model comparison chart">
+                            </div>
+                        </div>
+
                         <!-- Per-model details -->
                         <div id="mc-details-container"></div>
                     </div>
@@ -675,6 +683,9 @@
                                     </div>
                                 </div>
                                 <div id="lc-convergence-msg" class="alert alert-info small mb-3"></div>
+                                <div id="lc-chart-container" class="d-none text-center mb-3">
+                                    <img id="lc-chart-img" class="plot-img" src="" alt="Learning curve chart">
+                                </div>
                                 <div class="card mb-3">
                                     <div class="card-header">Accuracy vs Training Size</div>
                                     <div class="card-body p-0">
@@ -694,6 +705,59 @@
                                         <thead><tr id="lc-class-header"></tr></thead>
                                         <tbody id="lc-class-body"></tbody>
                                     </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Hierarchical Classification -->
+                    <div class="card mt-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-diagram-3"></i> Hierarchical Classification — Better Rare-Type Detection</span>
+                            <button class="btn btn-outline-primary btn-sm" onclick="runHierarchical()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Two-level approach: first detects rare vs common fracture types, then sub-classifies. This helps when some fracture types have very few samples (e.g., Boundary: 13 samples).</p>
+                            <div id="hier-results" class="d-none">
+                                <div id="hier-recommendation" class="alert mb-3"></div>
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-3">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Approach</div>
+                                            <div class="metric-value" id="hier-approach" style="font-size:1rem">--</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Flat Balanced Acc</div>
+                                            <div class="metric-value" id="hier-flat-bal">--</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Hierarchical Balanced Acc</div>
+                                            <div class="metric-value" id="hier-hier-bal">--</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="metric-card">
+                                            <div class="metric-label">L1 (Rare/Common) Acc</div>
+                                            <div class="metric-value" id="hier-l1-acc">--</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="card mb-3">
+                                    <div class="card-header">Per-Class F1 Comparison</div>
+                                    <div class="card-body p-0">
+                                        <table class="table table-sm mb-0" id="hier-class-table">
+                                            <thead><tr>
+                                                <th>Class</th><th>Samples</th><th>Type</th><th>Flat F1</th><th>Hierarchical F1</th><th>Change</th>
+                                            </tr></thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -737,6 +801,9 @@
                                     </div>
                                 </div>
                                 <div id="ci-reliability-msg" class="alert mb-3 small"></div>
+                                <div id="ci-chart-container" class="d-none text-center mb-3">
+                                    <img id="ci-chart-img" class="plot-img" src="" alt="Bootstrap CI chart">
+                                </div>
                                 <div class="card">
                                     <div class="card-header">Per-Class 95% Confidence Intervals</div>
                                     <div class="card-body p-0">
