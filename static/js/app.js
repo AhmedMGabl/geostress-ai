@@ -4340,6 +4340,49 @@ async function exportAuditLog() {
 }
 
 
+// ── Glossary Tooltips ─────────────────────────────
+
+var GLOSSARY = {
+    "SHmax": "Maximum horizontal stress direction — the azimuth where the Earth's crust pushes hardest. Critical for deciding well trajectory.",
+    "Mohr-Coulomb": "Failure criterion predicting when rock fractures slip. Uses friction and pore pressure to determine critical stress state.",
+    "R-ratio": "Stress shape parameter (0-1). Describes how the intermediate stress compares to the maximum and minimum.",
+    "Critically stressed": "Fractures close to slipping under current stress — likely fluid conduits that can cause drilling problems.",
+    "Pore pressure": "Fluid pressure inside rock pores. Higher pore pressure makes fractures more likely to slip.",
+    "Slip tendency": "How close a fracture is to sliding. Higher values mean higher risk.",
+    "Dilation tendency": "How likely a fracture is to open. Important for predicting fluid flow paths.",
+    "SMOTE": "Synthetic Minority Over-sampling — creates artificial training samples for rare fracture types to improve classification.",
+    "Bootstrap CI": "Confidence interval estimated by repeatedly resampling the data — shows how reliable a measurement is.",
+    "OOD": "Out-Of-Distribution — when new data looks very different from the training data, meaning predictions may be unreliable.",
+    "ECE": "Expected Calibration Error — measures whether predicted probabilities match actual frequencies. Lower is better.",
+    "SHAP": "SHapley Additive exPlanations — shows which features influenced each prediction most.",
+    "Byerlee": "Byerlee's law — rock friction coefficient typically 0.6-0.85. Values outside this range suggest unusual conditions.",
+};
+
+function initTooltips() {
+    // Re-initialize tooltips on all [title] and [data-bs-toggle=tooltip] elements
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
+        bootstrap.Tooltip.getOrCreateInstance(el);
+    });
+    document.querySelectorAll('[title]:not([data-bs-toggle]):not([data-tooltip-done])').forEach(function(el) {
+        new bootstrap.Tooltip(el, { trigger: 'hover', placement: 'top' });
+        el.setAttribute("data-tooltip-done", "1");
+    });
+}
+
+// Auto-initialize tooltips on dynamically added content
+var _tooltipObserver = new MutationObserver(function(mutations) {
+    var hasNew = false;
+    mutations.forEach(function(m) {
+        if (m.addedNodes.length > 0) hasNew = true;
+    });
+    if (hasNew) {
+        clearTimeout(_tooltipObserver._timer);
+        _tooltipObserver._timer = setTimeout(initTooltips, 200);
+    }
+});
+_tooltipObserver._timer = null;
+
+
 // ── Init ──────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", function() {
@@ -4347,10 +4390,7 @@ document.addEventListener("DOMContentLoaded", function() {
     loadFeedbackSummary();
     // Auto-run overview after a short delay (let summary load first)
     setTimeout(function() { runOverview(); }, 500);
-
-    // Enable Bootstrap tooltips for all info icons
-    var tooltipEls = document.querySelectorAll('[title]');
-    tooltipEls.forEach(function(el) {
-        new bootstrap.Tooltip(el, { trigger: 'hover', placement: 'top' });
-    });
+    initTooltips();
+    // Watch for dynamically added content
+    _tooltipObserver.observe(document.body, { childList: true, subtree: true });
 });
