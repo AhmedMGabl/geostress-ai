@@ -1249,6 +1249,25 @@ async function runInversion() {
         setImg("dilation-img", r.dilation_tendency_img);
         setImg("dashboard-img", r.dashboard_img);
 
+        // Display recommendations
+        if (r.recommendations && r.recommendations.length > 0) {
+            var recEl = document.getElementById("inv-recommendations");
+            if (recEl) {
+                var rhtml = '<div class="card border-info mb-3"><div class="card-header bg-info text-white py-2">' +
+                    '<i class="bi bi-lightbulb"></i> <strong>Actionable Recommendations</strong></div>' +
+                    '<div class="card-body py-2"><ul class="list-group list-group-flush">';
+                r.recommendations.forEach(function(rec) {
+                    var pc = rec.priority === "HIGH" ? "danger" : rec.priority === "MODERATE" ? "warning" : "info";
+                    rhtml += '<li class="list-group-item px-0 py-1"><span class="badge bg-' + pc + ' me-2">' +
+                        rec.priority + '</span><strong>' + rec.category + ':</strong> ' + rec.text +
+                        '<div class="text-muted small">' + rec.rationale + '</div></li>';
+                });
+                rhtml += '</ul></div></div>';
+                recEl.innerHTML = rhtml;
+                recEl.classList.remove("d-none");
+            }
+        }
+
         // Display auto-regime detection results if applicable
         renderAutoRegime(r.auto_regime);
 

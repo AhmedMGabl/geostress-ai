@@ -155,6 +155,91 @@ def fig_to_base64(fig, dpi=120) -> str:
     return f"data:image/png;base64,{b64}"
 
 
+def generate_recommendations(inv, cs, quality, n_fractures, well):
+    """Generate actionable next-step recommendations for stakeholders.
+
+    Tailored to the specific results — not generic advice.
+    Returns list of dicts: {priority, category, text, rationale}.
+    """
+    recs = []
+
+    # Data collection recommendations
+    if n_fractures < 100:
+        recs.append({
+            "priority": "HIGH",
+            "category": "Data Collection",
+            "text": f"Collect at least {100 - n_fractures} more fracture measurements to reach industrial minimum (100).",
+            "rationale": f"Current count ({n_fractures}) may not represent the full fracture population, reducing stress estimate reliability.",
+        })
+    elif n_fractures < 300:
+        recs.append({
+            "priority": "MODERATE",
+            "category": "Data Collection",
+            "text": f"Consider adding {300 - n_fractures} more measurements for robust statistics.",
+            "rationale": "300+ fractures typically give <5° uncertainty in SHmax direction.",
+        })
+
+    # SHmax-based drilling recommendation
+    shmax = inv.get("shmax_azimuth_deg", 0)
+    opt_drill = (shmax + 90) % 360
+    recs.append({
+        "priority": "HIGH",
+        "category": "Drilling Direction",
+        "text": f"Optimal horizontal well azimuth: {opt_drill:.0f}° (perpendicular to SHmax {shmax:.0f}°).",
+        "rationale": "Wells drilled perpendicular to SHmax minimize borehole breakout and maximize stability.",
+    })
+
+    # Critically stressed assessment
+    cs_pct = cs.get("pct_critical", 0)
+    if cs_pct > 30:
+        recs.append({
+            "priority": "HIGH",
+            "category": "Wellbore Safety",
+            "text": f"CAUTION: {cs_pct:.0f}% of fractures are critically stressed. Plan contingency for fluid losses.",
+            "rationale": "Critically stressed fractures may reactivate during drilling, causing mud losses or kicks.",
+        })
+    elif cs_pct > 10:
+        recs.append({
+            "priority": "MODERATE",
+            "category": "Wellbore Safety",
+            "text": f"{cs_pct:.0f}% critically stressed fractures — monitor mud weight carefully.",
+            "rationale": "Moderate risk of fracture reactivation during pressure changes.",
+        })
+
+    # Pore pressure recommendation
+    pp = inv.get("pore_pressure", 0)
+    if pp == 0 or pp is None:
+        recs.append({
+            "priority": "HIGH",
+            "category": "Data Collection",
+            "text": "Measure actual pore pressure (RFT/MDT) — current analysis uses hydrostatic estimate.",
+            "rationale": "Pore pressure is the #1 source of uncertainty. Direct measurements improve all predictions.",
+        })
+
+    # Quality-based recommendations
+    q_issues = quality.get("issues", [])
+    if len(q_issues) > 0:
+        recs.append({
+            "priority": "HIGH",
+            "category": "Data Quality",
+            "text": f"Resolve {len(q_issues)} data quality issue(s) before using results for decisions.",
+            "rationale": "; ".join(q_issues[:3]),
+        })
+
+    # Regime confidence
+    regime = inv.get("regime", "unknown")
+    misfit = float(np.sum(np.abs(inv.get("misfit", 0))))
+    if misfit > 0.5:
+        recs.append({
+            "priority": "MODERATE",
+            "category": "Validation",
+            "text": f"High misfit ({misfit:.2f}) — validate assumed {regime} regime with independent data.",
+            "rationale": "Compare with borehole breakouts, drilling-induced fractures, or regional stress maps.",
+        })
+
+    return recs
+
+
 def render_plot(plot_func, *args, **kwargs) -> str | None:
     """Thread-safe wrapper: call a plot function and return base64 image."""
     with plot_lock:
@@ -712,6 +797,11 @@ async def run_inversion(request: Request):
     else:
         q_confidence = "LOW"
 
+    # Actionable recommendations
+    recommendations = generate_recommendations(
+        result, cs_result, quality, len(df_well), well
+    )
+
     response = {
         "sigma1": round(float(result["sigma1"]), 2),
         "sigma2": round(float(result["sigma2"]), 2),
@@ -743,6 +833,7 @@ async def run_inversion(request: Request):
             "issues": quality.get("issues", []),
             "warnings": quality.get("warnings", []),
         },
+        "recommendations": recommendations,
     }
 
     # Include auto-detection results if applicable
