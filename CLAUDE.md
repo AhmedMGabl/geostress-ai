@@ -83,6 +83,7 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/bayesian` | Bayesian MCMC uncertainty (posterior CIs) |
 | POST | `/api/analysis/overview` | Quick auto-analysis on page load |
 | POST | `/api/analysis/uncertainty-budget` | Uncertainty source ranking + recommendations |
+| POST | `/api/analysis/active-learning` | Active learning: most uncertain samples for review |
 | GET | `/api/analysis/features` | Enhanced feature info |
 
 ## Domain Concepts
@@ -122,3 +123,7 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Uncertainty budget aggregates 6 sources: parameter sensitivity, Bayesian, data quality, ML confidence, cross-well, pore pressure
 - Pore pressure is consistently the #1 uncertainty driver (0-100% critically stressed range)
 - Including Bayesian in uncertainty budget reduces that source's score from 70 to ~42
+- Active learning uses entropy + margin sampling to rank fractures by expert-review value
+- Inversion results are cached by (source, well, regime, depth, pp) — cleared on data upload
+- Learning curve plateaus at ~87% with current features — suggests feature engineering matters more than more data
+- Boundary (13) and Continuous (46) fracture types are under-represented vs median 189
