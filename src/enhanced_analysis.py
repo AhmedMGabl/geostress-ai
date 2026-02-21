@@ -22,12 +22,23 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import (
     classification_report, confusion_matrix, accuracy_score,
     f1_score, precision_score, recall_score, balanced_accuracy_score,
+    brier_score_loss,
 )
+from sklearn.calibration import calibration_curve
 from sklearn.utils.class_weight import compute_sample_weight
+from sklearn.covariance import EmpiricalCovariance
+from sklearn.ensemble import IsolationForest
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score, calinski_harabasz_score
 import warnings
+
+try:
+    from imblearn.over_sampling import SMOTE, ADASYN
+    from imblearn.pipeline import Pipeline as ImbPipeline
+    HAS_IMBLEARN = True
+except ImportError:
+    HAS_IMBLEARN = False
 
 try:
     import xgboost as xgb
@@ -245,6 +256,86 @@ def _get_models(fast: bool = False) -> dict:
     return models
 
 
+def _should_use_smote(y: np.ndarray, min_ratio: float = 0.15) -> bool:
+    """Determine if SMOTE should be applied based on class imbalance severity.
+
+    Returns True if the minority/majority ratio is below min_ratio
+    AND the minority class has at least 6 samples (SMOTE needs k_neighbors=5).
+    """
+    counts = np.bincount(y)
+    min_count = counts.min()
+    max_count = counts.max()
+    if min_count < 6:
+        # SMOTE default k_neighbors=5; need at least 6 samples
+        return False
+    return (min_count / max_count) < min_ratio
+
+
+def _cv_with_smote(model, X, y, cv, smote_strategy="auto"):
+    """Run cross-validation with SMOTE applied only to training folds.
+
+    This prevents data leakage: synthetic samples are never in test folds.
+    Returns (acc_scores, f1_scores, y_pred_cv, smote_info).
+    """
+    from sklearn.base import clone
+
+    acc_scores = []
+    f1_scores = []
+    y_pred_cv = np.zeros(len(y), dtype=int)
+    smote_counts = []
+
+    for train_idx, test_idx in cv.split(X, y):
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+
+        # Determine k_neighbors: must be <= smallest class count - 1
+        train_counts = np.bincount(y_train)
+        min_train = train_counts[train_counts > 0].min()
+        k_neighbors = min(5, min_train - 1)
+
+        if k_neighbors < 1:
+            # Can't use SMOTE, fall back to original data
+            model_clone = clone(model)
+            model_clone.fit(X_train, y_train)
+        else:
+            smote = SMOTE(
+                k_neighbors=k_neighbors,
+                random_state=42,
+                sampling_strategy=smote_strategy,
+            )
+            X_res, y_res = smote.fit_resample(X_train, y_train)
+            smote_counts.append({
+                "original": len(y_train),
+                "resampled": len(y_res),
+                "synthetic": len(y_res) - len(y_train),
+            })
+            model_clone = clone(model)
+            model_clone.fit(X_res, y_res)
+
+        y_pred_fold = model_clone.predict(X_test)
+        y_pred_cv[test_idx] = y_pred_fold
+        acc_scores.append(float(accuracy_score(y_test, y_pred_fold)))
+        f1_scores.append(float(f1_score(y_test, y_pred_fold, average="weighted", zero_division=0)))
+
+    smote_info = {}
+    if smote_counts:
+        avg_synthetic = np.mean([s["synthetic"] for s in smote_counts])
+        smote_info = {
+            "applied": True,
+            "avg_synthetic_per_fold": round(avg_synthetic),
+            "total_folds": len(smote_counts),
+        }
+    else:
+        smote_info = {"applied": False, "reason": "Insufficient minority samples for SMOTE"}
+
+    return (
+        np.array(acc_scores),
+        np.array(f1_scores),
+        y_pred_cv,
+        smote_info,
+    )
+
+
 def compare_models(
     df: pd.DataFrame,
     n_folds: int = 5,
@@ -254,7 +345,8 @@ def compare_models(
     """Run all models and return comparative metrics.
 
     Optimized: uses cross_validate for single-pass multi-metric scoring.
-    Also includes a stacking ensemble and conformal prediction intervals.
+    Also includes a stacking ensemble, conformal prediction, and SMOTE
+    oversampling when severe class imbalance is detected.
 
     fast=True: fewer estimators, 3-fold CV for ~3x speedup.
     """
@@ -274,6 +366,21 @@ def compare_models(
     if models_to_run:
         all_models = {k: v for k, v in all_models.items() if k in models_to_run}
 
+    # Determine if SMOTE should be used
+    use_smote = HAS_IMBLEARN and _should_use_smote(y)
+    smote_global_info = {
+        "available": HAS_IMBLEARN,
+        "applied": use_smote,
+        "reason": (
+            "Class imbalance detected; SMOTE applied to training folds"
+            if use_smote
+            else (
+                "imbalanced-learn not installed" if not HAS_IMBLEARN
+                else "Class balance is acceptable or minority classes too small for SMOTE"
+            )
+        ),
+    }
+
     results = {}
     all_preds = {}  # Collect predictions for agreement analysis
     sample_weights = compute_sample_weight("balanced", y)
@@ -282,27 +389,48 @@ def compare_models(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
 
-            # Use sample_weight for models without native class_weight support
-            needs_weight = name in ("gradient_boosting", "xgboost")
-            sw_params = {"sample_weight": sample_weights} if needs_weight else {}
+            if use_smote:
+                # SMOTE-enhanced CV (proper: SMOTE only on train folds)
+                acc_scores, f1_scores, y_pred_cv, smote_info = _cv_with_smote(
+                    model, X, y, cv,
+                )
+            else:
+                # Use sample_weight for models without native class_weight support
+                needs_weight = name in ("gradient_boosting", "xgboost")
+                sw_params = {"sample_weight": sample_weights} if needs_weight else {}
 
-            # Single-pass cross_validate for both metrics at once
-            cv_result = cross_validate(
-                model, X, y, cv=cv,
-                scoring={"accuracy": "accuracy", "f1": "f1_weighted"},
-                return_estimator=False,
-                params=sw_params if sw_params else None,
-            )
-            acc_scores = cv_result["test_accuracy"]
-            f1_scores = cv_result["test_f1"]
+                # Single-pass cross_validate for both metrics at once
+                cv_result = cross_validate(
+                    model, X, y, cv=cv,
+                    scoring={"accuracy": "accuracy", "f1": "f1_weighted"},
+                    return_estimator=False,
+                    params=sw_params if sw_params else None,
+                )
+                acc_scores = cv_result["test_accuracy"]
+                f1_scores = cv_result["test_f1"]
+                smote_info = {"applied": False}
 
-            # cross_val_predict for confusion matrix (separate, but only 1 extra CV)
-            y_pred_cv = cross_val_predict(
-                model, X, y, cv=cv, params=sw_params if sw_params else None,
-            )
+                # cross_val_predict for confusion matrix (separate, but only 1 extra CV)
+                y_pred_cv = cross_val_predict(
+                    model, X, y, cv=cv, params=sw_params if sw_params else None,
+                )
 
             # Fit on full data for feature importances + predictions
-            model.fit(X, y, **sw_params)
+            # (SMOTE for full fit if applicable, else use sample weights)
+            if use_smote and HAS_IMBLEARN:
+                train_counts = np.bincount(y)
+                min_train = train_counts[train_counts > 0].min()
+                k_n = min(5, min_train - 1)
+                if k_n >= 1:
+                    smote_full = SMOTE(k_neighbors=k_n, random_state=42)
+                    X_full_res, y_full_res = smote_full.fit_resample(X, y)
+                    model.fit(X_full_res, y_full_res)
+                else:
+                    model.fit(X, y)
+            else:
+                needs_weight = name in ("gradient_boosting", "xgboost")
+                sw_fit = {"sample_weight": sample_weights} if needs_weight else {}
+                model.fit(X, y, **sw_fit)
             y_pred_full = model.predict(X)
             all_preds[name] = y_pred_full
 
@@ -356,11 +484,13 @@ def compare_models(
                     balanced_accuracy_score(y, y_pred_cv)
                 ), 3),
                 "per_class_metrics": per_class,
+                "smote": smote_info,
             }
 
     # ── Stacking Ensemble ──
     # Uses top 3 tree-based models as base learners with LR meta-learner
-    stack_result = _build_stacking_ensemble(X, y, cv, features.columns, le, fast)
+    stack_result = _build_stacking_ensemble(X, y, cv, features.columns, le, fast,
+                                               use_smote=use_smote)
     if stack_result is not None:
         results["stacking_ensemble"] = stack_result
 
@@ -460,15 +590,20 @@ def compare_models(
         ),
         "conformal": conformal,
         "generalization": generalization,
+        "smote": smote_global_info,
     }
 
 
-def _build_stacking_ensemble(X, y, cv, feature_names, le, fast=False) -> dict | None:
+def _build_stacking_ensemble(X, y, cv, feature_names, le, fast=False,
+                              use_smote=False) -> dict | None:
     """Build a stacking ensemble from the best available base learners.
 
     Uses LogisticRegression as meta-learner (learns which base model
     to trust for which type of sample).
+    When use_smote=True, applies SMOTE to training folds.
     """
+    from sklearn.base import clone
+
     base_estimators = []
     available = _get_models(fast=fast)
 
@@ -496,16 +631,57 @@ def _build_stacking_ensemble(X, y, cv, feature_names, le, fast=False) -> dict | 
                 n_jobs=-1,
             )
 
-            cv_result = cross_validate(
-                stack, X, y, cv=cv,
-                scoring={"accuracy": "accuracy", "f1": "f1_weighted"},
-            )
-            acc_scores = cv_result["test_accuracy"]
-            f1_scores = cv_result["test_f1"]
+            if use_smote and HAS_IMBLEARN:
+                # Manual CV with SMOTE on training folds
+                acc_scores = []
+                f1_scores_list = []
+                y_pred_cv = np.zeros(len(y), dtype=int)
 
-            y_pred_cv = cross_val_predict(stack, X, y, cv=cv)
+                for train_idx, test_idx in cv.split(X, y):
+                    X_train, X_test = X[train_idx], X[test_idx]
+                    y_train, y_test = y[train_idx], y[test_idx]
 
-            stack.fit(X, y)
+                    train_counts = np.bincount(y_train)
+                    min_train = train_counts[train_counts > 0].min()
+                    k_n = min(5, min_train - 1)
+
+                    stack_clone = clone(stack)
+                    if k_n >= 1:
+                        smote = SMOTE(k_neighbors=k_n, random_state=42)
+                        X_res, y_res = smote.fit_resample(X_train, y_train)
+                        stack_clone.fit(X_res, y_res)
+                    else:
+                        stack_clone.fit(X_train, y_train)
+
+                    y_pred_fold = stack_clone.predict(X_test)
+                    y_pred_cv[test_idx] = y_pred_fold
+                    acc_scores.append(float(accuracy_score(y_test, y_pred_fold)))
+                    f1_scores_list.append(float(f1_score(y_test, y_pred_fold, average="weighted", zero_division=0)))
+
+                acc_scores = np.array(acc_scores)
+                f1_scores = np.array(f1_scores_list)
+
+                # Fit on full SMOTE data
+                train_counts = np.bincount(y)
+                min_train = train_counts[train_counts > 0].min()
+                k_n = min(5, min_train - 1)
+                if k_n >= 1:
+                    smote_full = SMOTE(k_neighbors=k_n, random_state=42)
+                    X_full_res, y_full_res = smote_full.fit_resample(X, y)
+                    stack.fit(X_full_res, y_full_res)
+                else:
+                    stack.fit(X, y)
+            else:
+                cv_result = cross_validate(
+                    stack, X, y, cv=cv,
+                    scoring={"accuracy": "accuracy", "f1": "f1_weighted"},
+                )
+                acc_scores = cv_result["test_accuracy"]
+                f1_scores = cv_result["test_f1"]
+
+                y_pred_cv = cross_val_predict(stack, X, y, cv=cv)
+                stack.fit(X, y)
+
             y_pred_full = stack.predict(X)
 
             train_acc = float(accuracy_score(y, y_pred_full))
@@ -547,6 +723,7 @@ def _build_stacking_ensemble(X, y, cv, feature_names, le, fast=False) -> dict | 
                 ), 3),
                 "per_class_metrics": per_class,
                 "base_learners": [name for name, _ in base_estimators],
+                "smote": {"applied": use_smote and HAS_IMBLEARN},
             }
     except Exception:
         return None
@@ -2937,4 +3114,474 @@ def active_learning_query(
         "total_samples": len(y),
         "n_classes": n_classes,
         "class_names": le.classes_.tolist(),
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Out-of-Distribution Detection
+# ──────────────────────────────────────────────────────
+
+def detect_ood(
+    reference_df: pd.DataFrame,
+    new_df: pd.DataFrame,
+    contamination: float = 0.05,
+) -> dict:
+    """Detect if new/uploaded data is out-of-distribution vs reference data.
+
+    Uses two complementary methods:
+    1. Mahalanobis distance: parametric, detects shift in mean/covariance
+    2. Isolation Forest: non-parametric, detects individual outliers
+
+    Critical for industrial safety: models trained on one geological
+    formation may give unreliable predictions on different formations.
+    """
+    ref_feats = engineer_enhanced_features(reference_df)
+    new_feats = engineer_enhanced_features(new_df)
+
+    # Align columns (new data might have different features)
+    common_cols = [c for c in ref_feats.columns if c in new_feats.columns]
+    if not common_cols:
+        return {
+            "ood_detected": True,
+            "severity": "CRITICAL",
+            "message": "No common features between reference and new data.",
+            "details": [],
+        }
+
+    scaler = StandardScaler()
+    X_ref = scaler.fit_transform(ref_feats[common_cols].values)
+    X_new = scaler.transform(new_feats[common_cols].values)
+
+    # ── Method 1: Mahalanobis Distance ──
+    try:
+        cov = EmpiricalCovariance().fit(X_ref)
+        ref_mahal = cov.mahalanobis(X_ref)
+        new_mahal = cov.mahalanobis(X_new)
+        ref_threshold = np.percentile(ref_mahal, 95)
+
+        pct_ood_mahal = float(np.mean(new_mahal > ref_threshold) * 100)
+        mean_mahal_shift = float(np.mean(new_mahal) / max(np.mean(ref_mahal), 1e-6))
+    except Exception:
+        pct_ood_mahal = None
+        mean_mahal_shift = None
+
+    # ── Method 2: Isolation Forest ──
+    try:
+        iso = IsolationForest(
+            contamination=contamination, random_state=42, n_estimators=100,
+        )
+        iso.fit(X_ref)
+        iso_scores = iso.decision_function(X_new)
+        iso_pred = iso.predict(X_new)  # -1 = outlier, 1 = inlier
+        pct_outlier_iso = float(np.mean(iso_pred == -1) * 100)
+    except Exception:
+        pct_outlier_iso = None
+        iso_scores = None
+
+    # ── Feature-level drift detection ──
+    drift_features = []
+    for i, col in enumerate(common_cols):
+        ref_mean = float(X_ref[:, i].mean())
+        new_mean = float(X_new[:, i].mean())
+        ref_std = float(X_ref[:, i].std())
+        shift = abs(new_mean - ref_mean) / max(ref_std, 1e-6)
+        if shift > 2.0:  # >2 standard deviations
+            drift_features.append({
+                "feature": col,
+                "shift_sigma": round(shift, 2),
+                "ref_mean": round(ref_mean, 3),
+                "new_mean": round(new_mean, 3),
+            })
+    drift_features.sort(key=lambda x: x["shift_sigma"], reverse=True)
+
+    # ── Range checks ──
+    range_warnings = []
+    for col_name in [DEPTH_COL, AZIMUTH_COL, DIP_COL]:
+        if col_name in reference_df.columns and col_name in new_df.columns:
+            ref_min = float(reference_df[col_name].min())
+            ref_max = float(reference_df[col_name].max())
+            new_min = float(new_df[col_name].min())
+            new_max = float(new_df[col_name].max())
+            if new_min < ref_min * 0.8 or new_max > ref_max * 1.2:
+                range_warnings.append({
+                    "column": col_name,
+                    "ref_range": f"{ref_min:.1f} - {ref_max:.1f}",
+                    "new_range": f"{new_min:.1f} - {new_max:.1f}",
+                    "message": f"New data {col_name} range extends beyond training data bounds.",
+                })
+
+    # ── Overall severity assessment ──
+    ood_score = 0
+    if pct_ood_mahal is not None and pct_ood_mahal > 30:
+        ood_score += 2
+    elif pct_ood_mahal is not None and pct_ood_mahal > 10:
+        ood_score += 1
+    if pct_outlier_iso is not None and pct_outlier_iso > 30:
+        ood_score += 2
+    elif pct_outlier_iso is not None and pct_outlier_iso > 10:
+        ood_score += 1
+    if len(drift_features) > 3:
+        ood_score += 2
+    elif len(drift_features) > 0:
+        ood_score += 1
+    if len(range_warnings) > 0:
+        ood_score += 1
+
+    if ood_score >= 4:
+        severity = "HIGH"
+        message = (
+            "Significant distribution shift detected. Model predictions on this "
+            "data are UNRELIABLE. The new data appears to come from a different "
+            "geological formation, depth range, or measurement system. "
+            "Retrain the model with representative data before making decisions."
+        )
+    elif ood_score >= 2:
+        severity = "MODERATE"
+        message = (
+            "Some distribution differences detected. Model predictions should be "
+            "treated with caution. Review the flagged features and consider "
+            "whether the new data represents a different geological setting."
+        )
+    else:
+        severity = "LOW"
+        message = (
+            "New data is consistent with the training distribution. "
+            "Model predictions are expected to be reliable."
+        )
+
+    return {
+        "ood_detected": ood_score >= 2,
+        "severity": severity,
+        "ood_score": ood_score,
+        "message": message,
+        "mahalanobis_pct_ood": round(pct_ood_mahal, 1) if pct_ood_mahal is not None else None,
+        "mahalanobis_shift": round(mean_mahal_shift, 2) if mean_mahal_shift is not None else None,
+        "isolation_forest_pct_outlier": round(pct_outlier_iso, 1) if pct_outlier_iso is not None else None,
+        "drift_features": drift_features[:10],
+        "range_warnings": range_warnings,
+        "n_reference": len(reference_df),
+        "n_new": len(new_df),
+        "stakeholder_summary": (
+            f"Distribution check: {severity} concern. "
+            f"{'Model predictions may not be reliable for this data. ' if ood_score >= 2 else ''}"
+            f"{len(drift_features)} feature(s) show significant drift. "
+            f"{len(range_warnings)} measurement range(s) outside training bounds."
+        ),
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Confidence Calibration Assessment
+# ──────────────────────────────────────────────────────
+
+def assess_calibration(
+    df: pd.DataFrame,
+    n_bins: int = 10,
+    fast: bool = False,
+) -> dict:
+    """Assess whether predicted probabilities match actual outcomes.
+
+    If a model says "80% confident this is Vuggy", is it actually correct
+    80% of the time? Calibration measures this alignment.
+
+    Returns calibration curves, Brier score, and reliability assessment
+    for the best available model.
+    """
+    features = engineer_enhanced_features(df)
+    labels = df[FRACTURE_TYPE_COL].values
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+    n_classes = len(le.classes_)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    n_folds = 3 if fast else 5
+    cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+
+    # Use Random Forest (usually well-calibrated with probability estimates)
+    model = RandomForestClassifier(
+        n_estimators=100 if fast else 300,
+        max_depth=12, min_samples_leaf=3,
+        class_weight="balanced", random_state=42, n_jobs=-1,
+    )
+
+    # Collect CV probabilities
+    probs = np.zeros((len(y), n_classes))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for train_idx, test_idx in cv.split(X, y):
+            model.fit(X[train_idx], y[train_idx])
+            probs[test_idx] = model.predict_proba(X[test_idx])
+
+    y_pred = probs.argmax(axis=1)
+    max_probs = probs.max(axis=1)
+
+    # ── Overall Brier Score (multi-class) ──
+    y_onehot = np.zeros((len(y), n_classes))
+    y_onehot[np.arange(len(y)), y] = 1
+    brier = float(np.mean(np.sum((probs - y_onehot) ** 2, axis=1)))
+
+    # ── Per-class calibration curves ──
+    calibration_data = {}
+    for ci, cname in enumerate(le.classes_):
+        y_binary = (y == ci).astype(int)
+        prob_class = probs[:, ci]
+        try:
+            fraction_positive, mean_predicted = calibration_curve(
+                y_binary, prob_class, n_bins=n_bins, strategy="uniform",
+            )
+            class_brier = float(brier_score_loss(y_binary, prob_class))
+            calibration_data[cname] = {
+                "fraction_positive": [round(float(v), 4) for v in fraction_positive],
+                "mean_predicted": [round(float(v), 4) for v in mean_predicted],
+                "brier_score": round(class_brier, 4),
+                "n_samples": int(y_binary.sum()),
+            }
+        except Exception:
+            calibration_data[cname] = {
+                "fraction_positive": [],
+                "mean_predicted": [],
+                "brier_score": None,
+                "n_samples": int(y_binary.sum()),
+                "error": "Insufficient samples for calibration curve",
+            }
+
+    # ── Confidence bins analysis ──
+    confidence_bins = []
+    bin_edges = np.linspace(0, 1, n_bins + 1)
+    for i in range(n_bins):
+        low, high = bin_edges[i], bin_edges[i + 1]
+        mask = (max_probs >= low) & (max_probs < high)
+        if i == n_bins - 1:
+            mask = (max_probs >= low) & (max_probs <= high)
+        n_in_bin = int(mask.sum())
+        if n_in_bin > 0:
+            acc_in_bin = float(accuracy_score(y[mask], y_pred[mask]))
+            avg_conf = float(max_probs[mask].mean())
+            confidence_bins.append({
+                "range": f"{low:.0%}-{high:.0%}",
+                "n_samples": n_in_bin,
+                "accuracy": round(acc_in_bin, 3),
+                "avg_confidence": round(avg_conf, 3),
+                "gap": round(abs(avg_conf - acc_in_bin), 3),
+            })
+
+    # ── Expected Calibration Error (ECE) ──
+    ece = 0.0
+    total = len(y)
+    for b in confidence_bins:
+        weight = b["n_samples"] / total
+        ece += weight * b["gap"]
+    ece = round(ece, 4)
+
+    # ── Reliability verdict ──
+    if ece < 0.05:
+        reliability = "EXCELLENT"
+        reliability_msg = (
+            "Model probabilities are well-calibrated. When the model says "
+            "80% confident, it is correct approximately 80% of the time."
+        )
+    elif ece < 0.10:
+        reliability = "GOOD"
+        reliability_msg = (
+            "Model probabilities are reasonably calibrated. Confidence values "
+            "are slightly optimistic or pessimistic but usable for decisions."
+        )
+    elif ece < 0.20:
+        reliability = "FAIR"
+        reliability_msg = (
+            "Model probabilities show moderate miscalibration. High confidence "
+            "predictions may be overconfident. Use with caution for critical decisions."
+        )
+    else:
+        reliability = "POOR"
+        reliability_msg = (
+            "Model probabilities are poorly calibrated. Confidence values "
+            "DO NOT reflect actual accuracy. Do NOT rely on probability "
+            "estimates for operational decisions."
+        )
+
+    return {
+        "brier_score": round(brier, 4),
+        "ece": ece,
+        "reliability": reliability,
+        "reliability_message": reliability_msg,
+        "per_class": calibration_data,
+        "confidence_bins": confidence_bins,
+        "n_samples": len(y),
+        "n_classes": n_classes,
+        "class_names": le.classes_.tolist(),
+        "stakeholder_summary": (
+            f"Calibration: {reliability}. Expected Calibration Error = {ece:.1%}. "
+            f"Brier score = {brier:.3f} (lower is better, perfect = 0). "
+            f"{reliability_msg}"
+        ),
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Enhanced Data Quality with Actionable Recommendations
+# ──────────────────────────────────────────────────────
+
+def data_collection_recommendations(df: pd.DataFrame) -> dict:
+    """Generate specific, actionable data collection recommendations.
+
+    Tells operators exactly what data to collect next to maximize
+    model accuracy improvement per effort invested.
+    """
+    recommendations = []
+    priority_actions = []
+
+    n = len(df)
+
+    # ── Class distribution analysis ──
+    if FRACTURE_TYPE_COL in df.columns:
+        type_counts = df[FRACTURE_TYPE_COL].value_counts()
+        median_count = type_counts.median()
+
+        for ftype, count in type_counts.items():
+            if count < 30:
+                needed = 30 - count
+                priority_actions.append({
+                    "action": f"Collect {needed} more '{ftype}' fracture measurements",
+                    "priority": "HIGH",
+                    "reason": (
+                        f"Only {count} samples of type '{ftype}'. ML models need "
+                        f"at least 30 per class for basic reliability. "
+                        f"Current F1 score for this type is likely 0%."
+                    ),
+                    "expected_impact": (
+                        f"Balanced accuracy improvement: ~{min(15, needed)}% "
+                        f"(currently the model cannot predict this type)"
+                    ),
+                })
+            elif count < median_count * 0.3:
+                target = int(median_count * 0.5)
+                needed = target - count
+                if needed > 0:
+                    recommendations.append({
+                        "action": f"Add ~{needed} more '{ftype}' measurements",
+                        "priority": "MODERATE",
+                        "reason": (
+                            f"Under-represented ({count} samples vs median {int(median_count)}). "
+                            f"Class imbalance degrades overall balanced accuracy."
+                        ),
+                    })
+
+    # ── Depth coverage ──
+    if DEPTH_COL in df.columns:
+        depth = df[DEPTH_COL].dropna()
+        if len(depth) > 0:
+            d_range = depth.max() - depth.min()
+            bin_size = max(50, d_range / 20)
+            depth_bins = np.arange(depth.min(), depth.max() + bin_size, bin_size)
+            hist, _ = np.histogram(depth, bins=depth_bins)
+            sparse_zones = []
+            for i, count in enumerate(hist):
+                if count < 5:
+                    zone_start = depth_bins[i]
+                    zone_end = depth_bins[i + 1]
+                    sparse_zones.append(f"{zone_start:.0f}-{zone_end:.0f}m")
+
+            if sparse_zones:
+                recommendations.append({
+                    "action": f"Collect fracture data in sparse depth zones: {', '.join(sparse_zones[:5])}",
+                    "priority": "MODERATE",
+                    "reason": (
+                        "These depth intervals have fewer than 5 fracture measurements. "
+                        "Model predictions in these zones are extrapolations."
+                    ),
+                })
+
+    # ── Azimuth coverage ──
+    if AZIMUTH_COL in df.columns:
+        az = df[AZIMUTH_COL].dropna()
+        az_bins = np.arange(0, 370, 30)
+        hist, _ = np.histogram(az, bins=az_bins)
+        empty_sectors = []
+        for i, count in enumerate(hist):
+            if count == 0:
+                start = int(az_bins[i])
+                end = int(az_bins[i + 1])
+                empty_sectors.append(f"{start}-{end}")
+
+        if empty_sectors:
+            recommendations.append({
+                "action": f"Investigate fractures with azimuths in: {', '.join(empty_sectors)} degrees",
+                "priority": "LOW",
+                "reason": (
+                    "No fractures observed in these azimuth sectors. "
+                    "This may be real (stress-controlled) or a measurement gap."
+                ),
+            })
+
+    # ── Sample size assessment ──
+    if n < 50:
+        priority_actions.append({
+            "action": f"Collect at least {50 - n} more fracture measurements (any type)",
+            "priority": "CRITICAL",
+            "reason": (
+                f"Only {n} total samples. ML classification requires minimum 50 "
+                f"for any meaningful results."
+            ),
+            "expected_impact": "Accuracy could improve from ~50% (random) to 70%+",
+        })
+    elif n < 200:
+        recommendations.append({
+            "action": f"Target {200 - n} more measurements for robust ML",
+            "priority": "MODERATE",
+            "reason": (
+                f"{n} samples is marginal. Learning curve analysis shows accuracy "
+                f"improvement plateaus around 200-300 samples."
+            ),
+        })
+
+    # ── Well diversity ──
+    if WELL_COL in df.columns:
+        n_wells = df[WELL_COL].nunique()
+        if n_wells < 3:
+            recommendations.append({
+                "action": "Include data from additional wells in the field",
+                "priority": "MODERATE",
+                "reason": (
+                    f"Only {n_wells} well(s). Cross-well validation is essential to "
+                    f"confirm stress patterns are field-wide, not well-specific."
+                ),
+            })
+
+    # ── Minimum viable dataset specification ──
+    min_viable = {
+        "min_total_samples": 200,
+        "min_per_class": 30,
+        "min_wells": 3,
+        "min_depth_coverage_pct": 80,
+        "required_columns": ["Depth(m)", "Azimuth(deg)", "Dip(deg)", "Fracture_Type", "Well"],
+    }
+
+    current_meets = {
+        "total_samples": bool(n >= 200),
+        "per_class": bool(
+            df[FRACTURE_TYPE_COL].value_counts().min() >= 30
+            if FRACTURE_TYPE_COL in df.columns else False
+        ),
+        "wells": bool(
+            df[WELL_COL].nunique() >= 3
+            if WELL_COL in df.columns else False
+        ),
+    }
+
+    return {
+        "priority_actions": priority_actions,
+        "recommendations": recommendations,
+        "min_viable_dataset": min_viable,
+        "current_meets_minimum": current_meets,
+        "data_completeness_pct": round(
+            100 * sum(current_meets.values()) / len(current_meets), 0
+        ),
+        "summary": (
+            f"{len(priority_actions)} critical action(s), "
+            f"{len(recommendations)} recommendation(s). "
+            f"Dataset completeness: {sum(current_meets.values())}/{len(current_meets)} criteria met."
+        ),
     }

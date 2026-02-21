@@ -39,6 +39,7 @@ from src.enhanced_analysis import (
     sensitivity_analysis, compute_risk_matrix,
     generate_well_report, compare_wells,
     compute_uncertainty_budget, active_learning_query,
+    detect_ood, assess_calibration, data_collection_recommendations,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -121,8 +122,10 @@ def _sanitize_for_json(obj):
     """Recursively convert numpy types to Python types for JSON."""
     if isinstance(obj, dict):
         return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
+    elif isinstance(obj, (list, tuple)):
         return [_sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
     elif isinstance(obj, (np.integer,)):
         return int(obj)
     elif isinstance(obj, (np.floating,)):
@@ -143,7 +146,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="2.4.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="2.5.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -238,13 +241,28 @@ async def upload_file(file: UploadFile = File(...)):
         _auto_regime_cache.clear()
         _sensitivity_cache.clear()
         _shap_cache.clear()
-        return {
+
+        result = {
             "filename": file.filename,
             "rows": len(new_df),
             "wells": new_df[WELL_COL].unique().tolist(),
             "fracture_types": new_df[FRACTURE_TYPE_COL].unique().tolist(),
             "source": "uploaded",
         }
+
+        # Auto OOD check against demo data
+        if demo_df is not None:
+            try:
+                ood_result = detect_ood(demo_df, new_df)
+                result["ood_check"] = {
+                    "severity": ood_result["severity"],
+                    "message": ood_result["message"],
+                    "ood_detected": ood_result["ood_detected"],
+                }
+            except Exception:
+                result["ood_check"] = None
+
+        return _sanitize_for_json(result)
     finally:
         os.unlink(tmp_path)
 
@@ -1222,3 +1240,62 @@ async def export_inversion(request: Request):
         "rows": len(export_df),
         "filename": f"inversion_{well}_{regime}.csv",
     })
+
+
+# ── OOD Detection ─────────────────────────────────
+@app.post("/api/analysis/ood-check")
+async def ood_check(request: Request):
+    """Check if uploaded data is out-of-distribution vs demo data."""
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    if source == "uploaded" and uploaded_df is not None and demo_df is not None:
+        result = await asyncio.to_thread(detect_ood, demo_df, uploaded_df)
+        return _sanitize_for_json(result)
+    elif source == "demo" and demo_df is not None:
+        # Compare wells against each other
+        wells = demo_df[WELL_COL].unique()
+        if len(wells) >= 2:
+            df_a = demo_df[demo_df[WELL_COL] == wells[0]]
+            df_b = demo_df[demo_df[WELL_COL] == wells[1]]
+            result = await asyncio.to_thread(detect_ood, df_a, df_b)
+            result["note"] = f"Cross-well OOD: {wells[0]} vs {wells[1]}"
+            return _sanitize_for_json(result)
+
+    return {"ood_detected": False, "severity": "N/A",
+            "message": "OOD check requires both reference and new data. Upload data to compare."}
+
+
+# ── Calibration Assessment ────────────────────────
+@app.post("/api/analysis/calibration")
+async def calibration_assessment(request: Request):
+    """Assess model probability calibration (are confidence values reliable?)."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    fast = body.get("fast", True)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    result = await asyncio.to_thread(assess_calibration, df, 10, fast)
+    return _sanitize_for_json(result)
+
+
+# ── Data Collection Recommendations ───────────────
+@app.post("/api/data/recommendations")
+async def data_recommendations(request: Request):
+    """Get actionable recommendations for what data to collect next."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    if well and WELL_COL in df.columns:
+        df = df[df[WELL_COL] == well]
+
+    result = await asyncio.to_thread(data_collection_recommendations, df)
+    return _sanitize_for_json(result)

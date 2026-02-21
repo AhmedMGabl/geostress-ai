@@ -262,7 +262,15 @@ document.getElementById("file-upload").addEventListener("change", async function
         val("data-source-label", result.filename);
         document.getElementById("btn-use-demo").classList.remove("d-none");
 
-        showToast("Loaded " + result.rows + " fractures from " + result.filename);
+        // Show OOD warning if detected
+        var oodMsg = "";
+        if (result.ood_check) {
+            var ood = result.ood_check;
+            if (ood.ood_detected) {
+                oodMsg = " | WARNING: " + ood.severity + " distribution shift detected. " + ood.message;
+            }
+        }
+        showToast("Loaded " + result.rows + " fractures from " + result.filename + oodMsg);
         await loadSummary();
     } catch (err) {
         showToast("Upload error: " + err.message, "Error");
@@ -830,6 +838,21 @@ async function runModelComparison(fast) {
                     rankingRows[idx].appendChild(gapCell);
                 }
             });
+        }
+
+        // SMOTE info
+        var smoteEl = document.getElementById("mc-smote-info");
+        if (smoteEl && r.smote) {
+            smoteEl.classList.remove("d-none");
+            var smoteHtml = '<i class="bi bi-';
+            if (r.smote.applied) {
+                smoteHtml += 'check-circle text-success"></i> <strong>SMOTE Active:</strong> ' +
+                    'Synthetic samples generated for minority classes to improve balanced accuracy. ' +
+                    r.smote.reason;
+            } else {
+                smoteHtml += 'info-circle text-muted"></i> SMOTE not applied: ' + r.smote.reason;
+            }
+            smoteEl.innerHTML = smoteHtml;
         }
 
         showToast("Model comparison complete: " + (r.ranking ? r.ranking.length : 0) + " models evaluated" +
@@ -2108,6 +2131,225 @@ async function runOverview() {
     } catch (err) {
         // Overview is not critical, don't show error toast
         console.warn("Overview failed:", err.message);
+    }
+}
+
+
+// ── Calibration Assessment ────────────────────────
+
+async function runCalibration() {
+    showLoading("Assessing model calibration...");
+    try {
+        var r = await api("/api/analysis/calibration", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: currentSource, fast: true })
+        });
+
+        document.getElementById("calibration-results").classList.remove("d-none");
+
+        // Metrics row
+        var metrics = document.getElementById("calibration-metrics");
+        var reliabilityColor = {
+            "EXCELLENT": "success", "GOOD": "primary",
+            "FAIR": "warning", "POOR": "danger"
+        }[r.reliability] || "secondary";
+
+        metrics.innerHTML =
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Reliability</div>' +
+            '<div class="metric-value"><span class="badge bg-' + reliabilityColor + '">' + r.reliability + '</span></div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">ECE</div>' +
+            '<div class="metric-value">' + (r.ece * 100).toFixed(1) + '%</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Brier Score</div>' +
+            '<div class="metric-value">' + r.brier_score.toFixed(3) + '</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Samples</div>' +
+            '<div class="metric-value">' + r.n_samples + '</div></div></div>';
+
+        // Reliability message
+        metrics.innerHTML += '<div class="col-12 mt-2"><div class="alert alert-' + reliabilityColor + ' py-2 small">' +
+            '<i class="bi bi-info-circle me-1"></i>' + r.reliability_message + '</div></div>';
+
+        // Confidence bins table
+        var binsEl = document.getElementById("calibration-bins");
+        if (r.confidence_bins && r.confidence_bins.length > 0) {
+            var html = '<table class="table table-sm table-hover"><thead><tr>' +
+                '<th>Confidence Range</th><th>Samples</th><th>Actual Accuracy</th><th>Avg Confidence</th><th>Gap</th></tr></thead><tbody>';
+            r.confidence_bins.forEach(function(b) {
+                var gapColor = b.gap > 0.15 ? "text-danger" : b.gap > 0.05 ? "text-warning" : "text-success";
+                html += '<tr><td>' + b.range + '</td><td>' + b.n_samples + '</td>' +
+                    '<td>' + (b.accuracy * 100).toFixed(1) + '%</td>' +
+                    '<td>' + (b.avg_confidence * 100).toFixed(1) + '%</td>' +
+                    '<td class="' + gapColor + '">' + (b.gap * 100).toFixed(1) + '%</td></tr>';
+            });
+            html += '</tbody></table>';
+            binsEl.innerHTML = html;
+        }
+
+        // Per-class calibration
+        var perClassEl = document.getElementById("calibration-per-class");
+        if (r.per_class) {
+            var pcHtml = '<table class="table table-sm"><thead><tr>' +
+                '<th>Fracture Type</th><th>Brier Score</th><th>Samples</th></tr></thead><tbody>';
+            Object.keys(r.per_class).forEach(function(cname) {
+                var c = r.per_class[cname];
+                pcHtml += '<tr><td>' + cname + '</td>' +
+                    '<td>' + (c.brier_score !== null ? c.brier_score.toFixed(4) : 'N/A') + '</td>' +
+                    '<td>' + c.n_samples + '</td></tr>';
+            });
+            pcHtml += '</tbody></table>';
+            perClassEl.innerHTML = pcHtml;
+        }
+
+        showToast("Calibration: " + r.reliability + " (ECE=" + (r.ece * 100).toFixed(1) + "%)");
+    } catch (err) {
+        showToast("Calibration error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+async function runOODCheck() {
+    showLoading("Running distribution check...");
+    try {
+        var r = await api("/api/analysis/ood-check", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: currentSource })
+        });
+
+        document.getElementById("ood-results").classList.remove("d-none");
+        var card = document.getElementById("ood-card");
+        var sevColor = {"HIGH": "danger", "MODERATE": "warning", "LOW": "success"}[r.severity] || "secondary";
+
+        var html = '<div class="card-header bg-' + sevColor + ' text-white">' +
+            '<i class="bi bi-exclamation-triangle me-1"></i> Distribution Check: ' + r.severity + '</div>' +
+            '<div class="card-body">' +
+            '<p>' + r.message + '</p>';
+
+        if (r.note) {
+            html += '<p class="text-muted small">' + r.note + '</p>';
+        }
+
+        // Detection metrics
+        html += '<div class="row">';
+        if (r.mahalanobis_pct_ood !== null && r.mahalanobis_pct_ood !== undefined) {
+            html += '<div class="col-md-4"><div class="metric-card"><div class="metric-label">Mahalanobis OOD %</div>' +
+                '<div class="metric-value">' + r.mahalanobis_pct_ood + '%</div></div></div>';
+        }
+        if (r.isolation_forest_pct_outlier !== null && r.isolation_forest_pct_outlier !== undefined) {
+            html += '<div class="col-md-4"><div class="metric-card"><div class="metric-label">Isolation Forest Outlier %</div>' +
+                '<div class="metric-value">' + r.isolation_forest_pct_outlier + '%</div></div></div>';
+        }
+        if (r.drift_features && r.drift_features.length > 0) {
+            html += '<div class="col-md-4"><div class="metric-card"><div class="metric-label">Drifting Features</div>' +
+                '<div class="metric-value">' + r.drift_features.length + '</div></div></div>';
+        }
+        html += '</div>';
+
+        // Drift features table
+        if (r.drift_features && r.drift_features.length > 0) {
+            html += '<h6 class="mt-3">Feature Drift Details</h6>' +
+                '<table class="table table-sm"><thead><tr><th>Feature</th><th>Shift (sigma)</th></tr></thead><tbody>';
+            r.drift_features.forEach(function(f) {
+                html += '<tr><td>' + f.feature + '</td><td>' + f.shift_sigma + ' SD</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+
+        // Range warnings
+        if (r.range_warnings && r.range_warnings.length > 0) {
+            html += '<h6>Range Warnings</h6>';
+            r.range_warnings.forEach(function(w) {
+                html += '<div class="alert alert-warning py-1 small"><strong>' + w.column + ':</strong> ' +
+                    'Reference: ' + w.ref_range + ', New: ' + w.new_range + '</div>';
+            });
+        }
+
+        html += '</div>';
+        card.innerHTML = html;
+
+        showToast("OOD Check: " + r.severity);
+    } catch (err) {
+        showToast("OOD check error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+async function runDataRecommendations() {
+    showLoading("Generating data collection recommendations...");
+    try {
+        var r = await api("/api/data/recommendations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: currentSource })
+        });
+
+        document.getElementById("data-rec-results").classList.remove("d-none");
+        var content = document.getElementById("data-rec-content");
+
+        var html = '<div class="card mb-3 border-info">' +
+            '<div class="card-header bg-info text-white"><i class="bi bi-lightbulb me-1"></i> Data Collection Roadmap</div>' +
+            '<div class="card-body">' +
+            '<p class="text-muted small">' + r.summary + '</p>';
+
+        // Progress bar
+        html += '<div class="mb-3"><strong>Dataset Completeness</strong>' +
+            '<div class="progress mt-1" style="height:20px"><div class="progress-bar ' +
+            (r.data_completeness_pct >= 100 ? 'bg-success' : r.data_completeness_pct >= 50 ? 'bg-warning' : 'bg-danger') +
+            '" style="width:' + r.data_completeness_pct + '%">' + r.data_completeness_pct + '%</div></div></div>';
+
+        // Priority actions
+        if (r.priority_actions && r.priority_actions.length > 0) {
+            html += '<h6 class="text-danger"><i class="bi bi-exclamation-circle me-1"></i>Priority Actions</h6>';
+            r.priority_actions.forEach(function(a) {
+                html += '<div class="alert alert-danger py-2 mb-2"><strong>' + a.action + '</strong>' +
+                    '<br><small>' + a.reason + '</small>';
+                if (a.expected_impact) {
+                    html += '<br><small class="text-success"><i class="bi bi-graph-up me-1"></i>' + a.expected_impact + '</small>';
+                }
+                html += '</div>';
+            });
+        }
+
+        // Recommendations
+        if (r.recommendations && r.recommendations.length > 0) {
+            html += '<h6 class="text-warning mt-3"><i class="bi bi-arrow-right-circle me-1"></i>Recommendations</h6>';
+            r.recommendations.forEach(function(rec) {
+                var color = rec.priority === "MODERATE" ? "warning" : "info";
+                html += '<div class="alert alert-' + color + ' py-2 mb-2"><strong>' + rec.action + '</strong>' +
+                    '<br><small>' + rec.reason + '</small></div>';
+            });
+        }
+
+        // Minimum viable dataset
+        if (r.min_viable_dataset && r.current_meets_minimum) {
+            html += '<h6 class="mt-3"><i class="bi bi-check2-square me-1"></i>Minimum Viable Dataset</h6>' +
+                '<table class="table table-sm"><thead><tr><th>Criterion</th><th>Required</th><th>Met?</th></tr></thead><tbody>';
+            var mvd = r.min_viable_dataset;
+            var cm = r.current_meets_minimum;
+            var criteria = [
+                ["Total Samples", ">= " + mvd.min_total_samples, cm.total_samples],
+                ["Per-Class Minimum", ">= " + mvd.min_per_class, cm.per_class],
+                ["Number of Wells", ">= " + mvd.min_wells, cm.wells],
+            ];
+            criteria.forEach(function(c) {
+                html += '<tr><td>' + c[0] + '</td><td>' + c[1] + '</td>' +
+                    '<td>' + (c[2] ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-x-circle text-danger"></i>') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+
+        html += '</div></div>';
+        content.innerHTML = html;
+
+        showToast("Data recommendations generated");
+    } catch (err) {
+        showToast("Recommendations error: " + err.message, "Error");
+    } finally {
+        hideLoading();
     }
 }
 

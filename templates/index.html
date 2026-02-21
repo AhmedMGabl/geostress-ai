@@ -91,6 +91,16 @@
                         <i class="bi bi-chat-dots"></i> Feedback
                     </a>
                 </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="calibration" href="#">
+                        <i class="bi bi-bullseye"></i> Calibration
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="glossary" href="#">
+                        <i class="bi bi-book"></i> Glossary
+                    </a>
+                </li>
             </ul>
 
             <!-- Parameters -->
@@ -613,6 +623,9 @@
                                 </div>
                             </div>
                         </div>
+
+                        <!-- SMOTE Info -->
+                        <div id="mc-smote-info" class="d-none alert alert-info py-2 mb-3 small"></div>
 
                         <!-- Per-model details -->
                         <div id="mc-details-container"></div>
@@ -1243,6 +1256,180 @@
                         <div class="card mb-3">
                             <div class="card-header"><i class="bi bi-clipboard-data"></i> Data Quality</div>
                             <div class="card-body" id="report-quality"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Calibration Tab -->
+                <div id="tab-calibration" class="tab-content">
+                    <h5 class="mb-3">Model Calibration Assessment</h5>
+                    <p class="text-muted">Are the model's confidence values reliable? Calibration measures whether "80% confident" truly means 80% accurate.</p>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="runCalibration()">
+                            <i class="bi bi-bullseye"></i> Run Calibration Check
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="runOODCheck()">
+                            <i class="bi bi-exclamation-triangle"></i> Distribution Check
+                        </button>
+                        <button class="btn btn-outline-info btn-sm" onclick="runDataRecommendations()">
+                            <i class="bi bi-lightbulb"></i> Data Recommendations
+                        </button>
+                    </div>
+
+                    <!-- Calibration Results -->
+                    <div id="calibration-results" class="d-none">
+                        <div class="row mb-3" id="calibration-metrics"></div>
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-bar-chart"></i> Confidence vs. Accuracy</div>
+                            <div class="card-body" id="calibration-bins"></div>
+                        </div>
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-diagram-3"></i> Per-Class Calibration</div>
+                            <div class="card-body" id="calibration-per-class"></div>
+                        </div>
+                    </div>
+
+                    <!-- OOD Results -->
+                    <div id="ood-results" class="d-none">
+                        <div class="card mb-3" id="ood-card"></div>
+                    </div>
+
+                    <!-- Data Recommendations -->
+                    <div id="data-rec-results" class="d-none">
+                        <div id="data-rec-content"></div>
+                    </div>
+                </div>
+
+                <!-- Glossary Tab -->
+                <div id="tab-glossary" class="tab-content">
+                    <h5 class="mb-3"><i class="bi bi-book"></i> Geomechanics Glossary & Decision Guide</h5>
+                    <p class="text-muted">Plain-language explanations for non-technical stakeholders. Understand what the numbers mean before making drilling decisions.</p>
+
+                    <!-- Stress & Pressure -->
+                    <div class="card mb-3">
+                        <div class="card-header bg-primary text-white"><i class="bi bi-arrows-angle-expand"></i> Stress & Pressure Terms</div>
+                        <div class="card-body">
+                            <dl class="row mb-0">
+                                <dt class="col-sm-3">Principal Stresses (&#963;1, &#963;2, &#963;3)</dt>
+                                <dd class="col-sm-9">The three main forces squeezing the rock underground, measured in MPa (megapascals). &#963;1 is the strongest, &#963;3 the weakest. <strong>Think of it as:</strong> squeezing a sponge from three sides &mdash; one direction always pushes hardest.</dd>
+
+                                <dt class="col-sm-3">SHmax (Maximum Horizontal Stress Azimuth)</dt>
+                                <dd class="col-sm-9">The compass direction of the strongest horizontal squeeze. <strong>Why it matters:</strong> Drilling perpendicular to SHmax reduces borehole instability. This is the single most important output for well planning. Reported as degrees from North (0-360).</dd>
+
+                                <dt class="col-sm-3">R Ratio</dt>
+                                <dd class="col-sm-9">How "round" vs "cigar-shaped" the stress ellipsoid is (0 to 1). R=0 means &#963;2 equals &#963;3, R=1 means &#963;2 equals &#963;1. <strong>Practical impact:</strong> R near 0.5 = all three stresses are distinct; near 0 or 1 = two stresses are similar, so stress direction is less constrained.</dd>
+
+                                <dt class="col-sm-3">Pore Pressure (Pp)</dt>
+                                <dd class="col-sm-9">The pressure of fluids (water, oil, gas) inside the rock pores, in MPa. Default estimate uses hydrostatic gradient (1020 kg/m3 water). <strong>Critical:</strong> Higher pore pressure makes fractures more likely to slip. This is consistently the #1 source of uncertainty in our analysis.</dd>
+
+                                <dt class="col-sm-3">Overburden Stress (Sv)</dt>
+                                <dd class="col-sm-9">The weight of all rock above a given depth. Calculated from rock density (2500 kg/m3) times depth times gravity. This sets the scale for all other stress estimates.</dd>
+                            </dl>
+                        </div>
+                    </div>
+
+                    <!-- Stress Regime -->
+                    <div class="card mb-3">
+                        <div class="card-header bg-info text-white"><i class="bi bi-globe"></i> Stress Regimes (Faulting Styles)</div>
+                        <div class="card-body">
+                            <dl class="row mb-0">
+                                <dt class="col-sm-3">Normal Faulting</dt>
+                                <dd class="col-sm-9">The vertical stress is the greatest (&#963;1 = Sv). Rock extends apart horizontally. <strong>Typical setting:</strong> rift basins, passive margins. Fractures tend to be steep and parallel to SHmax.</dd>
+
+                                <dt class="col-sm-3">Strike-Slip</dt>
+                                <dd class="col-sm-9">The vertical stress is intermediate (&#963;2 = Sv). Rock shears horizontally. <strong>Typical setting:</strong> transform boundaries. Both vertical and sub-horizontal fractures are common.</dd>
+
+                                <dt class="col-sm-3">Thrust (Reverse) Faulting</dt>
+                                <dd class="col-sm-9">The vertical stress is the weakest (&#963;3 = Sv). Rock compresses horizontally. <strong>Typical setting:</strong> compressional margins, fold-thrust belts. Low-angle fractures dominate.</dd>
+
+                                <dt class="col-sm-3">Regime Confidence</dt>
+                                <dd class="col-sm-9"><span class="badge bg-success">HIGH</span> = clear winner (1 regime fits much better). <span class="badge bg-warning text-dark">MODERATE</span> = likely but not definitive. <span class="badge bg-danger">LOW</span> = all regimes fit similarly; independent data (borehole breakouts, drilling-induced fractures) needed to resolve.</dd>
+                            </dl>
+                        </div>
+                    </div>
+
+                    <!-- Fracture Properties -->
+                    <div class="card mb-3">
+                        <div class="card-header bg-warning text-dark"><i class="bi bi-hurricane"></i> Fracture Properties</div>
+                        <div class="card-body">
+                            <dl class="row mb-0">
+                                <dt class="col-sm-3">Fracture Azimuth</dt>
+                                <dd class="col-sm-9">The compass direction the fracture plane faces (0-360 degrees from North). <strong>Example:</strong> Azimuth 90 = fracture faces East.</dd>
+
+                                <dt class="col-sm-3">Fracture Dip</dt>
+                                <dd class="col-sm-9">How steeply the fracture tilts from horizontal (0-90 degrees). 0 = flat; 90 = vertical.</dd>
+
+                                <dt class="col-sm-3">Slip Tendency</dt>
+                                <dd class="col-sm-9">How close a fracture is to sliding (shear stress / normal stress). <strong>Range:</strong> 0 to 1+. Values above the friction coefficient (~0.6) mean the fracture is likely sliding. <span class="text-danger fw-bold">High slip tendency = potential wellbore instability.</span></dd>
+
+                                <dt class="col-sm-3">Dilation Tendency</dt>
+                                <dd class="col-sm-9">How likely a fracture is to open and allow fluid flow (0 to 1). <strong>High values (>0.7):</strong> fracture is likely a fluid conduit. <span class="text-success fw-bold">Can be beneficial (natural fracture network) or harmful (lost circulation).</span></dd>
+
+                                <dt class="col-sm-3">Critically Stressed</dt>
+                                <dd class="col-sm-9">Fractures whose slip tendency exceeds the Mohr-Coulomb criterion. These fractures are at or past the point of failure. <strong>Operational impact:</strong> High % critically stressed = higher risk of induced seismicity, lost circulation, and wellbore instability.</dd>
+                            </dl>
+                        </div>
+                    </div>
+
+                    <!-- Risk Interpretation -->
+                    <div class="card mb-3">
+                        <div class="card-header bg-danger text-white"><i class="bi bi-shield-exclamation"></i> Risk Categories Explained</div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm mb-0">
+                                    <thead>
+                                        <tr><th>Risk Level</th><th>What It Means</th><th>Recommended Action</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr class="table-success"><td><span class="badge bg-success">LOW</span></td><td>Critically stressed <20%, high data quality, good model confidence</td><td>Proceed with standard drilling program</td></tr>
+                                        <tr class="table-warning"><td><span class="badge bg-warning text-dark">MODERATE</span></td><td>Some fractures at risk, moderate uncertainty</td><td>Use managed pressure drilling, plan contingencies</td></tr>
+                                        <tr class="table-danger"><td><span class="badge bg-danger">HIGH</span></td><td>>30% critically stressed, low data quality or model confidence</td><td>Commission additional data before drilling. Consider alternative well trajectory.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Model Reliability -->
+                    <div class="card mb-3">
+                        <div class="card-header bg-secondary text-white"><i class="bi bi-robot"></i> Understanding AI Predictions</div>
+                        <div class="card-body">
+                            <dl class="row mb-0">
+                                <dt class="col-sm-3">Standard Accuracy</dt>
+                                <dd class="col-sm-9">How often the model is correct overall. <strong>Limitation:</strong> Can be misleadingly high if one fracture type dominates. Example: if 50% of data is Vuggy, a model that always says "Vuggy" gets 50% accuracy while being useless.</dd>
+
+                                <dt class="col-sm-3">Balanced Accuracy</dt>
+                                <dd class="col-sm-9">Accuracy calculated separately for each fracture type, then averaged. <strong>More honest</strong> when class sizes differ. If standard accuracy is 88% but balanced is 56%, the model is failing on rare fracture types.</dd>
+
+                                <dt class="col-sm-3">SMOTE (Synthetic Minority Over-sampling)</dt>
+                                <dd class="col-sm-9">When some fracture types have very few samples, SMOTE creates realistic synthetic examples by interpolating between existing ones. This helps the model learn rare types. <strong>Automatically applied</strong> when class imbalance is detected.</dd>
+
+                                <dt class="col-sm-3">Calibration (ECE)</dt>
+                                <dd class="col-sm-9">Expected Calibration Error measures whether the model's confidence values are reliable. ECE <5% = excellent (confidence values can be trusted). ECE >20% = poor (don't rely on probability estimates).</dd>
+
+                                <dt class="col-sm-3">Out-of-Distribution (OOD)</dt>
+                                <dd class="col-sm-9">When you upload new data, we check if it looks similar to the training data. If the new data is "out of distribution" (different depth range, formation, etc.), model predictions will be unreliable. <span class="text-danger fw-bold">Always check OOD before trusting predictions on new data.</span></dd>
+
+                                <dt class="col-sm-3">Overfitting</dt>
+                                <dd class="col-sm-9">When a model memorizes the training data instead of learning general patterns. Measured by the gap between training accuracy and cross-validation accuracy. Gap >10% = significant overfitting risk.</dd>
+                            </dl>
+                        </div>
+                    </div>
+
+                    <!-- Decision Flowchart -->
+                    <div class="card mb-3 border-success">
+                        <div class="card-header bg-success text-white"><i class="bi bi-signpost-split"></i> Decision Flowchart: Should I Trust These Results?</div>
+                        <div class="card-body">
+                            <ol class="mb-0">
+                                <li class="mb-2"><strong>Check Data Quality score.</strong> If grade is D or F, stop &mdash; fix data issues first.</li>
+                                <li class="mb-2"><strong>Check Regime Confidence.</strong> If LOW, do not rely on SHmax direction. Collect borehole breakout data.</li>
+                                <li class="mb-2"><strong>Check Balanced Accuracy.</strong> If below 60%, classification is unreliable. Consider merging rare fracture types or collecting more data.</li>
+                                <li class="mb-2"><strong>If using uploaded data:</strong> Check the OOD (distribution) result. If HIGH severity, retrain before using predictions.</li>
+                                <li class="mb-2"><strong>Check Calibration.</strong> If POOR, don't use probability values for risk decisions. Use binary yes/no classification instead.</li>
+                                <li class="mb-2"><strong>Review the Risk Matrix.</strong> If HIGH risk, escalate to senior geomechanics engineer before proceeding.</li>
+                                <li class="mb-2"><strong>Check the Uncertainty Budget.</strong> Pore pressure is consistently the #1 source of uncertainty. If you have measured Pp data, input it to dramatically improve reliability.</li>
+                            </ol>
                         </div>
                     </div>
                 </div>

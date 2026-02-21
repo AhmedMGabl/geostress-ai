@@ -87,6 +87,9 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | GET | `/api/analysis/features` | Enhanced feature info |
 | POST | `/api/export/data` | Export fracture data as CSV |
 | POST | `/api/export/inversion` | Export inversion results + tendencies as CSV |
+| POST | `/api/analysis/ood-check` | Out-of-distribution detection (uploaded vs demo) |
+| POST | `/api/analysis/calibration` | Model probability calibration assessment (ECE, Brier) |
+| POST | `/api/data/recommendations` | Actionable data collection recommendations |
 
 ## Domain Concepts
 
@@ -132,3 +135,12 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Auto regime detection runs all 3 regimes (~6s), ranks by total Mohr-Coulomb misfit
 - Both wells show LOW confidence for regime (ratio ~1.03-1.04) — data alone doesn't constrain regime
 - Export endpoints return CSV strings for browser download (no server-side file creation)
+- SMOTE oversampling applied when minority/majority ratio < 15% and min class >= 6 samples
+- SMOTE improved Boundary F1 from 0% to ~22-38%, Continuous from 0% to ~14-30%
+- MLP with SMOTE achieves best balanced accuracy (69.2%) despite lower standard accuracy
+- Wells 3P and 6P are highly OOD from each other (95% Mahalanobis, 72% Isolation Forest outlier)
+- Model calibration is EXCELLENT (ECE=2.7%) — RF probability estimates can be trusted
+- `_sanitize_for_json` must handle np.bool_ (not caught by np.integer/np.floating)
+- imbalanced-learn required for SMOTE (added to requirements.txt)
+- Glossary tab provides plain-language explanations for non-technical stakeholders
+- Data recommendations identify specific actions: min 30 samples/class, sparse depth zones, well diversity
