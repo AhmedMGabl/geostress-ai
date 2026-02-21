@@ -74,6 +74,9 @@ uploaded_df: pd.DataFrame = None
 _model_comparison_cache = {}
 _inversion_cache = {}
 _auto_regime_cache = {}
+_classify_cache = {}
+_misclass_cache = {}
+_physics_predict_cache = {}
 
 # Audit trail for regulatory compliance (max 1000 entries in-memory)
 _audit_log: deque = deque(maxlen=1000)
@@ -188,7 +191,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="2.6.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="2.7.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -211,6 +214,38 @@ async def global_exception_handler(request: Request, exc: Exception):
             "suggestion": "Try again or contact support if the issue persists.",
         },
     )
+
+
+# ── Response timing middleware ────────────────────────
+
+@app.middleware("http")
+async def add_timing_header(request: Request, call_next):
+    """Add X-Response-Time header to all API responses for performance monitoring."""
+    import time as _time
+    start = _time.perf_counter()
+    response = await call_next(request)
+    elapsed = _time.perf_counter() - start
+    response.headers["X-Response-Time"] = f"{elapsed:.3f}s"
+    if request.url.path.startswith("/api/") and elapsed > 2.0:
+        print(f"SLOW: {request.method} {request.url.path} took {elapsed:.1f}s")
+    return response
+
+
+# ── Cache status endpoint ─────────────────────────────
+
+@app.get("/api/cache/status")
+async def cache_status():
+    """Return current cache sizes and hit information."""
+    return {
+        "inversion": len(_inversion_cache),
+        "model_comparison": len(_model_comparison_cache),
+        "auto_regime": len(_auto_regime_cache),
+        "classify": len(_classify_cache),
+        "misclass": len(_misclass_cache),
+        "physics_predict": len(_physics_predict_cache),
+        "shap": len(_shap_cache),
+        "sensitivity": len(_sensitivity_cache),
+    }
 
 
 # ── Page routes ──────────────────────────────────────
@@ -283,6 +318,9 @@ async def upload_file(file: UploadFile = File(...)):
         _auto_regime_cache.clear()
         _sensitivity_cache.clear()
         _shap_cache.clear()
+        _classify_cache.clear()
+        _misclass_cache.clear()
+        _physics_predict_cache.clear()
 
         result = {
             "filename": file.filename,
@@ -2148,12 +2186,18 @@ async def run_physics_constrained_predict(request: Request):
         raise HTTPException(400, "No data loaded")
     df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
 
+    cache_key = f"phys_{source}_{well}_{depth_m}"
+    if cache_key in _physics_predict_cache:
+        return _physics_predict_cache[cache_key]
+
     result = await asyncio.to_thread(
         physics_constrained_predict, df_well,
         inversion_result=None, depth_m=depth_m, fast=fast,
     )
     _audit_record("physics_constrained_predict", {"well": well, "depth": depth_m}, result)
-    return _sanitize_for_json(result)
+    response = _sanitize_for_json(result)
+    _physics_predict_cache[cache_key] = response
+    return response
 
 
 @app.post("/api/analysis/misclassification")
@@ -2175,8 +2219,14 @@ async def run_misclassification_analysis(request: Request):
     if well:
         df = df[df[WELL_COL] == well].reset_index(drop=True)
 
+    cache_key = f"misclass_{source}_{well}_{len(df)}"
+    if cache_key in _misclass_cache:
+        return _misclass_cache[cache_key]
+
     result = await asyncio.to_thread(misclassification_analysis, df, fast=fast)
-    return _sanitize_for_json(result)
+    response = _sanitize_for_json(result)
+    _misclass_cache[cache_key] = response
+    return response
 
 
 # ── Audit Trail ──────────────────────────────────────

@@ -33,8 +33,16 @@ function showToast(msg, title) {
     toast.show();
 }
 
+var _lastResponseTime = null;
+
 async function api(url, options) {
+    var t0 = performance.now();
     var resp = await fetch(url, options || {});
+    var elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+    _lastResponseTime = elapsed;
+    // Show response time in status bar
+    var timeEl = document.getElementById("response-time");
+    if (timeEl) timeEl.textContent = elapsed + "s";
     if (!resp.ok) {
         var text = await resp.text();
         throw new Error(text || resp.statusText);
