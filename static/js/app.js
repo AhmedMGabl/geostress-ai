@@ -146,8 +146,84 @@ async function loadSummary() {
         if (wellInfo) {
             document.getElementById("depth-input").value = Math.round(wellInfo.avg_depth);
         }
+
+        // Load data quality assessment
+        loadDataQuality();
     } catch (err) {
         showToast("Error loading data: " + err.message, "Error");
+    }
+}
+
+async function loadDataQuality() {
+    try {
+        var q = await api("/api/data/quality?source=" + currentSource);
+        var banner = document.getElementById("quality-banner");
+        banner.classList.remove("d-none");
+
+        // Score and grade
+        val("quality-score", q.score + "/100");
+        var gradeBadge = document.getElementById("quality-grade-badge");
+        gradeBadge.textContent = "Grade: " + q.grade;
+        var gradeColors = { A: "bg-success", B: "bg-primary", C: "bg-warning text-dark", D: "bg-warning text-dark", F: "bg-danger" };
+        gradeBadge.className = "badge fs-6 " + (gradeColors[q.grade] || "bg-secondary");
+
+        // Progress bar
+        var bar = document.getElementById("quality-bar");
+        bar.style.width = q.score + "%";
+        bar.className = "progress-bar " + (q.score >= 80 ? "bg-success" : q.score >= 60 ? "bg-warning" : "bg-danger");
+
+        // Issues
+        var issuesDiv = document.getElementById("quality-issues");
+        clearChildren(issuesDiv);
+        if (q.issues && q.issues.length > 0) {
+            var issueAlert = document.createElement("div");
+            issueAlert.className = "alert alert-danger py-2 mb-2 small";
+            var issueTitle = document.createElement("strong");
+            issueTitle.textContent = "Critical Issues: ";
+            issueAlert.appendChild(issueTitle);
+            q.issues.forEach(function(issue, i) {
+                if (i > 0) issueAlert.appendChild(document.createTextNode(" | "));
+                issueAlert.appendChild(document.createTextNode(issue));
+            });
+            issuesDiv.appendChild(issueAlert);
+        }
+
+        // Warnings
+        var warningsDiv = document.getElementById("quality-warnings");
+        clearChildren(warningsDiv);
+        if (q.warnings && q.warnings.length > 0) {
+            var warnAlert = document.createElement("div");
+            warnAlert.className = "alert alert-warning py-2 mb-2 small";
+            var warnTitle = document.createElement("strong");
+            warnTitle.textContent = "Warnings: ";
+            warnAlert.appendChild(warnTitle);
+            var warnList = document.createElement("ul");
+            warnList.className = "mb-0 mt-1";
+            q.warnings.forEach(function(w) {
+                var li = document.createElement("li");
+                li.textContent = w;
+                warnList.appendChild(li);
+            });
+            warnAlert.appendChild(warnList);
+            warningsDiv.appendChild(warnAlert);
+        }
+
+        // Recommendations
+        var recsDiv = document.getElementById("quality-recommendations");
+        clearChildren(recsDiv);
+        if (q.recommendations && q.recommendations.length > 0) {
+            q.recommendations.forEach(function(rec) {
+                var recDiv = document.createElement("div");
+                recDiv.className = "small text-muted";
+                var icon = document.createElement("i");
+                icon.className = "bi bi-arrow-right-circle me-1";
+                recDiv.appendChild(icon);
+                recDiv.appendChild(document.createTextNode(rec));
+                recsDiv.appendChild(recDiv);
+            });
+        }
+    } catch (err) {
+        // Non-critical - don't show error toast
     }
 }
 

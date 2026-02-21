@@ -152,6 +152,29 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Data Quality Banner -->
+                    <div id="quality-banner" class="d-none mb-4">
+                        <div class="card" id="quality-card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-shield-check"></i> Data Quality Assessment</span>
+                                <span class="badge fs-6" id="quality-grade-badge">--</span>
+                            </div>
+                            <div class="card-body">
+                                <div class="d-flex align-items-center gap-3 mb-2">
+                                    <div class="fs-4 fw-bold" id="quality-score">--</div>
+                                    <div class="flex-grow-1">
+                                        <div class="progress" style="height:8px">
+                                            <div class="progress-bar" id="quality-bar" style="width:0%"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="quality-issues"></div>
+                                <div id="quality-warnings"></div>
+                                <div id="quality-recommendations"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="card">
                         <div class="card-header">Fracture Summary by Well & Type</div>
                         <div class="card-body p-0">

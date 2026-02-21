@@ -35,6 +35,7 @@ from src.enhanced_analysis import (
     critically_stressed_enhanced, generate_interpretation,
     compute_pore_pressure, feedback_store,
     engineer_enhanced_features, compute_shap_explanations,
+    validate_data_quality,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -150,6 +151,13 @@ async def data_summary(source: str = "demo"):
         "fracture_types": df[FRACTURE_TYPE_COL].unique().tolist(),
         "summary": rows,
     }
+
+
+@app.get("/api/data/quality")
+async def data_quality(source: str = "demo"):
+    """Run data quality validation checks."""
+    df = get_df(source)
+    return _sanitize_for_json(validate_data_quality(df))
 
 
 @app.get("/api/data/wells")

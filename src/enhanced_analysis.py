@@ -1138,6 +1138,167 @@ def compute_shap_explanations(
 
 
 # ──────────────────────────────────────────────────────
+# Data Quality Validation
+# ──────────────────────────────────────────────────────
+
+def validate_data_quality(df: pd.DataFrame) -> dict:
+    """Run comprehensive data quality checks for production use.
+
+    Critical for the oil industry: bad data leads to bad drilling decisions.
+    Returns quality score (0-100), issues found, and recommendations.
+    """
+    issues = []
+    warnings_list = []
+    score = 100  # Start perfect, deduct for issues
+
+    n = len(df)
+    if n == 0:
+        return {"score": 0, "issues": ["No data"], "warnings": [], "recommendations": ["Upload fracture data to begin analysis."]}
+
+    # ── Check required columns ──
+    required = [AZIMUTH_COL, DIP_COL]
+    for col in required:
+        if col not in df.columns:
+            issues.append(f"Missing required column: {col}")
+            score -= 30
+
+    # ── Azimuth range check (0-360) ──
+    if AZIMUTH_COL in df.columns:
+        az = df[AZIMUTH_COL].dropna()
+        out_of_range = ((az < 0) | (az > 360)).sum()
+        if out_of_range > 0:
+            issues.append(f"{out_of_range} azimuth values outside 0-360 range")
+            score -= min(20, out_of_range * 2)
+
+        # Check for suspicious clustering (all same value = likely error)
+        if len(az.unique()) < 3 and n > 10:
+            warnings_list.append("Very low azimuth diversity - check if data is real")
+            score -= 10
+
+    # ── Dip range check (0-90) ──
+    if DIP_COL in df.columns:
+        dip = df[DIP_COL].dropna()
+        out_of_range = ((dip < 0) | (dip > 90)).sum()
+        if out_of_range > 0:
+            issues.append(f"{out_of_range} dip values outside 0-90 range")
+            score -= min(20, out_of_range * 2)
+
+        # Very low or very high average dip is suspicious
+        if len(dip) > 0:
+            mean_dip = dip.mean()
+            if mean_dip < 5:
+                warnings_list.append(f"Mean dip is very low ({mean_dip:.1f}). Near-horizontal fractures are unusual.")
+            elif mean_dip > 85:
+                warnings_list.append(f"Mean dip is very high ({mean_dip:.1f}). Near-vertical fractures dominate.")
+
+    # ── Depth checks ──
+    if DEPTH_COL in df.columns:
+        depth = df[DEPTH_COL].dropna()
+        if len(depth) == 0:
+            warnings_list.append("No depth data available - pore pressure and overburden estimates will be unreliable")
+            score -= 5
+        else:
+            if depth.min() < 0:
+                issues.append(f"Negative depth values found (min={depth.min():.1f}m)")
+                score -= 15
+            if depth.max() > 12000:
+                warnings_list.append(f"Very deep well ({depth.max():.0f}m). Verify depth units are in meters.")
+            if depth.max() - depth.min() < 10 and n > 20:
+                warnings_list.append("Very narrow depth range - fractures may be from a single thin zone")
+
+    # ── Missing values ──
+    for col in [AZIMUTH_COL, DIP_COL, DEPTH_COL]:
+        if col in df.columns:
+            missing = df[col].isna().sum()
+            if missing > 0:
+                pct = 100 * missing / n
+                if pct > 20:
+                    issues.append(f"{col}: {missing} missing values ({pct:.0f}%)")
+                    score -= min(15, int(pct / 2))
+                elif pct > 5:
+                    warnings_list.append(f"{col}: {missing} missing values ({pct:.1f}%)")
+                    score -= 3
+
+    # ── Sample size checks ──
+    if n < 30:
+        warnings_list.append(f"Only {n} fractures. ML models need 50+ for reliable results.")
+        score -= 10
+    elif n < 100:
+        warnings_list.append(f"{n} fractures is marginal for multi-class ML. Consider adding more data.")
+        score -= 5
+
+    # ── Fracture type distribution ──
+    if FRACTURE_TYPE_COL in df.columns:
+        type_counts = df[FRACTURE_TYPE_COL].value_counts()
+        min_count = type_counts.min()
+        if min_count < 5:
+            minority = type_counts[type_counts < 5].index.tolist()
+            warnings_list.append(
+                f"Very few samples for types: {', '.join(minority)}. "
+                f"Classification may be unreliable for these types."
+            )
+            score -= 5
+
+        # Check for unknown types
+        n_types = len(type_counts)
+        if n_types > 10:
+            warnings_list.append(f"{n_types} fracture types is unusual. Check for data entry errors.")
+        elif n_types == 1:
+            warnings_list.append("Only 1 fracture type - classification is not meaningful.")
+            score -= 10
+
+    # ── Well distribution ──
+    if WELL_COL in df.columns:
+        wells = df[WELL_COL].unique()
+        if len(wells) == 1:
+            warnings_list.append("Single well - results may not generalize to other wells.")
+
+    # ── Duplicate detection ──
+    if AZIMUTH_COL in df.columns and DIP_COL in df.columns:
+        check_cols = [AZIMUTH_COL, DIP_COL]
+        if DEPTH_COL in df.columns:
+            check_cols.append(DEPTH_COL)
+        dupes = df.duplicated(subset=check_cols).sum()
+        if dupes > 0:
+            pct = 100 * dupes / n
+            if pct > 10:
+                warnings_list.append(f"{dupes} duplicate rows ({pct:.0f}%). Check for repeated entries.")
+                score -= 5
+
+    score = max(0, min(100, score))
+
+    # Generate recommendations
+    recommendations = []
+    if score < 50:
+        recommendations.append("Data quality is LOW. Fix critical issues before running analysis.")
+    elif score < 80:
+        recommendations.append("Data quality is MODERATE. Review warnings before making operational decisions.")
+
+    if n < 100:
+        recommendations.append("Add more fracture measurements to improve ML model accuracy.")
+    if DEPTH_COL not in df.columns or df[DEPTH_COL].isna().all():
+        recommendations.append("Include depth measurements to enable pore pressure and overburden estimates.")
+
+    grade = "A" if score >= 90 else "B" if score >= 80 else "C" if score >= 70 else "D" if score >= 50 else "F"
+
+    return {
+        "score": score,
+        "grade": grade,
+        "issues": issues,
+        "warnings": warnings_list,
+        "recommendations": recommendations,
+        "stats": {
+            "total_rows": n,
+            "wells": df[WELL_COL].nunique() if WELL_COL in df.columns else 0,
+            "fracture_types": df[FRACTURE_TYPE_COL].nunique() if FRACTURE_TYPE_COL in df.columns else 0,
+            "missing_azimuth": int(df[AZIMUTH_COL].isna().sum()) if AZIMUTH_COL in df.columns else n,
+            "missing_dip": int(df[DIP_COL].isna().sum()) if DIP_COL in df.columns else n,
+            "missing_depth": int(df[DEPTH_COL].isna().sum()) if DEPTH_COL in df.columns else n,
+        },
+    }
+
+
+# ──────────────────────────────────────────────────────
 # Feedback & Validation Tracking
 # ──────────────────────────────────────────────────────
 
