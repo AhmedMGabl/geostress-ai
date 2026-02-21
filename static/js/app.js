@@ -475,6 +475,81 @@ async function runEvidenceChain() {
 
 // ── Guided Analysis Wizard ──────────────────────────
 
+async function runAnomalyDetection() {
+    showLoading("Scanning for data anomalies...");
+    try {
+        var r = await apiPost("/api/data/anomaly-detection", {
+            source: currentSource, well: getWell()
+        });
+        var el = document.getElementById("anomaly-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("anomaly-body");
+
+        var rec = r.recommendation || {};
+        var verdictColors = {
+            DATA_ERRORS_FOUND: "danger", MANY_WARNINGS: "warning",
+            SOME_WARNINGS: "info", DATA_CLEAN: "success"
+        };
+        var html = '<div class="alert alert-' + (verdictColors[rec.verdict] || "secondary") + ' p-3">' +
+            '<h5><i class="bi bi-shield-check"></i> ' + (rec.verdict || "").replace(/_/g, " ") + '</h5>' +
+            '<p class="mb-1">' + (rec.message || "") + '</p></div>';
+
+        // Summary cards
+        html += '<div class="row g-2 mb-3">';
+        html += '<div class="col-md-3"><div class="card text-center"><div class="card-body py-2">' +
+            '<h3>' + r.total_samples + '</h3><small class="text-muted">Total</small></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center border-success"><div class="card-body py-2">' +
+            '<h3 class="text-success">' + r.clean_count + '</h3><small class="text-muted">Clean</small></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center border-warning"><div class="card-body py-2">' +
+            '<h3 class="text-warning">' + r.flagged_count + '</h3><small class="text-muted">Flagged (' + r.flagged_pct + '%)</small></div></div></div>';
+        var errCount = (r.severity_counts || {}).ERROR || 0;
+        html += '<div class="col-md-3"><div class="card text-center border-danger"><div class="card-body py-2">' +
+            '<h3 class="text-danger">' + errCount + '</h3><small class="text-muted">Errors</small></div></div></div>';
+        html += '</div>';
+
+        // Flag type breakdown
+        if (r.flag_types && Object.keys(r.flag_types).length > 0) {
+            html += '<h6><i class="bi bi-tags"></i> Flag Types</h6>';
+            html += '<div class="d-flex flex-wrap gap-2 mb-3">';
+            Object.keys(r.flag_types).forEach(function(ft) {
+                var badgeColor = ft.includes("ERROR") || ft.includes("IMPOSSIBLE") ? "danger" :
+                    (ft.includes("OUTLIER") || ft.includes("DUPLICATE") ? "warning" : "info");
+                html += '<span class="badge bg-' + badgeColor + '">' + ft.replace(/_/g, " ") +
+                    ': ' + r.flag_types[ft] + '</span>';
+            });
+            html += '</div>';
+        }
+
+        // Flagged samples table (first 30)
+        if (r.flagged_samples && r.flagged_samples.length > 0) {
+            html += '<h6><i class="bi bi-table"></i> Flagged Samples (' + r.flagged_samples.length + ')</h6>';
+            html += '<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr>' +
+                '<th>#</th><th>Depth</th><th>Az</th><th>Dip</th><th>Type</th><th>Severity</th><th>Issues</th></tr></thead><tbody>';
+            r.flagged_samples.slice(0, 30).forEach(function(s) {
+                var rowClass = s.max_severity === "ERROR" ? "table-danger" :
+                    (s.max_severity === "WARNING" ? "table-warning" : "");
+                var issues = s.flags.map(function(f) { return f.message; }).join("; ");
+                html += '<tr class="' + rowClass + '"><td>' + s.index + '</td>' +
+                    '<td>' + (s.depth || "-") + '</td><td>' + (s.azimuth || "-") + '</td>' +
+                    '<td>' + (s.dip || "-") + '</td><td>' + (s.type || "-") + '</td>' +
+                    '<td><span class="badge bg-' + (s.max_severity === "ERROR" ? "danger" : (s.max_severity === "WARNING" ? "warning" : "info")) +
+                    '">' + s.max_severity + '</span></td><td><small>' + issues + '</small></td></tr>';
+            });
+            html += '</tbody></table></div>';
+            if (r.flagged_samples.length > 30) {
+                html += '<small class="text-muted">Showing 30 of ' + r.flagged_samples.length + ' flagged samples</small>';
+            }
+        }
+
+        body.innerHTML = html;
+        showToast("Anomalies: " + r.flagged_count + " flagged, " + errCount + " errors");
+    } catch (err) {
+        showToast("Anomaly detection error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 async function runBatchAnalysis() {
     showLoading("Running batch analysis for all wells...");
     try {

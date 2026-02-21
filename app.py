@@ -55,7 +55,7 @@ from src.enhanced_analysis import (
     physics_constrained_predict, misclassification_analysis,
     evidence_chain_analysis, model_bias_detection,
     prediction_reliability_report, guided_analysis_wizard,
-    predict_with_abstention,
+    predict_with_abstention, detect_data_anomalies,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -2317,6 +2317,30 @@ async def data_recommendations(request: Request):
         df = df[df[WELL_COL] == well]
 
     result = await asyncio.to_thread(data_collection_recommendations, df)
+    return _sanitize_for_json(result)
+
+
+# ── Data Anomaly Detection ────────────────────────────
+
+@app.post("/api/data/anomaly-detection")
+async def run_anomaly_detection(request: Request):
+    """Flag individual fracture measurements that may contain errors.
+
+    Identifies: physical impossibilities, statistical outliers, duplicates,
+    isolated depth zones, and low-dip azimuth uncertainty.
+    Returns per-sample flags for expert review.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well and WELL_COL in df.columns:
+        df = df[df[WELL_COL] == well].reset_index(drop=True)
+
+    result = await asyncio.to_thread(detect_data_anomalies, df)
     return _sanitize_for_json(result)
 
 

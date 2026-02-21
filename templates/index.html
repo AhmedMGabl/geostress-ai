@@ -371,6 +371,21 @@
                         </div>
                     </div>
 
+                    <!-- Data Anomaly Detection -->
+                    <div class="mb-3">
+                        <button class="btn btn-outline-warning btn-sm" onclick="runAnomalyDetection()">
+                            <i class="bi bi-search"></i> Scan for Data Anomalies
+                        </button>
+                    </div>
+                    <div id="anomaly-results" class="d-none mb-4">
+                        <div class="card border-warning">
+                            <div class="card-header bg-warning text-dark">
+                                <i class="bi bi-exclamation-triangle"></i> Data Anomaly Detection
+                            </div>
+                            <div class="card-body" id="anomaly-body"></div>
+                        </div>
+                    </div>
+
                     <!-- Auto-Analysis Overview -->
                     <div id="overview-panel" class="d-none mb-4">
                         <div class="card border-dark">

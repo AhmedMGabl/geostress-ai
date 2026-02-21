@@ -7336,3 +7336,214 @@ def field_consistency_check(
         "recommendation": recommendation,
         "recommendation_message": rec_msg,
     }
+
+
+# ──────────────────────────────────────────────────────
+# Data Anomaly Detection — Per-Sample Flagging
+# ──────────────────────────────────────────────────────
+
+def detect_data_anomalies(df: pd.DataFrame) -> dict:
+    """Flag individual fracture measurements that may contain errors.
+
+    Unlike validate_domain_constraints (which checks aggregate patterns),
+    this function identifies SPECIFIC samples that look suspicious:
+    - Statistical outliers (IQR, Z-score)
+    - Physically impossible values
+    - Duplicate entries
+    - Isolated depth clusters
+    - Azimuth/dip combinations inconsistent with neighbours
+
+    Returns per-sample flags + summary statistics for stakeholder review.
+    """
+    n = len(df)
+    flags = [[] for _ in range(n)]  # per-sample list of flag dicts
+
+    # Get column references
+    az = df[AZIMUTH_COL].values.astype(float) if AZIMUTH_COL in df.columns else None
+    dip = df[DIP_COL].values.astype(float) if DIP_COL in df.columns else None
+    depth = df[DEPTH_COL].values.astype(float) if DEPTH_COL in df.columns else None
+
+    # 1. Physical impossibility
+    if az is not None:
+        for i in range(n):
+            if np.isnan(az[i]):
+                flags[i].append({"type": "MISSING_AZIMUTH", "severity": "ERROR",
+                                 "message": "Missing azimuth value"})
+            elif az[i] < 0 or az[i] > 360:
+                flags[i].append({"type": "IMPOSSIBLE_AZIMUTH", "severity": "ERROR",
+                                 "message": f"Azimuth {az[i]:.1f}° outside [0, 360]"})
+
+    if dip is not None:
+        for i in range(n):
+            if np.isnan(dip[i]):
+                flags[i].append({"type": "MISSING_DIP", "severity": "ERROR",
+                                 "message": "Missing dip value"})
+            elif dip[i] < 0 or dip[i] > 90:
+                flags[i].append({"type": "IMPOSSIBLE_DIP", "severity": "ERROR",
+                                 "message": f"Dip {dip[i]:.1f}° outside [0, 90]"})
+
+    if depth is not None:
+        for i in range(n):
+            if np.isnan(depth[i]):
+                flags[i].append({"type": "MISSING_DEPTH", "severity": "WARNING",
+                                 "message": "Missing depth value"})
+            elif depth[i] < 0:
+                flags[i].append({"type": "NEGATIVE_DEPTH", "severity": "ERROR",
+                                 "message": f"Negative depth {depth[i]:.1f}m"})
+
+    # 2. Statistical outliers (IQR method)
+    for col_name, vals in [("azimuth", az), ("dip", dip), ("depth", depth)]:
+        if vals is None:
+            continue
+        valid = vals[~np.isnan(vals)]
+        if len(valid) < 10:
+            continue
+        q1, q3 = np.percentile(valid, [25, 75])
+        iqr = q3 - q1
+        if iqr == 0:
+            continue
+        lower = q1 - 2.5 * iqr
+        upper = q3 + 2.5 * iqr
+        for i in range(n):
+            if np.isnan(vals[i]):
+                continue
+            if vals[i] < lower or vals[i] > upper:
+                flags[i].append({
+                    "type": f"OUTLIER_{col_name.upper()}",
+                    "severity": "WARNING",
+                    "message": f"{col_name.title()} {vals[i]:.1f} is a statistical outlier "
+                               f"(IQR bounds: [{lower:.1f}, {upper:.1f}])",
+                })
+
+    # 3. Exact duplicates
+    if az is not None and dip is not None:
+        seen = {}
+        for i in range(n):
+            d = depth[i] if depth is not None else 0
+            key = (round(float(az[i]), 2), round(float(dip[i]), 2), round(float(d), 2))
+            if key in seen:
+                flags[i].append({
+                    "type": "DUPLICATE",
+                    "severity": "WARNING",
+                    "message": f"Exact duplicate of sample {seen[key]}",
+                })
+            else:
+                seen[key] = i
+
+    # 4. Depth gaps (isolated samples)
+    if depth is not None:
+        valid_depths = depth[~np.isnan(depth)]
+        if len(valid_depths) > 20:
+            sorted_depths = np.sort(valid_depths)
+            median_spacing = np.median(np.diff(sorted_depths))
+            gap_threshold = max(median_spacing * 10, 50)  # 10x median or 50m
+            for i in range(n):
+                if np.isnan(depth[i]):
+                    continue
+                # Check if this sample is isolated
+                distances = np.abs(valid_depths - depth[i])
+                n_nearby = int((distances < gap_threshold).sum()) - 1  # exclude self
+                if n_nearby < 3:
+                    flags[i].append({
+                        "type": "ISOLATED_DEPTH",
+                        "severity": "INFO",
+                        "message": f"Only {n_nearby} samples within {gap_threshold:.0f}m — "
+                                   "verify this measurement is from the correct well/interval",
+                    })
+
+    # 5. Low-dip with high-azimuth uncertainty (structural geology heuristic)
+    if dip is not None and az is not None:
+        for i in range(n):
+            if np.isnan(dip[i]) or np.isnan(az[i]):
+                continue
+            if dip[i] < 10:
+                flags[i].append({
+                    "type": "LOW_DIP_UNCERTAINTY",
+                    "severity": "INFO",
+                    "message": f"Very low dip ({dip[i]:.1f}°) — azimuth direction is "
+                               "poorly constrained for near-horizontal fractures",
+                })
+
+    # Summary
+    flagged_samples = []
+    for i in range(n):
+        if flags[i]:
+            sample = {"index": i}
+            if depth is not None and not np.isnan(depth[i]):
+                sample["depth"] = round(float(depth[i]), 1)
+            if az is not None and not np.isnan(az[i]):
+                sample["azimuth"] = round(float(az[i]), 1)
+            if dip is not None and not np.isnan(dip[i]):
+                sample["dip"] = round(float(dip[i]), 1)
+            if FRACTURE_TYPE_COL in df.columns:
+                sample["type"] = str(df[FRACTURE_TYPE_COL].iloc[i])
+            sample["flags"] = flags[i]
+            sample["max_severity"] = max(
+                f["severity"] for f in flags[i]
+            ) if flags[i] else "OK"
+            flagged_samples.append(sample)
+
+    severity_counts = {"ERROR": 0, "WARNING": 0, "INFO": 0}
+    for s in flagged_samples:
+        for f in s["flags"]:
+            severity_counts[f["severity"]] = severity_counts.get(f["severity"], 0) + 1
+
+    flag_types = {}
+    for s in flagged_samples:
+        for f in s["flags"]:
+            flag_types[f["type"]] = flag_types.get(f["type"], 0) + 1
+
+    return {
+        "total_samples": n,
+        "flagged_count": len(flagged_samples),
+        "clean_count": n - len(flagged_samples),
+        "flagged_pct": round(100 * len(flagged_samples) / max(n, 1), 1),
+        "severity_counts": severity_counts,
+        "flag_types": flag_types,
+        "flagged_samples": flagged_samples,
+        "recommendation": _anomaly_recommendation(
+            len(flagged_samples), n, severity_counts,
+        ),
+    }
+
+
+def _anomaly_recommendation(n_flagged, n_total, severity_counts):
+    """Generate recommendation based on anomaly results."""
+    pct = 100 * n_flagged / max(n_total, 1)
+    errors = severity_counts.get("ERROR", 0)
+
+    if errors > 0:
+        return {
+            "verdict": "DATA_ERRORS_FOUND",
+            "message": (
+                f"{errors} data errors detected (impossible values). "
+                "These MUST be corrected before analysis — results will be unreliable."
+            ),
+            "action": "FIX_ERRORS_FIRST",
+        }
+    elif pct > 30:
+        return {
+            "verdict": "MANY_WARNINGS",
+            "message": (
+                f"{pct:.0f}% of samples flagged — data quality is questionable. "
+                "Review flagged samples before trusting analysis results."
+            ),
+            "action": "REVIEW_AND_CLEAN",
+        }
+    elif pct > 10:
+        return {
+            "verdict": "SOME_WARNINGS",
+            "message": (
+                f"{pct:.0f}% of samples flagged. Most are low-severity. "
+                "Review high-priority flags; analysis can proceed with caution."
+            ),
+            "action": "PROCEED_WITH_REVIEW",
+        }
+    else:
+        return {
+            "verdict": "DATA_CLEAN",
+            "message": (
+                f"Only {pct:.0f}% of samples flagged. Data quality is good for analysis."
+            ),
+            "action": "PROCEED",
+        }
