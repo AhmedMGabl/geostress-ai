@@ -1398,7 +1398,8 @@ async function runWellComparison() {
                 var cv = r.cross_validation[key];
                 var accColor = cv.accuracy >= 70 ? "success" : cv.accuracy >= 50 ? "warning" : "danger";
                 cvTbl += '<tr><td>' + key + '</td>' +
-                    '<td><span class="badge bg-' + accColor + '">' + (cv.accuracy != null ? cv.accuracy + '%' : cv.error) + '</span></td>' +
+                    '<td><span class="badge bg-' + accColor + '">' + (cv.accuracy != null ? cv.accuracy + '%' : (cv.error || 'N/A')) + '</span>' +
+                    (cv.note ? '<br><small class="text-muted">' + cv.note + '</small>' : '') + '</td>' +
                     '<td>' + (cv.train_size || '') + '</td><td>' + (cv.test_size || '') + '</td></tr>';
             }
             cvTbl += '</tbody></table>';
