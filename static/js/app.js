@@ -161,7 +161,9 @@ var tabNames = {
     montecarlo: "Monte Carlo Uncertainty",
     validation: "Data Validation",
     research: "Research & Methods",
-    audit: "Audit Trail"
+    audit: "Audit Trail",
+    calibration: "Model Calibration",
+    glossary: "Glossary & Guide"
 };
 
 document.querySelectorAll("[data-tab]").forEach(function(link) {
@@ -181,6 +183,17 @@ document.querySelectorAll("[data-tab]").forEach(function(link) {
         document.getElementById("page-title").textContent = tabNames[tab] || tab;
     });
 });
+
+function switchTab(tab) {
+    document.querySelectorAll(".sidebar-nav .nav-link").forEach(function(l) {
+        l.classList.remove("active");
+        if (l.dataset.tab === tab) l.classList.add("active");
+    });
+    document.querySelectorAll(".tab-content").forEach(function(c) { c.classList.remove("active"); });
+    var el = document.getElementById("tab-" + tab);
+    if (el) el.classList.add("active");
+    document.getElementById("page-title").textContent = tabNames[tab] || tab;
+}
 
 // ── Well selector sync ────────────────────────────
 
@@ -764,6 +777,149 @@ async function runGuidedWizard() {
     } finally {
         hideLoading();
     }
+}
+
+
+// ── Full Analysis Pipeline ────────────────────────
+
+var _pipelineRunning = false;
+
+function closePipelinePanel() {
+    document.getElementById("pipeline-panel").classList.add("d-none");
+}
+
+function _updatePipelineStep(steps, idx, status) {
+    // status: "running", "done", "error", "pending"
+    var colors = {running: "primary", done: "success", error: "danger", pending: "secondary"};
+    var icons = {running: "arrow-right-circle", done: "check-circle-fill", error: "x-circle-fill", pending: "circle"};
+    var stepsEl = document.getElementById("pipeline-steps");
+    var badges = stepsEl.querySelectorAll(".badge");
+    if (badges[idx]) {
+        badges[idx].className = "badge bg-" + colors[status] + " py-1 px-2";
+        badges[idx].innerHTML = '<i class="bi bi-' + icons[status] + '"></i> ' + steps[idx].label;
+    }
+}
+
+async function runFullPipeline() {
+    if (_pipelineRunning) { showToast("Pipeline already running", "Warning"); return; }
+    _pipelineRunning = true;
+
+    var well = getWell();
+    var depth = getDepth();
+    var regime = getRegime();
+    var panel = document.getElementById("pipeline-panel");
+    panel.classList.remove("d-none");
+    panel.scrollIntoView({behavior: "smooth"});
+
+    var steps = [
+        {label: "Data Validation", endpoint: "/api/data/validate-constraints", tab: "validation",
+         body: {source: currentSource, well: well}},
+        {label: "Stress Inversion", endpoint: "/api/analysis/inversion", tab: "inversion",
+         body: {source: currentSource, well: well, depth_m: depth, regime: regime}},
+        {label: "ML Classification", endpoint: "/api/analysis/classify", tab: "classify",
+         body: {source: currentSource, well: well, classifier: "gradient_boosting"}},
+        {label: "Risk Assessment", endpoint: "/api/analysis/risk-matrix", tab: "risk",
+         body: {source: currentSource, well: well, depth: depth}},
+        {label: "Uncertainty Budget", endpoint: "/api/analysis/uncertainty-budget", tab: "uncertainty",
+         body: {source: currentSource, well: well, depth: depth}},
+        {label: "Executive Summary", endpoint: "/api/analysis/executive-summary", tab: "executive",
+         body: {source: currentSource, well: well, depth: depth}}
+    ];
+
+    // Render step badges
+    var stepsEl = document.getElementById("pipeline-steps");
+    stepsEl.innerHTML = steps.map(function(s) {
+        return '<span class="badge bg-secondary py-1 px-2"><i class="bi bi-circle"></i> ' + s.label + '</span>';
+    }).join("");
+
+    var bar = document.getElementById("pipeline-bar");
+    var statusEl = document.getElementById("pipeline-status");
+    var elapsedEl = document.getElementById("pipeline-elapsed");
+    var summaryEl = document.getElementById("pipeline-summary");
+    summaryEl.classList.add("d-none");
+    bar.style.width = "0%";
+    bar.className = "progress-bar bg-warning";
+
+    var startTime = Date.now();
+    var results = {};
+    var errors = [];
+    var timer = setInterval(function() {
+        var sec = ((Date.now() - startTime) / 1000).toFixed(0);
+        elapsedEl.textContent = sec + "s";
+    }, 500);
+
+    document.getElementById("btn-pipeline").disabled = true;
+
+    for (var i = 0; i < steps.length; i++) {
+        var step = steps[i];
+        _updatePipelineStep(steps, i, "running");
+        statusEl.textContent = "Step " + (i + 1) + "/" + steps.length + ": " + step.label + "...";
+        bar.style.width = Math.round((i / steps.length) * 100) + "%";
+
+        try {
+            var r = await apiPost(step.endpoint, step.body);
+            results[step.label] = r;
+            _updatePipelineStep(steps, i, "done");
+        } catch (err) {
+            errors.push(step.label + ": " + err.message);
+            _updatePipelineStep(steps, i, "error");
+        }
+    }
+
+    bar.style.width = "100%";
+    clearInterval(timer);
+    var totalSec = ((Date.now() - startTime) / 1000).toFixed(1);
+    elapsedEl.textContent = totalSec + "s total";
+
+    // Summary
+    var nOk = steps.length - errors.length;
+    bar.className = errors.length === 0 ? "progress-bar bg-success" : "progress-bar bg-warning";
+    statusEl.textContent = errors.length === 0
+        ? "Pipeline complete — all " + nOk + " steps passed"
+        : nOk + "/" + steps.length + " steps completed, " + errors.length + " failed";
+
+    // Build summary card
+    var html = '<div class="row g-2">';
+    // Inversion result
+    if (results["Stress Inversion"]) {
+        var inv = results["Stress Inversion"];
+        html += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">SHmax</div>' +
+            '<div class="metric-value">' + (inv.shmax_azimuth_deg || "--") + '&deg;</div></div></div>';
+        html += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Regime</div>' +
+            '<div class="metric-value text-capitalize">' + (inv.regime || "--") + '</div></div></div>';
+    }
+    // Risk result
+    if (results["Risk Assessment"]) {
+        var risk = results["Risk Assessment"];
+        var rc = {HIGH: "danger", MODERATE: "warning", LOW: "success"};
+        html += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Risk</div>' +
+            '<div class="metric-value text-' + (rc[risk.overall_risk] || "muted") + '">' +
+            (risk.overall_risk || "--") + '</div></div></div>';
+    }
+    // Executive summary verdict
+    if (results["Executive Summary"]) {
+        var exec = results["Executive Summary"];
+        html += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Decision</div>' +
+            '<div class="metric-value">' + (exec.overall_risk || exec.go_no_go || "--") + '</div></div></div>';
+    }
+    html += '</div>';
+
+    if (errors.length > 0) {
+        html += '<div class="alert alert-danger py-2 mt-2 small"><strong>Issues:</strong><ul class="mb-0">';
+        errors.forEach(function(e) { html += '<li>' + e + '</li>'; });
+        html += '</ul></div>';
+    }
+
+    html += '<div class="mt-2"><button class="btn btn-sm btn-outline-primary" onclick="switchTab(\'executive\')">View Executive Summary</button> ';
+    html += '<button class="btn btn-sm btn-outline-secondary" onclick="switchTab(\'inversion\')">View Inversion</button> ';
+    html += '<button class="btn btn-sm btn-outline-secondary" onclick="switchTab(\'risk\')">View Risk Matrix</button></div>';
+
+    summaryEl.innerHTML = html;
+    summaryEl.classList.remove("d-none");
+
+    document.getElementById("btn-pipeline").disabled = false;
+    _pipelineRunning = false;
+    showToast("Pipeline complete in " + totalSec + "s (" + nOk + "/" + steps.length + " OK)");
 }
 
 

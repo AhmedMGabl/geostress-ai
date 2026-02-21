@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v2.7</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.0</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -172,6 +172,14 @@
                 </div>
             </div>
 
+            <!-- Full Pipeline -->
+            <div class="sidebar-section">
+                <button id="btn-pipeline" class="btn btn-warning btn-sm w-100 fw-bold" onclick="runFullPipeline()">
+                    <i class="bi bi-rocket-takeoff"></i> Run Full Pipeline
+                </button>
+                <div class="small text-muted-light mt-1">Chains all analyses in one click</div>
+            </div>
+
             <!-- Upload -->
             <div class="sidebar-section">
                 <h6 class="sidebar-heading">Upload Data</h6>
@@ -200,6 +208,27 @@
             </div>
 
             <div class="content-area p-4">
+                <!-- Pipeline Progress Panel -->
+                <div id="pipeline-panel" class="d-none mb-4">
+                    <div class="card border-warning">
+                        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center py-2">
+                            <span><i class="bi bi-rocket-takeoff"></i> <strong>Full Analysis Pipeline</strong></span>
+                            <button class="btn btn-sm btn-outline-dark" onclick="closePipelinePanel()"><i class="bi bi-x-lg"></i></button>
+                        </div>
+                        <div class="card-body py-3">
+                            <div id="pipeline-steps" class="d-flex gap-1 mb-2 flex-wrap"></div>
+                            <div class="progress mb-2" style="height:6px">
+                                <div id="pipeline-bar" class="progress-bar bg-warning" style="width:0%;transition:width 0.3s"></div>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <small id="pipeline-status" class="text-muted">Preparing...</small>
+                                <small id="pipeline-elapsed" class="text-muted"></small>
+                            </div>
+                            <div id="pipeline-summary" class="d-none mt-3"></div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- EXECUTIVE SUMMARY TAB -->
                 <div id="tab-executive" class="tab-content active">
                     <div class="d-flex justify-content-between align-items-center mb-4">
