@@ -73,14 +73,30 @@ plot_lock = threading.Lock()
 demo_df: pd.DataFrame = None
 uploaded_df: pd.DataFrame = None
 
-# Cache for expensive computations
-_model_comparison_cache = {}
-_inversion_cache = {}
-_auto_regime_cache = {}
-_classify_cache = {}
-_misclass_cache = {}
-_physics_predict_cache = {}
-_wizard_cache = {}
+# Bounded cache with LRU eviction
+class BoundedCache(dict):
+    """Dict with max size — evicts oldest entries when full."""
+    def __init__(self, maxsize=50):
+        super().__init__()
+        self._maxsize = maxsize
+        self._order = deque()
+
+    def __setitem__(self, key, value):
+        if key not in self:
+            if len(self) >= self._maxsize:
+                oldest = self._order.popleft()
+                super().pop(oldest, None)
+            self._order.append(key)
+        super().__setitem__(key, value)
+
+# Cache for expensive computations (bounded to prevent memory leaks)
+_model_comparison_cache = BoundedCache(30)
+_inversion_cache = BoundedCache(100)
+_auto_regime_cache = BoundedCache(50)
+_classify_cache = BoundedCache(30)
+_misclass_cache = BoundedCache(30)
+_physics_predict_cache = BoundedCache(30)
+_wizard_cache = BoundedCache(20)
 
 # Audit trail for regulatory compliance (max 1000 entries in-memory)
 _audit_log: deque = deque(maxlen=1000)
@@ -159,6 +175,22 @@ def get_df(source: str = "demo") -> pd.DataFrame:
     if source == "uploaded" and uploaded_df is not None:
         return uploaded_df
     return demo_df
+
+
+def _validate_depth(depth) -> float:
+    """Validate and clamp depth parameter."""
+    d = float(depth)
+    if d < 0 or d > 15000:
+        raise HTTPException(400, f"Depth must be 0-15000m, got {d}")
+    return d
+
+
+def _validate_friction(mu) -> float:
+    """Validate friction coefficient."""
+    m = float(mu)
+    if m < 0.01 or m > 2.0:
+        raise HTTPException(400, f"Friction must be 0.01-2.0, got {m}")
+    return m
 
 
 def _sanitize_for_json(obj):
@@ -1054,7 +1086,7 @@ async def get_feature_info(source: str = "demo"):
 
 # ── NEW: SHAP Explainability API ─────────────────────
 
-_shap_cache = {}
+_shap_cache = BoundedCache(20)
 
 
 @app.post("/api/analysis/shap")
@@ -1083,7 +1115,7 @@ async def shap_explanations(request: Request):
 
 # ── Sensitivity Analysis ─────────────────────────────
 
-_sensitivity_cache = {}
+_sensitivity_cache = BoundedCache(30)
 
 
 @app.post("/api/analysis/sensitivity")
