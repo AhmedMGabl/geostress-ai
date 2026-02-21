@@ -366,11 +366,12 @@ async def upload_file(file: UploadFile = File(...)):
     if not file.filename.endswith((".xls", ".xlsx")):
         raise HTTPException(400, "Only .xls and .xlsx files supported")
 
-    suffix = Path(file.filename).suffix
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        content = await file.read()
-        tmp.write(content)
-        tmp_path = tmp.name
+    # Use original filename so parse_filename can extract well/type
+    tmp_dir = tempfile.mkdtemp()
+    tmp_path = os.path.join(tmp_dir, file.filename)
+    content = await file.read()
+    with open(tmp_path, "wb") as f:
+        f.write(content)
 
     try:
         new_df = load_single_file(tmp_path)
@@ -406,9 +407,63 @@ async def upload_file(file: UploadFile = File(...)):
             except Exception:
                 result["ood_check"] = None
 
+        # Data quality + sufficiency + domain checks
+        try:
+            quality = validate_data_quality(new_df)
+            result["quality"] = {
+                "score": quality["score"],
+                "grade": quality["grade"],
+                "issues": quality.get("issues", [])[:5],
+            }
+        except Exception:
+            result["quality"] = None
+
+        try:
+            sufficiency = data_sufficiency_check(new_df)
+            analyses = sufficiency.get("analyses", [])
+            if isinstance(analyses, dict):
+                analyses = list(analyses.values())
+            result["sufficiency"] = {
+                "overall": sufficiency.get("overall_readiness", "UNKNOWN"),
+                "ready_count": sum(1 for a in analyses if a.get("status") == "READY"),
+                "total_count": len(analyses),
+                "message": sufficiency.get("overall_message", ""),
+            }
+        except Exception:
+            result["sufficiency"] = None
+
+        try:
+            domain = validate_domain_constraints(new_df)
+            result["domain_warnings"] = [
+                w.get("message", str(w)) for w in domain.get("warnings", [])
+            ][:5]
+        except Exception:
+            result["domain_warnings"] = []
+
+        # Preview stats
+        result["preview"] = {
+            "depth_range": [
+                round(float(new_df[DEPTH_COL].min()), 1),
+                round(float(new_df[DEPTH_COL].max()), 1),
+            ] if DEPTH_COL in new_df.columns else None,
+            "azimuth_range": [
+                round(float(new_df[AZIMUTH_COL].min()), 1),
+                round(float(new_df[AZIMUTH_COL].max()), 1),
+            ] if AZIMUTH_COL in new_df.columns else None,
+            "dip_range": [
+                round(float(new_df[DIP_COL].min()), 1),
+                round(float(new_df[DIP_COL].max()), 1),
+            ] if DIP_COL in new_df.columns else None,
+            "type_distribution": (
+                new_df[FRACTURE_TYPE_COL].value_counts().to_dict()
+                if FRACTURE_TYPE_COL in new_df.columns else {}
+            ),
+        }
+
         return _sanitize_for_json(result)
     finally:
-        os.unlink(tmp_path)
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ── Visualization API ────────────────────────────────

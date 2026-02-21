@@ -737,15 +737,81 @@ document.getElementById("file-upload").addEventListener("change", async function
         val("data-source-label", result.filename);
         document.getElementById("btn-use-demo").classList.remove("d-none");
 
-        // Show OOD warning if detected
+        // Show upload validation summary
+        var warnings = [];
         var oodMsg = "";
-        if (result.ood_check) {
-            var ood = result.ood_check;
-            if (ood.ood_detected) {
-                oodMsg = " | WARNING: " + ood.severity + " distribution shift detected. " + ood.message;
+        if (result.ood_check && result.ood_check.ood_detected) {
+            warnings.push("Distribution shift: " + result.ood_check.severity + " — " + result.ood_check.message);
+        }
+        if (result.domain_warnings) {
+            result.domain_warnings.forEach(function(w) { warnings.push(w); });
+        }
+        if (result.quality && result.quality.issues) {
+            result.quality.issues.forEach(function(i) { warnings.push(i); });
+        }
+
+        // Build validation summary
+        var valHtml = '<div class="card border-info mb-3"><div class="card-header bg-info text-white">' +
+            '<i class="bi bi-clipboard-check"></i> Upload Validation — ' + result.filename + '</div><div class="card-body">';
+
+        // Quality badge
+        if (result.quality) {
+            var qColor = result.quality.score >= 80 ? "success" : result.quality.score >= 60 ? "warning" : "danger";
+            valHtml += '<div class="d-flex gap-3 mb-2"><span class="badge bg-' + qColor + ' fs-6">' +
+                'Quality: ' + result.quality.grade + ' (' + result.quality.score + '/100)</span>';
+        }
+        if (result.sufficiency) {
+            var sColor = result.sufficiency.overall === "FULLY READY" ? "success" :
+                result.sufficiency.overall === "PARTIALLY READY" ? "warning" : "danger";
+            valHtml += '<span class="badge bg-' + sColor + ' fs-6">' +
+                result.sufficiency.ready_count + '/' + result.sufficiency.total_count + ' analyses ready</span></div>';
+        }
+
+        // Preview stats
+        if (result.preview) {
+            var p = result.preview;
+            valHtml += '<div class="row g-2 mb-2">';
+            if (p.depth_range) {
+                valHtml += '<div class="col-md-4"><small class="text-muted">Depth:</small> ' +
+                    p.depth_range[0] + ' — ' + p.depth_range[1] + ' m</div>';
+            }
+            if (p.azimuth_range) {
+                valHtml += '<div class="col-md-4"><small class="text-muted">Azimuth:</small> ' +
+                    p.azimuth_range[0] + '° — ' + p.azimuth_range[1] + '°</div>';
+            }
+            if (p.dip_range) {
+                valHtml += '<div class="col-md-4"><small class="text-muted">Dip:</small> ' +
+                    p.dip_range[0] + '° — ' + p.dip_range[1] + '°</div>';
+            }
+            valHtml += '</div>';
+            if (p.type_distribution && Object.keys(p.type_distribution).length > 0) {
+                valHtml += '<div class="mb-2"><small class="text-muted">Types:</small> ';
+                Object.entries(p.type_distribution).forEach(function(e) {
+                    valHtml += '<span class="badge bg-secondary me-1">' + e[0] + ': ' + e[1] + '</span>';
+                });
+                valHtml += '</div>';
             }
         }
-        showToast("Loaded " + result.rows + " fractures from " + result.filename + oodMsg);
+
+        // Warnings
+        if (warnings.length > 0) {
+            valHtml += '<div class="alert alert-warning py-2 mb-0 mt-2 small"><strong>Warnings:</strong><ul class="mb-0">';
+            warnings.forEach(function(w) { valHtml += '<li>' + w + '</li>'; });
+            valHtml += '</ul></div>';
+        }
+        valHtml += '</div></div>';
+
+        // Show in the data tab
+        var dataTab = document.getElementById("tab-data");
+        var existingVal = document.getElementById("upload-validation");
+        if (existingVal) existingVal.remove();
+        var valDiv = document.createElement("div");
+        valDiv.id = "upload-validation";
+        valDiv.innerHTML = valHtml;
+        dataTab.insertBefore(valDiv, dataTab.firstChild);
+
+        showToast("Loaded " + result.rows + " fractures from " + result.filename +
+            (warnings.length > 0 ? " (" + warnings.length + " warnings)" : " — all checks passed"));
         await loadSummary();
     } catch (err) {
         showToast("Upload error: " + err.message, "Error");
