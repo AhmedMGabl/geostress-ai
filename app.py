@@ -54,7 +54,7 @@ from src.enhanced_analysis import (
     physics_constraint_check, research_methods_summary,
     physics_constrained_predict, misclassification_analysis,
     evidence_chain_analysis, model_bias_detection,
-    prediction_reliability_report,
+    prediction_reliability_report, guided_analysis_wizard,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -79,6 +79,7 @@ _auto_regime_cache = {}
 _classify_cache = {}
 _misclass_cache = {}
 _physics_predict_cache = {}
+_wizard_cache = {}
 
 # Audit trail for regulatory compliance (max 1000 entries in-memory)
 _audit_log: deque = deque(maxlen=1000)
@@ -265,6 +266,7 @@ async def cache_status():
         "physics_predict": len(_physics_predict_cache),
         "shap": len(_shap_cache),
         "sensitivity": len(_sensitivity_cache),
+        "wizard": len(_wizard_cache),
     }
 
 
@@ -381,6 +383,7 @@ async def upload_file(file: UploadFile = File(...)):
         _classify_cache.clear()
         _misclass_cache.clear()
         _physics_predict_cache.clear()
+        _wizard_cache.clear()
 
         result = {
             "filename": file.filename,
@@ -2370,6 +2373,57 @@ async def run_reliability_report(request: Request):
         well_name=well, depth_m=depth_m, fast=fast,
     )
     return _sanitize_for_json(result)
+
+
+@app.post("/api/analysis/guided-wizard")
+async def run_guided_wizard(request: Request):
+    """Run the complete guided analysis wizard (5 steps).
+
+    One-click industrial-grade pipeline:
+      Step 1: Data Validation (quality, sufficiency, constraints)
+      Step 2: Stress Analysis (regime detection, inversion, SHmax)
+      Step 3: Risk Assessment (critically stressed, safety)
+      Step 4: Model Validation (accuracy, bias, physics)
+      Step 5: Decision Support (evidence, recommendations)
+
+    Streams progress via SSE when task_id is provided.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+    task_id = body.get("task_id", "")
+
+    cache_key = f"wiz_{source}_{well}_{depth_m}"
+    if cache_key in _wizard_cache:
+        return _wizard_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+
+    def _progress_cb(step, pct, detail=""):
+        if task_id:
+            _emit_progress(task_id, step, pct, detail)
+
+    result = await asyncio.to_thread(
+        guided_analysis_wizard, df_well,
+        well_name=well, depth_m=depth_m,
+        progress_fn=_progress_cb,
+    )
+
+    _audit_record("guided_wizard", {
+        "source": source, "well": well, "depth_m": depth_m,
+    }, {
+        "overall_status": result.get("overall_status"),
+        "pass": result.get("pass_count"), "warn": result.get("warn_count"),
+        "fail": result.get("fail_count"),
+    })
+
+    response = _sanitize_for_json(result)
+    _wizard_cache[cache_key] = response
+    return response
 
 
 # ── Audit Trail ──────────────────────────────────────

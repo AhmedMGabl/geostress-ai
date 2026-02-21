@@ -473,6 +473,126 @@ async function runEvidenceChain() {
 }
 
 
+// ── Guided Analysis Wizard ──────────────────────────
+
+async function runGuidedWizard() {
+    var taskId = generateTaskId();
+    showLoadingWithProgress("Running guided analysis wizard...", taskId);
+    try {
+        var r = await apiPost("/api/analysis/guided-wizard", {
+            source: currentSource, well: getWell(), depth: getDepth(),
+            task_id: taskId
+        });
+
+        var container = document.getElementById("wizard-results");
+        container.classList.remove("d-none");
+
+        // Overall status banner
+        var statusColors = {PROCEED: "success", PROCEED_WITH_REVIEW: "info", CAUTION: "warning", HALT: "danger"};
+        var statusIcons = {PROCEED: "check-circle-fill", PROCEED_WITH_REVIEW: "info-circle-fill",
+                           CAUTION: "exclamation-triangle-fill", HALT: "x-octagon-fill"};
+        var color = statusColors[r.overall_status] || "secondary";
+        var icon = statusIcons[r.overall_status] || "question-circle";
+
+        var html = '<div class="card border-' + color + '">';
+        html += '<div class="card-header bg-' + color + ' text-white">' +
+            '<i class="bi bi-' + icon + '"></i> Guided Analysis — ' + r.overall_status.replace(/_/g, " ") +
+            ' <span class="float-end badge bg-light text-dark">' + r.well + '</span></div>';
+
+        html += '<div class="card-body">';
+        html += '<div class="alert alert-' + color + ' mb-3"><strong>' + r.overall_message + '</strong></div>';
+
+        // Step progress bar
+        html += '<div class="d-flex gap-1 mb-4">';
+        (r.steps || []).forEach(function(step) {
+            var sc = {PASS: "success", WARN: "warning", FAIL: "danger",
+                      PROCEED: "success", PROCEED_WITH_REVIEW: "info",
+                      CAUTION: "warning", HALT: "danger"};
+            var c = sc[step.status] || "secondary";
+            var w = Math.floor(100 / r.n_steps);
+            html += '<div class="progress flex-fill" style="height:28px">' +
+                '<div class="progress-bar bg-' + c + '" style="width:100%" title="Step ' + step.step + '">' +
+                step.step + '. ' + step.title + '</div></div>';
+        });
+        html += '</div>';
+
+        // Each step card
+        (r.steps || []).forEach(function(step) {
+            var sc = {PASS: "success", WARN: "warning", FAIL: "danger",
+                      PROCEED: "success", PROCEED_WITH_REVIEW: "info",
+                      CAUTION: "warning", HALT: "danger"};
+            var si = {PASS: "check-circle", WARN: "exclamation-triangle", FAIL: "x-circle",
+                      PROCEED: "check-circle", PROCEED_WITH_REVIEW: "info-circle",
+                      CAUTION: "exclamation-triangle", HALT: "x-octagon"};
+            var c = sc[step.status] || "secondary";
+            var i = si[step.status] || "question-circle";
+
+            html += '<div class="card mb-2 border-' + c + '">';
+            html += '<div class="card-header py-2 d-flex justify-content-between align-items-center">' +
+                '<span><i class="bi bi-' + i + ' text-' + c + '"></i> ' +
+                '<strong>Step ' + step.step + ': ' + step.title + '</strong></span>' +
+                '<span class="badge bg-' + c + '">' + step.status + '</span></div>';
+
+            html += '<div class="card-body py-2">';
+            html += '<p class="mb-1 small">' + step.summary + '</p>';
+
+            // Details
+            if (step.details && Object.keys(step.details).length > 0) {
+                html += '<div class="small text-muted mb-1">';
+                Object.entries(step.details).forEach(function(pair) {
+                    var k = pair[0], v = pair[1];
+                    if (k === "issues" && Array.isArray(v) && v.length > 0) {
+                        html += '<div class="mt-1"><strong>Issues:</strong><ul class="mb-0">';
+                        v.forEach(function(issue) { html += '<li>' + issue + '</li>'; });
+                        html += '</ul></div>';
+                    } else if (k === "key_findings" && Array.isArray(v) && v.length > 0) {
+                        html += '<div class="mt-1"><strong>Key Findings:</strong><ul class="mb-0">';
+                        v.forEach(function(f) { html += '<li class="text-dark fw-bold">' + f + '</li>'; });
+                        html += '</ul></div>';
+                    } else if (k === "top_confusion" && v) {
+                        html += '<span class="me-3"><strong>' + k + ':</strong> ' +
+                            v.true_class + ' → ' + v.predicted_as + ' (' + v.count + ')</span>';
+                    } else if (k !== "error" && !Array.isArray(v) && typeof v !== "object") {
+                        html += '<span class="me-3"><strong>' + k + ':</strong> ' + v + '</span>';
+                    }
+                });
+                html += '</div>';
+            }
+
+            // Next action
+            html += '<div class="alert alert-' + c + ' py-1 px-2 mb-0 mt-1 small">' +
+                '<i class="bi bi-arrow-right-circle"></i> ' + step.next_action + '</div>';
+
+            html += '</div></div>';
+        });
+
+        // Key findings summary
+        if (r.key_findings && r.key_findings.length > 0) {
+            html += '<div class="alert alert-primary mt-3"><h6><i class="bi bi-star-fill"></i> Key Findings for Stakeholders</h6><ul class="mb-0">';
+            r.key_findings.forEach(function(f) {
+                html += '<li>' + f + '</li>';
+            });
+            html += '</ul></div>';
+        }
+
+        // Counts summary
+        html += '<div class="d-flex gap-3 mt-2 small">' +
+            '<span class="badge bg-success">' + r.pass_count + ' PASS</span>' +
+            '<span class="badge bg-warning text-dark">' + r.warn_count + ' WARN</span>' +
+            '<span class="badge bg-danger">' + r.fail_count + ' FAIL</span></div>';
+
+        html += '</div></div>';
+        container.innerHTML = html;
+
+        showToast("Wizard: " + r.overall_status.replace(/_/g, " "));
+    } catch (err) {
+        showToast("Wizard error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
 // ── Data Loading ──────────────────────────────────
 
 async function loadSummary() {

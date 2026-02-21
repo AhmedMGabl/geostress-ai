@@ -6386,6 +6386,337 @@ def prediction_reliability_report(
     }
 
 
+def guided_analysis_wizard(
+    df: pd.DataFrame,
+    well_name: str = "All",
+    depth_m: float = 3000,
+    progress_fn=None,
+) -> dict:
+    """Run the complete guided analysis pipeline and return step-by-step results.
+
+    This is the industrial-grade "one-click" analysis that walks through:
+    Step 1: Data Validation (quality, sufficiency, constraints)
+    Step 2: Stress Analysis (regime detection, inversion, SHmax)
+    Step 3: Risk Assessment (critically stressed, safety check)
+    Step 4: Model Validation (accuracy, bias, physics check)
+    Step 5: Decision Support (evidence chain, recommendations)
+
+    Each step includes: status (PASS/WARN/FAIL), summary, details, next_action.
+    """
+    def _progress(step, pct, detail=""):
+        if progress_fn:
+            progress_fn(step, pct, detail)
+
+    try:
+        from src.geostress import invert_stress, auto_detect_regime
+    except ImportError:
+        from geostress import invert_stress, auto_detect_regime
+
+    steps = []
+
+    # ═══════════════════════════════════════════
+    # STEP 1: Data Validation
+    # ═══════════════════════════════════════════
+    _progress("Step 1/5: Validating data...", 5, "Quality checks")
+    quality = validate_data_quality(df)
+    sufficiency = data_sufficiency_check(df)
+    domain = validate_domain_constraints(df)
+
+    data_issues = []
+    if quality["score"] < 70:
+        data_issues.append(f"Data quality below threshold: {quality['score']}/100")
+    for issue in quality.get("issues", []):
+        data_issues.append(issue)
+    for w in domain.get("warnings", []):
+        data_issues.append(w.get("message", str(w)))
+
+    analyses_list = sufficiency.get("analyses", [])
+    if isinstance(analyses_list, dict):
+        analyses_list = list(analyses_list.values())
+    ready_count = sum(1 for a in analyses_list if a.get("status") == "READY")
+    total_analyses = len(analyses_list)
+
+    step1_status = "PASS" if quality["score"] >= 70 and not data_issues else (
+        "WARN" if quality["score"] >= 50 else "FAIL"
+    )
+
+    steps.append({
+        "step": 1,
+        "title": "Data Validation",
+        "status": step1_status,
+        "summary": f"Quality: {quality['grade']} ({quality['score']}/100), "
+                  f"{ready_count}/{total_analyses} analyses ready, "
+                  f"{len(df)} fractures",
+        "details": {
+            "quality_score": quality["score"],
+            "quality_grade": quality["grade"],
+            "n_fractures": len(df),
+            "ready_analyses": ready_count,
+            "total_analyses": total_analyses,
+            "issues": data_issues[:5],
+        },
+        "next_action": (
+            "Data quality is sufficient. Proceeding to stress analysis."
+            if step1_status == "PASS"
+            else "Review data quality issues before relying on results."
+        ),
+    })
+
+    # ═══════════════════════════════════════════
+    # STEP 2: Stress Analysis
+    # ═══════════════════════════════════════════
+    _progress("Step 2/5: Analyzing stress state...", 25, "Regime detection + inversion")
+    normals = fracture_plane_normal(
+        df[AZIMUTH_COL].values, df[DIP_COL].values
+    )
+
+    stress_result = {}
+    try:
+        auto = auto_detect_regime(normals, depth_m)
+        regime = auto["best_regime"]
+        inv = invert_stress(normals, regime=regime, depth_m=depth_m)
+
+        def _s(v):
+            return float(v.flat[0]) if isinstance(v, np.ndarray) else float(v)
+
+        shmax = _s(inv["shmax_azimuth_deg"])
+        direction = _azimuth_to_direction(shmax)
+
+        stress_result = {
+            "regime": regime,
+            "regime_confidence": auto["confidence"],
+            "shmax_deg": round(shmax, 0),
+            "shmax_direction": direction,
+            "sigma1": round(_s(inv["sigma1"]), 1),
+            "sigma3": round(_s(inv["sigma3"]), 1),
+            "R_ratio": round(_s(inv["R"]), 3),
+            "mu": round(_s(inv["mu"]), 3),
+            "misfit": round(_s(inv["misfit"]), 4),
+        }
+
+        step2_status = "PASS" if auto["confidence"] == "HIGH" else (
+            "WARN" if auto["confidence"] == "MODERATE" else "WARN"
+        )
+
+        steps.append({
+            "step": 2,
+            "title": "Stress Analysis",
+            "status": step2_status,
+            "summary": f"SHmax = {shmax:.0f}° ({direction}), "
+                      f"regime = {regime} ({auto['confidence']} confidence), "
+                      f"misfit = {_s(inv['misfit']):.4f}",
+            "details": stress_result,
+            "next_action": (
+                "Stress state is well-constrained."
+                if step2_status == "PASS"
+                else "Regime confidence is LOW. Run Bayesian analysis for uncertainty bounds."
+            ),
+        })
+    except Exception as e:
+        steps.append({
+            "step": 2,
+            "title": "Stress Analysis",
+            "status": "FAIL",
+            "summary": f"Stress inversion failed: {str(e)[:100]}",
+            "details": {"error": str(e)[:200]},
+            "next_action": "Check input data format and parameters.",
+        })
+
+    # ═══════════════════════════════════════════
+    # STEP 3: Risk Assessment
+    # ═══════════════════════════════════════════
+    _progress("Step 3/5: Assessing risk...", 50, "Critically stressed + safety check")
+    risk_result = {}
+    try:
+        if stress_result:
+            pp_val = inv.get("pore_pressure", 0.0) if "inv" in dir() else 0.0
+            cs = critically_stressed_enhanced(
+                inv["sigma_n"], inv["tau"],
+                mu=inv["mu"], pore_pressure=pp_val,
+            )
+            pct = cs["pct_critical"]
+
+            risk_level = "GREEN" if pct < 10 else "AMBER" if pct < 30 else "RED"
+            risk_result = {
+                "critically_stressed_pct": round(pct, 1),
+                "risk_level": risk_level,
+                "high_risk_count": cs["high_risk_count"],
+                "pore_pressure_mpa": round(float(pp_val), 1),
+            }
+
+            step3_status = "PASS" if risk_level == "GREEN" else (
+                "WARN" if risk_level == "AMBER" else "FAIL"
+            )
+
+            steps.append({
+                "step": 3,
+                "title": "Risk Assessment",
+                "status": step3_status,
+                "summary": f"{pct:.1f}% critically stressed ({risk_level}), "
+                          f"{cs['high_risk_count']} high-risk fractures",
+                "details": risk_result,
+                "next_action": (
+                    "Low risk — standard drilling parameters appropriate."
+                    if step3_status == "PASS"
+                    else "Elevated risk — consider mud weight increase and LCM on standby."
+                ),
+            })
+        else:
+            steps.append({
+                "step": 3,
+                "title": "Risk Assessment",
+                "status": "FAIL",
+                "summary": "Cannot assess risk: stress inversion required",
+                "details": {},
+                "next_action": "Fix stress analysis (Step 2) first.",
+            })
+    except Exception as e:
+        steps.append({
+            "step": 3,
+            "title": "Risk Assessment",
+            "status": "FAIL",
+            "summary": f"Risk assessment failed: {str(e)[:100]}",
+            "details": {"error": str(e)[:200]},
+            "next_action": "Review inversion parameters.",
+        })
+
+    # ═══════════════════════════════════════════
+    # STEP 4: Model Validation
+    # ═══════════════════════════════════════════
+    _progress("Step 4/5: Validating models...", 70, "ML accuracy + bias + physics")
+    model_result = {}
+    try:
+        misclass = misclassification_analysis(df, fast=True)
+        bias = model_bias_detection(df, fast=True)
+
+        accuracy = misclass.get("overall_accuracy", 0)
+        model_result = {
+            "accuracy": round(accuracy, 3),
+            "n_errors": misclass.get("n_errors", 0),
+            "bias_level": bias.get("bias_level", "UNKNOWN"),
+            "n_biases": bias.get("n_biases", 0),
+            "top_confusion": (
+                misclass["confused_pairs"][0] if misclass.get("confused_pairs") else None
+            ),
+        }
+
+        step4_status = "PASS" if accuracy >= 0.85 and bias["bias_level"] == "NONE" else (
+            "WARN" if accuracy >= 0.6 else "FAIL"
+        )
+
+        top_conf_str = ""
+        if model_result["top_confusion"]:
+            tc = model_result["top_confusion"]
+            top_conf_str = f", top confusion: {tc['true_class']}→{tc['predicted_as']} ({tc['count']})"
+
+        steps.append({
+            "step": 4,
+            "title": "Model Validation",
+            "status": step4_status,
+            "summary": f"Accuracy: {accuracy:.1%}, bias: {bias['bias_level']}, "
+                      f"{misclass.get('n_errors', 0)} errors{top_conf_str}",
+            "details": model_result,
+            "next_action": (
+                "Model is reliable for classification."
+                if step4_status == "PASS"
+                else "Model has limitations — see recommendations for improvement."
+            ),
+        })
+    except Exception as e:
+        steps.append({
+            "step": 4,
+            "title": "Model Validation",
+            "status": "FAIL",
+            "summary": f"Model validation failed: {str(e)[:100]}",
+            "details": {"error": str(e)[:200]},
+            "next_action": "Check data format.",
+        })
+
+    # ═══════════════════════════════════════════
+    # STEP 5: Decision Support
+    # ═══════════════════════════════════════════
+    _progress("Step 5/5: Generating recommendations...", 90, "Final assessment")
+
+    pass_count = sum(1 for s in steps if s["status"] == "PASS")
+    warn_count = sum(1 for s in steps if s["status"] == "WARN")
+    fail_count = sum(1 for s in steps if s["status"] == "FAIL")
+
+    if fail_count > 0:
+        overall = "HALT"
+        overall_msg = (
+            f"{fail_count} step(s) failed. Do NOT proceed with analysis results "
+            f"until failures are resolved."
+        )
+    elif warn_count >= 2:
+        overall = "CAUTION"
+        overall_msg = (
+            f"{warn_count} warnings detected. Results are usable but have "
+            f"significant uncertainty. Validate with domain experts."
+        )
+    elif warn_count == 1:
+        overall = "PROCEED_WITH_REVIEW"
+        overall_msg = (
+            "One minor concern detected. Results are largely reliable "
+            "but review the flagged step before critical decisions."
+        )
+    else:
+        overall = "PROCEED"
+        overall_msg = (
+            "All checks passed. Analysis results are reliable for "
+            "operational planning decisions."
+        )
+
+    # Key findings for stakeholders
+    key_findings = []
+    if stress_result:
+        key_findings.append(
+            f"Maximum horizontal stress direction: {stress_result.get('shmax_deg', 0):.0f}° "
+            f"({stress_result.get('shmax_direction', '')})"
+        )
+        key_findings.append(
+            f"Drill perpendicular to SHmax for stability: "
+            f"{(stress_result.get('shmax_deg', 0) + 90) % 360:.0f}°"
+        )
+    if risk_result:
+        key_findings.append(
+            f"Critically stressed fractures: {risk_result.get('critically_stressed_pct', 0):.1f}% "
+            f"({risk_result.get('risk_level', 'UNKNOWN')})"
+        )
+    if model_result:
+        key_findings.append(
+            f"Classification reliability: {model_result.get('accuracy', 0):.0%}"
+        )
+
+    steps.append({
+        "step": 5,
+        "title": "Decision Support",
+        "status": overall,
+        "summary": overall_msg,
+        "details": {
+            "pass_count": pass_count,
+            "warn_count": warn_count,
+            "fail_count": fail_count,
+            "key_findings": key_findings,
+        },
+        "next_action": overall_msg,
+    })
+
+    _progress("Analysis complete", 100)
+
+    return {
+        "well": well_name,
+        "depth_m": depth_m,
+        "overall_status": overall,
+        "overall_message": overall_msg,
+        "n_steps": len(steps),
+        "pass_count": pass_count,
+        "warn_count": warn_count,
+        "fail_count": fail_count,
+        "steps": steps,
+        "key_findings": key_findings,
+    }
+
+
 def research_methods_summary() -> dict:
     """Return a summary of the scientific methods and 2025-2026 research
     integrated into this application.
