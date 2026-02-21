@@ -251,16 +251,23 @@ def _prewarm_caches():
             normals = fracture_plane_normal(
                 df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
             )
+            avg_depth = df_well[DEPTH_COL].mean()
+            if np.isnan(avg_depth):
+                avg_depth = 3000.0
+            # Pre-warm for the depth the page will actually use:
+            # loadSummary sets depth-input to avg_depth rounded, then overview reads it
+            depth_to_warm = round(avg_depth)
             # Pre-warm auto regime detection (~3s per well)
-            cache_key = f"demo_{well}_3000"
+            # Use same key format as endpoints: f"auto_{source}_{well}_{depth_m}"
+            cache_key = f"auto_demo_{well}_{depth_to_warm}"
             if cache_key not in _auto_regime_cache:
-                auto = auto_detect_regime(normals, 3000)
+                auto = auto_detect_regime(normals, depth_to_warm)
                 _auto_regime_cache[cache_key] = auto
             # Pre-warm inversion for best regime
             regime = _auto_regime_cache[cache_key]["best_regime"]
-            inv_key = f"demo_{well}_{regime}_3000_None"
+            inv_key = f"inv_demo_{well}_{regime}_{depth_to_warm}_auto"
             if inv_key not in _inversion_cache:
-                inv = invert_stress(normals, regime=regime, depth_m=3000)
+                inv = invert_stress(normals, regime=regime, depth_m=depth_to_warm)
                 _inversion_cache[inv_key] = inv
 
         elapsed = _time.perf_counter() - start
@@ -629,22 +636,30 @@ async def run_inversion(request: Request):
     avg_depth = df_well[DEPTH_COL].mean()
     if np.isnan(avg_depth):
         avg_depth = depth_m
+    # Normalize depth for consistent cache keys (round to int)
+    depth_key = round(avg_depth)
 
     # Auto-detect regime or use specified one
     auto_detection = None
     if regime == "auto":
-        auto_detection = await asyncio.to_thread(
-            auto_detect_regime, normals, avg_depth, cohesion, pore_pressure,
-        )
+        # Check auto-regime cache first (pre-warmed at startup)
+        auto_cache_key = f"auto_{source}_{well}_{depth_key}"
+        if auto_cache_key in _auto_regime_cache:
+            auto_detection = _auto_regime_cache[auto_cache_key]
+        else:
+            auto_detection = await asyncio.to_thread(
+                auto_detect_regime, normals, avg_depth, cohesion, pore_pressure,
+            )
+            _auto_regime_cache[auto_cache_key] = auto_detection
         result = auto_detection["best_result"]
         regime = auto_detection["best_regime"]
         # Cache the best result for downstream use
         pp_key = round(result["pore_pressure"], 1) if result.get("pore_pressure") else "auto"
-        cache_key = f"inv_{source}_{well}_{regime}_{avg_depth}_{pp_key}"
+        cache_key = f"inv_{source}_{well}_{regime}_{depth_key}_{pp_key}"
         _inversion_cache[cache_key] = result
     else:
         result = await _cached_inversion(
-            normals, well, regime, avg_depth, pore_pressure, source
+            normals, well, regime, depth_key, pore_pressure, source
         )
 
     # Generate plots

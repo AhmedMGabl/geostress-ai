@@ -124,6 +124,21 @@ function getPorePresure() {
     return ppVal === "" ? null : parseFloat(ppVal);
 }
 
+function getWell() {
+    var el = document.getElementById("well-select");
+    return el ? el.value : "3P";
+}
+
+function getDepth() {
+    var el = document.getElementById("depth-input");
+    return el ? (parseFloat(el.value) || 3000) : 3000;
+}
+
+function getRegime() {
+    var el = document.getElementById("regime-select");
+    return el ? el.value : "auto";
+}
+
 // ── Tab Switching ─────────────────────────────────
 
 var tabNames = {
