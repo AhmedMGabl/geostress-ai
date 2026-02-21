@@ -1,14 +1,19 @@
-"""GeoStress AI - FastAPI Web Application (v2.0 - Industrial Grade)."""
+"""GeoStress AI - FastAPI Web Application (v2.6 - Industrial Grade)."""
 
 import os
 import io
+import time
 import base64
 import asyncio
 import threading
 import tempfile
+import hashlib
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 from functools import lru_cache
+from collections import deque
 
 import matplotlib
 matplotlib.use("Agg")
@@ -40,6 +45,7 @@ from src.enhanced_analysis import (
     generate_well_report, compare_wells,
     compute_uncertainty_budget, active_learning_query,
     detect_ood, assess_calibration, data_collection_recommendations,
+    compute_learning_curve, bootstrap_class_metrics, scenario_comparison,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -60,6 +66,10 @@ uploaded_df: pd.DataFrame = None
 _model_comparison_cache = {}
 _inversion_cache = {}
 _auto_regime_cache = {}
+
+# Audit trail for regulatory compliance (max 1000 entries in-memory)
+_audit_log: deque = deque(maxlen=1000)
+_audit_lock = threading.Lock()
 
 
 async def _cached_inversion(normals, well, regime, depth_m, pore_pressure, source):
@@ -136,6 +146,30 @@ def _sanitize_for_json(obj):
     return obj
 
 
+def _audit_record(action: str, params: dict, result_summary: dict,
+                  source: str = "demo", well: str = None, elapsed_s: float = 0):
+    """Record an analysis action in the audit trail for regulatory compliance."""
+    # Create a hash of the result for integrity verification
+    result_str = json.dumps(_sanitize_for_json(result_summary), sort_keys=True, default=str)
+    result_hash = hashlib.sha256(result_str.encode()).hexdigest()[:16]
+
+    record = {
+        "id": len(_audit_log) + 1,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        "source": source,
+        "well": well,
+        "parameters": _sanitize_for_json(params),
+        "result_hash": result_hash,
+        "result_summary": _sanitize_for_json(result_summary),
+        "elapsed_s": round(elapsed_s, 2),
+        "app_version": "2.6.0",
+    }
+    with _audit_lock:
+        _audit_log.append(record)
+    return record["id"]
+
+
 # ── App lifecycle ────────────────────────────────────
 
 @asynccontextmanager
@@ -146,7 +180,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="2.5.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="2.6.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -447,6 +481,15 @@ async def run_inversion(request: Request):
             "comparison": auto_detection["comparison"],
             "stakeholder_summary": auto_detection["stakeholder_summary"],
         }
+
+    # Audit trail
+    _audit_record("stress_inversion",
+                  {"regime": regime, "depth_m": depth_m, "cohesion": cohesion,
+                   "pore_pressure": pore_pressure},
+                  {"sigma1": response["sigma1"], "sigma3": response["sigma3"],
+                   "shmax": response["shmax_azimuth_deg"], "mu": response["mu"],
+                   "critically_stressed_pct": response["critically_stressed_pct"]},
+                  source=source, well=well)
 
     return _sanitize_for_json(response)
 
@@ -979,9 +1022,11 @@ async def run_well_comparison(request: Request):
 async def run_overview(request: Request):
     """Quick analysis overview for immediate insights on page load.
 
-    Runs a fast stress inversion, data quality check, and risk estimate
-    to give stakeholders the big picture without clicking through tabs.
+    Runs stress inversion, calibration, and data recommendations IN PARALLEL
+    using asyncio.gather to minimize wall-clock time. Returns timing breakdown
+    so users can see performance.
     """
+    t_start = time.monotonic()
     body = await request.json()
     source = body.get("source", "demo")
     well = body.get("well", None)
@@ -1002,94 +1047,130 @@ async def run_overview(request: Request):
         "n_wells": df[WELL_COL].nunique() if WELL_COL in df.columns else 0,
     }
 
-    # Data quality (instant)
+    # Data quality (instant, < 10ms)
     quality = validate_data_quality(df_well)
     overview["data_quality"] = {
         "score": quality["score"],
         "grade": quality["grade"],
     }
 
-    # Fast stress inversion (with auto-detection)
-    try:
-        normals = fracture_plane_normal(
-            df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
-        )
+    # ── Run 3 independent tasks in parallel ──────────
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
 
-        # Auto-detect regime if not specified
-        if regime == "auto" or regime == "strike_slip":
-            auto_cache_key = f"auto_{source}_{well_name}_{depth_m}"
-            if auto_cache_key in _auto_regime_cache:
-                auto_res = _auto_regime_cache[auto_cache_key]
+    async def _stress_chain():
+        """Stress inversion → critically stressed → risk (sequential chain)."""
+        t0 = time.monotonic()
+        result = {}
+        try:
+            nonlocal regime
+            if regime == "auto" or regime == "strike_slip":
+                auto_cache_key = f"auto_{source}_{well_name}_{depth_m}"
+                if auto_cache_key in _auto_regime_cache:
+                    auto_res = _auto_regime_cache[auto_cache_key]
+                else:
+                    auto_res = await asyncio.to_thread(
+                        auto_detect_regime, normals, depth_m, 0.0, None,
+                    )
+                    _auto_regime_cache[auto_cache_key] = auto_res
+                inv = auto_res["best_result"]
+                regime = auto_res["best_regime"]
+                result["regime_detection"] = {
+                    "best_regime": auto_res["best_regime"],
+                    "confidence": auto_res["confidence"],
+                    "misfit_ratio": auto_res["misfit_ratio"],
+                }
             else:
-                auto_res = await asyncio.to_thread(
-                    auto_detect_regime, normals, depth_m, 0.0, None,
+                inv = await _cached_inversion(
+                    normals, well, regime, depth_m, None, source
                 )
-                _auto_regime_cache[auto_cache_key] = auto_res
-            inv = auto_res["best_result"]
-            regime = auto_res["best_regime"]
-            overview["regime_detection"] = {
-                "best_regime": auto_res["best_regime"],
-                "confidence": auto_res["confidence"],
-                "misfit_ratio": auto_res["misfit_ratio"],
+
+            pp_val = inv.get("pore_pressure", 0.0)
+            result["stress"] = {
+                "sigma1": round(inv["sigma1"], 1),
+                "sigma3": round(inv["sigma3"], 1),
+                "shmax": round(inv["shmax_azimuth_deg"], 0),
+                "regime": regime,
+                "mu": round(inv["mu"], 3),
             }
-        else:
-            inv = await _cached_inversion(
-                normals, well, regime, depth_m, None, source
+
+            cs = critically_stressed_enhanced(
+                inv["sigma_n"], inv["tau"],
+                mu=inv["mu"], pore_pressure=pp_val,
             )
+            result["critically_stressed"] = {
+                "pct": round(cs["pct_critical"], 1),
+                "high_risk": cs["high_risk_count"],
+                "total": cs["total"],
+            }
 
-        pp_val = inv.get("pore_pressure", 0.0)
+            risk = compute_risk_matrix(inv, cs, quality)
+            result["risk"] = {
+                "score": risk["overall_score"],
+                "level": risk["overall_level"],
+                "go_nogo": risk["go_nogo"],
+            }
+        except Exception as e:
+            result["stress"] = {"error": str(e)[:100]}
+            result["risk"] = {"level": "UNKNOWN", "go_nogo": "Cannot assess"}
+        result["_elapsed"] = round(time.monotonic() - t0, 2)
+        return result
 
-        overview["stress"] = {
-            "sigma1": round(inv["sigma1"], 1),
-            "sigma3": round(inv["sigma3"], 1),
-            "shmax": round(inv["shmax_azimuth_deg"], 0),
-            "regime": regime,
-            "mu": round(inv["mu"], 3),
-        }
+    async def _calibration():
+        """Quick calibration check (fast mode)."""
+        t0 = time.monotonic()
+        try:
+            cal = await asyncio.to_thread(assess_calibration, df_well, 10, True)
+            return {
+                "calibration": {"reliability": cal["reliability"], "ece": cal["ece"]},
+                "_elapsed": round(time.monotonic() - t0, 2),
+            }
+        except Exception:
+            return {"calibration": None, "_elapsed": round(time.monotonic() - t0, 2)}
 
-        # Quick critically stressed
-        cs = critically_stressed_enhanced(
-            inv["sigma_n"], inv["tau"],
-            mu=inv["mu"], pore_pressure=pp_val,
-        )
-        overview["critically_stressed"] = {
-            "pct": round(cs["pct_critical"], 1),
-            "high_risk": cs["high_risk_count"],
-            "total": cs["total"],
-        }
+    async def _data_recs():
+        """Data collection recommendations."""
+        t0 = time.monotonic()
+        try:
+            recs = data_collection_recommendations(df_well)
+            return {
+                "data_recommendations": {
+                    "n_priority": len(recs["priority_actions"]),
+                    "n_recommendations": len(recs["recommendations"]),
+                    "completeness_pct": recs["data_completeness_pct"],
+                },
+                "_elapsed": round(time.monotonic() - t0, 2),
+            }
+        except Exception:
+            return {"data_recommendations": None, "_elapsed": round(time.monotonic() - t0, 2)}
 
-        # Quick risk estimate (without model comparison or sensitivity)
-        risk = compute_risk_matrix(inv, cs, quality)
-        overview["risk"] = {
-            "score": risk["overall_score"],
-            "level": risk["overall_level"],
-            "go_nogo": risk["go_nogo"],
-        }
+    # Fire all 3 concurrently
+    stress_res, cal_res, recs_res = await asyncio.gather(
+        _stress_chain(), _calibration(), _data_recs()
+    )
 
-    except Exception as e:
-        overview["stress"] = {"error": str(e)[:100]}
-        overview["risk"] = {"level": "UNKNOWN", "go_nogo": "Cannot assess"}
+    # Merge results
+    for key in ("stress", "regime_detection", "critically_stressed", "risk"):
+        if key in stress_res:
+            overview[key] = stress_res[key]
+    overview["calibration"] = cal_res.get("calibration")
+    overview["data_recommendations"] = recs_res.get("data_recommendations")
 
-    # Quick calibration check (fast mode)
-    try:
-        cal = await asyncio.to_thread(assess_calibration, df_well, 10, True)
-        overview["calibration"] = {
-            "reliability": cal["reliability"],
-            "ece": cal["ece"],
-        }
-    except Exception:
-        overview["calibration"] = None
+    # Timing breakdown for transparency
+    total_elapsed = round(time.monotonic() - t_start, 2)
+    overview["_timing"] = {
+        "total_s": total_elapsed,
+        "stress_s": stress_res.get("_elapsed", 0),
+        "calibration_s": cal_res.get("_elapsed", 0),
+        "recommendations_s": recs_res.get("_elapsed", 0),
+        "parallel": True,
+    }
 
-    # Data collection recommendations
-    try:
-        recs = data_collection_recommendations(df_well)
-        overview["data_recommendations"] = {
-            "n_priority": len(recs["priority_actions"]),
-            "n_recommendations": len(recs["recommendations"]),
-            "completeness_pct": recs["data_completeness_pct"],
-        }
-    except Exception:
-        overview["data_recommendations"] = None
+    # Audit trail
+    _audit_record("overview", {"well": well_name, "regime": regime, "depth_m": depth_m},
+                  {"risk": overview.get("risk", {}), "shmax": overview.get("stress", {}).get("shmax")},
+                  source=source, well=well_name, elapsed_s=total_elapsed)
 
     return _sanitize_for_json(overview)
 
@@ -1356,3 +1437,158 @@ async def data_recommendations(request: Request):
 
     result = await asyncio.to_thread(data_collection_recommendations, df)
     return _sanitize_for_json(result)
+
+
+# ── Learning Curve ───────────────────────────────────
+
+@app.post("/api/analysis/learning-curve")
+async def run_learning_curve(request: Request):
+    """Compute learning curve: how accuracy improves with more data.
+
+    Shows stakeholders whether collecting more data would help, and
+    projects how many samples are needed for target accuracy levels.
+    """
+    t0 = time.monotonic()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well and WELL_COL in df.columns:
+        df = df[df[WELL_COL] == well]
+
+    result = await asyncio.to_thread(compute_learning_curve, df, 8, True)
+    elapsed = round(time.monotonic() - t0, 2)
+
+    _audit_record("learning_curve", {"well": well, "n_points": 8},
+                  {"convergence": result.get("convergence")},
+                  source=source, well=well, elapsed_s=elapsed)
+
+    result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Bootstrap Confidence Intervals ────────────────────
+
+@app.post("/api/analysis/bootstrap-ci")
+async def run_bootstrap_ci(request: Request):
+    """Compute bootstrap 95% CIs for per-class metrics.
+
+    Industrial-grade: returns confidence ranges, not just point estimates.
+    """
+    t0 = time.monotonic()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+    n_bootstrap = int(body.get("n_bootstrap", 200))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well and WELL_COL in df.columns:
+        df = df[df[WELL_COL] == well]
+
+    result = await asyncio.to_thread(
+        bootstrap_class_metrics, df, n_bootstrap, 0.95, True
+    )
+    elapsed = round(time.monotonic() - t0, 2)
+
+    _audit_record("bootstrap_ci", {"well": well, "n_bootstrap": n_bootstrap},
+                  {"reliability": result.get("reliability"),
+                   "accuracy": result.get("accuracy", {}).get("mean")},
+                  source=source, well=well, elapsed_s=elapsed)
+
+    result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Scenario Comparison ───────────────────────────────
+
+@app.post("/api/analysis/scenarios")
+async def run_scenarios(request: Request):
+    """Compare multiple what-if stress inversion scenarios.
+
+    Lets engineers compare different assumptions (regime, pore pressure)
+    side-by-side to make informed drilling decisions.
+    """
+    t0 = time.monotonic()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    scenarios = body.get("scenarios", [])
+    depth_m = float(body.get("depth", 3000))
+
+    if not scenarios or len(scenarios) < 2:
+        raise HTTPException(400, "Provide at least 2 scenarios to compare")
+    if len(scenarios) > 6:
+        raise HTTPException(400, "Maximum 6 scenarios per comparison")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True)
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    result = await asyncio.to_thread(
+        scenario_comparison, df_well, scenarios, depth_m
+    )
+    elapsed = round(time.monotonic() - t0, 2)
+
+    _audit_record("scenario_comparison",
+                  {"well": well, "n_scenarios": len(scenarios), "depth_m": depth_m},
+                  {"recommendation": result.get("recommendation", "")[:100]},
+                  source=source, well=well, elapsed_s=elapsed)
+
+    result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Audit Trail ──────────────────────────────────────
+
+@app.get("/api/audit/log")
+async def get_audit_log(limit: int = 50, offset: int = 0):
+    """Get the prediction audit trail for regulatory compliance.
+
+    Every analysis action is recorded with timestamp, parameters,
+    result hash, and timing. Returns most recent entries first.
+    """
+    with _audit_lock:
+        entries = list(_audit_log)
+    entries.reverse()  # Most recent first
+    total = len(entries)
+    page = entries[offset:offset + limit]
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "entries": _sanitize_for_json(page),
+    }
+
+
+@app.post("/api/audit/export")
+async def export_audit_log():
+    """Export full audit log as CSV for regulatory archival."""
+    with _audit_lock:
+        entries = list(_audit_log)
+    if not entries:
+        return {"csv": "", "rows": 0}
+
+    rows = []
+    for e in entries:
+        rows.append({
+            "id": e["id"],
+            "timestamp": e["timestamp"],
+            "action": e["action"],
+            "source": e["source"],
+            "well": e["well"],
+            "parameters": json.dumps(e["parameters"]),
+            "result_hash": e["result_hash"],
+            "elapsed_s": e["elapsed_s"],
+            "app_version": e["app_version"],
+        })
+    audit_df = pd.DataFrame(rows)
+    csv_str = audit_df.to_csv(index=False)
+    return {"csv": csv_str, "rows": len(rows), "filename": "audit_trail.csv"}

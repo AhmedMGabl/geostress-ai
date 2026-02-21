@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
-app.py              - FastAPI backend (v2.4), all API endpoints, serves templates
+app.py              - FastAPI backend (v2.6), all API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
   geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC, auto regime detection
@@ -90,6 +90,11 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/ood-check` | Out-of-distribution detection (uploaded vs demo) |
 | POST | `/api/analysis/calibration` | Model probability calibration assessment (ECE, Brier) |
 | POST | `/api/data/recommendations` | Actionable data collection recommendations |
+| POST | `/api/analysis/learning-curve` | Learning curve: accuracy vs data size + projections |
+| POST | `/api/analysis/bootstrap-ci` | Bootstrap 95% CIs for per-class metrics (200 resamples) |
+| POST | `/api/analysis/scenarios` | What-if scenario comparison (2-6 regimes side-by-side) |
+| GET | `/api/audit/log` | Prediction audit trail (timestamps, hashes, parameters) |
+| POST | `/api/audit/export` | Export audit log as CSV for regulatory archival |
 
 ## Domain Concepts
 
@@ -144,3 +149,14 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - imbalanced-learn required for SMOTE (added to requirements.txt)
 - Glossary tab provides plain-language explanations for non-technical stakeholders
 - Data recommendations identify specific actions: min 30 samples/class, sparse depth zones, well diversity
+- Overview endpoint runs stress/calibration/recommendations in parallel via asyncio.gather (saves ~1s)
+- Cached overview runs in < 1s; first-time auto-regime detection takes ~6s
+- Learning curve shows SLOWING convergence at ~87% accuracy — more data of same type won't help much
+- 85% accuracy projected to need ~7,500 total samples (vs current 1,022)
+- 95% accuracy is UNLIKELY with current features — need different data or features
+- Bootstrap CIs: overall accuracy 86.9% [84.1-89.6], Boundary F1 3.7% [0-33.5%] — very unreliable
+- Scenario comparison runs 2-6 stress inversions (~2s each) and compares metrics
+- Normal fault regime has lowest misfit for Well 3P, but all regimes similar
+- Audit trail uses deque(maxlen=1000) + SHA-256 hash for integrity
+- Every inversion, overview, and scenario comparison is audit-logged
+- `invert_stress` returns numpy scalars — use `_scalar()` helper to safely convert to float

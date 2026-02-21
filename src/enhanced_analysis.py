@@ -3626,3 +3626,459 @@ def data_collection_recommendations(df: pd.DataFrame) -> dict:
             f"Dataset completeness: {sum(current_meets.values())}/{len(current_meets)} criteria met."
         ),
     }
+
+
+# ═══════════════════════════════════════════════════════
+#  Learning Curve Analysis
+# ═══════════════════════════════════════════════════════
+
+def compute_learning_curve(df, n_points=8, fast=True):
+    """Compute learning curve showing how accuracy improves with more data.
+
+    Trains the best model (Random Forest) on increasingly larger subsets of
+    data to show stakeholders exactly how more data would improve accuracy.
+    Returns per-class curves to highlight where minority classes plateau.
+
+    Parameters
+    ----------
+    df : DataFrame with fracture data
+    n_points : number of training-set sizes to evaluate
+    fast : if True, use fewer estimators for speed
+
+    Returns
+    -------
+    dict with train_sizes, train_scores, val_scores, per_class, projection
+    """
+    features = engineer_enhanced_features(df)
+    le = LabelEncoder()
+    y = le.fit_transform(df[FRACTURE_TYPE_COL].values)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(features.values)
+
+    n_samples = len(X_scaled)
+    n_classes = len(le.classes_)
+
+    # Skip if too few samples
+    if n_samples < 30:
+        return {"error": "Need at least 30 samples for learning curve analysis"}
+
+    n_est = 50 if fast else 200
+    model = RandomForestClassifier(
+        n_estimators=n_est, class_weight="balanced",
+        random_state=42, n_jobs=-1,
+    )
+
+    # Generate training sizes (from 20% to 100%)
+    min_train = max(n_classes * 3, 15)  # Need at least 3 per class
+    max_train = int(n_samples * 0.8)  # Reserve 20% for validation
+    if min_train >= max_train:
+        min_train = max(n_classes * 2, 10)
+
+    train_sizes = np.linspace(min_train, max_train, n_points).astype(int)
+    train_sizes = np.unique(train_sizes)  # Remove duplicates
+
+    train_scores = []
+    val_scores = []
+    per_class_scores = {cls: [] for cls in le.classes_}
+    balanced_scores = []
+
+    # Stratified split: 80% train pool, 20% fixed validation
+    from sklearn.model_selection import StratifiedShuffleSplit
+    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    train_pool_idx, val_idx = next(sss.split(X_scaled, y))
+    X_pool, y_pool = X_scaled[train_pool_idx], y[train_pool_idx]
+    X_val, y_val = X_scaled[val_idx], y[val_idx]
+
+    for size in train_sizes:
+        if size > len(X_pool):
+            size = len(X_pool)
+
+        # Stratified subsample from the pool
+        try:
+            sub_sss = StratifiedShuffleSplit(
+                n_splits=1, train_size=min(size, len(X_pool) - 1),
+                random_state=42,
+            )
+            sub_idx, _ = next(sub_sss.split(X_pool, y_pool))
+        except ValueError:
+            sub_idx = np.arange(min(size, len(X_pool)))
+
+        X_sub, y_sub = X_pool[sub_idx], y_pool[sub_idx]
+
+        model_clone = RandomForestClassifier(
+            n_estimators=n_est, class_weight="balanced",
+            random_state=42, n_jobs=-1,
+        )
+        model_clone.fit(X_sub, y_sub)
+
+        train_acc = model_clone.score(X_sub, y_sub)
+        val_acc = model_clone.score(X_val, y_val)
+        val_pred = model_clone.predict(X_val)
+        bal_acc = balanced_accuracy_score(y_val, val_pred)
+
+        train_scores.append(round(float(train_acc), 4))
+        val_scores.append(round(float(val_acc), 4))
+        balanced_scores.append(round(float(bal_acc), 4))
+
+        # Per-class F1
+        for i, cls in enumerate(le.classes_):
+            mask = y_val == i
+            if mask.sum() > 0:
+                cls_f1 = f1_score(y_val == i, val_pred == i, zero_division=0)
+                per_class_scores[cls].append(round(float(cls_f1), 4))
+            else:
+                per_class_scores[cls].append(None)
+
+    # Projection: extrapolate how much data would be needed for target accuracy
+    projection = _project_data_needs(train_sizes, val_scores)
+
+    # Convergence analysis
+    if len(val_scores) >= 3:
+        recent_improvement = val_scores[-1] - val_scores[-3]
+        if recent_improvement < 0.01:
+            convergence = "PLATEAU"
+            convergence_msg = (
+                "Model accuracy has plateaued. More data of the same type "
+                "won't help significantly. Consider: (1) new feature types, "
+                "(2) data from different geological settings, or "
+                "(3) higher-quality measurements."
+            )
+        elif recent_improvement < 0.03:
+            convergence = "SLOWING"
+            convergence_msg = (
+                "Accuracy growth is slowing. Each additional sample adds "
+                "less value. Targeted collection of under-represented classes "
+                "would be more effective than bulk data collection."
+            )
+        else:
+            convergence = "GROWING"
+            convergence_msg = (
+                "Model is still improving with more data. Continue collecting "
+                "data, especially for minority fracture types."
+            )
+    else:
+        convergence = "INSUFFICIENT"
+        convergence_msg = "Not enough data points to assess convergence."
+
+    return {
+        "train_sizes": [int(s) for s in train_sizes],
+        "train_scores": train_scores,
+        "val_scores": val_scores,
+        "balanced_scores": balanced_scores,
+        "per_class": {cls: scores for cls, scores in per_class_scores.items()},
+        "class_names": list(le.classes_),
+        "n_samples": n_samples,
+        "convergence": convergence,
+        "convergence_message": convergence_msg,
+        "projection": projection,
+    }
+
+
+def _project_data_needs(sizes, scores):
+    """Extrapolate how many samples would be needed for various accuracy targets."""
+    if len(sizes) < 3 or len(scores) < 3:
+        return {"available": False, "reason": "Need more data points"}
+
+    current_acc = scores[-1]
+    targets = [0.85, 0.90, 0.95]
+    projections = []
+
+    for target in targets:
+        if current_acc >= target:
+            projections.append({
+                "target_accuracy": target,
+                "status": "ACHIEVED",
+                "samples_needed": 0,
+            })
+        else:
+            # Simple log-linear extrapolation (accuracy ~ a + b*log(n))
+            try:
+                log_sizes = np.log(sizes[-4:])
+                recent_scores = np.array(scores[-4:])
+                coeffs = np.polyfit(log_sizes, recent_scores, 1)
+                if coeffs[0] > 0:
+                    needed_log_n = (target - coeffs[1]) / coeffs[0]
+                    needed_n = int(np.exp(needed_log_n))
+                    if needed_n > 100000:
+                        projections.append({
+                            "target_accuracy": target,
+                            "status": "UNLIKELY",
+                            "reason": "Would require unrealistic data volume",
+                        })
+                    else:
+                        projections.append({
+                            "target_accuracy": target,
+                            "status": "PROJECTED",
+                            "samples_needed": needed_n,
+                            "additional_needed": max(0, needed_n - int(sizes[-1])),
+                        })
+                else:
+                    projections.append({
+                        "target_accuracy": target,
+                        "status": "PLATEAU",
+                        "reason": "Accuracy not improving with more data — need better features",
+                    })
+            except Exception:
+                projections.append({
+                    "target_accuracy": target,
+                    "status": "UNKNOWN",
+                    "reason": "Could not extrapolate",
+                })
+
+    return {"available": True, "targets": projections}
+
+
+# ═══════════════════════════════════════════════════════
+#  Bootstrap Confidence Intervals
+# ═══════════════════════════════════════════════════════
+
+def bootstrap_class_metrics(df, n_bootstrap=200, ci_level=0.95, fast=True):
+    """Compute bootstrap 95% confidence intervals for per-class metrics.
+
+    Industrial-grade: instead of point estimates, returns ranges like
+    "F1 = 0.85 [0.78-0.91]" so decision-makers know the reliability.
+
+    Parameters
+    ----------
+    df : DataFrame with fracture data
+    n_bootstrap : number of bootstrap resamples
+    ci_level : confidence level (default 0.95 = 95% CI)
+    fast : if True, use fewer estimators
+
+    Returns
+    -------
+    dict with per-class CIs for F1, precision, recall, and overall accuracy CI
+    """
+    features = engineer_enhanced_features(df)
+    le = LabelEncoder()
+    y = le.fit_transform(df[FRACTURE_TYPE_COL].values)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(features.values)
+
+    n_samples = len(X_scaled)
+    n_classes = len(le.classes_)
+
+    if n_samples < 20:
+        return {"error": "Need at least 20 samples for bootstrap CI"}
+
+    n_est = 50 if fast else 200
+    alpha = 1 - ci_level
+
+    # Bootstrap resamples
+    accuracy_boot = []
+    balanced_boot = []
+    f1_boot = {cls: [] for cls in le.classes_}
+    precision_boot = {cls: [] for cls in le.classes_}
+    recall_boot = {cls: [] for cls in le.classes_}
+
+    rng = np.random.RandomState(42)
+
+    for _ in range(n_bootstrap):
+        # Resample with replacement
+        idx = rng.choice(n_samples, size=n_samples, replace=True)
+        oob_mask = np.ones(n_samples, dtype=bool)
+        oob_mask[idx] = False
+        oob_idx = np.where(oob_mask)[0]
+
+        # Need at least 2 classes in both train and OOB
+        if len(oob_idx) < 5:
+            continue
+        if len(np.unique(y[idx])) < 2:
+            continue
+        if len(np.unique(y[oob_idx])) < 2:
+            continue
+
+        model = RandomForestClassifier(
+            n_estimators=n_est, class_weight="balanced",
+            random_state=42, n_jobs=-1,
+        )
+        model.fit(X_scaled[idx], y[idx])
+        pred = model.predict(X_scaled[oob_idx])
+
+        accuracy_boot.append(accuracy_score(y[oob_idx], pred))
+        balanced_boot.append(balanced_accuracy_score(y[oob_idx], pred))
+
+        for i, cls in enumerate(le.classes_):
+            y_bin = (y[oob_idx] == i).astype(int)
+            p_bin = (pred == i).astype(int)
+            if y_bin.sum() > 0:
+                f1_boot[cls].append(f1_score(y_bin, p_bin, zero_division=0))
+                precision_boot[cls].append(precision_score(y_bin, p_bin, zero_division=0))
+                recall_boot[cls].append(recall_score(y_bin, p_bin, zero_division=0))
+
+    if len(accuracy_boot) < 20:
+        return {"error": "Too few valid bootstrap resamples. Need more data."}
+
+    def _ci(values):
+        arr = np.array(values)
+        lo = float(np.percentile(arr, 100 * alpha / 2))
+        hi = float(np.percentile(arr, 100 * (1 - alpha / 2)))
+        mean = float(np.mean(arr))
+        return {"mean": round(mean, 4), "ci_low": round(lo, 4), "ci_high": round(hi, 4),
+                "width": round(hi - lo, 4)}
+
+    per_class = {}
+    for cls in le.classes_:
+        per_class[cls] = {
+            "f1": _ci(f1_boot[cls]) if len(f1_boot[cls]) >= 20 else None,
+            "precision": _ci(precision_boot[cls]) if len(precision_boot[cls]) >= 20 else None,
+            "recall": _ci(recall_boot[cls]) if len(recall_boot[cls]) >= 20 else None,
+            "n_bootstrap": len(f1_boot[cls]),
+        }
+
+    # Reliability assessment
+    wide_cis = sum(
+        1 for cls in per_class.values()
+        if cls["f1"] and cls["f1"]["width"] > 0.3
+    )
+    if wide_cis == 0:
+        reliability = "HIGH"
+        reliability_msg = "All class metrics have tight confidence intervals. Predictions are reliable."
+    elif wide_cis <= n_classes // 2:
+        reliability = "MODERATE"
+        reliability_msg = (
+            f"{wide_cis} class(es) have wide CIs (>0.30). "
+            f"These classes need more training data for reliable predictions."
+        )
+    else:
+        reliability = "LOW"
+        reliability_msg = (
+            f"{wide_cis}/{n_classes} classes have wide CIs. "
+            f"Model predictions are not reliable enough for production decisions."
+        )
+
+    return {
+        "accuracy": _ci(accuracy_boot),
+        "balanced_accuracy": _ci(balanced_boot),
+        "per_class": per_class,
+        "class_names": list(le.classes_),
+        "n_bootstrap": len(accuracy_boot),
+        "ci_level": ci_level,
+        "reliability": reliability,
+        "reliability_message": reliability_msg,
+    }
+
+
+# ═══════════════════════════════════════════════════════
+#  Scenario Comparison
+# ═══════════════════════════════════════════════════════
+
+def scenario_comparison(df, scenarios, depth_m=3000):
+    """Compare multiple what-if scenarios for stress inversion.
+
+    Allows decision-makers to see how different assumptions about regime,
+    pore pressure, and friction coefficient affect the results.
+
+    Parameters
+    ----------
+    df : DataFrame with fracture data for one well
+    scenarios : list of dicts, each with keys: name, regime, pore_pressure, friction
+    depth_m : depth in meters
+
+    Returns
+    -------
+    dict with scenario results and comparison metrics
+    """
+    try:
+        from src.geostress import invert_stress
+    except ImportError:
+        from geostress import invert_stress
+
+    normals = fracture_plane_normal(
+        df[AZIMUTH_COL].values, df[DIP_COL].values
+    )
+
+    results = []
+    for i, scenario in enumerate(scenarios):
+        name = scenario.get("name", f"Scenario {i+1}")
+        regime = scenario.get("regime", "strike_slip")
+        pp = scenario.get("pore_pressure", None)
+        # friction is not a parameter for invert_stress, it's optimized
+
+        try:
+            inv = invert_stress(
+                normals, regime=regime,
+                depth_m=depth_m, pore_pressure=pp,
+            )
+
+            pp_val = inv.get("pore_pressure", 0.0)
+            if isinstance(pp_val, np.ndarray):
+                pp_val = float(pp_val.flat[0])
+
+            cs = critically_stressed_enhanced(
+                inv["sigma_n"], inv["tau"],
+                mu=inv["mu"], pore_pressure=pp_val,
+            )
+
+            # Safely extract scalar values from potential numpy types
+            def _scalar(v):
+                if isinstance(v, np.ndarray):
+                    return float(v.flat[0])
+                return float(v)
+
+            results.append({
+                "name": name,
+                "regime": regime,
+                "sigma1": round(_scalar(inv["sigma1"]), 2),
+                "sigma3": round(_scalar(inv["sigma3"]), 2),
+                "shmax": round(_scalar(inv["shmax_azimuth_deg"]), 1),
+                "R_ratio": round(_scalar(inv["R"]), 4),
+                "mu": round(_scalar(inv["mu"]), 4),
+                "pore_pressure": round(_scalar(pp_val), 2),
+                "misfit": round(_scalar(inv["misfit"]), 4),
+                "critically_stressed_pct": round(cs["pct_critical"], 1),
+                "high_risk_count": cs["high_risk_count"],
+                "status": "OK",
+            })
+        except Exception as e:
+            results.append({
+                "name": name,
+                "regime": regime,
+                "status": "ERROR",
+                "error": str(e)[:100],
+            })
+
+    # Compute variance across scenarios for each key metric
+    ok_results = [r for r in results if r["status"] == "OK"]
+    if len(ok_results) >= 2:
+        metrics_spread = {}
+        for key in ("sigma1", "sigma3", "shmax", "R_ratio", "mu",
+                     "critically_stressed_pct"):
+            vals = [r[key] for r in ok_results if key in r]
+            if vals:
+                metrics_spread[key] = {
+                    "min": min(vals),
+                    "max": max(vals),
+                    "range": round(max(vals) - min(vals), 2),
+                    "cv_pct": round(100 * np.std(vals) / max(abs(np.mean(vals)), 1e-6), 1),
+                }
+
+        # Find which parameter has most impact
+        max_cv_key = max(metrics_spread, key=lambda k: metrics_spread[k]["cv_pct"])
+        sensitivity_msg = (
+            f"'{max_cv_key}' shows the most variation across scenarios "
+            f"(CV={metrics_spread[max_cv_key]['cv_pct']}%). "
+            f"This parameter requires the most careful specification."
+        )
+    else:
+        metrics_spread = {}
+        sensitivity_msg = "Need at least 2 successful scenarios for comparison."
+
+    # Recommendation
+    if ok_results:
+        best = min(ok_results, key=lambda r: r["misfit"])
+        recommendation = (
+            f"Scenario '{best['name']}' has the lowest misfit ({best['misfit']:.4f}), "
+            f"suggesting it best fits the observed fracture data."
+        )
+    else:
+        recommendation = "No scenarios completed successfully."
+
+    return {
+        "scenarios": results,
+        "n_scenarios": len(results),
+        "n_successful": len(ok_results),
+        "metrics_spread": metrics_spread,
+        "sensitivity_message": sensitivity_msg,
+        "recommendation": recommendation,
+    }

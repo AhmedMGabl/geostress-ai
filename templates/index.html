@@ -97,6 +97,16 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link" data-tab="scenarios" href="#">
+                        <i class="bi bi-sliders"></i> Scenarios
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="audit" href="#">
+                        <i class="bi bi-shield-check"></i> Audit Trail
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link" data-tab="glossary" href="#">
                         <i class="bi bi-book"></i> Glossary
                     </a>
@@ -631,6 +641,115 @@
 
                         <!-- Per-model details -->
                         <div id="mc-details-container"></div>
+                    </div>
+
+                    <!-- Learning Curve -->
+                    <div class="card mt-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-up"></i> Learning Curve — Do We Need More Data?</span>
+                            <button class="btn btn-outline-primary btn-sm" onclick="runLearningCurve()">
+                                <i class="bi bi-play-fill"></i> Compute
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Shows how model accuracy changes with training set size. If the curve has plateaued, more data of the same type won't help — you need better features or different data sources.</p>
+                            <div id="lc-results" class="d-none">
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-4">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Convergence</div>
+                                            <div class="metric-value" id="lc-convergence">--</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Current Accuracy</div>
+                                            <div class="metric-value" id="lc-current-acc">--</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Total Samples</div>
+                                            <div class="metric-value" id="lc-n-samples">--</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="lc-convergence-msg" class="alert alert-info small mb-3"></div>
+                                <div class="card mb-3">
+                                    <div class="card-header">Accuracy vs Training Size</div>
+                                    <div class="card-body p-0">
+                                        <table class="table table-sm mb-0" id="lc-table">
+                                            <thead><tr><th>Samples</th><th>Train Acc</th><th>Val Acc</th><th>Balanced Acc</th></tr></thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                                <div id="lc-projections" class="d-none">
+                                    <h6>Data Projections</h6>
+                                    <div id="lc-projection-list"></div>
+                                </div>
+                                <div id="lc-per-class" class="d-none">
+                                    <h6>Per-Class F1 vs Training Size</h6>
+                                    <table class="table table-sm" id="lc-class-table">
+                                        <thead><tr id="lc-class-header"></tr></thead>
+                                        <tbody id="lc-class-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bootstrap Confidence Intervals -->
+                    <div class="card mt-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bar-chart-steps"></i> Confidence Intervals — How Reliable Are Predictions?</span>
+                            <button class="btn btn-outline-primary btn-sm" onclick="runBootstrapCI()">
+                                <i class="bi bi-play-fill"></i> Compute 95% CI
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Bootstrap resampling (200x) to compute 95% confidence intervals for per-class metrics. Industrial-grade: "F1 = 0.85 [0.78 - 0.91]" instead of just "F1 = 0.85".</p>
+                            <div id="ci-results" class="d-none">
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-3">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Reliability</div>
+                                            <div class="metric-value" id="ci-reliability">--</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Accuracy</div>
+                                            <div class="metric-value" id="ci-accuracy">--</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Accuracy CI</div>
+                                            <div class="metric-value" id="ci-accuracy-range">--</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Bootstraps</div>
+                                            <div class="metric-value" id="ci-n-boot">--</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="ci-reliability-msg" class="alert mb-3 small"></div>
+                                <div class="card">
+                                    <div class="card-header">Per-Class 95% Confidence Intervals</div>
+                                    <div class="card-body p-0">
+                                        <table class="table table-sm mb-0" id="ci-class-table">
+                                            <thead><tr>
+                                                <th>Class</th><th>F1</th><th>F1 CI</th><th>Precision</th><th>Precision CI</th><th>Recall</th><th>Recall CI</th>
+                                            </tr></thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1300,6 +1419,137 @@
                     <!-- Data Recommendations -->
                     <div id="data-rec-results" class="d-none">
                         <div id="data-rec-content"></div>
+                    </div>
+                </div>
+
+                <!-- Scenario Comparison Tab -->
+                <div id="tab-scenarios" class="tab-content">
+                    <h5 class="mb-3"><i class="bi bi-sliders"></i> What-If Scenario Comparison</h5>
+                    <p class="text-muted small">Compare different stress regime assumptions side-by-side. See how pore pressure and regime choice affect drilling decisions. Define 2-6 scenarios below.</p>
+
+                    <div class="card mb-3">
+                        <div class="card-header">Define Scenarios</div>
+                        <div class="card-body">
+                            <div id="scenario-list">
+                                <div class="row g-2 mb-2 scenario-row">
+                                    <div class="col-md-3"><input type="text" class="form-control form-control-sm scenario-name" placeholder="Scenario name" value="Normal Fault"></div>
+                                    <div class="col-md-3">
+                                        <select class="form-select form-select-sm scenario-regime">
+                                            <option value="normal" selected>Normal</option>
+                                            <option value="strike_slip">Strike-Slip</option>
+                                            <option value="thrust">Thrust</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-3"><input type="number" class="form-control form-control-sm scenario-pp" placeholder="Pore pressure (MPa)" value=""></div>
+                                    <div class="col-md-3"><button class="btn btn-outline-danger btn-sm" onclick="removeScenario(this)"><i class="bi bi-trash"></i></button></div>
+                                </div>
+                                <div class="row g-2 mb-2 scenario-row">
+                                    <div class="col-md-3"><input type="text" class="form-control form-control-sm scenario-name" placeholder="Scenario name" value="Strike-Slip"></div>
+                                    <div class="col-md-3">
+                                        <select class="form-select form-select-sm scenario-regime">
+                                            <option value="normal">Normal</option>
+                                            <option value="strike_slip" selected>Strike-Slip</option>
+                                            <option value="thrust">Thrust</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-3"><input type="number" class="form-control form-control-sm scenario-pp" placeholder="Pore pressure (MPa)" value=""></div>
+                                    <div class="col-md-3"><button class="btn btn-outline-danger btn-sm" onclick="removeScenario(this)"><i class="bi bi-trash"></i></button></div>
+                                </div>
+                                <div class="row g-2 mb-2 scenario-row">
+                                    <div class="col-md-3"><input type="text" class="form-control form-control-sm scenario-name" placeholder="Scenario name" value="Thrust"></div>
+                                    <div class="col-md-3">
+                                        <select class="form-select form-select-sm scenario-regime">
+                                            <option value="normal">Normal</option>
+                                            <option value="strike_slip">Strike-Slip</option>
+                                            <option value="thrust" selected>Thrust</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-3"><input type="number" class="form-control form-control-sm scenario-pp" placeholder="Pore pressure (MPa)" value=""></div>
+                                    <div class="col-md-3"><button class="btn btn-outline-danger btn-sm" onclick="removeScenario(this)"><i class="bi bi-trash"></i></button></div>
+                                </div>
+                            </div>
+                            <div class="d-flex gap-2 mt-2">
+                                <button class="btn btn-outline-secondary btn-sm" onclick="addScenario()"><i class="bi bi-plus"></i> Add Scenario</button>
+                                <button class="btn btn-primary btn-sm" onclick="runScenarios()"><i class="bi bi-play-fill"></i> Compare Scenarios</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="scenario-results" class="d-none">
+                        <div id="scenario-recommendation" class="alert alert-success mb-3"></div>
+                        <div id="scenario-sensitivity-msg" class="alert alert-warning mb-3 small"></div>
+
+                        <div class="card mb-3">
+                            <div class="card-header">Scenario Results</div>
+                            <div class="card-body p-0">
+                                <table class="table table-sm table-striped mb-0" id="scenario-table">
+                                    <thead><tr>
+                                        <th>Scenario</th><th>Regime</th><th>&sigma;1</th><th>&sigma;3</th><th>SHmax</th><th>R</th><th>&mu;</th><th>Pp (MPa)</th><th>Misfit</th><th>Crit. Stressed %</th>
+                                    </tr></thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div id="scenario-spread" class="d-none">
+                            <div class="card">
+                                <div class="card-header">Parameter Sensitivity Across Scenarios</div>
+                                <div class="card-body p-0">
+                                    <table class="table table-sm mb-0" id="scenario-spread-table">
+                                        <thead><tr><th>Parameter</th><th>Min</th><th>Max</th><th>Range</th><th>CV %</th></tr></thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Audit Trail Tab -->
+                <div id="tab-audit" class="tab-content">
+                    <h5 class="mb-3"><i class="bi bi-shield-check"></i> Prediction Audit Trail</h5>
+                    <p class="text-muted small">Every analysis action is recorded with timestamp, parameters, and result hash for regulatory compliance and traceability. Records are integrity-verified with SHA-256 hashes.</p>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="loadAuditLog()">
+                            <i class="bi bi-arrow-clockwise"></i> Refresh Log
+                        </button>
+                        <button class="btn btn-outline-primary btn-sm" onclick="exportAuditLog()">
+                            <i class="bi bi-download"></i> Export CSV
+                        </button>
+                    </div>
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <div class="metric-card">
+                                <div class="metric-label">Total Records</div>
+                                <div class="metric-value" id="audit-total">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="metric-card">
+                                <div class="metric-label">App Version</div>
+                                <div class="metric-value" id="audit-version">2.6.0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="metric-card">
+                                <div class="metric-label">Session Start</div>
+                                <div class="metric-value" id="audit-session-start" style="font-size:0.9rem">--</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">Recent Analysis Actions</div>
+                        <div class="card-body p-0">
+                            <table class="table table-sm table-striped mb-0" id="audit-table">
+                                <thead><tr>
+                                    <th>#</th><th>Time</th><th>Action</th><th>Well</th><th>Source</th><th>Elapsed</th><th>Hash</th>
+                                </tr></thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 

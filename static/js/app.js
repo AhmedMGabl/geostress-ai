@@ -91,7 +91,9 @@ var tabNames = {
     uncertainty: "Uncertainty Budget",
     wells: "Well Comparison",
     report: "Well Report",
-    feedback: "Expert Feedback"
+    feedback: "Expert Feedback",
+    scenarios: "Scenario Comparison",
+    audit: "Audit Trail"
 };
 
 document.querySelectorAll("[data-tab]").forEach(function(link) {
@@ -2413,6 +2415,363 @@ async function runDataRecommendations() {
         showToast("Recommendations error: " + err.message, "Error");
     } finally {
         hideLoading();
+    }
+}
+
+
+// ── Learning Curve ────────────────────────────────
+
+async function runLearningCurve() {
+    showLoading("Computing learning curve...");
+    try {
+        var data = await api("/api/analysis/learning-curve", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ source: currentSource, well: currentWell })
+        });
+
+        if (data.error) {
+            showToast(data.error, "Error");
+            return;
+        }
+
+        document.getElementById("lc-results").classList.remove("d-none");
+
+        // Summary metrics
+        var convColors = { PLATEAU: "text-warning", SLOWING: "text-info", GROWING: "text-success", INSUFFICIENT: "text-muted" };
+        var convEl = document.getElementById("lc-convergence");
+        convEl.textContent = data.convergence;
+        convEl.className = "metric-value " + (convColors[data.convergence] || "");
+
+        var lastAcc = data.val_scores[data.val_scores.length - 1];
+        val("lc-current-acc", (lastAcc * 100).toFixed(1) + "%");
+        val("lc-n-samples", data.n_samples);
+
+        document.getElementById("lc-convergence-msg").textContent = data.convergence_message;
+
+        // Accuracy table
+        var tbody = document.querySelector("#lc-table tbody");
+        clearChildren(tbody);
+        for (var i = 0; i < data.train_sizes.length; i++) {
+            var tr = document.createElement("tr");
+            tr.appendChild(createCell("td", data.train_sizes[i]));
+            tr.appendChild(createCell("td", (data.train_scores[i] * 100).toFixed(1) + "%"));
+            tr.appendChild(createCell("td", (data.val_scores[i] * 100).toFixed(1) + "%"));
+            tr.appendChild(createCell("td", (data.balanced_scores[i] * 100).toFixed(1) + "%"));
+            tbody.appendChild(tr);
+        }
+
+        // Projections
+        if (data.projection && data.projection.available && data.projection.targets) {
+            document.getElementById("lc-projections").classList.remove("d-none");
+            var projList = document.getElementById("lc-projection-list");
+            clearChildren(projList);
+            data.projection.targets.forEach(function(t) {
+                var div = document.createElement("div");
+                div.className = "alert py-2 mb-2 small " +
+                    (t.status === "ACHIEVED" ? "alert-success" :
+                     t.status === "PROJECTED" ? "alert-info" : "alert-warning");
+                var text = (t.target_accuracy * 100) + "% accuracy: ";
+                if (t.status === "ACHIEVED") {
+                    text += "Already achieved!";
+                } else if (t.status === "PROJECTED") {
+                    text += "~" + t.samples_needed + " total samples needed (" + t.additional_needed + " more)";
+                } else {
+                    text += t.reason || t.status;
+                }
+                div.textContent = text;
+                projList.appendChild(div);
+            });
+        }
+
+        // Per-class table
+        if (data.per_class && data.class_names) {
+            document.getElementById("lc-per-class").classList.remove("d-none");
+            var header = document.getElementById("lc-class-header");
+            clearChildren(header);
+            header.appendChild(createCell("th", "Samples"));
+            data.class_names.forEach(function(cls) {
+                header.appendChild(createCell("th", cls));
+            });
+
+            var classBody = document.getElementById("lc-class-body");
+            clearChildren(classBody);
+            for (var j = 0; j < data.train_sizes.length; j++) {
+                var row = document.createElement("tr");
+                row.appendChild(createCell("td", data.train_sizes[j]));
+                data.class_names.forEach(function(cls) {
+                    var v = data.per_class[cls][j];
+                    row.appendChild(createCell("td", v != null ? (v * 100).toFixed(1) + "%" : "N/A"));
+                });
+                classBody.appendChild(row);
+            }
+        }
+
+        showToast("Learning curve computed in " + (data.elapsed_s || "?") + "s");
+    } catch (err) {
+        showToast("Learning curve error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Bootstrap Confidence Intervals ────────────────
+
+async function runBootstrapCI() {
+    showLoading("Computing bootstrap CIs (200 resamples)...");
+    try {
+        var data = await api("/api/analysis/bootstrap-ci", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ source: currentSource, well: currentWell })
+        });
+
+        if (data.error) {
+            showToast(data.error, "Error");
+            return;
+        }
+
+        document.getElementById("ci-results").classList.remove("d-none");
+
+        var relColors = { HIGH: "text-success", MODERATE: "text-warning", LOW: "text-danger" };
+        var relEl = document.getElementById("ci-reliability");
+        relEl.textContent = data.reliability;
+        relEl.className = "metric-value " + (relColors[data.reliability] || "");
+
+        val("ci-accuracy", (data.accuracy.mean * 100).toFixed(1) + "%");
+        val("ci-accuracy-range", "[" + (data.accuracy.ci_low * 100).toFixed(1) + "% - " + (data.accuracy.ci_high * 100).toFixed(1) + "%]");
+        val("ci-n-boot", data.n_bootstrap);
+
+        var msgEl = document.getElementById("ci-reliability-msg");
+        msgEl.textContent = data.reliability_message;
+        msgEl.className = "alert mb-3 small " +
+            (data.reliability === "HIGH" ? "alert-success" :
+             data.reliability === "MODERATE" ? "alert-warning" : "alert-danger");
+
+        // Per-class table
+        var tbody = document.querySelector("#ci-class-table tbody");
+        clearChildren(tbody);
+        data.class_names.forEach(function(cls) {
+            var pc = data.per_class[cls];
+            var tr = document.createElement("tr");
+            tr.appendChild(createCell("td", cls, { fontWeight: "600" }));
+
+            function ciCell(metric) {
+                if (!metric) return createCell("td", "N/A");
+                return createCell("td", (metric.mean * 100).toFixed(1) + "%");
+            }
+            function ciRangeCell(metric) {
+                if (!metric) return createCell("td", "N/A");
+                var width = metric.width;
+                var style = { fontSize: "0.8rem" };
+                if (width > 0.3) style.color = "#dc2626";
+                else if (width > 0.15) style.color = "#d97706";
+                else style.color = "#16a34a";
+                return createCell("td", "[" + (metric.ci_low * 100).toFixed(1) + " - " + (metric.ci_high * 100).toFixed(1) + "]", style);
+            }
+
+            tr.appendChild(ciCell(pc.f1));
+            tr.appendChild(ciRangeCell(pc.f1));
+            tr.appendChild(ciCell(pc.precision));
+            tr.appendChild(ciRangeCell(pc.precision));
+            tr.appendChild(ciCell(pc.recall));
+            tr.appendChild(ciRangeCell(pc.recall));
+            tbody.appendChild(tr);
+        });
+
+        showToast("Bootstrap CIs computed (" + data.n_bootstrap + " resamples, " + (data.elapsed_s || "?") + "s)");
+    } catch (err) {
+        showToast("Bootstrap CI error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Scenario Comparison ───────────────────────────
+
+function addScenario() {
+    var list = document.getElementById("scenario-list");
+    var rows = list.querySelectorAll(".scenario-row");
+    if (rows.length >= 6) {
+        showToast("Maximum 6 scenarios", "Limit");
+        return;
+    }
+    var html = '<div class="row g-2 mb-2 scenario-row">' +
+        '<div class="col-md-3"><input type="text" class="form-control form-control-sm scenario-name" placeholder="Scenario name" value="Scenario ' + (rows.length + 1) + '"></div>' +
+        '<div class="col-md-3"><select class="form-select form-select-sm scenario-regime">' +
+        '<option value="normal">Normal</option><option value="strike_slip">Strike-Slip</option><option value="thrust">Thrust</option></select></div>' +
+        '<div class="col-md-3"><input type="number" class="form-control form-control-sm scenario-pp" placeholder="Pore pressure (MPa)" value=""></div>' +
+        '<div class="col-md-3"><button class="btn btn-outline-danger btn-sm" onclick="removeScenario(this)"><i class="bi bi-trash"></i></button></div></div>';
+    list.insertAdjacentHTML("beforeend", html);
+}
+
+function removeScenario(btn) {
+    var list = document.getElementById("scenario-list");
+    if (list.querySelectorAll(".scenario-row").length <= 2) {
+        showToast("Need at least 2 scenarios", "Minimum");
+        return;
+    }
+    btn.closest(".scenario-row").remove();
+}
+
+async function runScenarios() {
+    var rows = document.querySelectorAll("#scenario-list .scenario-row");
+    var scenarios = [];
+    rows.forEach(function(row) {
+        var name = row.querySelector(".scenario-name").value || "Unnamed";
+        var regime = row.querySelector(".scenario-regime").value;
+        var ppVal = row.querySelector(".scenario-pp").value;
+        var s = { name: name, regime: regime };
+        if (ppVal !== "") s.pore_pressure = parseFloat(ppVal);
+        scenarios.push(s);
+    });
+
+    if (scenarios.length < 2) {
+        showToast("Need at least 2 scenarios", "Error");
+        return;
+    }
+
+    showLoading("Comparing " + scenarios.length + " scenarios...");
+    try {
+        var depth = document.getElementById("depth-input").value || 3000;
+        var data = await api("/api/analysis/scenarios", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                source: currentSource,
+                well: currentWell,
+                depth: parseFloat(depth),
+                scenarios: scenarios
+            })
+        });
+
+        document.getElementById("scenario-results").classList.remove("d-none");
+
+        // Recommendation
+        document.getElementById("scenario-recommendation").innerHTML =
+            '<i class="bi bi-lightbulb me-1"></i><strong>Recommendation:</strong> ' + data.recommendation;
+
+        // Sensitivity message
+        if (data.sensitivity_message) {
+            document.getElementById("scenario-sensitivity-msg").textContent = data.sensitivity_message;
+            document.getElementById("scenario-sensitivity-msg").classList.remove("d-none");
+        }
+
+        // Results table
+        var tbody = document.querySelector("#scenario-table tbody");
+        clearChildren(tbody);
+        data.scenarios.forEach(function(s) {
+            var tr = document.createElement("tr");
+            if (s.status === "ERROR") {
+                tr.appendChild(createCell("td", s.name, { fontWeight: "600" }));
+                tr.appendChild(createCell("td", s.regime));
+                var errCell = document.createElement("td");
+                errCell.colSpan = 8;
+                errCell.textContent = "Error: " + s.error;
+                errCell.style.color = "#dc2626";
+                tr.appendChild(errCell);
+            } else {
+                tr.appendChild(createCell("td", s.name, { fontWeight: "600" }));
+                tr.appendChild(createCell("td", s.regime));
+                tr.appendChild(createCell("td", fmt(s.sigma1, 1)));
+                tr.appendChild(createCell("td", fmt(s.sigma3, 1)));
+                tr.appendChild(createCell("td", fmt(s.shmax, 0) + "\u00B0"));
+                tr.appendChild(createCell("td", fmt(s.R_ratio, 3)));
+                tr.appendChild(createCell("td", fmt(s.mu, 3)));
+                tr.appendChild(createCell("td", fmt(s.pore_pressure, 1)));
+                tr.appendChild(createCell("td", fmt(s.misfit, 4)));
+                var csPct = s.critically_stressed_pct;
+                var csStyle = { fontWeight: "600" };
+                if (csPct > 50) csStyle.color = "#dc2626";
+                else if (csPct > 25) csStyle.color = "#d97706";
+                else csStyle.color = "#16a34a";
+                tr.appendChild(createCell("td", fmt(csPct, 1) + "%", csStyle));
+            }
+            tbody.appendChild(tr);
+        });
+
+        // Metrics spread
+        if (data.metrics_spread && Object.keys(data.metrics_spread).length > 0) {
+            document.getElementById("scenario-spread").classList.remove("d-none");
+            var sTbody = document.querySelector("#scenario-spread-table tbody");
+            clearChildren(sTbody);
+            var paramLabels = {
+                sigma1: "\u03C31 (MPa)", sigma3: "\u03C33 (MPa)", shmax: "SHmax (\u00B0)",
+                R_ratio: "R ratio", mu: "Friction \u03BC", critically_stressed_pct: "Crit. Stressed %"
+            };
+            for (var key in data.metrics_spread) {
+                var m = data.metrics_spread[key];
+                var sr = document.createElement("tr");
+                sr.appendChild(createCell("td", paramLabels[key] || key, { fontWeight: "600" }));
+                sr.appendChild(createCell("td", fmt(m.min, 2)));
+                sr.appendChild(createCell("td", fmt(m.max, 2)));
+                sr.appendChild(createCell("td", fmt(m.range, 2)));
+                var cvStyle = {};
+                if (m.cv_pct > 20) cvStyle.color = "#dc2626";
+                else if (m.cv_pct > 10) cvStyle.color = "#d97706";
+                sr.appendChild(createCell("td", fmt(m.cv_pct, 1) + "%", cvStyle));
+                sTbody.appendChild(sr);
+            }
+        }
+
+        showToast("Compared " + data.n_successful + "/" + data.n_scenarios + " scenarios in " + (data.elapsed_s || "?") + "s");
+    } catch (err) {
+        showToast("Scenario error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Audit Trail ───────────────────────────────────
+
+async function loadAuditLog() {
+    try {
+        var data = await api("/api/audit/log?limit=50");
+        val("audit-total", data.total);
+
+        if (data.entries.length > 0) {
+            var first = data.entries[data.entries.length - 1];
+            val("audit-session-start", first.timestamp.substring(0, 19).replace("T", " "));
+        }
+
+        var tbody = document.querySelector("#audit-table tbody");
+        clearChildren(tbody);
+        data.entries.forEach(function(e) {
+            var tr = document.createElement("tr");
+            tr.appendChild(createCell("td", e.id));
+            tr.appendChild(createCell("td", e.timestamp.substring(11, 19)));
+            tr.appendChild(createCell("td", e.action, { fontWeight: "600" }));
+            tr.appendChild(createCell("td", e.well || "All"));
+            tr.appendChild(createCell("td", e.source));
+            tr.appendChild(createCell("td", e.elapsed_s + "s"));
+            tr.appendChild(createCell("td", e.result_hash, { fontFamily: "monospace", fontSize: "0.75rem" }));
+            tbody.appendChild(tr);
+        });
+    } catch (err) {
+        // Silent - audit is non-critical
+    }
+}
+
+async function exportAuditLog() {
+    try {
+        var data = await api("/api/audit/export", { method: "POST" });
+        if (data.csv && data.rows > 0) {
+            var blob = new Blob([data.csv], { type: "text/csv" });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement("a");
+            a.href = url;
+            a.download = data.filename || "audit_trail.csv";
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast("Exported " + data.rows + " audit records");
+        } else {
+            showToast("No audit records to export");
+        }
+    } catch (err) {
+        showToast("Export error: " + err.message, "Error");
     }
 }
 
