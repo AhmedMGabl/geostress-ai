@@ -2174,6 +2174,13 @@ document.addEventListener("DOMContentLoaded", function() {
             document.getElementById("whatif-depth-val").textContent = this.value + " m";
         };
     }
+    var abstentionSlider = document.getElementById("abstention-threshold");
+    if (abstentionSlider) {
+        abstentionSlider.oninput = function() {
+            document.getElementById("abstention-threshold-val").textContent =
+                Math.round(this.value * 100) + "%";
+        };
+    }
 });
 
 async function runWhatIf() {
@@ -4283,6 +4290,128 @@ async function runReliabilityReport() {
         showToast("Reliability: Grade " + r.reliability_grade);
     } catch (err) {
         showToast("Reliability report error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Prediction Abstention ─────────────────────────
+
+async function runPredictWithAbstention() {
+    showLoading("Running prediction with abstention...");
+    try {
+        var thresholdEl = document.getElementById("abstention-threshold");
+        var threshold = thresholdEl ? parseFloat(thresholdEl.value) : 0.60;
+
+        var r = await apiPost("/api/analysis/predict-with-abstention", {
+            source: currentSource, well: getWell(), threshold: threshold,
+            classifier: "random_forest", fast: true
+        });
+        var el = document.getElementById("abstention-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("abstention-body");
+
+        // Recommendation badge
+        var recColors = {
+            LOW_ABSTENTION: "success", MODERATE_ABSTENTION: "warning", HIGH_ABSTENTION: "danger"
+        };
+        var rec = r.recommendation || {};
+        var html = '<div class="alert alert-' + (recColors[rec.verdict] || "info") + ' p-3">' +
+            '<h5 class="mb-1"><i class="bi bi-shield-check"></i> ' + (rec.verdict || "").replace(/_/g, " ") + '</h5>' +
+            '<p class="mb-1">' + (rec.message || "") + '</p>' +
+            '<small><strong>Suggested action:</strong> ' + (rec.action || "").replace(/_/g, " ") + '</small></div>';
+
+        // Summary cards
+        html += '<div class="row g-2 mb-3">';
+        html += '<div class="col-md-3"><div class="card text-center"><div class="card-body py-2">' +
+            '<h3>' + r.total_samples + '</h3><small class="text-muted">Total Samples</small></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center border-success"><div class="card-body py-2">' +
+            '<h3 class="text-success">' + r.confident_predictions + '</h3><small class="text-muted">Confident</small></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center border-warning"><div class="card-body py-2">' +
+            '<h3 class="text-warning">' + r.abstained_predictions + '</h3><small class="text-muted">Abstained (' + r.abstention_rate + '%)</small></div></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center border-info"><div class="card-body py-2">' +
+            '<h3 class="text-info">+' + (r.accuracy_gain * 100).toFixed(1) + '%</h3><small class="text-muted">Accuracy Gain</small></div></div></div>';
+        html += '</div>';
+
+        // Accuracy comparison
+        html += '<div class="row g-2 mb-3">';
+        html += '<div class="col-md-6"><div class="card"><div class="card-body py-2">' +
+            '<h6>Overall Accuracy (all samples)</h6>' +
+            '<div class="progress" style="height:25px"><div class="progress-bar bg-secondary" style="width:' + (r.accuracy_overall * 100) + '%">' +
+            (r.accuracy_overall * 100).toFixed(1) + '%</div></div></div></div></div>';
+        html += '<div class="col-md-6"><div class="card"><div class="card-body py-2">' +
+            '<h6>Confident-Only Accuracy</h6>' +
+            '<div class="progress" style="height:25px"><div class="progress-bar bg-success" style="width:' + (r.accuracy_confident_only * 100) + '%">' +
+            (r.accuracy_confident_only * 100).toFixed(1) + '%</div></div></div></div></div>';
+        html += '</div>';
+
+        // Confidence distribution
+        if (r.confidence_distribution) {
+            html += '<h6><i class="bi bi-bar-chart"></i> Confidence Distribution</h6>';
+            html += '<div class="d-flex gap-1 mb-3">';
+            var maxCount = Math.max.apply(null, r.confidence_distribution.map(function(b) { return b.count; }));
+            r.confidence_distribution.forEach(function(bin) {
+                var hPct = maxCount > 0 ? Math.max(5, (bin.count / maxCount) * 100) : 5;
+                var color = parseFloat(bin.range) < 0.5 ? "#dc3545" : (parseFloat(bin.range) < 0.7 ? "#ffc107" : "#198754");
+                html += '<div class="text-center flex-fill">' +
+                    '<div style="height:80px;display:flex;align-items:flex-end;justify-content:center">' +
+                    '<div style="width:100%;height:' + hPct + '%;background:' + color + ';border-radius:3px 3px 0 0"></div></div>' +
+                    '<small class="d-block">' + bin.range + '</small>' +
+                    '<small class="text-muted">' + bin.count + '</small></div>';
+            });
+            html += '</div>';
+        }
+
+        // Abstention by class
+        if (r.abstain_by_class && Object.keys(r.abstain_by_class).length > 0) {
+            html += '<h6><i class="bi bi-exclamation-diamond"></i> Abstentions by Class</h6>';
+            html += '<table class="table table-sm"><thead><tr><th>Fracture Type</th><th>Abstained</th></tr></thead><tbody>';
+            Object.keys(r.abstain_by_class).forEach(function(cls) {
+                html += '<tr><td>' + cls + '</td><td><span class="badge bg-warning">' + r.abstain_by_class[cls] + '</span></td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+
+        // Sample-level table (first 20 abstained + first 10 confident)
+        if (r.samples && r.samples.length > 0) {
+            var abstained = r.samples.filter(function(s) { return s.status !== "CONFIDENT"; });
+            var confident = r.samples.filter(function(s) { return s.status === "CONFIDENT" && !s.correct; });
+            html += '<h6><i class="bi bi-person-raised-hand"></i> Samples Requiring Expert Review (' + abstained.length + ')</h6>';
+            if (abstained.length > 0) {
+                html += '<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr>' +
+                    '<th>Depth</th><th>Az</th><th>Dip</th><th>True</th><th>Conf</th><th>Top Candidates</th></tr></thead><tbody>';
+                abstained.slice(0, 20).forEach(function(s) {
+                    var cands = (s.top_candidates || []).map(function(c) {
+                        return c["class"] + " (" + (c.probability * 100).toFixed(0) + "%)";
+                    }).join(", ");
+                    html += '<tr class="table-warning"><td>' + (s.depth || "-") + '</td><td>' + (s.azimuth || "-") + '</td>' +
+                        '<td>' + (s.dip || "-") + '</td><td>' + s.true_label + '</td>' +
+                        '<td>' + (s.confidence * 100).toFixed(0) + '%</td><td>' + cands + '</td></tr>';
+                });
+                html += '</tbody></table></div>';
+                if (abstained.length > 20) {
+                    html += '<small class="text-muted">Showing 20 of ' + abstained.length + ' abstained samples</small>';
+                }
+            }
+            // Misclassified confident samples
+            if (confident.length > 0) {
+                html += '<h6 class="mt-3"><i class="bi bi-x-circle"></i> Confident but Wrong (' + confident.length + ')</h6>';
+                html += '<div class="table-responsive"><table class="table table-sm"><thead><tr>' +
+                    '<th>Depth</th><th>True</th><th>Predicted</th><th>Conf</th></tr></thead><tbody>';
+                confident.slice(0, 10).forEach(function(s) {
+                    html += '<tr class="table-danger"><td>' + (s.depth || "-") + '</td>' +
+                        '<td>' + s.true_label + '</td><td>' + s.prediction + '</td>' +
+                        '<td>' + (s.confidence * 100).toFixed(0) + '%</td></tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+        }
+
+        body.innerHTML = html;
+        showToast("Abstention: " + r.abstained_predictions + "/" + r.total_samples + " samples flagged for review");
+    } catch (err) {
+        showToast("Abstention error: " + err.message, "Error");
     } finally {
         hideLoading();
     }

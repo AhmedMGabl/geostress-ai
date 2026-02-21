@@ -2070,6 +2070,16 @@
                         <button class="btn btn-warning btn-sm" onclick="runReliabilityReport()">
                             <i class="bi bi-award"></i> Reliability Report
                         </button>
+                        <button class="btn btn-danger btn-sm" onclick="runPredictWithAbstention()">
+                            <i class="bi bi-shield-exclamation"></i> Predict with Abstention
+                        </button>
+                    </div>
+                    <!-- Abstention threshold slider -->
+                    <div class="mt-2 px-2" style="max-width:350px">
+                        <label class="form-label small mb-0">Abstention Threshold:
+                            <span id="abstention-threshold-val">60%</span></label>
+                        <input type="range" class="form-range form-range-sm" id="abstention-threshold"
+                               min="0.30" max="0.95" step="0.05" value="0.60">
                     </div>
 
                     <div id="research-body"></div>
@@ -2087,6 +2097,16 @@
                         <div class="card border-warning">
                             <div class="card-header bg-warning text-dark"><i class="bi bi-award"></i> Prediction Reliability Report</div>
                             <div class="card-body" id="reliability-body"></div>
+                        </div>
+                    </div>
+
+                    <!-- Prediction Abstention Results -->
+                    <div id="abstention-results" class="d-none mt-3">
+                        <div class="card border-danger">
+                            <div class="card-header bg-danger text-white">
+                                <i class="bi bi-shield-exclamation"></i> Prediction Abstention — Safety-Critical Refusal
+                            </div>
+                            <div class="card-body" id="abstention-body"></div>
                         </div>
                     </div>
 

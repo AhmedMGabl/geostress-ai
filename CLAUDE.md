@@ -116,6 +116,7 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/guided-wizard` | 5-step guided analysis pipeline (Data→Stress→Risk→Model→Decision) |
 | POST | `/api/analysis/what-if` | Quick single-inversion with user-specified friction/Pp/depth |
 | POST | `/api/export/pdf-report` | Multi-page PDF report for stakeholder distribution |
+| POST | `/api/analysis/predict-with-abstention` | Safety-critical: refuse prediction when confidence < threshold |
 | GET | `/api/progress/{task_id}` | SSE progress streaming for long-running operations |
 
 ## Domain Concepts
@@ -221,3 +222,8 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Upload validation returns quality score, sufficiency status, domain warnings, preview stats, OOD check
 - Confusion matrix plot: row-normalized (recall-based) heatmap with raw count + percentage annotations
 - 9 caches: inversion, model_comparison, auto_regime, classify, misclass, physics_predict, shap, sensitivity, wizard
+- Prediction abstention: model refuses when max(predict_proba) < threshold (default 60%), flags for expert review
+- Well 3P at 60% threshold: 49% abstained, +13.2% accuracy gain on confident predictions (79% vs 66%)
+- Well 6P at 50% threshold: 0% abstained (only 2 classes = easy separation, 100% confident)
+- Abstained samples show tentative prediction + top-2 candidates with probabilities for expert guidance
+- `_safe_float()` helper in abstention handles NaN depths (Well 6P has NaN depth values)

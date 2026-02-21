@@ -783,6 +783,221 @@ def _conformal_confidence(X, y, cv, models) -> dict:
         return {"available": False}
 
 
+# ──────────────────────────────────────────────────────
+# Prediction Abstention — Safety-Critical Refusal
+# ──────────────────────────────────────────────────────
+
+def predict_with_abstention(
+    df: pd.DataFrame,
+    abstention_threshold: float = 0.60,
+    classifier: str = "random_forest",
+    n_folds: int = 5,
+    fast: bool = True,
+) -> dict:
+    """Classify fractures but REFUSE prediction when confidence is too low.
+
+    Industrial safety pattern: instead of forcing a prediction on every sample,
+    flag uncertain ones as "ABSTAIN — expert review required."  This prevents
+    stakeholders from acting on low-confidence predictions.
+
+    Parameters
+    ----------
+    df : DataFrame with fracture data
+    abstention_threshold : float (0-1)
+        Minimum max-class probability to accept a prediction.
+        Below this, the model abstains.  Default 0.60 (conservative).
+    classifier : str
+        Model to use (random_forest, xgboost, etc.)
+    n_folds : int
+        Cross-validation folds for honest probability estimates
+    fast : bool
+        Use fast settings (fewer estimators)
+
+    Returns
+    -------
+    dict with per-sample predictions, abstention flags, and summary
+    """
+    features = engineer_enhanced_features(df)
+    labels = df[FRACTURE_TYPE_COL].values
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+    class_names = le.classes_.tolist()
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    all_models = _get_models(fast=fast)
+    if classifier not in all_models:
+        classifier = "random_forest"
+    model = all_models[classifier]
+
+    # Check model supports probability estimates
+    if not hasattr(model, "predict_proba"):
+        return {
+            "error": f"Model '{classifier}' does not support probability estimation.",
+            "suggestion": "Use random_forest, xgboost, or logistic_regression.",
+        }
+
+    cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+
+    # Cross-validated probabilities — honest, not overfit
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        n_classes = len(np.unique(y))
+        probs = np.zeros((len(y), n_classes))
+        y_pred_cv = np.zeros(len(y), dtype=int)
+
+        for train_idx, test_idx in cv.split(X, y):
+            model.fit(X[train_idx], y[train_idx])
+            fold_probs = model.predict_proba(X[test_idx])
+            probs[test_idx] = fold_probs
+            y_pred_cv[test_idx] = fold_probs.argmax(axis=1)
+
+    # Confidence = max class probability per sample
+    max_probs = probs.max(axis=1)
+
+    # Abstention decision
+    confident_mask = max_probs >= abstention_threshold
+    abstain_mask = ~confident_mask
+    n_total = len(y)
+    n_confident = int(confident_mask.sum())
+    n_abstained = int(abstain_mask.sum())
+
+    # Accuracy on confident predictions only (the ones we'd actually serve)
+    if n_confident > 0:
+        acc_confident = float(accuracy_score(y[confident_mask], y_pred_cv[confident_mask]))
+        f1_confident = float(f1_score(y[confident_mask], y_pred_cv[confident_mask],
+                                       average="weighted", zero_division=0))
+    else:
+        acc_confident = 0.0
+        f1_confident = 0.0
+
+    # Overall accuracy (for comparison — includes forced predictions)
+    acc_overall = float(accuracy_score(y, y_pred_cv))
+
+    # Per-sample results
+    samples = []
+    depths = df[DEPTH_COL].values if DEPTH_COL in df.columns else [None] * n_total
+    azimuths = df[AZIMUTH_COL].values if AZIMUTH_COL in df.columns else [None] * n_total
+    dips = df[DIP_COL].values if DIP_COL in df.columns else [None] * n_total
+
+    def _safe_float(val):
+        """Convert to rounded float, returning None for NaN/None."""
+        if val is None:
+            return None
+        v = float(val)
+        if np.isnan(v) or np.isinf(v):
+            return None
+        return round(v, 1)
+
+    for i in range(n_total):
+        sample = {
+            "index": i,
+            "depth": _safe_float(depths[i]),
+            "azimuth": _safe_float(azimuths[i]),
+            "dip": _safe_float(dips[i]),
+            "true_label": class_names[y[i]],
+            "confidence": round(float(max_probs[i]), 3),
+        }
+        if confident_mask[i]:
+            sample["prediction"] = class_names[y_pred_cv[i]]
+            sample["status"] = "CONFIDENT"
+            sample["correct"] = bool(y[i] == y_pred_cv[i])
+        else:
+            sample["prediction"] = "ABSTAIN"
+            sample["status"] = "ABSTAIN — expert review required"
+            sample["correct"] = None  # not evaluated
+            # Show what the model WOULD have predicted (for expert reference)
+            sample["tentative_prediction"] = class_names[y_pred_cv[i]]
+            # Top-2 classes for the expert
+            top2_idx = probs[i].argsort()[-2:][::-1]
+            sample["top_candidates"] = [
+                {"class": class_names[idx], "probability": round(float(probs[i, idx]), 3)}
+                for idx in top2_idx
+            ]
+        samples.append(sample)
+
+    # Abstained samples summary: which classes are most uncertain?
+    abstain_classes = {}
+    for i in np.where(abstain_mask)[0]:
+        true_cls = class_names[y[i]]
+        abstain_classes[true_cls] = abstain_classes.get(true_cls, 0) + 1
+
+    # Confidence distribution bins
+    bins = [0, 0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    hist, _ = np.histogram(max_probs, bins=bins)
+    confidence_distribution = [
+        {"range": f"{bins[j]:.1f}-{bins[j+1]:.1f}", "count": int(hist[j])}
+        for j in range(len(hist))
+    ]
+
+    # Accuracy improvement from abstention
+    accuracy_gain = round(acc_confident - acc_overall, 3) if n_confident > 0 else 0.0
+
+    return {
+        "classifier": classifier,
+        "threshold": abstention_threshold,
+        "total_samples": n_total,
+        "confident_predictions": n_confident,
+        "abstained_predictions": n_abstained,
+        "abstention_rate": round(100 * n_abstained / max(n_total, 1), 1),
+        "accuracy_overall": round(acc_overall, 3),
+        "accuracy_confident_only": round(acc_confident, 3),
+        "accuracy_gain": accuracy_gain,
+        "f1_confident_only": round(f1_confident, 3),
+        "class_names": class_names,
+        "abstain_by_class": abstain_classes,
+        "confidence_distribution": confidence_distribution,
+        "samples": samples,
+        "recommendation": _abstention_recommendation(
+            n_abstained, n_total, acc_confident, acc_overall, abstention_threshold
+        ),
+    }
+
+
+def _abstention_recommendation(
+    n_abstained: int,
+    n_total: int,
+    acc_confident: float,
+    acc_overall: float,
+    threshold: float,
+) -> dict:
+    """Generate actionable recommendation based on abstention results."""
+    pct = 100 * n_abstained / max(n_total, 1)
+
+    if pct > 50:
+        verdict = "HIGH_ABSTENTION"
+        message = (
+            f"Model abstains on {pct:.0f}% of samples at threshold {threshold:.0f}%. "
+            "This indicates the model is poorly suited for this data. "
+            "Collect more labeled data or lower the threshold (accepting more risk)."
+        )
+        action = "COLLECT_MORE_DATA"
+    elif pct > 20:
+        verdict = "MODERATE_ABSTENTION"
+        message = (
+            f"Model abstains on {pct:.0f}% of samples. "
+            f"Confident predictions are {acc_confident:.1%} accurate "
+            f"(vs {acc_overall:.1%} overall — a {acc_confident - acc_overall:+.1%} gain). "
+            "Expert review of abstained samples is recommended."
+        )
+        action = "EXPERT_REVIEW"
+    else:
+        verdict = "LOW_ABSTENTION"
+        message = (
+            f"Model is confident on {100-pct:.0f}% of samples at threshold {threshold:.0f}%. "
+            f"Confident accuracy: {acc_confident:.1%}. "
+            "Abstained samples can be queued for expert review."
+        )
+        action = "DEPLOY_WITH_REVIEW_QUEUE"
+
+    return {
+        "verdict": verdict,
+        "message": message,
+        "action": action,
+    }
+
+
 def classify_enhanced(
     df: pd.DataFrame,
     classifier: str = "xgboost",

@@ -55,6 +55,7 @@ from src.enhanced_analysis import (
     physics_constrained_predict, misclassification_analysis,
     evidence_chain_analysis, model_bias_detection,
     prediction_reliability_report, guided_analysis_wizard,
+    predict_with_abstention,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -2836,6 +2837,49 @@ async def run_reliability_report(request: Request):
         prediction_reliability_report, df_well,
         well_name=well, depth_m=depth_m, fast=fast,
     )
+    return _sanitize_for_json(result)
+
+
+@app.post("/api/analysis/predict-with-abstention")
+async def run_predict_with_abstention(request: Request):
+    """Classify fractures with safety abstention — refuse low-confidence predictions.
+
+    Industrial safety: predictions below the confidence threshold are marked
+    ABSTAIN instead of forcing a potentially wrong answer.  Abstained samples
+    are flagged for expert review with top-2 candidate classes.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    threshold = float(body.get("threshold", 0.60))
+    classifier = body.get("classifier", "random_forest")
+    fast = body.get("fast", True)
+
+    # Validate threshold
+    if not 0.1 <= threshold <= 0.99:
+        raise HTTPException(400, "Threshold must be between 0.10 and 0.99")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+
+    result = await asyncio.to_thread(
+        predict_with_abstention, df_well,
+        abstention_threshold=threshold,
+        classifier=classifier,
+        fast=fast,
+    )
+
+    _audit_record("predict_with_abstention", {
+        "source": source, "well": well,
+        "threshold": threshold, "classifier": classifier,
+    }, {
+        "total": result.get("total_samples"),
+        "abstained": result.get("abstained_predictions"),
+        "accuracy_confident": result.get("accuracy_confident_only"),
+    })
+
     return _sanitize_for_json(result)
 
 
