@@ -111,6 +111,34 @@ _wizard_cache = BoundedCache(20)
 _audit_log: deque = deque(maxlen=1000)
 _audit_lock = threading.Lock()
 
+# Model training history (tracks every run for version comparison)
+_model_history: deque = deque(maxlen=200)
+_model_history_lock = threading.Lock()
+
+
+def _record_training(
+    model_name: str, accuracy: float, f1: float, n_samples: int,
+    n_features: int, params: dict = None, source: str = "demo",
+):
+    """Record a model training run in the history."""
+    import hashlib
+    with _model_history_lock:
+        _model_history.append({
+            "timestamp": datetime.now().isoformat(),
+            "model": model_name,
+            "accuracy": round(accuracy, 4),
+            "f1": round(f1, 4),
+            "n_samples": n_samples,
+            "n_features": n_features,
+            "source": source,
+            "params": params or {},
+            "run_id": hashlib.sha256(
+                f"{model_name}_{n_samples}_{accuracy}_{datetime.now().timestamp()}"
+                .encode()
+            ).hexdigest()[:12],
+        })
+
+
 # Progress tracking for SSE (Server-Sent Events)
 _progress_queues: dict[str, asyncio.Queue] = {}
 _progress_lock = threading.Lock()
@@ -613,6 +641,71 @@ async def upload_file(file: UploadFile = File(...)):
         except Exception:
             result["domain_warnings"] = []
 
+        # Validity pre-filter (synthetic negative detection)
+        try:
+            validity = train_validity_prefilter(new_df)
+            result["validity"] = {
+                "suspicious_count": validity["suspicious_count"],
+                "borderline_count": validity["borderline_count"],
+                "clean_count": validity["clean_count"],
+                "filter_accuracy": validity["filter_accuracy"],
+            }
+        except Exception:
+            result["validity"] = None
+
+        # Anomaly detection
+        try:
+            anomalies = detect_data_anomalies(new_df)
+            result["anomalies"] = {
+                "total_flagged": anomalies.get("total_flagged", 0),
+                "total_samples": anomalies.get("total_samples", 0),
+                "flagged_pct": anomalies.get("flagged_pct", 0),
+            }
+        except Exception:
+            result["anomalies"] = None
+
+        # Comprehensive GO/NO-GO report card
+        go_nogo = []
+        q_score = result.get("quality", {}).get("score", 0) if result.get("quality") else 0
+        n_suspicious = result.get("validity", {}).get("suspicious_count", 0) if result.get("validity") else 0
+        n_borderline = result.get("validity", {}).get("borderline_count", 0) if result.get("validity") else 0
+        flagged_pct = result.get("anomalies", {}).get("flagged_pct", 0) if result.get("anomalies") else 0
+        n_rows = len(new_df)
+
+        # Stress inversion readiness
+        if n_rows >= 50 and q_score >= 60 and n_suspicious == 0:
+            go_nogo.append({"analysis": "Stress Inversion", "status": "GO", "reason": f"{n_rows} fractures, quality {q_score}/100"})
+        elif n_rows >= 20:
+            go_nogo.append({"analysis": "Stress Inversion", "status": "CAUTION", "reason": f"Only {n_rows} fractures or quality {q_score}/100"})
+        else:
+            go_nogo.append({"analysis": "Stress Inversion", "status": "NO-GO", "reason": f"Need >= 20 fractures (have {n_rows})"})
+
+        # ML classification readiness
+        n_types = len(new_df[FRACTURE_TYPE_COL].unique()) if FRACTURE_TYPE_COL in new_df.columns else 0
+        min_per_class = new_df[FRACTURE_TYPE_COL].value_counts().min() if FRACTURE_TYPE_COL in new_df.columns and n_types > 0 else 0
+        if n_types >= 2 and min_per_class >= 10 and q_score >= 50:
+            go_nogo.append({"analysis": "ML Classification", "status": "GO", "reason": f"{n_types} types, min {min_per_class} per class"})
+        elif n_types >= 2 and min_per_class >= 3:
+            go_nogo.append({"analysis": "ML Classification", "status": "CAUTION", "reason": f"Low per-class count (min={min_per_class})"})
+        else:
+            go_nogo.append({"analysis": "ML Classification", "status": "NO-GO", "reason": f"Need >= 2 types with >= 3 each"})
+
+        # Risk assessment readiness
+        if n_rows >= 30 and n_suspicious == 0 and flagged_pct < 50:
+            go_nogo.append({"analysis": "Risk Assessment", "status": "GO", "reason": "Sufficient clean data"})
+        else:
+            go_nogo.append({"analysis": "Risk Assessment", "status": "CAUTION", "reason": f"{flagged_pct:.0f}% flagged anomalies"})
+
+        # Data quality
+        if n_suspicious > 0:
+            go_nogo.append({"analysis": "Data Validity", "status": "NO-GO", "reason": f"{n_suspicious} suspicious measurements detected"})
+        elif n_borderline > 5:
+            go_nogo.append({"analysis": "Data Validity", "status": "CAUTION", "reason": f"{n_borderline} borderline measurements"})
+        else:
+            go_nogo.append({"analysis": "Data Validity", "status": "GO", "reason": "All measurements pass validity check"})
+
+        result["report_card"] = go_nogo
+
         # Preview stats
         result["preview"] = {
             "depth_range": [
@@ -918,6 +1011,14 @@ async def run_classification(request: Request):
         cm = cm.tolist()
     feat_imp = {k: round(float(v), 4)
                 for k, v in clf_result["feature_importances"].items()}
+
+    # Record training history
+    _record_training(
+        classifier,
+        float(clf_result["cv_mean_accuracy"]),
+        float(clf_result.get("cv_f1_mean", 0)),
+        len(df), len(feat_imp), source=source,
+    )
 
     return _sanitize_for_json({
         "cv_mean_accuracy": round(float(clf_result["cv_mean_accuracy"]), 4),
@@ -3559,6 +3660,42 @@ async def get_audit_log(limit: int = 50, offset: int = 0):
         "limit": limit,
         "entries": _sanitize_for_json(page),
     }
+
+
+@app.get("/api/model/history")
+async def get_model_history(limit: int = 50):
+    """Get model training history for version comparison.
+
+    Returns all training runs with timestamps, accuracy, parameters.
+    Helps stakeholders see if the model is improving over time and
+    which parameters produce the best results.
+    """
+    with _model_history_lock:
+        entries = list(_model_history)
+    entries.reverse()  # Most recent first
+
+    # Compute summary stats
+    if entries:
+        best = max(entries, key=lambda x: x["accuracy"])
+        worst = min(entries, key=lambda x: x["accuracy"])
+        models_used = list(set(e["model"] for e in entries))
+        avg_acc = sum(e["accuracy"] for e in entries) / len(entries)
+    else:
+        best = worst = None
+        models_used = []
+        avg_acc = 0
+
+    return _sanitize_for_json({
+        "total_runs": len(entries),
+        "runs": entries[:limit],
+        "summary": {
+            "best_run": best,
+            "worst_run": worst,
+            "avg_accuracy": round(avg_acc, 4),
+            "models_tested": models_used,
+            "total_runs": len(entries),
+        },
+    })
 
 
 @app.post("/api/audit/export")

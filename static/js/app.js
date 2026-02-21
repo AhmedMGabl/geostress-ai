@@ -1123,6 +1123,36 @@ document.getElementById("file-upload").addEventListener("change", async function
             }
         }
 
+        // Report Card (GO/CAUTION/NO-GO per analysis)
+        if (result.report_card && result.report_card.length > 0) {
+            valHtml += '<div class="mt-2 mb-2"><strong class="small">Analysis Readiness:</strong>';
+            valHtml += '<div class="d-flex flex-wrap gap-2 mt-1">';
+            result.report_card.forEach(function(rc) {
+                var rcColor = rc.status === "GO" ? "success" : rc.status === "CAUTION" ? "warning" : "danger";
+                var rcIcon = rc.status === "GO" ? "bi-check-circle" : rc.status === "CAUTION" ? "bi-exclamation-triangle" : "bi-x-circle";
+                valHtml += '<div class="border rounded px-2 py-1 border-' + rcColor + '">' +
+                    '<i class="bi ' + rcIcon + ' text-' + rcColor + '"></i> ' +
+                    '<small><strong>' + rc.analysis + '</strong>: ' +
+                    '<span class="badge bg-' + rcColor + '">' + rc.status + '</span> ' +
+                    '<span class="text-muted">' + rc.reason + '</span></small></div>';
+            });
+            valHtml += '</div></div>';
+        }
+
+        // Validity pre-filter results
+        if (result.validity) {
+            var vl = result.validity;
+            if (vl.suspicious_count > 0) {
+                valHtml += '<div class="alert alert-danger py-2 mb-1 mt-2 small">' +
+                    '<i class="bi bi-exclamation-octagon"></i> <strong>' + vl.suspicious_count +
+                    ' suspicious measurements</strong> detected by validity pre-filter. Review before analysis.</div>';
+            } else if (vl.borderline_count > 0) {
+                valHtml += '<div class="alert alert-info py-1 mb-1 mt-2 small">' +
+                    '<i class="bi bi-info-circle"></i> ' + vl.borderline_count +
+                    ' borderline measurements (filter accuracy: ' + (vl.filter_accuracy * 100).toFixed(1) + '%)</div>';
+            }
+        }
+
         // Warnings
         if (warnings.length > 0) {
             valHtml += '<div class="alert alert-warning py-2 mb-0 mt-2 small"><strong>Warnings:</strong><ul class="mb-0">';
@@ -2872,7 +2902,16 @@ async function runActiveLearning() {
 
 // ── What-If Interactive Explorer ──────────────────────
 
-// Update slider value displays
+// Update slider value displays + debounced auto-run
+var _whatIfDebounceTimer = null;
+function _debounceWhatIf() {
+    // Auto-run what-if 600ms after user stops dragging
+    if (_whatIfDebounceTimer) clearTimeout(_whatIfDebounceTimer);
+    _whatIfDebounceTimer = setTimeout(function() {
+        runWhatIf();
+    }, 600);
+}
+
 document.addEventListener("DOMContentLoaded", function() {
     var frictionSlider = document.getElementById("whatif-friction");
     var ppSlider = document.getElementById("whatif-pp");
@@ -2880,16 +2919,19 @@ document.addEventListener("DOMContentLoaded", function() {
     if (frictionSlider) {
         frictionSlider.oninput = function() {
             document.getElementById("whatif-friction-val").textContent = this.value;
+            _debounceWhatIf();
         };
     }
     if (ppSlider) {
         ppSlider.oninput = function() {
             document.getElementById("whatif-pp-val").textContent = this.value + " MPa";
+            _debounceWhatIf();
         };
     }
     if (depthSlider) {
         depthSlider.oninput = function() {
             document.getElementById("whatif-depth-val").textContent = this.value + " m";
+            _debounceWhatIf();
         };
     }
     var abstentionSlider = document.getElementById("abstention-threshold");
