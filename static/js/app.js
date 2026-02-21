@@ -6202,6 +6202,108 @@ var _tooltipObserver = new MutationObserver(function(mutations) {
 _tooltipObserver._timer = null;
 
 
+// ── Adversarial Robustness Test ──────────────────────
+
+async function runAugmentedClassify() {
+    const well = document.getElementById('well-select')?.value || '3P';
+    const noise = parseFloat(document.getElementById('aug-noise')?.value || '5');
+    showLoading('Running adversarial robustness test...');
+    try {
+        const res = await fetch('/api/analysis/augmented-classify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ well, noise_std: noise, source: 'demo' }),
+        });
+        const d = await res.json();
+        hideLoading();
+
+        const el = id => document.getElementById(id);
+        el('aug-results').classList.remove('d-none');
+
+        el('aug-orig-acc').textContent = (d.original.accuracy * 100).toFixed(1) + '%';
+        el('aug-orig-n').textContent = d.original.n_samples + ' samples';
+        el('aug-new-acc').textContent = (d.augmented.accuracy * 100).toFixed(1) + '%';
+        el('aug-new-n').textContent = d.augmented.n_samples + ' samples (+' + d.augmented.n_added + ')';
+
+        const rob = d.comparison.robustness;
+        el('aug-robustness').textContent = rob;
+        el('aug-change').textContent = (d.comparison.accuracy_change >= 0 ? '+' : '') +
+            (d.comparison.accuracy_change * 100).toFixed(1) + '%';
+
+        const verdictEl = el('aug-verdict');
+        verdictEl.style.borderLeft = rob === 'ROBUST' ? '4px solid #28a745' :
+            rob === 'IMPROVED' ? '4px solid #007bff' : '4px solid #dc3545';
+
+        el('aug-interpretation').innerHTML = '<i class="bi bi-info-circle"></i> ' + d.comparison.interpretation;
+        el('aug-interpretation').className = 'alert small ' + (
+            rob === 'ROBUST' ? 'alert-success' :
+            rob === 'IMPROVED' ? 'alert-info' : 'alert-danger'
+        );
+    } catch (e) {
+        hideLoading();
+        alert('Robustness test failed: ' + e.message);
+    }
+}
+
+
+// ── Glossary ────────────────────────────────────────
+
+async function loadGlossary() {
+    try {
+        const res = await fetch('/api/help/glossary');
+        const d = await res.json();
+        const body = document.getElementById('glossary-body');
+        if (!body || !d.terms) return;
+
+        let html = '<div class="input-group mb-3"><span class="input-group-text"><i class="bi bi-search"></i></span>' +
+            '<input type="text" class="form-control" id="glossary-search" placeholder="Search terms..." oninput="filterGlossary(this.value)"></div>';
+        html += '<div id="glossary-items">';
+
+        for (const [key, term] of Object.entries(d.terms)) {
+            html += `
+                <div class="glossary-item card mb-2" data-term="${key}">
+                    <div class="card-body py-2">
+                        <h6 class="mb-1">
+                            <i class="bi bi-${term.icon || 'circle'} text-primary me-1"></i>
+                            ${term.term}
+                        </h6>
+                        <p class="mb-1 fw-semibold" style="color:#2c5f2d">${term.plain}</p>
+                        <p class="mb-1 small text-muted">${term.detail}</p>
+                        <div class="alert alert-warning py-1 px-2 mb-0 small">
+                            <strong>Why it matters:</strong> ${term.why_it_matters}
+                        </div>
+                    </div>
+                </div>`;
+        }
+        html += '</div>';
+        body.innerHTML = html;
+    } catch (e) {
+        console.warn('Glossary load failed:', e);
+    }
+}
+
+function filterGlossary(query) {
+    const items = document.querySelectorAll('.glossary-item');
+    const q = query.toLowerCase();
+    items.forEach(item => {
+        const text = item.textContent.toLowerCase();
+        item.style.display = text.includes(q) ? '' : 'none';
+    });
+}
+
+// Load glossary when modal opens
+document.addEventListener('DOMContentLoaded', function() {
+    const modal = document.getElementById('glossaryModal');
+    if (modal) {
+        modal.addEventListener('shown.bs.modal', function() {
+            if (document.getElementById('glossary-body')?.textContent?.includes('Loading')) {
+                loadGlossary();
+            }
+        });
+    }
+});
+
+
 // ── PDF Report Download ─────────────────────────────
 
 async function downloadPdfReport() {

@@ -1645,6 +1645,52 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Adversarial Robustness Test -->
+                    <div class="card mb-4 border-warning mt-4">
+                        <div class="card-header bg-warning bg-opacity-10">
+                            <i class="bi bi-shield-shaded"></i> Adversarial Robustness Test
+                            <small class="text-muted ms-2">Does the model survive noisy/adversarial data?</small>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-2">
+                                Trains on augmented data (noise injection, boundary interpolation, edge cases)
+                                and compares accuracy against the original model. A robust model should maintain
+                                similar accuracy despite adversarial samples.
+                            </p>
+                            <div class="d-flex gap-2 mb-3 align-items-center">
+                                <button class="btn btn-sm btn-outline-warning" onclick="runAugmentedClassify()">
+                                    <i class="bi bi-shield-check"></i> Run Robustness Test
+                                </button>
+                                <small class="text-muted">Noise: <input type="number" id="aug-noise" value="5" min="1" max="20" style="width:50px" class="form-control form-control-sm d-inline-block"> deg</small>
+                            </div>
+                            <div id="aug-results" class="d-none">
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-4">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Original Accuracy</div>
+                                            <div class="metric-value" id="aug-orig-acc">--</div>
+                                            <small class="text-muted" id="aug-orig-n">-- samples</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Augmented Accuracy</div>
+                                            <div class="metric-value" id="aug-new-acc">--</div>
+                                            <small class="text-muted" id="aug-new-n">-- samples</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div id="aug-verdict" class="metric-card">
+                                            <div class="metric-label">Robustness</div>
+                                            <div class="metric-value" id="aug-robustness">--</div>
+                                            <small class="text-muted" id="aug-change">--</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="aug-interpretation" class="alert alert-light small"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- ═══════ Sensitivity Tab ═══════ -->
@@ -2811,6 +2857,29 @@
                 <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
             </div>
             <div class="toast-body" id="toast-body"></div>
+        </div>
+    </div>
+
+    <!-- Floating Help Button -->
+    <button class="btn btn-info position-fixed shadow-lg rounded-circle"
+            style="bottom:24px;right:24px;width:56px;height:56px;z-index:1050;font-size:1.4rem;"
+            data-bs-toggle="modal" data-bs-target="#glossaryModal"
+            title="Help: What do these terms mean?">
+        <i class="bi bi-question-circle"></i>
+    </button>
+
+    <!-- Glossary Modal -->
+    <div class="modal fade" id="glossaryModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header bg-info bg-opacity-10">
+                    <h5 class="modal-title"><i class="bi bi-book"></i> Glossary — Plain Language Guide</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="glossary-body">
+                    <p class="text-muted">Loading glossary...</p>
+                </div>
+            </div>
         </div>
     </div>
 

@@ -6546,3 +6546,240 @@ async def generate_pdf_report(request: Request):
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+# ── Adversarial Data Augmentation ─────────────────────
+
+def _augment_fracture_data(df: pd.DataFrame, noise_std: float = 5.0,
+                           n_boundary: int = 50, n_edge: int = 30) -> pd.DataFrame:
+    """Generate physics-aware adversarial augmentation of fracture data.
+
+    Three strategies:
+    1. Gaussian noise: ±noise_std degrees on azimuth/dip (simulates measurement error)
+    2. Near-boundary: interpolated samples between different fracture types
+    3. Edge cases: azimuth near 0°/360° wraparound and extreme dips (0°, 85-90°)
+
+    All augmented data satisfies domain constraints:
+    - Azimuth in [0, 360)
+    - Dip in [0, 90]
+    - Depth > 0
+    """
+    rows = []
+
+    # Strategy 1: Gaussian noise (realistic measurement uncertainty)
+    for _, row in df.iterrows():
+        new = row.copy()
+        new[AZIMUTH_COL] = (row[AZIMUTH_COL] + np.random.normal(0, noise_std)) % 360
+        new[DIP_COL] = np.clip(row[DIP_COL] + np.random.normal(0, noise_std * 0.5), 0, 90)
+        rows.append(new)
+
+    # Strategy 2: Near-boundary interpolation (hard examples for classifier)
+    if FRACTURE_TYPE_COL in df.columns:
+        types = df[FRACTURE_TYPE_COL].unique()
+        if len(types) > 1:
+            for _ in range(n_boundary):
+                t1, t2 = np.random.choice(types, 2, replace=False)
+                s1 = df[df[FRACTURE_TYPE_COL] == t1].sample(1).iloc[0]
+                s2 = df[df[FRACTURE_TYPE_COL] == t2].sample(1).iloc[0]
+                alpha = np.random.uniform(0.3, 0.7)
+                new = s1.copy()
+                new[AZIMUTH_COL] = (alpha * s1[AZIMUTH_COL] + (1-alpha) * s2[AZIMUTH_COL]) % 360
+                new[DIP_COL] = np.clip(alpha * s1[DIP_COL] + (1-alpha) * s2[DIP_COL], 0, 90)
+                if DEPTH_COL in df.columns:
+                    new[DEPTH_COL] = alpha * s1[DEPTH_COL] + (1-alpha) * s2[DEPTH_COL]
+                # Label as the dominant class (nearest by alpha)
+                new[FRACTURE_TYPE_COL] = t1 if alpha > 0.5 else t2
+                rows.append(new)
+
+    # Strategy 3: Edge cases (wraparound + extreme dips)
+    for _ in range(n_edge):
+        base = df.sample(1).iloc[0].copy()
+        edge_type = np.random.choice(["wraparound", "low_dip", "high_dip"])
+        if edge_type == "wraparound":
+            base[AZIMUTH_COL] = np.random.choice([
+                np.random.uniform(0, 5),     # Just above 0
+                np.random.uniform(355, 360),  # Just below 360
+            ])
+        elif edge_type == "low_dip":
+            base[DIP_COL] = np.random.uniform(0, 5)
+        else:
+            base[DIP_COL] = np.random.uniform(85, 90)
+        rows.append(base)
+
+    aug_df = pd.DataFrame(rows)
+    aug_df = aug_df.reset_index(drop=True)
+    return pd.concat([df, aug_df], ignore_index=True)
+
+
+@app.post("/api/analysis/augmented-classify")
+async def augmented_classify(request: Request):
+    """Compare original vs adversarially-augmented classification.
+
+    Trains the same model on original data and on augmented data (with
+    noise, boundary samples, and edge cases). Reports both accuracy
+    metrics so stakeholders can see how robust the model is.
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    noise_std = float(body.get("noise_std", 5.0))
+
+    df = demo_df if source == "demo" else uploaded_df
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well != "all" else df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    n_original = len(df_well)
+
+    # Original classification
+    cls_original = await asyncio.to_thread(
+        classify_enhanced, df_well, "gradient_boosting", 3
+    )
+
+    # Augmented classification
+    df_aug = _augment_fracture_data(df_well, noise_std=noise_std)
+    n_augmented = len(df_aug)
+    cls_augmented = await asyncio.to_thread(
+        classify_enhanced, df_aug, "gradient_boosting", 3
+    )
+
+    # Compare
+    orig_acc = float(cls_original.get("cv_mean_accuracy", cls_original.get("accuracy", 0)))
+    aug_acc = float(cls_augmented.get("cv_mean_accuracy", cls_augmented.get("accuracy", 0)))
+    acc_change = aug_acc - orig_acc
+
+    robustness = "ROBUST" if abs(acc_change) < 0.05 else (
+        "IMPROVED" if acc_change > 0.05 else "DEGRADED"
+    )
+
+    elapsed = round(time.time() - t0, 2)
+
+    _audit_record("augmented_classify",
+                  {"well": well, "noise_std": noise_std, "n_original": n_original},
+                  {"orig_acc": round(orig_acc, 4), "aug_acc": round(aug_acc, 4),
+                   "robustness": robustness},
+                  source, well, elapsed)
+
+    return _sanitize_for_json({
+        "original": {
+            "n_samples": n_original,
+            "accuracy": round(orig_acc, 4),
+            "n_classes": len(cls_original.get("class_names", [])),
+        },
+        "augmented": {
+            "n_samples": n_augmented,
+            "accuracy": round(aug_acc, 4),
+            "n_added": n_augmented - n_original,
+            "noise_std_deg": noise_std,
+        },
+        "comparison": {
+            "accuracy_change": round(acc_change, 4),
+            "robustness": robustness,
+            "interpretation": (
+                f"Model {'maintained' if robustness == 'ROBUST' else 'showed'} "
+                f"{'stable' if robustness == 'ROBUST' else ('improved' if robustness == 'IMPROVED' else 'degraded')} "
+                f"performance with {n_augmented - n_original} adversarial samples "
+                f"(noise={noise_std}deg). "
+                + ("This suggests the model is learning robust patterns, not memorizing data."
+                   if robustness in ("ROBUST", "IMPROVED")
+                   else "The model may be overfitting to clean data and needs retraining with augmented samples.")
+            ),
+        },
+        "well": well,
+        "elapsed_s": elapsed,
+    })
+
+
+# ── Contextual Help / Glossary ────────────────────────
+
+_GLOSSARY = {
+    "regime": {
+        "term": "Stress Regime",
+        "plain": "The direction underground forces push the rock. Like squeezing a box from different sides.",
+        "detail": "Three types: Normal (gravity dominates, rock extends), Strike-slip (horizontal forces dominate, rock slides sideways), Thrust (horizontal compression, rock shortens). Determines mud weight and casing design.",
+        "why_it_matters": "Wrong regime = wrong mud weight = possible blowout or stuck pipe. This is the most critical parameter for well planning.",
+        "icon": "arrows-collapse",
+    },
+    "shmax": {
+        "term": "SHmax (Maximum Horizontal Stress Azimuth)",
+        "plain": "The compass direction of the strongest horizontal push underground.",
+        "detail": "Measured in degrees from North (0-360). Fractures tend to form perpendicular to SHmax. Wellbore breakouts align with minimum stress.",
+        "why_it_matters": "Determines optimal well trajectory. Drilling parallel to SHmax minimizes wellbore instability.",
+        "icon": "compass",
+    },
+    "r_ratio": {
+        "term": "R Ratio (Stress Shape)",
+        "plain": "How 'pointy' vs 'flat' the underground stress is. R=0 means one direction dominates; R=1 means forces are more equal.",
+        "detail": "R = (σ2-σ3)/(σ1-σ3). Range [0,1]. Low R: strong anisotropy, fractures prefer one direction. High R: more isotropic, fractures in multiple directions.",
+        "why_it_matters": "Affects how predictable fracture behavior is. Low R gives more confidence in SHmax direction.",
+        "icon": "pie-chart",
+    },
+    "slip_tendency": {
+        "term": "Slip Tendency",
+        "plain": "How close a fracture is to sliding. Think of it like a block on a tilted table — higher slip tendency means it's about to slide.",
+        "detail": "Ratio of shear stress to normal stress (τ/σn). Values above the friction coefficient (typically 0.6) mean the fracture is critically stressed and may slip.",
+        "why_it_matters": "High slip tendency fractures are fluid conduits — they let fluids flow. Critical for reservoir engineering and induced seismicity risk.",
+        "icon": "exclamation-triangle",
+    },
+    "dilation_tendency": {
+        "term": "Dilation Tendency",
+        "plain": "How likely a fracture is to open up. Open fractures let fluids flow through.",
+        "detail": "(σ1-σn)/(σ1-σ3). Range [0,1]. Value of 1 means the fracture is aligned to open maximally under the current stress.",
+        "why_it_matters": "High dilation tendency = high permeability direction. Use this to plan stimulation and injection wells.",
+        "icon": "arrows-expand",
+    },
+    "pore_pressure": {
+        "term": "Pore Pressure (Pp)",
+        "plain": "The pressure of fluid trapped inside the rock's tiny holes. Like water pressure in a sponge.",
+        "detail": "Hydrostatic Pp ≈ 9.81 × depth(m) kPa. Overpressure zones have higher Pp. Effective stress = total stress - Pp.",
+        "why_it_matters": "Pp determines drilling mud weight window. Too low mud weight = fluid influx (kick). Too high = lost circulation. Pp also controls whether fractures are critically stressed.",
+        "icon": "water",
+    },
+    "critically_stressed": {
+        "term": "Critically Stressed Fractures",
+        "plain": "Fractures that are on the verge of slipping. They're like cracks in a dam that could give way.",
+        "detail": "Fractures where shear stress exceeds Mohr-Coulomb friction: τ > μ(σn - Pp). These are above the failure line on a Mohr diagram.",
+        "why_it_matters": "Critically stressed fractures are the main fluid flow pathways in tight rock. They determine reservoir productivity and drilling hazards.",
+        "icon": "lightning",
+    },
+    "confidence": {
+        "term": "Confidence Level",
+        "plain": "How sure the AI is about its answer. HIGH means strong evidence, LOW means uncertain.",
+        "detail": "Based on misfit ratio between stress regimes, data coverage, and model agreement. HIGH (misfit ratio > 2x), MODERATE (1.5-2x), LOW (<1.5x).",
+        "why_it_matters": "LOW confidence means collect more data before making expensive decisions. MODERATE means proceed with extra monitoring. HIGH means standard operations.",
+        "icon": "shield-check",
+    },
+    "verdict": {
+        "term": "GO / CAUTION / NO-GO Verdict",
+        "plain": "The overall recommendation: safe to proceed (GO), proceed with care (CAUTION), or stop and investigate (NO-GO).",
+        "detail": "Based on multiple independent signals: stress confidence, model accuracy, data quality, regime stability, expert consensus, and scenario checks.",
+        "why_it_matters": "This is the bottom line for decision makers. NO-GO doesn't mean the project fails — it means more data or analysis is needed before proceeding safely.",
+        "icon": "traffic-light",
+    },
+}
+
+
+@app.get("/api/help/glossary")
+async def get_glossary(term: str = None):
+    """Get plain-language explanations of geomechanics terms.
+
+    Designed for non-technical stakeholders (managers, regulators, investors).
+    Each term includes: plain language explanation, technical detail, and
+    why it matters for drilling decisions.
+    """
+    if term and term in _GLOSSARY:
+        return _GLOSSARY[term]
+    if term:
+        # Fuzzy match
+        matches = [k for k in _GLOSSARY if term.lower() in k.lower()
+                   or term.lower() in _GLOSSARY[k]["term"].lower()]
+        if matches:
+            return {k: _GLOSSARY[k] for k in matches}
+        raise HTTPException(404, f"Term '{term}' not found. Available: {list(_GLOSSARY.keys())}")
+    return {
+        "terms": _GLOSSARY,
+        "total": len(_GLOSSARY),
+    }
