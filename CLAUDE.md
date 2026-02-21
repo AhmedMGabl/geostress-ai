@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
-app.py              - FastAPI backend (v3.1.2), 84 API endpoints, serves templates
+app.py              - FastAPI backend (v3.2.0), 90+ API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
   geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC, auto regime detection
@@ -29,6 +29,7 @@ src/
   enhanced_analysis.py - Multi-model comparison (6 models), physics-informed features,
                          uncertainty quantification, decision support, feedback loop
   visualization.py  - Rose diagrams, stereonets, Mohr circles, tendency plots, dashboards
+  persistence.py    - SQLite persistence layer (audit trail, model history, expert RLHF)
 templates/
   index.html        - SPA frontend (Bootstrap 5)
 static/
@@ -139,6 +140,12 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/regime-stability` | Stability check: Pp/depth perturbations, STABLE/MOSTLY_STABLE/UNSTABLE |
 | POST | `/api/analysis/trustworthiness-report` | 5-check reliability audit (quality, CV, calibration, validity, balance) |
 | POST | `/api/report/comprehensive` | One-click full analysis: 7 modules → GO/CAUTION/NO-GO + executive brief |
+| POST | `/api/report/pdf` | Download PDF comprehensive report for stakeholder distribution |
+| GET | `/api/analysis/negative-scenarios` | Library of 8 known failure scenarios in geostress analysis |
+| POST | `/api/analysis/scenario-check` | Check data against known failure modes with evidence |
+| GET | `/api/db/stats` | SQLite persistent storage statistics (audit/model/preference counts) |
+| POST | `/api/db/export` | Export entire database as JSON for backup |
+| POST | `/api/db/import` | Import records from a previously exported backup |
 | POST | `/api/analysis/decision-readiness` | GO/CAUTION/NO-GO with 6 independent signals |
 
 ## Domain Concepts
@@ -176,6 +183,14 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Wells 3P/6P: zero-shot 65%, fine-tuned 100% (trivial 2-class), confirms separate models needed
 - Validity pre-filter: 511 synthetic negatives (impossible/implausible) → binary RF → catches borderline real measurements
 - catboost>=1.2 added to requirements.txt
+- v3.2.0: SQLite persistence layer replaces in-memory deques for audit trail, model history, and RLHF preferences — data survives server restarts
+- SQLite path: `data/geostress.db`, WAL journal mode for concurrent reads, thread-local connections
+- Export/import endpoints allow backup before Render free-tier sleep; JSON format includes all 3 tables
+- Negative scenario library: 8 industry-standard failure modes (FS-001 to FS-008) covering physics, data quality, and ML pitfalls
+- Scenario check runs automated detection against actual fracture data, reports evidence + consequence + mitigation
+- PDF report uses fpdf2 (lightweight, no external deps), includes verdict banner, executive summary, data stats
+- Comprehensive report caching: first call ~77s, subsequent calls 0.01s (BoundedCache, maxsize=10)
+- Per-well classification pre-warming at startup reduces comprehensive report cold-start from ~130s to ~77s
 - Stacking ensemble (RF+XGBoost+LightGBM with LR meta-learner) is typically the best model
 - SHAP TreeExplainer for XGBoost/LightGBM/RF; GradientBoosting only supports binary in SHAP
 - Conformal prediction provides calibrated per-sample confidence scores

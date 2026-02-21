@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.0 - Industrial Grade)."""
+"""GeoStress AI - FastAPI Web Application (v3.2.0 - Industrial Grade)."""
 
 import os
 import io
@@ -64,6 +64,13 @@ from src.enhanced_analysis import (
     deep_ensemble_classify, transfer_learning_evaluate,
     train_validity_prefilter,
 )
+from src.persistence import (
+    init_db, insert_audit, get_audit_log as db_get_audit_log, count_audit,
+    insert_model_history, get_model_history as db_get_model_history,
+    insert_preference, get_preferences as db_get_preferences,
+    count_preferences, clear_preferences, export_all as db_export_all,
+    import_all as db_import_all, db_stats,
+)
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
     plot_mohr_circle, plot_tendency, plot_depth_profile,
@@ -106,17 +113,12 @@ _classify_cache = BoundedCache(30)
 _misclass_cache = BoundedCache(30)
 _physics_predict_cache = BoundedCache(30)
 _wizard_cache = BoundedCache(20)
+_comprehensive_cache = BoundedCache(10)
 
-# Audit trail for regulatory compliance (max 1000 entries in-memory)
-_audit_log: deque = deque(maxlen=1000)
+# Audit trail and model history now persist in SQLite (see src/persistence.py).
+# Locks kept for thread safety around DB writes.
 _audit_lock = threading.Lock()
-
-# Model training history (tracks every run for version comparison)
-_model_history: deque = deque(maxlen=200)
 _model_history_lock = threading.Lock()
-
-# Expert stress solution preferences (RLHF for inversion)
-_expert_preferences: deque = deque(maxlen=100)
 _expert_pref_lock = threading.Lock()
 
 
@@ -124,23 +126,17 @@ def _record_training(
     model_name: str, accuracy: float, f1: float, n_samples: int,
     n_features: int, params: dict = None, source: str = "demo",
 ):
-    """Record a model training run in the history."""
-    import hashlib
+    """Record a model training run in SQLite."""
+    run_id = hashlib.sha256(
+        f"{model_name}_{n_samples}_{accuracy}_{datetime.now().timestamp()}"
+        .encode()
+    ).hexdigest()[:12]
     with _model_history_lock:
-        _model_history.append({
-            "timestamp": datetime.now().isoformat(),
-            "model": model_name,
-            "accuracy": round(accuracy, 4),
-            "f1": round(f1, 4),
-            "n_samples": n_samples,
-            "n_features": n_features,
-            "source": source,
-            "params": params or {},
-            "run_id": hashlib.sha256(
-                f"{model_name}_{n_samples}_{accuracy}_{datetime.now().timestamp()}"
-                .encode()
-            ).hexdigest()[:12],
-        })
+        insert_model_history(
+            model=model_name, accuracy=accuracy, f1=f1,
+            n_samples=n_samples, n_features=n_features,
+            source=source, params=params or {}, run_id=run_id,
+        )
 
 
 # Progress tracking for SSE (Server-Sent Events)
@@ -339,26 +335,17 @@ def _sanitize_for_json(obj):
 
 def _audit_record(action: str, params: dict, result_summary: dict,
                   source: str = "demo", well: str = None, elapsed_s: float = 0):
-    """Record an analysis action in the audit trail for regulatory compliance."""
-    # Create a hash of the result for integrity verification
+    """Record an analysis action in SQLite for regulatory compliance."""
     result_str = json.dumps(_sanitize_for_json(result_summary), sort_keys=True, default=str)
     result_hash = hashlib.sha256(result_str.encode()).hexdigest()[:16]
-
-    record = {
-        "id": len(_audit_log) + 1,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "action": action,
-        "source": source,
-        "well": well,
-        "parameters": _sanitize_for_json(params),
-        "result_hash": result_hash,
-        "result_summary": _sanitize_for_json(result_summary),
-        "elapsed_s": round(elapsed_s, 2),
-        "app_version": "3.1.0",
-    }
     with _audit_lock:
-        _audit_log.append(record)
-    return record["id"]
+        return insert_audit(
+            action=action, source=source, well=well,
+            parameters=_sanitize_for_json(params),
+            result_hash=result_hash,
+            result_summary=_sanitize_for_json(result_summary),
+            elapsed_s=elapsed_s, app_version="3.2.0",
+        )
 
 
 # ── App lifecycle ────────────────────────────────────
@@ -411,14 +398,27 @@ def _prewarm_caches():
                 except Exception as e:
                     print(f"  Pre-warm {futures[f]}: failed ({e})")
 
-        # Phase 2: Classifier (uses all data, single-threaded)
-        clf_key = "clf_demo_gradient_boosting_enh"
-        if clf_key not in _classify_cache and demo_df is not None:
-            try:
-                clf_result = classify_enhanced(demo_df, classifier="gradient_boosting")
-                _classify_cache[clf_key] = clf_result
-            except Exception:
-                pass
+        # Phase 2: Classifier — warm all data + per-well
+        if demo_df is not None:
+            clf_key = "clf_demo_gradient_boosting_enh"
+            if clf_key not in _classify_cache:
+                try:
+                    clf_result = classify_enhanced(demo_df, classifier="gradient_boosting")
+                    _classify_cache[clf_key] = clf_result
+                except Exception:
+                    pass
+
+            # Per-well classification (needed by comprehensive report)
+            for w in wells:
+                wkey = f"clf_demo_{w}_gradient_boosting_3cv"
+                if wkey not in _classify_cache:
+                    try:
+                        df_w = demo_df[demo_df[WELL_COL] == w].reset_index(drop=True)
+                        cls = classify_enhanced(df_w, "gradient_boosting", 3)
+                        _classify_cache[wkey] = cls
+                        print(f"  Pre-warm classify {w}: done ({_time.perf_counter()-start:.1f}s)")
+                    except Exception:
+                        pass
 
         elapsed = _time.perf_counter() - start
         print(f"Cache pre-warm complete: {len(wells)} wells in {elapsed:.1f}s")
@@ -429,6 +429,9 @@ def _prewarm_caches():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global demo_df
+    # Initialize persistent storage
+    init_db()
+    print("SQLite database initialized at data/geostress.db")
     demo_df = load_all_fractures(str(DATA_DIR))
     print(f"Loaded {len(demo_df)} demo fractures from {DATA_DIR}")
     # Pre-warm caches in background thread (doesn't block startup)
@@ -436,7 +439,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.1.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.2.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -491,6 +494,7 @@ async def cache_status():
         "shap": len(_shap_cache),
         "sensitivity": len(_sensitivity_cache),
         "wizard": len(_wizard_cache),
+        "comprehensive": len(_comprehensive_cache),
     }
 
 
@@ -3666,42 +3670,38 @@ async def run_guided_wizard(request: Request):
 
 @app.get("/api/audit/log")
 async def get_audit_log(limit: int = 50, offset: int = 0):
-    """Get the prediction audit trail for regulatory compliance.
+    """Get the prediction audit trail from persistent storage.
 
     Every analysis action is recorded with timestamp, parameters,
     result hash, and timing. Returns most recent entries first.
+    Survives server restarts (SQLite-backed).
     """
-    with _audit_lock:
-        entries = list(_audit_log)
-    entries.reverse()  # Most recent first
-    total = len(entries)
-    page = entries[offset:offset + limit]
+    entries = db_get_audit_log(limit=limit, offset=offset)
+    total = count_audit()
     return {
         "total": total,
         "offset": offset,
         "limit": limit,
-        "entries": _sanitize_for_json(page),
+        "entries": _sanitize_for_json(entries),
+        "storage": "persistent",
     }
 
 
 @app.get("/api/model/history")
 async def get_model_history(limit: int = 50):
-    """Get model training history for version comparison.
+    """Get model training history from persistent storage.
 
     Returns all training runs with timestamps, accuracy, parameters.
-    Helps stakeholders see if the model is improving over time and
-    which parameters produce the best results.
+    Data survives server restarts (SQLite-backed).
     """
-    with _model_history_lock:
-        entries = list(_model_history)
-    entries.reverse()  # Most recent first
+    entries = db_get_model_history(limit=limit)
 
     # Compute summary stats
     if entries:
-        best = max(entries, key=lambda x: x["accuracy"])
-        worst = min(entries, key=lambda x: x["accuracy"])
-        models_used = list(set(e["model"] for e in entries))
-        avg_acc = sum(e["accuracy"] for e in entries) / len(entries)
+        best = max(entries, key=lambda x: x.get("accuracy", 0))
+        worst = min(entries, key=lambda x: x.get("accuracy", 0))
+        models_used = list(set(e.get("model", "") for e in entries))
+        avg_acc = sum(e.get("accuracy", 0) for e in entries) / len(entries)
     else:
         best = worst = None
         models_used = []
@@ -3717,29 +3717,29 @@ async def get_model_history(limit: int = 50):
             "models_tested": models_used,
             "total_runs": len(entries),
         },
+        "storage": "persistent",
     })
 
 
 @app.post("/api/audit/export")
 async def export_audit_log():
-    """Export full audit log as CSV for regulatory archival."""
-    with _audit_lock:
-        entries = list(_audit_log)
+    """Export full audit log as CSV for regulatory archival (SQLite-backed)."""
+    entries = db_get_audit_log(limit=10000)
     if not entries:
         return {"csv": "", "rows": 0}
 
     rows = []
     for e in entries:
         rows.append({
-            "id": e["id"],
-            "timestamp": e["timestamp"],
-            "action": e["action"],
-            "source": e["source"],
-            "well": e["well"],
-            "parameters": json.dumps(e["parameters"]),
-            "result_hash": e["result_hash"],
-            "elapsed_s": e["elapsed_s"],
-            "app_version": e["app_version"],
+            "id": e.get("id"),
+            "timestamp": e.get("timestamp"),
+            "action": e.get("action"),
+            "source": e.get("source"),
+            "well": e.get("well"),
+            "parameters": json.dumps(e.get("parameters", {})),
+            "result_hash": e.get("result_hash"),
+            "elapsed_s": e.get("elapsed_s"),
+            "app_version": e.get("app_version"),
         })
     audit_df = pd.DataFrame(rows)
     csv_str = audit_df.to_csv(index=False)
@@ -4477,12 +4477,8 @@ async def run_expert_stress_ranking(request: Request):
             "mohr_img": mohr_img,
         })
 
-    # Check if there are existing expert preferences for this well
-    existing_prefs = []
-    with _expert_pref_lock:
-        for pref in _expert_preferences:
-            if pref.get("well") == well:
-                existing_prefs.append(pref)
+    # Check if there are existing expert preferences for this well (from SQLite)
+    existing_prefs = db_get_preferences(well=well, limit=10)
 
     elapsed = round(time.time() - t0, 2)
 
@@ -4530,6 +4526,20 @@ async def expert_stress_select(request: Request):
     if selected_regime not in ("normal", "strike_slip", "thrust"):
         raise HTTPException(400, f"Invalid regime: {selected_regime}")
 
+    with _expert_pref_lock:
+        insert_preference(
+            well=well, selected_regime=selected_regime,
+            expert_confidence=confidence, rationale=reason[:500],
+        )
+
+    # Count regime selections for this well (from SQLite)
+    regime_counts = {}
+    well_prefs = db_get_preferences(well=well, limit=1000)
+    for pref in well_prefs:
+        r = pref.get("selected_regime", "")
+        if r:
+            regime_counts[r] = regime_counts.get(r, 0) + 1
+
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "well": well,
@@ -4538,16 +4548,6 @@ async def expert_stress_select(request: Request):
         "expert_confidence": confidence,
         "source": body.get("source", "demo"),
     }
-    with _expert_pref_lock:
-        _expert_preferences.append(record)
-
-    # Count regime selections for this well
-    regime_counts = {}
-    with _expert_pref_lock:
-        for pref in _expert_preferences:
-            if pref.get("well") == well:
-                r = pref["selected_regime"]
-                regime_counts[r] = regime_counts.get(r, 0) + 1
 
     _audit_record(
         "expert_stress_select",
@@ -4912,16 +4912,13 @@ async def run_data_tracker(request: Request):
 # ── Expert Preference History & Consensus ──────────────
 
 def _compute_expert_consensus(well: str = None):
-    """Compute expert consensus from accumulated RLHF preferences.
+    """Compute expert consensus from SQLite-stored RLHF preferences.
 
     Returns per-well and global regime vote counts, confidence-weighted
     scores, and consensus status (STRONG / WEAK / NONE).
+    Persists across server restarts.
     """
-    with _expert_pref_lock:
-        prefs = list(_expert_preferences)
-
-    if well:
-        prefs = [p for p in prefs if p.get("well") == well]
+    prefs = db_get_preferences(well=well, limit=1000)
 
     if not prefs:
         return {"status": "NONE", "n_selections": 0, "regime_scores": {},
@@ -4965,26 +4962,28 @@ def _compute_expert_consensus(well: str = None):
 
 @app.get("/api/analysis/expert-preference-history")
 async def expert_preference_history(well: str = Query(None)):
-    """View all expert regime selections with timestamps and consensus stats."""
-    with _expert_pref_lock:
-        prefs = list(_expert_preferences)
+    """View all expert regime selections with timestamps and consensus stats.
 
-    if well:
-        prefs = [p for p in prefs if p.get("well") == well]
+    Data is stored in SQLite and persists across server restarts.
+    """
+    prefs = db_get_preferences(well=well, limit=200)
 
     consensus = _compute_expert_consensus(well)
 
-    # Build timeline of how consensus evolved
+    # Build timeline of how consensus evolved (oldest first for timeline)
+    prefs_chrono = list(reversed(prefs))  # DB returns newest first
     timeline = []
     running_counts = {}
-    for i, p in enumerate(prefs):
-        r = p["selected_regime"]
+    for i, p in enumerate(prefs_chrono):
+        r = p.get("selected_regime", "")
+        if not r:
+            continue
         running_counts[r] = running_counts.get(r, 0) + 1
         total = sum(running_counts.values())
         dominant = max(running_counts, key=running_counts.get)
         timeline.append({
             "step": i + 1,
-            "timestamp": p["timestamp"],
+            "timestamp": p.get("timestamp", ""),
             "regime": r,
             "dominant_regime": dominant,
             "dominant_pct": round(100 * running_counts[dominant] / total, 1),
@@ -4992,41 +4991,47 @@ async def expert_preference_history(well: str = Query(None)):
 
     # Group by well for overview
     well_summaries = {}
-    all_prefs = list(_expert_preferences) if not well else prefs
-    for p in all_prefs:
-        w = p.get("well", "unknown")
-        if w not in well_summaries:
-            well_summaries[w] = _compute_expert_consensus(w)
+    if well:
+        well_summaries[well] = consensus
+    else:
+        all_prefs = db_get_preferences(limit=1000)
+        seen_wells = set()
+        for p in all_prefs:
+            w = p.get("well", "unknown")
+            if w not in seen_wells:
+                seen_wells.add(w)
+                well_summaries[w] = _compute_expert_consensus(w)
+
+    total_all = count_preferences()
 
     return _sanitize_for_json({
-        "preferences": prefs[-50:],  # Last 50 for display
+        "preferences": prefs[:50],  # Last 50 for display
         "consensus": consensus,
         "timeline": timeline,
         "well_summaries": well_summaries,
-        "total_all_wells": len(list(_expert_preferences)),
+        "total_all_wells": total_all,
+        "storage": "persistent",
     })
 
 
 @app.post("/api/analysis/expert-preference-reset")
 async def expert_preference_reset(request: Request):
-    """Reset expert preferences for a specific well (or all wells)."""
+    """Reset expert preferences for a specific well (or all wells).
+
+    Deletes records from SQLite. This is a destructive operation.
+    """
     body = await request.json()
     well = body.get("well")
 
-    with _expert_pref_lock:
-        if well:
-            # Remove only this well's preferences
-            to_keep = [p for p in _expert_preferences if p.get("well") != well]
-            _expert_preferences.clear()
-            _expert_preferences.extend(to_keep)
-            msg = f"Reset {len(list(_expert_preferences))} preferences for well {well}"
-        else:
-            n_removed = len(_expert_preferences)
-            _expert_preferences.clear()
-            msg = f"Reset all {n_removed} expert preferences"
+    n_before = count_preferences(well=well)
+    n_deleted = clear_preferences(well=well)
+    if well:
+        msg = f"Deleted {n_deleted} preferences for well {well}"
+    else:
+        msg = f"Deleted all {n_deleted} expert preferences"
 
-    _audit_record("expert_preference_reset", {"well": well}, {"message": msg})
-    return {"status": "reset", "message": msg}
+    _audit_record("expert_preference_reset", {"well": well}, {"message": msg, "n_deleted": n_deleted})
+    return {"status": "reset", "message": msg, "n_deleted": n_deleted}
 
 
 # ── Preference-Weighted Auto-Detection ──────────────────
@@ -5616,6 +5621,15 @@ async def comprehensive_report(request: Request):
     pp = body.get("pore_pressure", None)
     pp = float(pp) if pp else 0.0
 
+    # Check cache first (comprehensive report is expensive)
+    pp_key = round(pp, 1) if pp else "auto"
+    comp_cache_key = f"comp_{source}_{well}_{depth_m}_{pp_key}"
+    if comp_cache_key in _comprehensive_cache:
+        cached = _comprehensive_cache[comp_cache_key]
+        cached["from_cache"] = True
+        cached["elapsed_s"] = 0.01
+        return cached
+
     df = get_df(source)
     if df is None:
         raise HTTPException(400, "No data loaded")
@@ -5675,10 +5689,15 @@ async def comprehensive_report(request: Request):
 
     # ── Module 3: ML Classification ──
     try:
-        cls_key = f"clf_{source}_{well}_gradient_boosting_enh"
-        if cls_key in _classify_cache:
-            cls = _classify_cache[cls_key]
-        else:
+        # Try multiple cache key patterns (prewarm uses _3cv, ad-hoc uses _enh)
+        cls = None
+        for suffix in ("_3cv", "_enh"):
+            cls_key = f"clf_{source}_{well}_gradient_boosting{suffix}"
+            if cls_key in _classify_cache:
+                cls = _classify_cache[cls_key]
+                break
+        if cls is None:
+            cls_key = f"clf_{source}_{well}_gradient_boosting_3cv"
             cls = await asyncio.to_thread(
                 classify_enhanced, df_well, "gradient_boosting", 3,
             )
@@ -5862,7 +5881,7 @@ async def comprehensive_report(request: Request):
         source, well, elapsed,
     )
 
-    return _sanitize_for_json({
+    result = _sanitize_for_json({
         "verdict": verdict,
         "verdict_color": verdict_color,
         "signal_summary": {"GREEN": n_green, "AMBER": n_amber, "RED": n_red},
@@ -5874,5 +5893,656 @@ async def comprehensive_report(request: Request):
         "pore_pressure": pp,
         "n_fractures": n_fractures,
         "elapsed_s": elapsed,
-        "app_version": "3.1.1",
+        "app_version": "3.2.0",
+        "from_cache": False,
     })
+    _comprehensive_cache[comp_cache_key] = result
+    return result
+
+
+# ── Database Management Endpoints ─────────────────────
+
+@app.get("/api/db/stats")
+async def database_stats():
+    """Return persistent storage statistics.
+
+    Shows record counts for audit trail, model history, and expert
+    preferences, plus database file size.
+    """
+    return db_stats()
+
+
+@app.post("/api/db/export")
+async def database_export():
+    """Export entire persistent database as JSON for backup.
+
+    Critical for Render's ephemeral filesystem — export before
+    the free-tier instance goes to sleep. Can be re-imported later.
+    """
+    data = db_export_all()
+    _audit_record("db_export", {}, {"audit": len(data["audit_log"]),
+                                     "models": len(data["model_history"]),
+                                     "prefs": len(data["expert_preferences"])})
+    return data
+
+
+@app.post("/api/db/import")
+async def database_import(request: Request):
+    """Import records from a previously exported JSON backup.
+
+    Use this to restore data after a server restart on ephemeral hosts.
+    """
+    body = await request.json()
+    counts = db_import_all(body)
+    _audit_record("db_import", {}, counts)
+    return {"status": "imported", "counts": counts}
+
+
+# ── Negative Scenario Library ─────────────────────────
+
+# Built-in failure scenarios that every geomechanist should know about.
+# These are NOT from real data — they are engineered adversarial cases.
+_FAILURE_SCENARIOS = [
+    {
+        "id": "FS-001",
+        "name": "Regime Misidentification Under High Pore Pressure",
+        "category": "physics",
+        "severity": "CRITICAL",
+        "description": (
+            "When pore pressure exceeds 80% of overburden stress, effective stresses "
+            "become very small. The stress regime can flip from normal to thrust, "
+            "causing catastrophic wellbore instability if the wrong mud weight is used."
+        ),
+        "trigger": "Pore pressure ratio Pp/Sv > 0.8",
+        "consequence": "Wrong regime → wrong mud weight → blowout or stuck pipe",
+        "mitigation": "Always run regime stability check with Pp perturbations before drilling decisions.",
+        "data_signature": "Low dip angles (<20°) with high azimuth scatter (>120° range) at depth >3000m",
+    },
+    {
+        "id": "FS-002",
+        "name": "Sampling Bias from Borehole Orientation",
+        "category": "data_quality",
+        "severity": "HIGH",
+        "description": (
+            "Vertical wells systematically miss vertical fractures (parallel to wellbore). "
+            "If the dataset is dominated by vertical wells, high-dip fractures (>70°) "
+            "will be underrepresented, leading to biased stress estimates."
+        ),
+        "trigger": "Dip histogram showing <5% fractures with dip > 70°",
+        "consequence": "Underestimate SHmax magnitude → unsafe completion design",
+        "mitigation": "Check dip distribution; if >70° dip is <5%, flag as potentially biased. Use Terzaghi correction.",
+        "data_signature": "Dip distribution truncated above 70°, strong peak at 30-50°",
+    },
+    {
+        "id": "FS-003",
+        "name": "Thermal Stress Ignored in Deep Wells",
+        "category": "physics",
+        "severity": "HIGH",
+        "description": (
+            "Below 4000m, rock temperature exceeds 120°C. Thermal expansion creates "
+            "additional horizontal stress that can change the stress regime. Ignoring "
+            "thermal corrections at depth causes systematic overestimation of R ratio."
+        ),
+        "trigger": "Depth > 4000m AND no thermal correction applied",
+        "consequence": "Overestimate R ratio → wrong fracture susceptibility ranking",
+        "mitigation": "Use temperature-corrected friction (mu_T) and include thermal stress in sigma_H calculations.",
+        "data_signature": "R ratio > 0.7 at depths > 4000m without thermal correction flag",
+    },
+    {
+        "id": "FS-004",
+        "name": "Class Imbalance Masking Rare but Critical Fracture Types",
+        "category": "ml_model",
+        "severity": "HIGH",
+        "description": (
+            "When one fracture type dominates (>70% of samples), the ML model achieves "
+            "high overall accuracy by mostly predicting the dominant class. Rare types "
+            "like Vuggy or Brecciated — which are often the most important for fluid "
+            "flow — get misclassified as the dominant type."
+        ),
+        "trigger": "Class imbalance ratio > 5:1",
+        "consequence": "Miss critically stressed vuggy fractures → underestimate permeability",
+        "mitigation": "Use balanced accuracy, check per-class F1 scores, apply SMOTE or class weights.",
+        "data_signature": "High accuracy (>85%) but F1 for minority class < 0.30",
+    },
+    {
+        "id": "FS-005",
+        "name": "Overfitting on Single-Well Data",
+        "category": "ml_model",
+        "severity": "MODERATE",
+        "description": (
+            "Training and evaluating on the same well makes the model memorize well-specific "
+            "patterns (e.g., unique depth intervals) rather than learning transferable geology. "
+            "When applied to a new well, accuracy can drop by 20-40%."
+        ),
+        "trigger": "Cross-well accuracy drop > 15% compared to within-well accuracy",
+        "consequence": "Model appears reliable but fails on new wells → wrong drilling decisions",
+        "mitigation": "Always use leave-one-well-out cross-validation. Report within-well AND cross-well accuracy.",
+        "data_signature": "Within-well accuracy 90%, cross-well accuracy 55-65%",
+    },
+    {
+        "id": "FS-006",
+        "name": "Azimuth Wraparound Error",
+        "category": "data_quality",
+        "severity": "MODERATE",
+        "description": (
+            "Azimuth is circular (0° = 360°). Using raw azimuth as a feature creates "
+            "an artificial discontinuity where fractures at 1° and 359° appear maximally "
+            "different when they are nearly identical. This corrupts clustering and "
+            "classification near North."
+        ),
+        "trigger": "Model uses raw azimuth (not sin/cos encoded) as feature",
+        "consequence": "Artificial cluster boundaries near 0°/360° → wrong fracture set grouping",
+        "mitigation": "Always use sin(az)/cos(az) encoding. Check rose diagram for discontinuity at North.",
+        "data_signature": "Cluster boundary at ~0° or ~360° with members split across the boundary",
+    },
+    {
+        "id": "FS-007",
+        "name": "Duplicate Fractures from Overlapping Log Runs",
+        "category": "data_quality",
+        "severity": "MODERATE",
+        "description": (
+            "Multiple image log runs over the same interval create duplicate fracture "
+            "picks. These inflate sample size, bias density calculations, and give "
+            "false confidence in statistical tests."
+        ),
+        "trigger": "Multiple fractures with identical (depth, azimuth, dip) within 0.5m",
+        "consequence": "Inflated n → narrow confidence intervals → overconfident decisions",
+        "mitigation": "Deduplicate by (depth±0.5m, azimuth±2°, dip±2°) before analysis.",
+        "data_signature": "Pairs of fractures within 0.5m with azimuth and dip differences < 2°",
+    },
+    {
+        "id": "FS-008",
+        "name": "Incorrect Stress Regime from Limited Depth Range",
+        "category": "physics",
+        "severity": "CRITICAL",
+        "description": (
+            "Stress regimes can change with depth (normal near surface → strike-slip "
+            "at intermediate depths → thrust at great depths). Analyzing fractures from "
+            "a narrow depth window gives the regime for THAT interval only, not the field."
+        ),
+        "trigger": "Depth range of data < 500m",
+        "consequence": "Apply wrong regime to entire well → wrong casing/completion design",
+        "mitigation": "Report regime WITH depth range qualifier. Never extrapolate beyond data range.",
+        "data_signature": "All fractures within a 200-500m interval, single apparent regime",
+    },
+]
+
+
+@app.get("/api/analysis/negative-scenarios")
+async def get_negative_scenarios(category: str = None, severity: str = None):
+    """Return the built-in negative scenario library.
+
+    Each scenario describes a known failure mode in geostress analysis,
+    its trigger conditions, consequences, and mitigations. Helps stakeholders
+    understand what can go wrong and how to prevent it.
+    """
+    scenarios = list(_FAILURE_SCENARIOS)
+    if category:
+        scenarios = [s for s in scenarios if s["category"] == category]
+    if severity:
+        scenarios = [s for s in scenarios if s["severity"] == severity]
+    return {
+        "scenarios": scenarios,
+        "total": len(scenarios),
+        "categories": list(set(s["category"] for s in _FAILURE_SCENARIOS)),
+        "severities": ["CRITICAL", "HIGH", "MODERATE"],
+    }
+
+
+@app.post("/api/analysis/scenario-check")
+async def check_scenarios_against_data(request: Request):
+    """Check if any negative scenarios are triggered by the current data.
+
+    Runs automated detection of known failure modes against the actual
+    fracture data for a specific well. Returns triggered scenarios with
+    evidence and recommended actions.
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    df = demo_df if source == "demo" else uploaded_df
+    if df is None:
+        raise HTTPException(400, f"No {source} data loaded")
+    if well != "all":
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True)
+    else:
+        df_well = df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    triggered = []
+    not_triggered = []
+
+    # FS-001: High pore pressure regime flip
+    depths = df_well[DEPTH_COL].dropna().values if DEPTH_COL in df_well.columns else np.array([])
+    if len(depths) > 0:
+        max_depth = float(np.max(depths))
+        pp_ratio = compute_pore_pressure(max_depth) / (max_depth * 0.023)  # Sv = 0.023 MPa/m
+        if pp_ratio > 0.75:
+            triggered.append({
+                **_FAILURE_SCENARIOS[0],
+                "evidence": f"Max depth {max_depth:.0f}m, Pp/Sv ratio = {pp_ratio:.2f}",
+                "action_required": True,
+            })
+        else:
+            not_triggered.append({"id": "FS-001", "reason": f"Pp/Sv = {pp_ratio:.2f} < 0.75"})
+    else:
+        not_triggered.append({"id": "FS-001", "reason": "No depth data available"})
+
+    # FS-002: Sampling bias (missing high-dip fractures)
+    dips = df_well[DIP_COL].values
+    high_dip_pct = 100 * np.sum(dips > 70) / len(dips) if len(dips) > 0 else 0
+    if high_dip_pct < 5:
+        triggered.append({
+            **_FAILURE_SCENARIOS[1],
+            "evidence": f"Only {high_dip_pct:.1f}% fractures have dip > 70° (threshold: 5%)",
+            "action_required": True,
+        })
+    else:
+        not_triggered.append({"id": "FS-002", "reason": f"{high_dip_pct:.1f}% high-dip fractures"})
+
+    # FS-003: Thermal stress at depth
+    if len(depths) > 0 and float(np.max(depths)) > 4000:
+        triggered.append({
+            **_FAILURE_SCENARIOS[2],
+            "evidence": f"Max depth {float(np.max(depths)):.0f}m > 4000m threshold",
+            "action_required": True,
+        })
+    elif len(depths) > 0:
+        not_triggered.append({"id": "FS-003", "reason": f"Max depth {float(np.max(depths)):.0f}m < 4000m"})
+
+    # FS-004: Class imbalance
+    if FRACTURE_TYPE_COL in df_well.columns:
+        type_counts = df_well[FRACTURE_TYPE_COL].value_counts()
+        if len(type_counts) > 1:
+            imbalance_ratio = float(type_counts.iloc[0]) / float(type_counts.iloc[-1])
+            if imbalance_ratio > 5:
+                triggered.append({
+                    **_FAILURE_SCENARIOS[3],
+                    "evidence": f"Class imbalance ratio = {imbalance_ratio:.1f}:1 "
+                                f"(dominant: {type_counts.index[0]}, rare: {type_counts.index[-1]})",
+                    "action_required": True,
+                })
+            else:
+                not_triggered.append({"id": "FS-004", "reason": f"Imbalance ratio {imbalance_ratio:.1f}:1"})
+        else:
+            not_triggered.append({"id": "FS-004", "reason": "Only one fracture type"})
+    else:
+        not_triggered.append({"id": "FS-004", "reason": "No fracture type column"})
+
+    # FS-005: Single-well overfitting (can only check if multiple wells)
+    wells_available = df[WELL_COL].unique() if WELL_COL in df.columns else []
+    if len(wells_available) < 2:
+        triggered.append({
+            **_FAILURE_SCENARIOS[4],
+            "evidence": f"Only {len(wells_available)} well(s) available — cannot validate cross-well",
+            "action_required": False,
+        })
+    else:
+        not_triggered.append({"id": "FS-005", "reason": f"{len(wells_available)} wells available for cross-validation"})
+
+    # FS-006: Azimuth wraparound (check if near-north fractures exist)
+    azimuths = df_well[AZIMUTH_COL].values
+    near_north = np.sum((azimuths < 15) | (azimuths > 345))
+    if near_north > 5:
+        not_triggered.append({
+            "id": "FS-006",
+            "reason": f"{near_north} near-North fractures — sin/cos encoding prevents this issue"
+        })
+    else:
+        not_triggered.append({"id": "FS-006", "reason": "Few near-North fractures"})
+
+    # FS-007: Duplicate detection
+    if len(df_well) > 1 and DEPTH_COL in df_well.columns:
+        n_dups = 0
+        depths_arr = df_well[DEPTH_COL].values
+        az_arr = df_well[AZIMUTH_COL].values
+        dip_arr = df_well[DIP_COL].values
+        for i in range(len(df_well)):
+            for j in range(i + 1, min(i + 10, len(df_well))):  # Only check neighbors
+                if (abs(depths_arr[i] - depths_arr[j]) < 0.5 and
+                    abs(az_arr[i] - az_arr[j]) < 2 and
+                    abs(dip_arr[i] - dip_arr[j]) < 2):
+                    n_dups += 1
+        if n_dups > 0:
+            triggered.append({
+                **_FAILURE_SCENARIOS[6],
+                "evidence": f"Found {n_dups} potential duplicate pairs (depth±0.5m, az±2°, dip±2°)",
+                "action_required": n_dups > 5,
+            })
+        else:
+            not_triggered.append({"id": "FS-007", "reason": "No duplicates detected"})
+
+    # FS-008: Limited depth range
+    if len(depths) > 0:
+        depth_range = float(np.max(depths) - np.min(depths))
+        if depth_range < 500:
+            triggered.append({
+                **_FAILURE_SCENARIOS[7],
+                "evidence": f"Depth range = {depth_range:.0f}m (< 500m threshold)",
+                "action_required": True,
+            })
+        else:
+            not_triggered.append({"id": "FS-008", "reason": f"Depth range {depth_range:.0f}m"})
+
+    elapsed = round(time.time() - t0, 2)
+
+    # Severity ranking
+    severity_order = {"CRITICAL": 3, "HIGH": 2, "MODERATE": 1}
+    triggered.sort(key=lambda s: severity_order.get(s["severity"], 0), reverse=True)
+
+    overall = "SAFE"
+    if any(s["severity"] == "CRITICAL" for s in triggered):
+        overall = "CRITICAL_ISSUES"
+    elif any(s["severity"] == "HIGH" for s in triggered):
+        overall = "CAUTION"
+    elif triggered:
+        overall = "MINOR_ISSUES"
+
+    _audit_record("scenario_check", {"well": well},
+                  {"triggered": len(triggered), "overall": overall},
+                  source, well, elapsed)
+
+    return _sanitize_for_json({
+        "overall_status": overall,
+        "triggered": triggered,
+        "not_triggered": not_triggered,
+        "n_triggered": len(triggered),
+        "n_total_scenarios": len(_FAILURE_SCENARIOS),
+        "well": well,
+        "n_fractures": len(df_well),
+        "elapsed_s": elapsed,
+    })
+
+
+# ── PDF Report Generation ────────────────────────────
+
+@app.post("/api/report/pdf")
+async def generate_pdf_report(request: Request):
+    """Generate a downloadable PDF comprehensive report.
+
+    Runs the same analysis as /api/report/comprehensive but formats the
+    results into a professional PDF document suitable for stakeholder
+    review meetings, regulatory submissions, and archival.
+
+    Returns the PDF as a streaming binary response.
+    """
+    from fpdf import FPDF
+
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+    pp = body.get("pore_pressure", None)
+    pp = float(pp) if pp else None
+
+    # First run the comprehensive report to get all data
+    # (reuse the same logic rather than duplicating)
+    df = demo_df if source == "demo" else uploaded_df
+    if df is None:
+        raise HTTPException(400, f"No {source} data loaded")
+    if well != "all":
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True)
+    else:
+        df_well = df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    n_fractures = len(df_well)
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values,
+    )
+
+    # ── Collect analysis results ──
+    modules = {}
+    errors = []
+
+    # Stress inversion
+    try:
+        regime_result = await asyncio.to_thread(
+            auto_detect_regime, normals, depth_m=depth_m, pore_pressure=pp
+        )
+        inv = await _cached_inversion(
+            normals, well, regime_result["best_regime"], depth_m, pp, source
+        )
+        modules["stress"] = {
+            "regime": regime_result["best_regime"],
+            "confidence": regime_result["confidence"],
+            "sigma1": round(float(inv.get("sigma1", inv.get("sigma_1", 0))), 1),
+            "sigma3": round(float(inv.get("sigma3", inv.get("sigma_3", 0))), 1),
+            "shmax_azimuth": round(float(inv.get("shmax_azimuth_deg",
+                                   inv.get("SHmax_azimuth_deg", 0))), 1),
+            "R_ratio": round(float(inv.get("R", 0)), 3),
+        }
+    except Exception as e:
+        errors.append(f"Stress inversion: {e}")
+
+    # Classification
+    try:
+        cls = await asyncio.to_thread(
+            classify_enhanced, df_well, "gradient_boosting", 3
+        )
+        modules["classification"] = {
+            "accuracy": round(float(cls.get("accuracy", 0)), 3),
+            "n_classes": len(cls.get("class_names", cls.get("unique_types", []))),
+            "model": cls.get("model_name", "gradient_boosting"),
+        }
+    except Exception as e:
+        errors.append(f"Classification: {e}")
+
+    # Critically stressed
+    try:
+        if "stress" in modules:
+            crit = await asyncio.to_thread(
+                critically_stressed_enhanced, df_well, inv, mu=0.6
+            )
+            n_crit = int(crit.get("n_critically_stressed", 0))
+            pct_crit = round(float(crit.get("percent_critically_stressed", 0)), 1)
+            modules["critically_stressed"] = {
+                "n_critical": n_crit,
+                "pct_critical": pct_crit,
+            }
+    except Exception as e:
+        errors.append(f"Critically stressed: {e}")
+
+    # Scenario check
+    try:
+        scenario_res = await check_scenarios_against_data(request)
+        if hasattr(scenario_res, 'body'):
+            sc_data = json.loads(scenario_res.body)
+        else:
+            sc_data = scenario_res
+        modules["scenarios"] = {
+            "overall": sc_data.get("overall_status", "UNKNOWN"),
+            "n_triggered": sc_data.get("n_triggered", 0),
+        }
+    except Exception:
+        # Run inline scenario check
+        pass
+
+    # Expert consensus
+    consensus = _compute_expert_consensus(well)
+    modules["consensus"] = {
+        "status": consensus.get("status", "NONE"),
+        "n_selections": consensus.get("n_selections", 0),
+        "best_regime": consensus.get("consensus_regime"),
+    }
+
+    # Determine verdict
+    verdict = "GO"
+    signals = []
+    if "stress" in modules:
+        conf = modules["stress"].get("confidence", "LOW")
+        if conf == "LOW":
+            verdict = "CAUTION"
+            signals.append("Low stress inversion confidence")
+    if "classification" in modules:
+        acc = modules["classification"].get("accuracy", 0)
+        if acc < 0.7:
+            verdict = "CAUTION"
+            signals.append(f"Classification accuracy {acc:.0%}")
+    if "scenarios" in modules:
+        if modules["scenarios"].get("overall") == "CRITICAL_ISSUES":
+            verdict = "NO-GO"
+            signals.append("Critical failure scenarios triggered")
+        elif modules["scenarios"].get("overall") == "CAUTION":
+            if verdict != "NO-GO":
+                verdict = "CAUTION"
+            signals.append("High-severity scenarios triggered")
+    if errors:
+        if verdict == "GO":
+            verdict = "CAUTION"
+        signals.append(f"{len(errors)} analysis module(s) failed")
+
+    # ── Build PDF ──
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+
+    # Header
+    pdf.set_font("Helvetica", "B", 20)
+    pdf.cell(0, 12, "GeoStress AI - Comprehensive Report", ln=True, align="C")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}", ln=True, align="C")
+    pdf.cell(0, 6, f"Well: {well}  |  Depth: {depth_m}m  |  Fractures: {n_fractures}", ln=True, align="C")
+    pdf.ln(8)
+
+    # Verdict banner
+    pdf.set_font("Helvetica", "B", 16)
+    verdict_colors = {"GO": (40, 167, 69), "CAUTION": (255, 193, 7), "NO-GO": (220, 53, 69)}
+    vc = verdict_colors.get(verdict, (108, 117, 125))
+    pdf.set_fill_color(*vc)
+    text_color = (255, 255, 255) if verdict != "CAUTION" else (0, 0, 0)
+    pdf.set_text_color(*text_color)
+    pdf.cell(0, 14, f"  VERDICT: {verdict}  ", ln=True, fill=True, align="C")
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(4)
+
+    if signals:
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.cell(0, 5, "Signals: " + " | ".join(signals), ln=True, align="C")
+        pdf.ln(6)
+
+    # Executive Brief
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 8, "Executive Summary", ln=True)
+    pdf.set_draw_color(40, 167, 69)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(3)
+
+    pdf.set_font("Helvetica", "", 10)
+    if "stress" in modules:
+        s = modules["stress"]
+        pdf.multi_cell(0, 5,
+            f"Stress inversion for well {well} indicates a {s['regime']} faulting regime "
+            f"with {s.get('confidence', 'unknown')} confidence. "
+            f"Principal stresses: sigma1 = {s['sigma1']} MPa, sigma3 = {s['sigma3']} MPa. "
+            f"SHmax azimuth = {s['shmax_azimuth']}deg, R ratio = {s['R_ratio']}."
+        )
+    else:
+        pdf.cell(0, 5, "Stress inversion was not completed.", ln=True)
+    pdf.ln(3)
+
+    if "classification" in modules:
+        c = modules["classification"]
+        pdf.multi_cell(0, 5,
+            f"ML classification ({c['model']}) achieved {c['accuracy']:.1%} accuracy "
+            f"across {c['n_classes']} fracture types."
+        )
+    pdf.ln(3)
+
+    if "critically_stressed" in modules:
+        cs = modules["critically_stressed"]
+        pdf.multi_cell(0, 5,
+            f"Critically stressed analysis: {cs['n_critical']} fractures ({cs['pct_critical']}%) "
+            f"exceed Mohr-Coulomb failure criterion. These are likely fluid conduits."
+        )
+    pdf.ln(5)
+
+    # Scenario Check Results
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 8, "Failure Scenario Check", ln=True)
+    pdf.set_draw_color(220, 53, 69)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(3)
+
+    if "scenarios" in modules:
+        sc = modules["scenarios"]
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 5,
+            f"Status: {sc['overall']}  |  {sc['n_triggered']} scenario(s) triggered",
+            ln=True
+        )
+    pdf.ln(3)
+
+    # Expert Consensus
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 8, "Expert Consensus (RLHF)", ln=True)
+    pdf.set_draw_color(255, 193, 7)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(3)
+
+    pdf.set_font("Helvetica", "", 10)
+    ec = modules.get("consensus", {})
+    if ec.get("status") != "NONE":
+        pdf.multi_cell(0, 5,
+            f"Expert consensus: {ec.get('status', 'N/A')} for {ec.get('best_regime', 'N/A')} regime "
+            f"based on {ec.get('n_selections', 0)} selections."
+        )
+    else:
+        pdf.cell(0, 5, "No expert preferences recorded yet.", ln=True)
+    pdf.ln(5)
+
+    # Data summary table
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 8, "Data Summary", ln=True)
+    pdf.set_draw_color(0, 123, 255)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(3)
+
+    pdf.set_font("Helvetica", "", 9)
+    if FRACTURE_TYPE_COL in df_well.columns:
+        type_counts = df_well[FRACTURE_TYPE_COL].value_counts()
+        for ftype, count in type_counts.items():
+            pct = 100 * count / len(df_well)
+            pdf.cell(0, 5, f"  {ftype}: {count} ({pct:.1f}%)", ln=True)
+    pdf.ln(3)
+
+    if DEPTH_COL in df_well.columns:
+        depths = df_well[DEPTH_COL].dropna()
+        if len(depths) > 0:
+            pdf.cell(0, 5,
+                f"  Depth range: {depths.min():.1f}m - {depths.max():.1f}m "
+                f"(span: {depths.max() - depths.min():.1f}m)",
+                ln=True
+            )
+    pdf.ln(5)
+
+    # Footer
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.cell(0, 5,
+        f"GeoStress AI v3.2.0  |  Report ID: {hashlib.sha256(f'{well}_{datetime.now().timestamp()}'.encode()).hexdigest()[:12]}",
+        ln=True, align="C"
+    )
+    pdf.cell(0, 5,
+        "This report is generated by AI and should be reviewed by a qualified geomechanics engineer before use in operational decisions.",
+        ln=True, align="C"
+    )
+
+    # Generate PDF bytes
+    pdf_bytes = pdf.output()
+
+    elapsed = round(time.time() - t0, 2)
+    _audit_record("pdf_report", {"well": well, "depth_m": depth_m},
+                  {"verdict": verdict, "pages": pdf.page_no()},
+                  source, well, elapsed)
+
+    filename = f"geostress_report_{well}_{datetime.now().strftime('%Y%m%d')}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )

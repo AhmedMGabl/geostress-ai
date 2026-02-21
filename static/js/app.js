@@ -6202,11 +6202,229 @@ var _tooltipObserver = new MutationObserver(function(mutations) {
 _tooltipObserver._timer = null;
 
 
+// ── PDF Report Download ─────────────────────────────
+
+async function downloadPdfReport() {
+    const well = document.getElementById('well-select')?.value || '3P';
+    const depth = document.getElementById('depth-input')?.value || '3000';
+    showLoading('Generating PDF report...');
+    try {
+        const res = await fetch('/api/report/pdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ well, depth: parseFloat(depth), source: 'demo' }),
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.message || 'PDF generation failed');
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `geostress_report_${well}_${new Date().toISOString().slice(0,10)}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        hideLoading();
+    } catch (e) {
+        hideLoading();
+        alert('PDF generation failed: ' + e.message);
+    }
+}
+
+
+// ── Negative Scenario Check ──────────────────────────
+
+async function runScenarioCheck() {
+    const well = document.getElementById('well-select')?.value || '3P';
+    showLoading('Checking failure scenarios...');
+    try {
+        const res = await fetch('/api/analysis/scenario-check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ well, source: 'demo' }),
+        });
+        const d = await res.json();
+        hideLoading();
+
+        const el = id => document.getElementById(id);
+        el('sc-results').classList.remove('d-none');
+
+        // Overall status banner
+        const statusEl = el('sc-overall');
+        const statusColors = {
+            'SAFE': 'alert-success',
+            'MINOR_ISSUES': 'alert-info',
+            'CAUTION': 'alert-warning',
+            'CRITICAL_ISSUES': 'alert-danger',
+        };
+        statusEl.className = `alert mb-3 text-center ${statusColors[d.overall_status] || 'alert-secondary'}`;
+        el('sc-status').textContent = d.overall_status.replace(/_/g, ' ');
+        el('sc-summary').textContent =
+            `${d.n_triggered} of ${d.n_total_scenarios} scenarios triggered | Well: ${d.well} | ${d.n_fractures} fractures`;
+
+        // Triggered scenarios
+        const triggeredEl = el('sc-triggered');
+        triggeredEl.innerHTML = '';
+        if (d.triggered && d.triggered.length > 0) {
+            d.triggered.forEach(s => {
+                const sevColor = s.severity === 'CRITICAL' ? 'danger' :
+                                 s.severity === 'HIGH' ? 'warning' : 'info';
+                triggeredEl.innerHTML += `
+                    <div class="card mb-2 border-${sevColor}">
+                        <div class="card-header bg-${sevColor} bg-opacity-10 d-flex justify-content-between">
+                            <strong>${s.id}: ${s.name}</strong>
+                            <span class="badge bg-${sevColor}">${s.severity}</span>
+                        </div>
+                        <div class="card-body small">
+                            <p>${s.description}</p>
+                            <div class="alert alert-${sevColor} py-1 px-2 mb-2">
+                                <strong>Evidence:</strong> ${s.evidence}
+                            </div>
+                            <div class="row g-2">
+                                <div class="col-md-6">
+                                    <strong>Consequence:</strong> ${s.consequence}
+                                </div>
+                                <div class="col-md-6">
+                                    <strong>Mitigation:</strong> ${s.mitigation}
+                                </div>
+                            </div>
+                        </div>
+                    </div>`;
+            });
+        } else {
+            triggeredEl.innerHTML = '<div class="text-success text-center py-3"><i class="bi bi-check-circle fs-3"></i><p>No failure scenarios triggered</p></div>';
+        }
+
+        // Safe checks
+        if (d.not_triggered && d.not_triggered.length > 0) {
+            el('sc-safe').classList.remove('d-none');
+            el('sc-safe-list').innerHTML = d.not_triggered.map(s =>
+                `<span class="badge bg-success bg-opacity-25 text-success me-1 mb-1">${s.id}: ${s.reason}</span>`
+            ).join('');
+        }
+    } catch (e) {
+        hideLoading();
+        alert('Scenario check failed: ' + e.message);
+    }
+}
+
+async function viewScenarioLibrary() {
+    showLoading('Loading scenario library...');
+    try {
+        const res = await fetch('/api/analysis/negative-scenarios');
+        const d = await res.json();
+        hideLoading();
+
+        const el = document.getElementById('sc-results');
+        el.classList.remove('d-none');
+
+        const triggered = document.getElementById('sc-triggered');
+        triggered.innerHTML = '<h6><i class="bi bi-book"></i> Complete Failure Scenario Library</h6>';
+        d.scenarios.forEach(s => {
+            const sevColor = s.severity === 'CRITICAL' ? 'danger' :
+                             s.severity === 'HIGH' ? 'warning' : 'info';
+            triggered.innerHTML += `
+                <div class="card mb-2 border-${sevColor}">
+                    <div class="card-header bg-${sevColor} bg-opacity-10 d-flex justify-content-between">
+                        <strong>${s.id}: ${s.name}</strong>
+                        <div>
+                            <span class="badge bg-secondary me-1">${s.category}</span>
+                            <span class="badge bg-${sevColor}">${s.severity}</span>
+                        </div>
+                    </div>
+                    <div class="card-body small">
+                        <p>${s.description}</p>
+                        <div class="row g-2">
+                            <div class="col-md-4"><strong>Trigger:</strong> ${s.trigger}</div>
+                            <div class="col-md-4"><strong>Consequence:</strong> ${s.consequence}</div>
+                            <div class="col-md-4"><strong>Mitigation:</strong> ${s.mitigation}</div>
+                        </div>
+                    </div>
+                </div>`;
+        });
+    } catch (e) {
+        hideLoading();
+        alert('Failed to load library: ' + e.message);
+    }
+}
+
+
+// ── Database Management ──────────────────────────────
+
+async function loadDbStats() {
+    try {
+        const res = await fetch('/api/db/stats');
+        const d = await res.json();
+        const el = id => document.getElementById(id);
+        if (el('db-audit-count')) el('db-audit-count').textContent = d.audit_count || 0;
+        if (el('db-model-count')) el('db-model-count').textContent = d.model_count || 0;
+        if (el('db-pref-count')) el('db-pref-count').textContent = d.preference_count || 0;
+        if (el('db-size')) el('db-size').textContent = `${d.db_size_kb || 0} KB`;
+    } catch (e) {
+        console.warn('DB stats unavailable:', e);
+    }
+}
+
+async function exportDatabase() {
+    try {
+        showLoading('Exporting database backup...');
+        const res = await fetch('/api/db/export', { method: 'POST' });
+        const data = await res.json();
+        // Download as JSON file
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `geostress_backup_${new Date().toISOString().slice(0,10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        hideLoading();
+        loadDbStats();
+    } catch (e) {
+        hideLoading();
+        alert('Export failed: ' + e.message);
+    }
+}
+
+async function importDatabase(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    if (!confirm('Import backup data? This will ADD records to the existing database.')) {
+        event.target.value = '';
+        return;
+    }
+    try {
+        showLoading('Importing database backup...');
+        const text = await file.text();
+        const data = JSON.parse(text);
+        const res = await fetch('/api/db/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        const result = await res.json();
+        hideLoading();
+        alert(`Imported: ${result.counts.audit} audit, ${result.counts.models} models, ${result.counts.preferences} preferences`);
+        loadDbStats();
+    } catch (e) {
+        hideLoading();
+        alert('Import failed: ' + e.message);
+    }
+    event.target.value = '';
+}
+
+
 // ── Init ──────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", function() {
     loadSummary();
     loadFeedbackSummary();
+    loadDbStats();
     // Auto-run overview after a short delay (let summary load first)
     setTimeout(function() { runOverview(); }, 500);
     initTooltips();

@@ -10,6 +10,7 @@ venv/
 outputs/
 notebooks/*_executed.ipynb
 .claude/
+data/geostress.db
 
 # Root-level data files (originals are in data/raw/ and references/)
 /*.xls
