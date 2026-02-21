@@ -5680,7 +5680,7 @@ async def comprehensive_report(request: Request):
             cls = _classify_cache[cls_key]
         else:
             cls = await asyncio.to_thread(
-                classify_enhanced, df_well, "gradient_boosting", 5,
+                classify_enhanced, df_well, "gradient_boosting", 3,
             )
             _classify_cache[cls_key] = cls
 

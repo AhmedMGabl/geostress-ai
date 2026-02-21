@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
-app.py              - FastAPI backend (v3.0), all API endpoints, serves templates
+app.py              - FastAPI backend (v3.1.2), 84 API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
   geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC, auto regime detection
@@ -133,6 +133,13 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/expert-stress-select` | Record expert's preferred stress solution (RLHF signal) |
 | POST | `/api/analysis/uncertainty-dashboard` | 5-signal traffic-light confidence check for stakeholders |
 | POST | `/api/analysis/data-tracker` | Where/how much more data needed, with accuracy projections |
+| GET | `/api/analysis/expert-preference-history` | Expert selection history with consensus timeline |
+| POST | `/api/analysis/expert-preference-reset` | Reset expert preferences for a well |
+| POST | `/api/analysis/preference-weighted-regime` | RLHF: physics + expert consensus → recommended regime |
+| POST | `/api/analysis/regime-stability` | Stability check: Pp/depth perturbations, STABLE/MOSTLY_STABLE/UNSTABLE |
+| POST | `/api/analysis/trustworthiness-report` | 5-check reliability audit (quality, CV, calibration, validity, balance) |
+| POST | `/api/report/comprehensive` | One-click full analysis: 7 modules → GO/CAUTION/NO-GO + executive brief |
+| POST | `/api/analysis/decision-readiness` | GO/CAUTION/NO-GO with 6 independent signals |
 
 ## Domain Concepts
 
@@ -154,7 +161,7 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Column headers in Excel files are actually the first data row (numeric values used as column names)
 - Inversion uses `scipy.differential_evolution` with pore pressure in objective function
 - Bayesian MCMC uses `emcee` package with 5 parameters: σ1, σ3, R, SHmax_azimuth, μ
-- Enhanced features: 25 columns including pore pressure, overburden, temperature, fracture density, fabric eigenvalues, fracture_intensity_10m, adj_spacing_up/down, azimuth_dispersion_100m
+- Enhanced features: 28 columns including pore pressure, overburden, temperature, fracture density, fabric eigenvalues, fracture_intensity_10m, adj_spacing_up/down, azimuth_dispersion_100m, pole_cluster_distance, fracture_density_per_m, fracture_density_20m
 - adj_spacing_down is #1 feature importance (19.0%), fracture_intensity_10m is #2 (12.1%) — spatial features dominate
 - Classification pre-warming at startup (~118s first time, 0.1s cached) — startup cache includes inversion + classify
 - Pre-warm cache keys MUST match endpoint cache keys exactly (format, depth rounding with `round()`)
@@ -282,3 +289,9 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Pp sensitivity in dashboard reuses single cached inversion (varies Pp in CS calc only, not full re-inversion)
 - Expert ranking caches full response (including Mohr circle PNGs) in _inversion_cache — 12s cold → 0.004s cached
 - Data tracker learning_curve uses fast=True with 5 splits and 5s timeout
+- RLHF preference-weighted regime: confidence weights HIGH=3, MODERATE=2, LOW=1; STRONG consensus (>=70%, >=3 votes) overrides physics
+- Regime stability: tests Pp ±5-10 MPa, depth ±200m — STABLE/MOSTLY_STABLE/UNSTABLE grading
+- Trustworthiness report: 5 checks (data quality+contamination, CV stability, calibration, validity prefilter, class balance)
+- Comprehensive report: 7 modules → GO/CAUTION/NO-GO verdict + executive brief (0.02s cached, ~130s cold)
+- Class imbalance is severe: Boundary=13 vs Continuous=231 (17.8:1 ratio) — Trustworthiness Report correctly flags this
+- Audit trail: `_audit_record()` called on 30+ endpoints, app_version=3.1.0, result hashing for integrity
