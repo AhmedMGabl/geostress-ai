@@ -237,11 +237,42 @@ def _audit_record(action: str, params: dict, result_summary: dict,
 
 # ── App lifecycle ────────────────────────────────────
 
+def _prewarm_caches():
+    """Pre-warm critical caches in background for instant first responses."""
+    import time as _time
+    start = _time.perf_counter()
+    try:
+        wells = demo_df[WELL_COL].unique().tolist() if demo_df is not None else []
+        for well in wells:
+            df_well = demo_df[demo_df[WELL_COL] == well].reset_index(drop=True)
+            normals = fracture_plane_normal(
+                df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+            )
+            # Pre-warm auto regime detection (~3s per well)
+            cache_key = f"demo_{well}_3000"
+            if cache_key not in _auto_regime_cache:
+                auto = auto_detect_regime(normals, 3000)
+                _auto_regime_cache[cache_key] = auto
+            # Pre-warm inversion for best regime
+            regime = _auto_regime_cache[cache_key]["best_regime"]
+            inv_key = f"demo_{well}_{regime}_3000_None"
+            if inv_key not in _inversion_cache:
+                inv = invert_stress(normals, regime=regime, depth_m=3000)
+                _inversion_cache[inv_key] = inv
+
+        elapsed = _time.perf_counter() - start
+        print(f"Cache pre-warm complete: {len(wells)} wells in {elapsed:.1f}s")
+    except Exception as e:
+        print(f"Cache pre-warm failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global demo_df
     demo_df = load_all_fractures(str(DATA_DIR))
     print(f"Loaded {len(demo_df)} demo fractures from {DATA_DIR}")
+    # Pre-warm caches in background thread (doesn't block startup)
+    threading.Thread(target=_prewarm_caches, daemon=True).start()
     yield
 
 
