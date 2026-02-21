@@ -323,12 +323,35 @@ async def run_inversion(request: Request):
     body = await request.json()
     well = body.get("well", "3P")
     regime = body.get("regime", "strike_slip")
-    depth_m = float(body.get("depth_m", 3300.0))
-    cohesion = float(body.get("cohesion", 0.0))
     source = body.get("source", "demo")
+
+    # Input validation
+    try:
+        depth_m = float(body.get("depth_m", 3300.0))
+    except (ValueError, TypeError):
+        raise HTTPException(400, "depth_m must be a number")
+    if depth_m <= 0 or depth_m > 15000:
+        raise HTTPException(400, f"depth_m={depth_m} is out of valid range (0-15000m)")
+
+    try:
+        cohesion = float(body.get("cohesion", 0.0))
+    except (ValueError, TypeError):
+        raise HTTPException(400, "cohesion must be a number")
+    if cohesion < 0 or cohesion > 100:
+        raise HTTPException(400, f"cohesion={cohesion} is out of valid range (0-100 MPa)")
+
     pore_pressure = body.get("pore_pressure", None)
     if pore_pressure is not None:
-        pore_pressure = float(pore_pressure)
+        try:
+            pore_pressure = float(pore_pressure)
+        except (ValueError, TypeError):
+            raise HTTPException(400, "pore_pressure must be a number or null")
+        if pore_pressure < 0 or pore_pressure > 500:
+            raise HTTPException(400, f"pore_pressure={pore_pressure} is out of valid range (0-500 MPa)")
+
+    valid_regimes = {"normal", "strike_slip", "thrust", "auto"}
+    if regime not in valid_regimes:
+        raise HTTPException(400, f"regime must be one of {valid_regimes}")
 
     df = get_df(source)
     df_well = df[df[WELL_COL] == well].reset_index(drop=True)
@@ -906,12 +929,25 @@ async def generate_report(request: Request):
         sensitivity_result=sens_result,
     )
 
+    # Calibration and data recommendations for report
+    try:
+        cal_result = await asyncio.to_thread(assess_calibration, df_well, 10, True)
+    except Exception:
+        cal_result = None
+
+    try:
+        data_recs = data_collection_recommendations(df_well)
+    except Exception:
+        data_recs = None
+
     report = generate_well_report(
         well_name, inv_result, cs_result, quality_result,
         model_comparison=model_comparison,
         sensitivity_result=sens_result,
         risk_matrix=risk,
         auto_regime_result=auto_regime,
+        calibration_result=cal_result,
+        data_recommendations=data_recs,
     )
 
     return _sanitize_for_json(report)
@@ -1033,6 +1069,27 @@ async def run_overview(request: Request):
     except Exception as e:
         overview["stress"] = {"error": str(e)[:100]}
         overview["risk"] = {"level": "UNKNOWN", "go_nogo": "Cannot assess"}
+
+    # Quick calibration check (fast mode)
+    try:
+        cal = await asyncio.to_thread(assess_calibration, df_well, 10, True)
+        overview["calibration"] = {
+            "reliability": cal["reliability"],
+            "ece": cal["ece"],
+        }
+    except Exception:
+        overview["calibration"] = None
+
+    # Data collection recommendations
+    try:
+        recs = data_collection_recommendations(df_well)
+        overview["data_recommendations"] = {
+            "n_priority": len(recs["priority_actions"]),
+            "n_recommendations": len(recs["recommendations"]),
+            "completeness_pct": recs["data_completeness_pct"],
+        }
+    except Exception:
+        overview["data_recommendations"] = None
 
     return _sanitize_for_json(overview)
 

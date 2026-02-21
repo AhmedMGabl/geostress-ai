@@ -494,9 +494,19 @@ def compare_models(
     if stack_result is not None:
         results["stacking_ensemble"] = stack_result
 
-    # Rank models
+    # Determine if class imbalance is severe enough to rank by balanced accuracy
+    class_counts = np.bincount(y, minlength=len(le.classes_))
+    max_count = class_counts.max()
+    min_count = class_counts[class_counts > 0].min()
+    imbalance_ratio = min_count / max_count if max_count > 0 else 1.0
+    rank_by_balanced = imbalance_ratio < 0.15  # severe imbalance
+
+    # Rank models: use balanced accuracy when severe imbalance, else standard
+    sort_key = "balanced_accuracy" if rank_by_balanced else "cv_accuracy_mean"
     ranked = sorted(
-        results.items(), key=lambda x: x[1]["cv_accuracy_mean"], reverse=True
+        results.items(),
+        key=lambda x: x[1].get(sort_key, 0),
+        reverse=True,
     )
     ranking = [
         {"rank": i + 1, "model": name, "accuracy": r["cv_accuracy_mean"],
@@ -504,6 +514,7 @@ def compare_models(
          "balanced_accuracy": r.get("balanced_accuracy", 0)}
         for i, (name, r) in enumerate(ranked)
     ]
+    ranking_criterion = "balanced_accuracy" if rank_by_balanced else "standard_accuracy"
 
     # Generalization assessment
     best_name, best_res = ranked[0] if ranked else (None, {})
@@ -578,6 +589,7 @@ def compare_models(
     return {
         "models": results,
         "ranking": ranking,
+        "ranking_criterion": ranking_criterion,
         "best_model": ranked[0][0] if ranked else None,
         "feature_names": features.columns.tolist(),
         "n_samples": len(y),
@@ -2240,6 +2252,8 @@ def generate_well_report(
     sensitivity_result: dict = None,
     risk_matrix: dict = None,
     auto_regime_result: dict = None,
+    calibration_result: dict = None,
+    data_recommendations: dict = None,
 ) -> dict:
     """Generate a comprehensive stakeholder report for a single well.
 
@@ -2249,7 +2263,7 @@ def generate_well_report(
     report = {
         "well_name": well_name,
         "generated_at": pd.Timestamp.now().isoformat(),
-        "version": "2.4.0",
+        "version": "2.5.0",
     }
 
     regime = inversion_result.get("regime", "unknown")
@@ -2405,6 +2419,33 @@ def generate_well_report(
         "completion": completion,
         "monitoring": monitoring,
     }
+
+    # ── Calibration Section ──
+    if calibration_result:
+        report["calibration"] = {
+            "reliability": calibration_result["reliability"],
+            "ece_pct": round(calibration_result["ece"] * 100, 1),
+            "brier_score": calibration_result["brier_score"],
+            "summary": calibration_result.get("stakeholder_summary", ""),
+        }
+    else:
+        report["calibration"] = None
+
+    # ── Data Collection Roadmap ──
+    if data_recommendations:
+        report["data_roadmap"] = {
+            "n_priority_actions": len(data_recommendations.get("priority_actions", [])),
+            "n_recommendations": len(data_recommendations.get("recommendations", [])),
+            "completeness_pct": data_recommendations.get("data_completeness_pct", 0),
+            "priority_actions": [
+                a["action"] for a in data_recommendations.get("priority_actions", [])
+            ],
+            "recommendations": [
+                r["action"] for r in data_recommendations.get("recommendations", [])
+            ],
+        }
+    else:
+        report["data_roadmap"] = None
 
     return report
 

@@ -628,6 +628,17 @@ async function runModelComparison(fast) {
 
         document.getElementById("model-results").classList.remove("d-none");
 
+        // Ranking criterion notice
+        if (r.ranking_criterion === "balanced_accuracy") {
+            var notice = document.getElementById("mc-ranking-notice");
+            if (notice) {
+                notice.classList.remove("d-none");
+                notice.innerHTML = '<i class="bi bi-info-circle me-1"></i>' +
+                    '<strong>Ranked by balanced accuracy</strong> due to severe class imbalance. ' +
+                    'This ensures the best model handles ALL fracture types, not just the majority ones.';
+            }
+        }
+
         // Summary metrics
         val("mc-best-model", r.best_model ? r.best_model.replace("_", " ") : "--");
         val("mc-best-acc", r.ranking && r.ranking[0] ? (r.ranking[0].accuracy * 100).toFixed(1) + "%" : "--");
@@ -1836,6 +1847,33 @@ async function generateReport() {
         }
         document.getElementById("report-quality").innerHTML = dqHtml;
 
+        // Calibration section (append to quality card)
+        if (r.calibration) {
+            var calBadge = {"EXCELLENT": "success", "GOOD": "primary", "FAIR": "warning", "POOR": "danger"}[r.calibration.reliability] || "secondary";
+            dqHtml += '<hr><h6><i class="bi bi-bullseye"></i> Model Calibration</h6>' +
+                '<p><span class="badge bg-' + calBadge + '">' + r.calibration.reliability + '</span> ' +
+                'ECE: ' + r.calibration.ece_pct + '% | Brier: ' + r.calibration.brier_score + '</p>' +
+                '<p class="small text-muted">' + (r.calibration.summary || '') + '</p>';
+            document.getElementById("report-quality").innerHTML = dqHtml;
+        }
+
+        // Data collection roadmap (append to recommendations)
+        if (r.data_roadmap) {
+            var roadHtml = '<hr><h6><i class="bi bi-lightbulb"></i> Data Collection Roadmap ' +
+                '<span class="badge bg-info">' + r.data_roadmap.completeness_pct + '% Complete</span></h6>';
+            if (r.data_roadmap.priority_actions && r.data_roadmap.priority_actions.length > 0) {
+                roadHtml += '<div class="text-danger small"><strong>Critical Actions:</strong></div><ul>';
+                r.data_roadmap.priority_actions.forEach(function(a) { roadHtml += '<li class="small text-danger">' + a + '</li>'; });
+                roadHtml += '</ul>';
+            }
+            if (r.data_roadmap.recommendations && r.data_roadmap.recommendations.length > 0) {
+                roadHtml += '<div class="text-warning small"><strong>Recommendations:</strong></div><ul>';
+                r.data_roadmap.recommendations.forEach(function(a) { roadHtml += '<li class="small">' + a + '</li>'; });
+                roadHtml += '</ul>';
+            }
+            document.getElementById("report-recommendations").innerHTML += roadHtml;
+        }
+
         showToast("Report generated for " + (r.well_name || "well"));
     } catch (err) {
         showToast("Report error: " + err.message, "Error");
@@ -2109,6 +2147,31 @@ async function runOverview() {
                 type: "danger",
                 icon: "sign-stop",
                 text: "HIGH RISK assessment. " + (cs.pct || 0) + "% of fractures are critically stressed. Operations near these fractures may trigger fault reactivation or induced seismicity."
+            });
+        }
+
+        // Calibration info
+        if (r.calibration) {
+            var calColor = {"EXCELLENT": "success", "GOOD": "info", "FAIR": "warning", "POOR": "danger"}[r.calibration.reliability] || "secondary";
+            warningsList.push({
+                type: calColor === "danger" ? "danger" : calColor === "warning" ? "warning" : "info",
+                icon: "bullseye",
+                text: "Model calibration: " + r.calibration.reliability +
+                    " (ECE=" + (r.calibration.ece * 100).toFixed(1) + "%). " +
+                    (r.calibration.reliability === "POOR"
+                        ? "DO NOT rely on confidence percentages for decisions."
+                        : "Probability estimates are trustworthy.")
+            });
+        }
+
+        // Data recommendations summary
+        if (r.data_recommendations && r.data_recommendations.n_priority > 0) {
+            warningsList.push({
+                type: "warning",
+                icon: "lightbulb",
+                text: r.data_recommendations.n_priority + " critical data gap(s) detected. " +
+                    "Visit the Calibration tab > Data Recommendations for specific actions to improve accuracy. " +
+                    "Dataset completeness: " + r.data_recommendations.completeness_pct + "%."
             });
         }
 
