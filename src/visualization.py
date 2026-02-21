@@ -585,3 +585,82 @@ def plot_confusion_matrix(cm, class_names,
 
     fig.tight_layout()
     return fig
+
+
+def plot_abstention_chart(confidence_distribution: list,
+                          threshold: float = 0.60,
+                          abstention_rate: float = 0.0,
+                          accuracy_overall: float = 0.0,
+                          accuracy_confident: float = 0.0,
+                          title: str = "Prediction Abstention — Confidence Distribution") -> plt.Figure:
+    """Bar chart of confidence distribution with abstention threshold line.
+
+    Parameters
+    ----------
+    confidence_distribution : list of dicts with 'range' and 'count'
+    threshold : float, abstention threshold
+    accuracy_overall, accuracy_confident : floats for annotation
+
+    Returns
+    -------
+    matplotlib Figure
+    """
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    ranges = [d["range"] for d in confidence_distribution]
+    counts = [d["count"] for d in confidence_distribution]
+
+    # Color bars: red below threshold, green above
+    colors = []
+    for r in ranges:
+        upper = float(r.split("-")[1])
+        if upper <= threshold:
+            colors.append("#dc3545")  # red — abstained
+        elif float(r.split("-")[0]) < threshold:
+            colors.append("#ffc107")  # amber — borderline
+        else:
+            colors.append("#198754")  # green — confident
+
+    bars = ax.bar(range(len(ranges)), counts, color=colors, edgecolor="white", linewidth=0.5)
+
+    # Threshold line
+    for i, r in enumerate(ranges):
+        lo = float(r.split("-")[0])
+        hi = float(r.split("-")[1])
+        if lo <= threshold <= hi:
+            frac = (threshold - lo) / (hi - lo)
+            x_pos = i - 0.5 + frac
+            ax.axvline(x=x_pos, color="#333", linestyle="--", linewidth=2, alpha=0.8)
+            ax.text(x_pos + 0.1, max(counts) * 0.9,
+                    f"Threshold: {threshold:.0%}",
+                    fontsize=10, fontweight="bold", color="#333")
+            break
+
+    # Value labels on bars
+    for bar, count in zip(bars, counts):
+        if count > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(counts) * 0.02,
+                    str(count), ha="center", va="bottom", fontsize=9, fontweight="bold")
+
+    ax.set_xticks(range(len(ranges)))
+    ax.set_xticklabels(ranges, fontsize=9)
+    ax.set_xlabel("Max Predicted Probability", fontsize=11)
+    ax.set_ylabel("Number of Samples", fontsize=11)
+    ax.set_title(title, fontsize=12, fontweight="bold")
+
+    # Legend annotation
+    legend_text = (
+        f"Abstention rate: {abstention_rate:.1f}%\n"
+        f"Overall accuracy: {accuracy_overall:.1%}\n"
+        f"Confident-only accuracy: {accuracy_confident:.1%}\n"
+        f"Accuracy gain: {accuracy_confident - accuracy_overall:+.1%}"
+    )
+    ax.text(0.98, 0.95, legend_text, transform=ax.transAxes,
+            fontsize=9, verticalalignment="top", horizontalalignment="right",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", alpha=0.9))
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    return fig

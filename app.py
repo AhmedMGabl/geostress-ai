@@ -62,7 +62,7 @@ from src.visualization import (
     plot_mohr_circle, plot_tendency, plot_depth_profile,
     plot_analysis_dashboard,
     plot_model_comparison, plot_learning_curve, plot_bootstrap_ci,
-    plot_confusion_matrix,
+    plot_confusion_matrix, plot_abstention_chart,
 )
 
 # ── Globals ──────────────────────────────────────────
@@ -2879,6 +2879,22 @@ async def run_predict_with_abstention(request: Request):
         "abstained": result.get("abstained_predictions"),
         "accuracy_confident": result.get("accuracy_confident_only"),
     })
+
+    # Generate confidence distribution chart
+    if result.get("confidence_distribution"):
+        try:
+            fig = await asyncio.to_thread(
+                render_plot, plot_abstention_chart,
+                result["confidence_distribution"],
+                threshold=threshold,
+                abstention_rate=result.get("abstention_rate", 0),
+                accuracy_overall=result.get("accuracy_overall", 0),
+                accuracy_confident=result.get("accuracy_confident_only", 0),
+                title=f"Abstention — Well {well} (threshold {threshold:.0%})",
+            )
+            result["chart_img"] = fig
+        except Exception:
+            pass
 
     return _sanitize_for_json(result)
 

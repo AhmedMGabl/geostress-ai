@@ -4346,8 +4346,11 @@ async function runPredictWithAbstention() {
             (r.accuracy_confident_only * 100).toFixed(1) + '%</div></div></div></div></div>';
         html += '</div>';
 
-        // Confidence distribution
-        if (r.confidence_distribution) {
+        // Confidence distribution chart (server-rendered or JS fallback)
+        if (r.chart_img) {
+            html += '<div class="text-center mb-3"><img src="data:image/png;base64,' + r.chart_img +
+                '" class="img-fluid" alt="Abstention confidence distribution"></div>';
+        } else if (r.confidence_distribution) {
             html += '<h6><i class="bi bi-bar-chart"></i> Confidence Distribution</h6>';
             html += '<div class="d-flex gap-1 mb-3">';
             var maxCount = Math.max.apply(null, r.confidence_distribution.map(function(b) { return b.count; }));
