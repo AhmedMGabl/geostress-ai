@@ -1514,9 +1514,133 @@ async function generateReport() {
 }
 
 
+// ── Bayesian MCMC ────────────────────────────────
+
+async function runBayesian() {
+    showLoading("Running Bayesian MCMC (may take 30-60s)");
+    try {
+        var well = document.getElementById("well-select").value || null;
+        var regime = document.getElementById("regime-select").value;
+        var depth = parseFloat(document.getElementById("depth-input").value) || 3000;
+        var pp = getPorePresure();
+
+        var r = await api("/api/analysis/bayesian", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, well: well, regime: regime, depth: depth, pore_pressure: pp, fast: true})
+        });
+
+        if (!r.available) {
+            showToast(r.error || "Bayesian MCMC not available", "Error");
+            return;
+        }
+
+        var resultsEl = document.getElementById("bayesian-results");
+        resultsEl.classList.remove("d-none");
+
+        // Convergence badge
+        var convBadge = document.getElementById("bayes-convergence");
+        convBadge.textContent = r.converged ? "Converged" : "May need more steps";
+        convBadge.className = "badge ms-2 bg-" + (r.converged ? "success" : "warning");
+
+        // Stakeholder summary
+        document.getElementById("bayes-summary").textContent = r.stakeholder_summary || "";
+
+        // Parameter table
+        var paramsBody = document.getElementById("bayes-params-body");
+        clearChildren(paramsBody);
+
+        var paramLabels = {
+            sigma1: "Maximum stress (sigma1)",
+            sigma3: "Minimum stress (sigma3)",
+            sigma2: "Intermediate stress (sigma2)",
+            R: "R ratio",
+            SHmax_azimuth: "SHmax direction",
+            mu: "Friction coefficient"
+        };
+        var paramUnits = {sigma1: " MPa", sigma3: " MPa", sigma2: " MPa", R: "", SHmax_azimuth: "deg", mu: ""};
+
+        var tbl = '<table class="table table-sm"><thead><tr><th>Parameter</th><th>Best Fit</th><th>Median</th><th>68% CI</th><th>90% CI</th></tr></thead><tbody>';
+        for (var pName in r.parameters) {
+            var p = r.parameters[pName];
+            var unit = paramUnits[pName] || "";
+            var label = paramLabels[pName] || pName;
+            tbl += '<tr><td>' + label + '</td>' +
+                '<td>' + (p.best_fit != null ? fmt(p.best_fit, 2) + unit : '-') + '</td>' +
+                '<td>' + fmt(p.median, 2) + unit + '</td>' +
+                '<td>' + fmt(p.ci_68[0], 2) + ' – ' + fmt(p.ci_68[1], 2) + unit + '</td>' +
+                '<td>' + fmt(p.ci_90[0], 2) + ' – ' + fmt(p.ci_90[1], 2) + unit + '</td></tr>';
+        }
+        tbl += '</tbody></table>';
+        paramsBody.innerHTML = tbl;
+
+        // Metadata
+        document.getElementById("bayes-meta").textContent =
+            r.n_samples + " posterior samples | " +
+            r.nwalkers + " walkers x " + r.nsteps + " steps | " +
+            "Acceptance: " + (r.acceptance_fraction * 100).toFixed(1) + "%";
+
+        showToast("Bayesian uncertainty computed: " + r.n_samples + " posterior samples");
+    } catch (err) {
+        showToast("Bayesian error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Auto-Analysis Overview ───────────────────────
+
+async function runOverview() {
+    try {
+        var well = document.getElementById("well-select").value || null;
+        var regime = document.getElementById("regime-select").value;
+        var depth = parseFloat(document.getElementById("depth-input").value) || 3000;
+
+        var r = await api("/api/analysis/overview", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, well: well, regime: regime, depth: depth})
+        });
+
+        var panel = document.getElementById("overview-panel");
+        panel.classList.remove("d-none");
+
+        // SHmax
+        var stress = r.stress || {};
+        val("ov-shmax", stress.shmax ? stress.shmax + "\u00B0" : "N/A");
+
+        // Critically stressed
+        var cs = r.critically_stressed || {};
+        val("ov-cs", cs.pct != null ? cs.pct + "%" : "N/A");
+
+        // Risk
+        var risk = r.risk || {};
+        var riskEl = document.getElementById("ov-risk");
+        riskEl.textContent = risk.level || "N/A";
+        riskEl.className = "metric-value text-" + (risk.level === "LOW" ? "success" : risk.level === "MODERATE" ? "warning" : "danger");
+
+        // Quality
+        var dq = r.data_quality || {};
+        val("ov-quality", dq.grade || "N/A");
+
+        // Go/No-Go
+        var gonogoEl = document.getElementById("ov-gonogo");
+        gonogoEl.textContent = risk.go_nogo || "N/A";
+        gonogoEl.className = "metric-value " + (risk.go_nogo === "GO" ? "text-success" : risk.go_nogo === "CONDITIONAL" ? "text-warning" : "text-danger");
+
+    } catch (err) {
+        // Overview is not critical, don't show error toast
+        console.warn("Overview failed:", err.message);
+    }
+}
+
+
 // ── Init ──────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", function() {
     loadSummary();
     loadFeedbackSummary();
+    // Auto-run overview after a short delay (let summary load first)
+    setTimeout(function() { runOverview(); }, 500);
 });

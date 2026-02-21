@@ -195,6 +195,27 @@
                         </div>
                     </div>
 
+                    <!-- Auto-Analysis Overview -->
+                    <div id="overview-panel" class="d-none mb-4">
+                        <div class="card border-dark">
+                            <div class="card-header bg-dark text-white">
+                                <i class="bi bi-speedometer2"></i> Quick Analysis Overview
+                                <button class="btn btn-sm btn-outline-light float-end" onclick="runOverview()">
+                                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="row g-3 text-center">
+                                    <div class="col"><div class="metric-card"><div class="metric-label">SHmax Direction</div><div class="metric-value" id="ov-shmax">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">Critically Stressed</div><div class="metric-value" id="ov-cs">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">Risk Level</div><div class="metric-value" id="ov-risk">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">Data Quality</div><div class="metric-value" id="ov-quality">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">Decision</div><div class="metric-value" id="ov-gonogo">--</div></div></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Quick Navigation for Stakeholders -->
                     <div class="card mb-4 border-info">
                         <div class="card-header bg-info bg-opacity-10">
@@ -305,6 +326,24 @@
                         <button class="btn btn-outline-secondary btn-sm" onclick="runAllRegimes()">
                             <i class="bi bi-arrow-repeat"></i> Compare All Regimes
                         </button>
+                        <button class="btn btn-outline-info btn-sm" onclick="runBayesian()">
+                            <i class="bi bi-distribute-vertical"></i> Bayesian Uncertainty
+                        </button>
+                    </div>
+
+                    <!-- Bayesian MCMC Results -->
+                    <div id="bayesian-results" class="d-none mb-4">
+                        <div class="card border-info">
+                            <div class="card-header bg-info bg-opacity-10">
+                                <i class="bi bi-distribute-vertical"></i> Bayesian MCMC Uncertainty Bounds
+                                <span class="badge bg-info ms-2" id="bayes-convergence"></span>
+                            </div>
+                            <div class="card-body">
+                                <p class="small text-muted" id="bayes-summary"></p>
+                                <div id="bayes-params-body"></div>
+                                <div class="mt-2 small text-muted" id="bayes-meta"></div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Results metrics -->

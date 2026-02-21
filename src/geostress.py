@@ -295,7 +295,8 @@ def log_prior(params: np.ndarray, bounds: list) -> float:
 
 
 def log_likelihood(params: np.ndarray, normals: np.ndarray,
-                   regime: str, cohesion: float, sigma_obs: float = 5.0) -> float:
+                   regime: str, cohesion: float, pore_pressure: float = 0.0,
+                   sigma_obs: float = 5.0) -> float:
     """Log-likelihood assuming Gaussian errors on Mohr-Coulomb misfit."""
     sigma1, sigma3, R, shmax_az, mu = _unpack_params(params)
     if sigma1 <= sigma3:
@@ -303,17 +304,17 @@ def log_likelihood(params: np.ndarray, normals: np.ndarray,
 
     S = build_stress_tensor(sigma1, sigma3, R, shmax_az, regime)
     sigma_n, tau = resolve_stress_on_planes(S, normals)
-    misfit = mohr_coulomb_misfit(sigma_n, tau, mu, cohesion)
+    misfit = mohr_coulomb_misfit(sigma_n, tau, mu, cohesion, pore_pressure)
 
     # Gaussian log-likelihood
     return -0.5 * np.sum((misfit / sigma_obs) ** 2)
 
 
-def log_posterior(params, normals, regime, cohesion, bounds, sigma_obs):
+def log_posterior(params, normals, regime, cohesion, pore_pressure, bounds, sigma_obs):
     lp = log_prior(params, bounds)
     if not np.isfinite(lp):
         return -np.inf
-    return lp + log_likelihood(params, normals, regime, cohesion, sigma_obs)
+    return lp + log_likelihood(params, normals, regime, cohesion, pore_pressure, sigma_obs)
 
 
 def bayesian_inversion(
@@ -321,9 +322,12 @@ def bayesian_inversion(
     initial_result: dict,
     regime: str = "strike_slip",
     cohesion: float = 0.0,
+    pore_pressure: float = 0.0,
+    depth_m: float = 3000.0,
     nwalkers: int = 32,
     nsteps: int = 2000,
     burnin: int = 500,
+    fast: bool = False,
 ) -> dict:
     """Run Bayesian MCMC inversion using emcee.
 
@@ -332,20 +336,30 @@ def bayesian_inversion(
     normals : (N, 3) fracture plane normals
     initial_result : dict from invert_stress() for initialization
     regime, cohesion : Same as invert_stress
+    pore_pressure : Pore fluid pressure in MPa
+    depth_m : Average depth for bound estimation
     nwalkers : Number of MCMC walkers
     nsteps : Total steps per walker
     burnin : Steps to discard as burn-in
+    fast : If True, use reduced steps (500/150) for quicker results
 
     Returns
     -------
-    dict with posterior samples and statistics
+    dict with posterior statistics (no raw samples for API serialization)
     """
     try:
         import emcee
     except ImportError:
-        raise ImportError("Install emcee: pip install emcee")
+        return {
+            "available": False,
+            "error": "emcee not installed. Run: pip install emcee",
+        }
 
-    depth_m = 3000.0
+    if fast:
+        nsteps = 500
+        burnin = 150
+        nwalkers = 16
+
     sv_est = 2500 * 9.81 * depth_m / 1e6
 
     bounds = [
@@ -376,14 +390,14 @@ def bayesian_inversion(
 
     sampler = emcee.EnsembleSampler(
         nwalkers, ndim, log_posterior,
-        args=(normals, regime, cohesion, bounds, sigma_obs),
+        args=(normals, regime, cohesion, pore_pressure, bounds, sigma_obs),
     )
 
-    sampler.run_mcmc(p0, nsteps, progress=True)
+    sampler.run_mcmc(p0, nsteps, progress=False)
 
     # Extract posterior samples (after burn-in)
     samples = sampler.get_chain(discard=burnin, flat=True)
-    labels = ["sigma1", "sigma2_proxy", "R", "SHmax_az", "mu"]
+    param_names = ["sigma1", "sigma3", "R", "SHmax_azimuth", "mu"]
 
     # Compute sigma2 for each sample
     sigma2_samples = samples[:, 1] + samples[:, 2] * (samples[:, 0] - samples[:, 1])
@@ -391,23 +405,90 @@ def bayesian_inversion(
     # Summary statistics
     medians = np.median(samples, axis=0)
     stds = np.std(samples, axis=0)
+    q5 = np.percentile(samples, 5, axis=0)
     q16 = np.percentile(samples, 16, axis=0)
     q84 = np.percentile(samples, 84, axis=0)
+    q95 = np.percentile(samples, 95, axis=0)
+
+    # Per-parameter results for frontend display
+    parameters = {}
+    for i, name in enumerate(param_names):
+        parameters[name] = {
+            "median": round(float(medians[i]), 3),
+            "std": round(float(stds[i]), 3),
+            "ci_68": [round(float(q16[i]), 3), round(float(q84[i]), 3)],
+            "ci_90": [round(float(q5[i]), 3), round(float(q95[i]), 3)],
+            "best_fit": round(float(p0_center[i]), 3),
+        }
+
+    # Sigma2 derived statistics
+    parameters["sigma2"] = {
+        "median": round(float(np.median(sigma2_samples)), 3),
+        "std": round(float(np.std(sigma2_samples)), 3),
+        "ci_68": [round(float(np.percentile(sigma2_samples, 16)), 3),
+                   round(float(np.percentile(sigma2_samples, 84)), 3)],
+        "ci_90": [round(float(np.percentile(sigma2_samples, 5)), 3),
+                   round(float(np.percentile(sigma2_samples, 95)), 3)],
+    }
+
+    # Convergence diagnostics
+    try:
+        autocorr = sampler.get_autocorr_time(quiet=True)
+        converged = all(nsteps > 50 * tau for tau in autocorr)
+    except Exception:
+        autocorr = None
+        converged = nsteps >= 1000  # rough heuristic
+
+    # Acceptance fraction
+    acc_frac = float(np.mean(sampler.acceptance_fraction))
 
     return {
-        "samples": samples,
-        "labels": ["sigma1", "sigma3", "R", "SHmax_azimuth", "mu"],
-        "medians": dict(zip(["sigma1", "sigma3", "R", "SHmax_azimuth", "mu"], medians)),
-        "stds": dict(zip(["sigma1", "sigma3", "R", "SHmax_azimuth", "mu"], stds)),
-        "ci_68": {
-            name: (lo, hi)
-            for name, lo, hi in zip(
-                ["sigma1", "sigma3", "R", "SHmax_azimuth", "mu"], q16, q84
-            )
-        },
-        "sigma2_samples": sigma2_samples,
-        "sampler": sampler,
+        "available": True,
+        "parameters": parameters,
+        "nwalkers": nwalkers,
+        "nsteps": nsteps,
+        "burnin": burnin,
+        "n_samples": len(samples),
+        "acceptance_fraction": round(acc_frac, 3),
+        "converged": converged,
+        "convergence_note": (
+            "Chain appears converged." if converged
+            else "Chain may not be fully converged. Consider running with more steps."
+        ),
+        "pore_pressure": round(float(pore_pressure), 2),
+        "regime": regime,
+        "stakeholder_summary": _bayesian_stakeholder_summary(parameters, converged),
     }
+
+
+def _bayesian_stakeholder_summary(parameters: dict, converged: bool) -> str:
+    """Generate plain-language summary of Bayesian uncertainty for stakeholders."""
+    s1 = parameters["sigma1"]
+    shmax = parameters["SHmax_azimuth"]
+    mu = parameters["mu"]
+
+    parts = [
+        f"Maximum stress (sigma1): {s1['median']:.1f} MPa "
+        f"(90% CI: {s1['ci_90'][0]:.1f}-{s1['ci_90'][1]:.1f} MPa). ",
+        f"Maximum horizontal stress direction: {shmax['median']:.0f} degrees "
+        f"(90% CI: {shmax['ci_90'][0]:.0f}-{shmax['ci_90'][1]:.0f} degrees). ",
+        f"Friction coefficient: {mu['median']:.2f} "
+        f"(90% CI: {mu['ci_90'][0]:.2f}-{mu['ci_90'][1]:.2f}). ",
+    ]
+
+    if shmax['ci_90'][1] - shmax['ci_90'][0] > 60:
+        parts.append(
+            "WARNING: SHmax direction is poorly constrained (>60 degree range). "
+            "Drilling azimuth recommendations have high uncertainty."
+        )
+
+    if not converged:
+        parts.append(
+            "NOTE: MCMC chain may not have fully converged. "
+            "Results should be treated as preliminary."
+        )
+
+    return "".join(parts)
 
 
 if __name__ == "__main__":

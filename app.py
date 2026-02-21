@@ -26,7 +26,7 @@ from src.data_loader import (
     fracture_plane_normal, AZIMUTH_COL, DIP_COL, DEPTH_COL,
     WELL_COL, FRACTURE_TYPE_COL,
 )
-from src.geostress import invert_stress
+from src.geostress import invert_stress, bayesian_inversion
 from src.fracture_analysis import (
     classify_fracture_types, cluster_fracture_sets, identify_critically_stressed,
 )
@@ -676,6 +676,51 @@ async def run_sensitivity(request: Request):
     return response
 
 
+# ── Bayesian MCMC Inversion ──────────────────────────
+
+@app.post("/api/analysis/bayesian")
+async def run_bayesian(request: Request):
+    """Run Bayesian MCMC inversion for proper uncertainty bounds.
+
+    Produces posterior distributions and confidence intervals on all
+    5 stress parameters. Gives stakeholders error bars, not just point
+    estimates.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", None)
+    regime = body.get("regime", "strike_slip")
+    depth_m = float(body.get("depth", 3000))
+    pore_pressure = body.get("pore_pressure", None)
+    fast = body.get("fast", True)
+
+    df = get_df(source)
+    if well:
+        df = df[df[WELL_COL] == well]
+
+    normals = fracture_plane_normal(
+        df[AZIMUTH_COL].values, df[DIP_COL].values
+    )
+    pp = float(pore_pressure) if pore_pressure else None
+
+    # Run optimization first (gives initial point for MCMC)
+    inv_result = await asyncio.to_thread(
+        invert_stress, normals, regime=regime,
+        depth_m=depth_m, pore_pressure=pp,
+    )
+
+    pp_val = inv_result.get("pore_pressure", 0.0)
+
+    # Run MCMC
+    bayes_result = await asyncio.to_thread(
+        bayesian_inversion, normals, inv_result,
+        regime=regime, pore_pressure=pp_val,
+        depth_m=depth_m, fast=fast,
+    )
+
+    return _sanitize_for_json(bayes_result)
+
+
 # ── Risk Assessment Matrix ───────────────────────────
 
 @app.post("/api/analysis/risk-matrix")
@@ -815,3 +860,83 @@ async def run_well_comparison(request: Request):
         compare_wells, df, depth_m=depth_m,
     )
     return _sanitize_for_json(result)
+
+
+# ── Auto-Analysis Overview ───────────────────────────
+
+@app.post("/api/analysis/overview")
+async def run_overview(request: Request):
+    """Quick analysis overview for immediate insights on page load.
+
+    Runs a fast stress inversion, data quality check, and risk estimate
+    to give stakeholders the big picture without clicking through tabs.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", None)
+    regime = body.get("regime", "strike_slip")
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    if well:
+        well_name = well
+        df_well = df[df[WELL_COL] == well]
+    else:
+        well_name = "All Wells"
+        df_well = df
+
+    overview = {
+        "well": well_name,
+        "n_fractures": len(df_well),
+        "n_wells": df[WELL_COL].nunique() if WELL_COL in df.columns else 0,
+    }
+
+    # Data quality (instant)
+    quality = validate_data_quality(df_well)
+    overview["data_quality"] = {
+        "score": quality["score"],
+        "grade": quality["grade"],
+    }
+
+    # Fast stress inversion
+    try:
+        normals = fracture_plane_normal(
+            df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+        )
+        inv = await asyncio.to_thread(
+            invert_stress, normals, regime=regime, depth_m=depth_m,
+        )
+        pp_val = inv.get("pore_pressure", 0.0)
+
+        overview["stress"] = {
+            "sigma1": round(inv["sigma1"], 1),
+            "sigma3": round(inv["sigma3"], 1),
+            "shmax": round(inv["shmax_azimuth_deg"], 0),
+            "regime": regime,
+            "mu": round(inv["mu"], 3),
+        }
+
+        # Quick critically stressed
+        cs = critically_stressed_enhanced(
+            inv["sigma_n"], inv["tau"],
+            mu=inv["mu"], pore_pressure=pp_val,
+        )
+        overview["critically_stressed"] = {
+            "pct": round(cs["pct_critical"], 1),
+            "high_risk": cs["high_risk_count"],
+            "total": cs["total"],
+        }
+
+        # Quick risk estimate (without model comparison or sensitivity)
+        risk = compute_risk_matrix(inv, cs, quality)
+        overview["risk"] = {
+            "score": risk["overall_score"],
+            "level": risk["overall_level"],
+            "go_nogo": risk["go_nogo"],
+        }
+
+    except Exception as e:
+        overview["stress"] = {"error": str(e)[:100]}
+        overview["risk"] = {"level": "UNKNOWN", "go_nogo": "Cannot assess"}
+
+    return _sanitize_for_json(overview)
