@@ -1599,17 +1599,38 @@ async def run_overview(request: Request):
         except Exception:
             return {"data_recommendations": None, "_elapsed": round(time.monotonic() - t0, 2)}
 
-    # Fire all 3 concurrently
+    # Fire all 3 concurrently with per-task timeouts
+    async def _with_timeout(coro, label, timeout_s=8.0):
+        """Run coroutine with timeout — return partial result on timeout."""
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout_s)
+        except asyncio.TimeoutError:
+            return {"_timeout": True, "_label": label, "_elapsed": timeout_s}
+
     stress_res, cal_res, recs_res = await asyncio.gather(
-        _stress_chain(), _calibration(), _data_recs()
+        _with_timeout(_stress_chain(), "stress", 10.0),
+        _with_timeout(_calibration(), "calibration", 5.0),
+        _with_timeout(_data_recs(), "recommendations", 3.0),
     )
 
-    # Merge results
-    for key in ("stress", "regime_detection", "critically_stressed", "risk"):
-        if key in stress_res:
-            overview[key] = stress_res[key]
-    overview["calibration"] = cal_res.get("calibration")
-    overview["data_recommendations"] = recs_res.get("data_recommendations")
+    # Merge results (handle timeouts gracefully)
+    if stress_res.get("_timeout"):
+        overview["stress"] = {"error": "Timed out (>10s) — try cached mode"}
+        overview["risk"] = {"level": "UNKNOWN", "go_nogo": "Timed out"}
+    else:
+        for key in ("stress", "regime_detection", "critically_stressed", "risk"):
+            if key in stress_res:
+                overview[key] = stress_res[key]
+
+    if cal_res.get("_timeout"):
+        overview["calibration"] = None
+    else:
+        overview["calibration"] = cal_res.get("calibration")
+
+    if recs_res.get("_timeout"):
+        overview["data_recommendations"] = None
+    else:
+        overview["data_recommendations"] = recs_res.get("data_recommendations")
 
     # Timing breakdown for transparency
     total_elapsed = round(time.monotonic() - t_start, 2)
