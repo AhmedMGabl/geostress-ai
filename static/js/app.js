@@ -6,13 +6,24 @@ var feedbackRating = 3;
 
 // ── Helpers ───────────────────────────────────────
 
+var _loadingTimer = null;
+var _loadingStart = 0;
+
 function showLoading(text) {
-    document.getElementById("loading-text").textContent = text || "Processing...";
+    var el = document.getElementById("loading-text");
+    el.textContent = text || "Processing";
     document.getElementById("loading-overlay").classList.remove("d-none");
+    _loadingStart = Date.now();
+    if (_loadingTimer) clearInterval(_loadingTimer);
+    _loadingTimer = setInterval(function() {
+        var elapsed = Math.round((Date.now() - _loadingStart) / 1000);
+        el.textContent = (text || "Processing") + " (" + elapsed + "s)";
+    }, 1000);
 }
 
 function hideLoading() {
     document.getElementById("loading-overlay").classList.add("d-none");
+    if (_loadingTimer) { clearInterval(_loadingTimer); _loadingTimer = null; }
 }
 
 function showToast(msg, title) {

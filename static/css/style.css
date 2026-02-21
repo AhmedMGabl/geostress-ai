@@ -252,6 +252,44 @@ body {
     border-color: #2563eb;
 }
 
+/* Quality grade colors */
+.quality-A { border-left: 4px solid #16a34a; }
+.quality-B { border-left: 4px solid #3b82f6; }
+.quality-C { border-left: 4px solid #d97706; }
+.quality-D { border-left: 4px solid #ea580c; }
+.quality-F { border-left: 4px solid #dc2626; }
+
+/* SHAP bars use indigo */
+.shap-bar .feat-bar-fill {
+    background: #6366f1;
+}
+
+/* Correction highlight */
+.correction-pending {
+    border-left: 3px solid #d97706;
+    background: #fffbeb;
+}
+
+/* Animated loading text */
+@keyframes ellipsis {
+    0% { content: '.'; }
+    33% { content: '..'; }
+    66% { content: '...'; }
+}
+#loading-text::after {
+    content: '';
+    animation: ellipsis 1.5s infinite;
+}
+
+/* Print styles for stakeholder reports */
+@media print {
+    #sidebar, .topbar, .btn, #loading-overlay { display: none !important; }
+    .content-area { max-width: 100%; padding: 0 !important; }
+    .d-flex { display: block !important; }
+    main { margin: 0; }
+    .card { break-inside: avoid; margin-bottom: 1rem; }
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     #sidebar { width: 220px; }

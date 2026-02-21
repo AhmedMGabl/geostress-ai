@@ -121,9 +121,29 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="2.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+
+# ── Global error handler for production safety ───────
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch unhandled errors and return a clean JSON response.
+
+    Never expose raw tracebacks in production.
+    """
+    import traceback
+    traceback.print_exc()  # Log to server console for debugging
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "message": str(exc)[:200],  # Truncate to avoid leaking details
+            "suggestion": "Try again or contact support if the issue persists.",
+        },
+    )
 
 
 # ── Page routes ──────────────────────────────────────
