@@ -531,7 +531,7 @@
                             <div class="card-body p-0">
                                 <table class="table table-striped mb-0" id="mc-ranking-table">
                                     <thead><tr>
-                                        <th>Rank</th><th>Model</th><th>CV Accuracy</th><th>F1 Score</th>
+                                        <th>Rank</th><th>Model</th><th>CV Accuracy</th><th>F1 Score</th><th>Overfit Gap</th>
                                     </tr></thead>
                                     <tbody></tbody>
                                 </table>
@@ -575,6 +575,41 @@
                                         <strong>What this means:</strong> Conformal prediction provides calibrated confidence scores.
                                         Fractures with &lt;50% confidence should be reviewed by an expert before operational decisions.
                                     </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Generalization Assessment -->
+                        <div id="mc-generalization" class="d-none mb-4">
+                            <div class="card border-warning">
+                                <div class="card-header bg-warning bg-opacity-10">
+                                    <i class="bi bi-clipboard-check"></i> Generalization Assessment
+                                </div>
+                                <div class="card-body">
+                                    <div class="row g-3 mb-3">
+                                        <div class="col-md-4">
+                                            <div class="text-center p-2 bg-light rounded">
+                                                <div class="small text-muted">Train-Test Gap</div>
+                                                <div class="fw-bold fs-5" id="mc-gen-gap">--</div>
+                                                <div class="small text-muted">&lt;5% is good</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="text-center p-2 bg-light rounded">
+                                                <div class="small text-muted">CV Stability (std)</div>
+                                                <div class="fw-bold fs-5" id="mc-gen-stability">--</div>
+                                                <div class="small text-muted">&lt;5% is stable</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="text-center p-2 bg-light rounded">
+                                                <div class="small text-muted">Min Class Size</div>
+                                                <div class="fw-bold fs-5" id="mc-gen-min-class">--</div>
+                                                <div class="small text-muted">&ge;30 for reliable metrics</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="mc-gen-warnings"></div>
                                 </div>
                             </div>
                         </div>

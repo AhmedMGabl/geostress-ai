@@ -306,8 +306,25 @@ def compare_models(
                 coef = np.abs(model.coef_).mean(axis=0)
                 feat_imp = dict(zip(features.columns, coef))
 
+            train_acc = float(accuracy_score(y, y_pred_full))
+            cv_acc = float(acc_scores.mean())
+
+            # Per-class metrics from cross-validated predictions
+            per_class = {}
+            class_prec = precision_score(y, y_pred_cv, average=None, zero_division=0)
+            class_rec = recall_score(y, y_pred_cv, average=None, zero_division=0)
+            class_f1 = f1_score(y, y_pred_cv, average=None, zero_division=0)
+            class_counts = np.bincount(y, minlength=len(le.classes_))
+            for ci, cname in enumerate(le.classes_):
+                per_class[cname] = {
+                    "precision": round(float(class_prec[ci]), 3),
+                    "recall": round(float(class_rec[ci]), 3),
+                    "f1": round(float(class_f1[ci]), 3),
+                    "support": int(class_counts[ci]),
+                }
+
             results[name] = {
-                "cv_accuracy_mean": float(acc_scores.mean()),
+                "cv_accuracy_mean": cv_acc,
                 "cv_accuracy_std": float(acc_scores.std()),
                 "cv_accuracy_scores": acc_scores.tolist(),
                 "cv_f1_mean": float(f1_scores.mean()),
@@ -323,7 +340,9 @@ def compare_models(
                     k: round(float(v), 4) for k, v in feat_imp.items()
                 },
                 "class_names": le.classes_.tolist(),
-                "train_accuracy": float(accuracy_score(y, y_pred_full)),
+                "train_accuracy": train_acc,
+                "overfit_gap": round(train_acc - cv_acc, 3),
+                "per_class_metrics": per_class,
             }
 
     # ── Stacking Ensemble ──
@@ -338,9 +357,48 @@ def compare_models(
     )
     ranking = [
         {"rank": i + 1, "model": name, "accuracy": r["cv_accuracy_mean"],
-         "f1": r["cv_f1_mean"]}
+         "f1": r["cv_f1_mean"], "overfit_gap": r.get("overfit_gap", 0)}
         for i, (name, r) in enumerate(ranked)
     ]
+
+    # Generalization assessment
+    best_name, best_res = ranked[0] if ranked else (None, {})
+    gap = best_res.get("overfit_gap", 0) if best_res else 0
+    best_cv_std = best_res.get("cv_accuracy_std", 0) if best_res else 0
+    gen_warnings = []
+    if gap > 0.10:
+        gen_warnings.append(
+            f"The best model ({best_name}) shows significant overfitting "
+            f"(train-test gap = {gap:.1%}). Predictions on new data may be "
+            f"less accurate than reported."
+        )
+    if best_cv_std > 0.05:
+        gen_warnings.append(
+            f"Cross-validation scores have high variance (std = {best_cv_std:.1%}). "
+            f"Model performance is unstable across data splits."
+        )
+    # Check for under-represented classes
+    class_counts = np.bincount(y, minlength=len(le.classes_))
+    minority_classes = [
+        le.classes_[i] for i in range(len(le.classes_))
+        if class_counts[i] < 30
+    ]
+    if minority_classes:
+        gen_warnings.append(
+            f"Under-represented fracture types ({', '.join(minority_classes)}) "
+            f"have fewer than 30 samples. Per-class metrics for these types "
+            f"are unreliable. Collecting more samples will improve accuracy."
+        )
+    generalization = {
+        "overfit_gap": round(gap, 3),
+        "cv_stability": round(best_cv_std, 3),
+        "min_class_count": int(class_counts.min()),
+        "warnings": gen_warnings,
+        "recommendation": (
+            "Model generalizes well." if not gen_warnings
+            else f"{len(gen_warnings)} issue(s) detected. See warnings."
+        ),
+    }
 
     # Model agreement analysis (uncertainty signal)
     pred_matrix = np.array(list(all_preds.values()))  # (n_models, n_samples)
@@ -367,6 +425,7 @@ def compare_models(
             100 * float((agreement < 0.7).sum()) / len(y), 1
         ),
         "conformal": conformal,
+        "generalization": generalization,
     }
 
 
@@ -415,8 +474,25 @@ def _build_stacking_ensemble(X, y, cv, feature_names, le, fast=False) -> dict | 
             stack.fit(X, y)
             y_pred_full = stack.predict(X)
 
+            train_acc = float(accuracy_score(y, y_pred_full))
+            cv_acc = float(acc_scores.mean())
+
+            # Per-class metrics
+            per_class = {}
+            class_prec = precision_score(y, y_pred_cv, average=None, zero_division=0)
+            class_rec = recall_score(y, y_pred_cv, average=None, zero_division=0)
+            class_f1_vals = f1_score(y, y_pred_cv, average=None, zero_division=0)
+            class_counts = np.bincount(y, minlength=len(le.classes_))
+            for ci, cname in enumerate(le.classes_):
+                per_class[cname] = {
+                    "precision": round(float(class_prec[ci]), 3),
+                    "recall": round(float(class_rec[ci]), 3),
+                    "f1": round(float(class_f1_vals[ci]), 3),
+                    "support": int(class_counts[ci]),
+                }
+
             return {
-                "cv_accuracy_mean": float(acc_scores.mean()),
+                "cv_accuracy_mean": cv_acc,
                 "cv_accuracy_std": float(acc_scores.std()),
                 "cv_accuracy_scores": acc_scores.tolist(),
                 "cv_f1_mean": float(f1_scores.mean()),
@@ -430,7 +506,9 @@ def _build_stacking_ensemble(X, y, cv, feature_names, le, fast=False) -> dict | 
                 "confusion_matrix": confusion_matrix(y, y_pred_cv).tolist(),
                 "feature_importances": {},  # stacking doesn't have simple importances
                 "class_names": le.classes_.tolist(),
-                "train_accuracy": float(accuracy_score(y, y_pred_full)),
+                "train_accuracy": train_acc,
+                "overfit_gap": round(train_acc - cv_acc, 3),
+                "per_class_metrics": per_class,
                 "base_learners": [name for name, _ in base_estimators],
             }
     except Exception:

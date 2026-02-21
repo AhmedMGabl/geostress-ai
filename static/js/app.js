@@ -716,6 +716,55 @@ async function runModelComparison(fast) {
                     });
                 }
 
+                // Per-class metrics table
+                if (m.per_class_metrics && Object.keys(m.per_class_metrics).length > 0) {
+                    var pcTitle = document.createElement("h6");
+                    pcTitle.className = "mt-3";
+                    pcTitle.textContent = "Per-Class Performance";
+                    body.appendChild(pcTitle);
+
+                    var table = document.createElement("table");
+                    table.className = "table table-sm table-striped mb-0";
+                    var thead = document.createElement("thead");
+                    thead.innerHTML = "<tr><th>Class</th><th>Precision</th><th>Recall</th><th>F1</th><th>Samples</th></tr>";
+                    table.appendChild(thead);
+                    var tbody2 = document.createElement("tbody");
+
+                    Object.entries(m.per_class_metrics).forEach(function(entry) {
+                        var cls = entry[0], met = entry[1];
+                        var tr = document.createElement("tr");
+                        if (met.f1 === 0) tr.className = "table-danger";
+                        else if (met.f1 < 0.5) tr.className = "table-warning";
+                        tr.appendChild(createCell("td", cls));
+                        tr.appendChild(createCell("td", (met.precision * 100).toFixed(1) + "%"));
+                        tr.appendChild(createCell("td", (met.recall * 100).toFixed(1) + "%"));
+                        tr.appendChild(createCell("td", (met.f1 * 100).toFixed(1) + "%"));
+                        var countCell = createCell("td", met.support);
+                        if (met.support < 30) {
+                            countCell.className = "text-danger fw-bold";
+                            countCell.title = "Under-represented class (<30 samples)";
+                        }
+                        tr.appendChild(countCell);
+                        tbody2.appendChild(tr);
+                    });
+
+                    table.appendChild(tbody2);
+                    body.appendChild(table);
+                }
+
+                // Overfit gap indicator
+                if (m.overfit_gap !== undefined) {
+                    var gapDiv = document.createElement("div");
+                    gapDiv.className = "small mt-2";
+                    var gapPct = (m.overfit_gap * 100).toFixed(1);
+                    var gapColor = m.overfit_gap > 0.10 ? "text-danger" : m.overfit_gap > 0.05 ? "text-warning" : "text-success";
+                    gapDiv.innerHTML = 'Train-Test Gap: <span class="' + gapColor + ' fw-bold">' + gapPct + '%</span>' +
+                        (m.overfit_gap > 0.10 ? ' <i class="bi bi-exclamation-triangle text-danger"></i> Significant overfitting' :
+                         m.overfit_gap > 0.05 ? ' <i class="bi bi-info-circle text-warning"></i> Mild overfitting' :
+                         ' <i class="bi bi-check-circle text-success"></i> Good generalization');
+                    body.appendChild(gapDiv);
+                }
+
                 card.appendChild(body);
                 container.appendChild(card);
             });
@@ -731,6 +780,48 @@ async function runModelComparison(fast) {
             val("mc-conf-min", (r.conformal.min_confidence * 100).toFixed(1) + "%");
         } else {
             confSection.classList.add("d-none");
+        }
+
+        // Generalization assessment
+        var genSection = document.getElementById("mc-generalization");
+        if (r.generalization) {
+            genSection.classList.remove("d-none");
+            var gen = r.generalization;
+            val("mc-gen-gap", (gen.overfit_gap * 100).toFixed(1) + "%");
+            val("mc-gen-stability", (gen.cv_stability * 100).toFixed(1) + "%");
+            val("mc-gen-min-class", gen.min_class_count);
+
+            var genWarnings = document.getElementById("mc-gen-warnings");
+            clearChildren(genWarnings);
+            if (gen.warnings && gen.warnings.length > 0) {
+                gen.warnings.forEach(function(w) {
+                    var div = document.createElement("div");
+                    div.className = "alert alert-warning py-2 mb-2 small";
+                    div.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + w;
+                    genWarnings.appendChild(div);
+                });
+            } else {
+                var ok = document.createElement("div");
+                ok.className = "alert alert-success py-2 mb-2 small";
+                ok.innerHTML = '<i class="bi bi-check-circle me-1"></i>Model generalizes well. No significant overfitting or instability detected.';
+                genWarnings.appendChild(ok);
+            }
+        } else {
+            genSection.classList.add("d-none");
+        }
+
+        // Add overfit gap to ranking table
+        if (r.ranking) {
+            var rankingRows = document.querySelectorAll("#mc-ranking-table tbody tr");
+            r.ranking.forEach(function(row, idx) {
+                if (rankingRows[idx] && row.overfit_gap !== undefined) {
+                    var gapCell = createCell("td", (row.overfit_gap * 100).toFixed(1) + "%");
+                    if (row.overfit_gap > 0.10) gapCell.className = "text-danger";
+                    else if (row.overfit_gap > 0.05) gapCell.className = "text-warning";
+                    else gapCell.className = "text-success";
+                    rankingRows[idx].appendChild(gapCell);
+                }
+            });
         }
 
         showToast("Model comparison complete: " + (r.ranking ? r.ranking.length : 0) + " models evaluated" +
