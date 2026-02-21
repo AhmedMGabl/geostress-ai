@@ -22,7 +22,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v2.3</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v2.4</small>
             </div>
 
             <ul class="nav flex-column sidebar-nav">
@@ -104,7 +104,8 @@
                 <div class="mb-2">
                     <label class="form-label-sm">Stress Regime</label>
                     <select id="regime-select" class="form-select form-select-sm">
-                        <option value="strike_slip" selected>Strike-Slip</option>
+                        <option value="auto" selected>Auto (Best Fit)</option>
+                        <option value="strike_slip">Strike-Slip</option>
                         <option value="normal">Normal</option>
                         <option value="thrust">Thrust</option>
                     </select>
@@ -212,11 +213,14 @@
                             <div class="card-body">
                                 <div class="row g-3 text-center">
                                     <div class="col"><div class="metric-card"><div class="metric-label">SHmax Direction</div><div class="metric-value" id="ov-shmax">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">Stress Regime</div><div class="metric-value" id="ov-regime">--</div></div></div>
                                     <div class="col"><div class="metric-card"><div class="metric-label">Critically Stressed</div><div class="metric-value" id="ov-cs">--</div></div></div>
                                     <div class="col"><div class="metric-card"><div class="metric-label">Risk Level</div><div class="metric-value" id="ov-risk">--</div></div></div>
                                     <div class="col"><div class="metric-card"><div class="metric-label">Data Quality</div><div class="metric-value" id="ov-quality">--</div></div></div>
                                     <div class="col"><div class="metric-card"><div class="metric-label">Decision</div><div class="metric-value" id="ov-gonogo">--</div></div></div>
                                 </div>
+                                <!-- Warnings & Disclaimers -->
+                                <div id="ov-warnings" class="mt-3"></div>
                             </div>
                         </div>
                     </div>
@@ -330,7 +334,7 @@
 
                 <!-- INVERSION TAB (Enhanced) -->
                 <div id="tab-inversion" class="tab-content">
-                    <div class="d-flex gap-2 mb-3">
+                    <div class="d-flex gap-2 mb-3 flex-wrap">
                         <button class="btn btn-primary btn-sm" onclick="runInversion()">
                             <i class="bi bi-play-fill"></i> Run Inversion
                         </button>
@@ -340,6 +344,36 @@
                         <button class="btn btn-outline-info btn-sm" onclick="runBayesian()">
                             <i class="bi bi-distribute-vertical"></i> Bayesian Uncertainty
                         </button>
+                        <button class="btn btn-outline-success btn-sm" onclick="exportInversion()">
+                            <i class="bi bi-download"></i> Export Results (CSV)
+                        </button>
+                        <button class="btn btn-outline-success btn-sm" onclick="exportData()">
+                            <i class="bi bi-filetype-csv"></i> Export Raw Data
+                        </button>
+                    </div>
+
+                    <!-- Auto Regime Detection Banner -->
+                    <div id="auto-regime-banner" class="d-none mb-4">
+                        <div class="card border-success">
+                            <div class="card-header bg-success bg-opacity-10">
+                                <i class="bi bi-robot"></i> Automatic Regime Detection
+                                <span class="badge ms-2" id="auto-regime-confidence"></span>
+                            </div>
+                            <div class="card-body">
+                                <p id="auto-regime-summary" class="mb-3"></p>
+                                <div class="table-responsive">
+                                    <table class="table table-sm table-striped mb-0" id="auto-regime-table">
+                                        <thead><tr>
+                                            <th>Regime</th><th>Misfit</th>
+                                            <th>&sigma;1</th><th>&sigma;3</th>
+                                            <th>R</th><th>SHmax</th><th>&mu;</th>
+                                            <th></th>
+                                        </tr></thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Bayesian MCMC Results -->

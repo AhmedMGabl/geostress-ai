@@ -67,7 +67,7 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | GET | `/api/viz/rose` | Rose diagram |
 | GET | `/api/viz/stereonet` | Stereonet plot |
 | GET | `/api/viz/depth-profile` | Depth profile |
-| POST | `/api/analysis/inversion` | Stress inversion (with Pp, interpretation) |
+| POST | `/api/analysis/inversion` | Stress inversion (regime=auto runs all 3, picks best) |
 | POST | `/api/analysis/classify` | ML classification (enhanced features) |
 | POST | `/api/analysis/cluster` | Fracture clustering |
 | POST | `/api/analysis/compare-models` | Multi-model comparison (6 models) |
@@ -85,6 +85,8 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/uncertainty-budget` | Uncertainty source ranking + recommendations |
 | POST | `/api/analysis/active-learning` | Active learning: most uncertain samples for review |
 | GET | `/api/analysis/features` | Enhanced feature info |
+| POST | `/api/export/data` | Export fracture data as CSV |
+| POST | `/api/export/inversion` | Export inversion results + tendencies as CSV |
 
 ## Domain Concepts
 
@@ -127,3 +129,6 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Inversion results are cached by (source, well, regime, depth, pp) — cleared on data upload
 - Learning curve plateaus at ~87% with current features — suggests feature engineering matters more than more data
 - Boundary (13) and Continuous (46) fracture types are under-represented vs median 189
+- Auto regime detection runs all 3 regimes (~6s), ranks by total Mohr-Coulomb misfit
+- Both wells show LOW confidence for regime (ratio ~1.03-1.04) — data alone doesn't constrain regime
+- Export endpoints return CSV strings for browser download (no server-side file creation)

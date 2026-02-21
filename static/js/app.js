@@ -310,11 +310,15 @@ async function loadAllViz() {
 // ── Inversion (Enhanced with pore pressure + interpretation) ──
 
 async function runInversion() {
-    showLoading("Running stress inversion (with pore pressure correction)...");
+    var selectedRegime = document.getElementById("regime-select").value;
+    var loadingMsg = selectedRegime === "auto"
+        ? "Auto-detecting best stress regime (running all 3 inversions)..."
+        : "Running stress inversion (with pore pressure correction)...";
+    showLoading(loadingMsg);
     try {
         var body = {
             well: currentWell,
-            regime: document.getElementById("regime-select").value,
+            regime: selectedRegime,
             depth_m: parseFloat(document.getElementById("depth-input").value),
             cohesion: 0,
             source: currentSource,
@@ -352,7 +356,14 @@ async function runInversion() {
         setImg("dilation-img", r.dilation_tendency_img);
         setImg("dashboard-img", r.dashboard_img);
 
-        showToast("Inversion complete: SHmax=" + r.shmax_azimuth_deg + "\u00b0, Pp=" + (r.pore_pressure_mpa || 0).toFixed(1) + " MPa");
+        // Display auto-regime detection results if applicable
+        renderAutoRegime(r.auto_regime);
+
+        var regimeLabel = r.regime;
+        if (r.auto_regime) {
+            regimeLabel = r.auto_regime.best_regime + " (auto-detected, " + r.auto_regime.confidence + " confidence)";
+        }
+        showToast("Inversion complete: " + regimeLabel + ", SHmax=" + r.shmax_azimuth_deg + "\u00b0, Pp=" + (r.pore_pressure_mpa || 0).toFixed(1) + " MPa");
     } catch (err) {
         showToast("Inversion error: " + err.message, "Error");
     } finally {
@@ -442,6 +453,107 @@ function renderInterpretation(interp) {
             ? "Moderate risk level. Some fractures may be reactivated during operations."
             : "Low risk. Most fractures are stable under current stress conditions.");
         banner.classList.remove("d-none");
+    }
+}
+
+function renderAutoRegime(autoRegime) {
+    var banner = document.getElementById("auto-regime-banner");
+    if (!autoRegime) {
+        banner.classList.add("d-none");
+        return;
+    }
+    banner.classList.remove("d-none");
+
+    // Confidence badge
+    var badge = document.getElementById("auto-regime-confidence");
+    var confColors = { HIGH: "bg-success", MODERATE: "bg-warning text-dark", LOW: "bg-danger" };
+    badge.className = "badge ms-2 " + (confColors[autoRegime.confidence] || "bg-secondary");
+    badge.textContent = autoRegime.confidence + " Confidence";
+
+    // Summary
+    document.getElementById("auto-regime-summary").textContent = autoRegime.stakeholder_summary;
+
+    // Comparison table
+    var tbody = document.querySelector("#auto-regime-table tbody");
+    clearChildren(tbody);
+    autoRegime.comparison.forEach(function(row) {
+        var tr = document.createElement("tr");
+        if (row.is_best) tr.className = "table-success";
+
+        var tdName = document.createElement("td");
+        var strong = document.createElement("strong");
+        strong.textContent = row.regime.replace("_", "-");
+        tdName.appendChild(strong);
+        tr.appendChild(tdName);
+
+        tr.appendChild(createCell("td", row.misfit.toFixed(1)));
+        tr.appendChild(createCell("td", row.sigma1.toFixed(1)));
+        tr.appendChild(createCell("td", row.sigma3.toFixed(1)));
+        tr.appendChild(createCell("td", row.R.toFixed(3)));
+        tr.appendChild(createCell("td", row.shmax_azimuth_deg.toFixed(1) + "\u00b0"));
+        tr.appendChild(createCell("td", row.mu.toFixed(3)));
+
+        var tdBest = document.createElement("td");
+        if (row.is_best) {
+            var bestBadge = document.createElement("span");
+            bestBadge.className = "badge bg-success";
+            bestBadge.textContent = "BEST FIT";
+            tdBest.appendChild(bestBadge);
+        }
+        tr.appendChild(tdBest);
+        tbody.appendChild(tr);
+    });
+}
+
+function downloadCSV(csvContent, filename) {
+    var blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    var link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+}
+
+async function exportInversion() {
+    showLoading("Exporting inversion results...");
+    try {
+        var r = await api("/api/export/inversion", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                well: currentWell,
+                regime: document.getElementById("regime-select").value,
+                depth_m: parseFloat(document.getElementById("depth-input").value),
+                source: currentSource,
+                pore_pressure: getPorePresure()
+            })
+        });
+        downloadCSV(r.csv, r.filename);
+        showToast("Exported " + r.rows + " fractures with tendencies to " + r.filename);
+    } catch (err) {
+        showToast("Export error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+async function exportData() {
+    showLoading("Exporting fracture data...");
+    try {
+        var r = await api("/api/export/data", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                well: currentWell,
+                source: currentSource
+            })
+        });
+        downloadCSV(r.csv, r.filename);
+        showToast("Exported " + r.rows + " fractures to " + r.filename);
+    } catch (err) {
+        showToast("Export error: " + err.message, "Error");
+    } finally {
+        hideLoading();
     }
 }
 
@@ -1783,6 +1895,18 @@ async function runOverview() {
         var stress = r.stress || {};
         val("ov-shmax", stress.shmax ? stress.shmax + "\u00B0" : "N/A");
 
+        // Regime (auto-detected)
+        var regimeEl = document.getElementById("ov-regime");
+        if (r.regime_detection) {
+            var rd = r.regime_detection;
+            regimeEl.textContent = rd.best_regime.replace("_", "-");
+            var confColor = rd.confidence === "HIGH" ? "text-success" : rd.confidence === "MODERATE" ? "text-warning" : "text-danger";
+            regimeEl.className = "metric-value " + confColor;
+            regimeEl.title = rd.confidence + " confidence (misfit ratio: " + rd.misfit_ratio + ")";
+        } else {
+            val("ov-regime", stress.regime ? stress.regime.replace("_", "-") : "N/A");
+        }
+
         // Critically stressed
         var cs = r.critically_stressed || {};
         val("ov-cs", cs.pct != null ? cs.pct + "%" : "N/A");
@@ -1801,6 +1925,69 @@ async function runOverview() {
         var gonogoEl = document.getElementById("ov-gonogo");
         gonogoEl.textContent = risk.go_nogo || "N/A";
         gonogoEl.className = "metric-value " + (risk.go_nogo === "GO" ? "text-success" : risk.go_nogo === "CONDITIONAL" ? "text-warning" : "text-danger");
+
+        // Warnings and disclaimers
+        var warnings = document.getElementById("ov-warnings");
+        clearChildren(warnings);
+        var warningsList = [];
+
+        // Sample size warning
+        if (r.n_fractures < 50) {
+            warningsList.push({
+                type: "danger",
+                icon: "exclamation-triangle",
+                text: "Very small sample size (" + r.n_fractures + " fractures). Results have high uncertainty and should NOT be used for operational decisions without additional data."
+            });
+        } else if (r.n_fractures < 200) {
+            warningsList.push({
+                type: "warning",
+                icon: "exclamation-circle",
+                text: "Limited sample size (" + r.n_fractures + " fractures). Results should be validated with additional wellbore data or regional models."
+            });
+        }
+
+        // Regime confidence warning
+        if (r.regime_detection && r.regime_detection.confidence === "LOW") {
+            warningsList.push({
+                type: "warning",
+                icon: "question-circle",
+                text: "Stress regime is poorly constrained (all regimes fit similarly). Use regional tectonic knowledge or independent data (breakouts, focal mechanisms) to confirm the " + r.regime_detection.best_regime.replace("_", "-") + " regime."
+            });
+        }
+
+        // Data quality warning
+        if (dq.score != null && dq.score < 50) {
+            warningsList.push({
+                type: "danger",
+                icon: "shield-exclamation",
+                text: "Data quality is " + dq.grade + " (score " + dq.score + "/100). Significant data issues detected. Review data quality tab before relying on results."
+            });
+        }
+
+        // High risk warning
+        if (risk.level === "HIGH" || risk.go_nogo === "NO-GO") {
+            warningsList.push({
+                type: "danger",
+                icon: "sign-stop",
+                text: "HIGH RISK assessment. " + (cs.pct || 0) + "% of fractures are critically stressed. Operations near these fractures may trigger fault reactivation or induced seismicity."
+            });
+        }
+
+        // General operational disclaimer
+        if (warningsList.length > 0 || (risk.level !== "LOW")) {
+            warningsList.push({
+                type: "info",
+                icon: "info-circle",
+                text: "These results are model estimates based on fracture orientation data only. For operational decisions, integrate with regional stress models, wellbore stability analysis, and local geological knowledge. All analyses should be reviewed by a qualified geomechanics engineer."
+            });
+        }
+
+        warningsList.forEach(function(w) {
+            var div = document.createElement("div");
+            div.className = "alert alert-" + w.type + " py-2 mb-2 small";
+            div.innerHTML = '<i class="bi bi-' + w.icon + ' me-1"></i>' + w.text;
+            warnings.appendChild(div);
+        });
 
     } catch (err) {
         // Overview is not critical, don't show error toast

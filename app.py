@@ -26,7 +26,7 @@ from src.data_loader import (
     fracture_plane_normal, AZIMUTH_COL, DIP_COL, DEPTH_COL,
     WELL_COL, FRACTURE_TYPE_COL,
 )
-from src.geostress import invert_stress, bayesian_inversion
+from src.geostress import invert_stress, bayesian_inversion, auto_detect_regime
 from src.fracture_analysis import (
     classify_fracture_types, cluster_fracture_sets, identify_critically_stressed,
 )
@@ -58,6 +58,7 @@ uploaded_df: pd.DataFrame = None
 # Cache for expensive computations
 _model_comparison_cache = {}
 _inversion_cache = {}
+_auto_regime_cache = {}
 
 
 async def _cached_inversion(normals, well, regime, depth_m, pore_pressure, source):
@@ -142,7 +143,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="2.3.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="2.4.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -234,6 +235,7 @@ async def upload_file(file: UploadFile = File(...)):
         # Clear all caches when new data is uploaded
         _model_comparison_cache.clear()
         _inversion_cache.clear()
+        _auto_regime_cache.clear()
         _sensitivity_cache.clear()
         _shap_cache.clear()
         return {
@@ -322,10 +324,22 @@ async def run_inversion(request: Request):
     if np.isnan(avg_depth):
         avg_depth = depth_m
 
-    # Run inversion with pore pressure support (cached)
-    result = await _cached_inversion(
-        normals, well, regime, avg_depth, pore_pressure, source
-    )
+    # Auto-detect regime or use specified one
+    auto_detection = None
+    if regime == "auto":
+        auto_detection = await asyncio.to_thread(
+            auto_detect_regime, normals, avg_depth, cohesion, pore_pressure,
+        )
+        result = auto_detection["best_result"]
+        regime = auto_detection["best_regime"]
+        # Cache the best result for downstream use
+        pp_key = round(result["pore_pressure"], 1) if result.get("pore_pressure") else "auto"
+        cache_key = f"inv_{source}_{well}_{regime}_{avg_depth}_{pp_key}"
+        _inversion_cache[cache_key] = result
+    else:
+        result = await _cached_inversion(
+            normals, well, regime, avg_depth, pore_pressure, source
+        )
 
     # Generate plots
     mohr_img = await asyncio.to_thread(
@@ -357,7 +371,7 @@ async def run_inversion(request: Request):
     # Generate stakeholder interpretation
     interpretation = generate_interpretation(result, cs_result, well)
 
-    return _sanitize_for_json({
+    response = {
         "sigma1": round(float(result["sigma1"]), 2),
         "sigma2": round(float(result["sigma2"]), 2),
         "sigma3": round(float(result["sigma3"]), 2),
@@ -381,7 +395,19 @@ async def run_inversion(request: Request):
             "low": cs_result["low_risk_count"],
         },
         "interpretation": interpretation,
-    })
+    }
+
+    # Include auto-detection results if applicable
+    if auto_detection:
+        response["auto_regime"] = {
+            "best_regime": auto_detection["best_regime"],
+            "confidence": auto_detection["confidence"],
+            "misfit_ratio": auto_detection["misfit_ratio"],
+            "comparison": auto_detection["comparison"],
+            "stakeholder_summary": auto_detection["stakeholder_summary"],
+        }
+
+    return _sanitize_for_json(response)
 
 
 @app.post("/api/analysis/classify")
@@ -914,14 +940,34 @@ async def run_overview(request: Request):
         "grade": quality["grade"],
     }
 
-    # Fast stress inversion
+    # Fast stress inversion (with auto-detection)
     try:
         normals = fracture_plane_normal(
             df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
         )
-        inv = await _cached_inversion(
-            normals, well, regime, depth_m, None, source
-        )
+
+        # Auto-detect regime if not specified
+        if regime == "auto" or regime == "strike_slip":
+            auto_cache_key = f"auto_{source}_{well_name}_{depth_m}"
+            if auto_cache_key in _auto_regime_cache:
+                auto_res = _auto_regime_cache[auto_cache_key]
+            else:
+                auto_res = await asyncio.to_thread(
+                    auto_detect_regime, normals, depth_m, 0.0, None,
+                )
+                _auto_regime_cache[auto_cache_key] = auto_res
+            inv = auto_res["best_result"]
+            regime = auto_res["best_regime"]
+            overview["regime_detection"] = {
+                "best_regime": auto_res["best_regime"],
+                "confidence": auto_res["confidence"],
+                "misfit_ratio": auto_res["misfit_ratio"],
+            }
+        else:
+            inv = await _cached_inversion(
+                normals, well, regime, depth_m, None, source
+            )
+
         pp_val = inv.get("pore_pressure", 0.0)
 
         overview["stress"] = {
@@ -1056,3 +1102,108 @@ async def run_active_learning(request: Request):
         active_learning_query, df, n_suggest=n_suggest, classifier=classifier,
     )
     return _sanitize_for_json(result)
+
+
+# ── Data & Results Export ────────────────────────────
+
+@app.post("/api/export/data")
+async def export_data(request: Request):
+    """Export fracture data as CSV string for download."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", None)
+
+    df = get_df(source)
+    if well:
+        df = df[df[WELL_COL] == well]
+    if len(df) == 0:
+        raise HTTPException(404, "No data to export")
+
+    csv_str = df.to_csv(index=False)
+    return {"csv": csv_str, "rows": len(df), "filename": f"fractures_{well or 'all'}.csv"}
+
+
+@app.post("/api/export/inversion")
+async def export_inversion(request: Request):
+    """Export inversion results as structured JSON + CSV table.
+
+    Runs inversion (or uses cache) and returns exportable formats
+    with all key parameters, tendencies, and stakeholder interpretation.
+    """
+    body = await request.json()
+    well = body.get("well", "3P")
+    regime = body.get("regime", "strike_slip")
+    depth_m = float(body.get("depth_m", 3300.0))
+    source = body.get("source", "demo")
+    pore_pressure = body.get("pore_pressure", None)
+    if pore_pressure is not None:
+        pore_pressure = float(pore_pressure)
+
+    df = get_df(source)
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True)
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+    avg_depth = df_well[DEPTH_COL].mean()
+    if np.isnan(avg_depth):
+        avg_depth = depth_m
+
+    # Handle auto regime
+    if regime == "auto":
+        auto_result = await asyncio.to_thread(
+            auto_detect_regime, normals, avg_depth, 0.0, pore_pressure,
+        )
+        result = auto_result["best_result"]
+        regime = auto_result["best_regime"]
+    else:
+        result = await _cached_inversion(
+            normals, well, regime, avg_depth, pore_pressure, source
+        )
+
+    pp = result.get("pore_pressure", 0.0)
+    cs_result = critically_stressed_enhanced(
+        result["sigma_n"], result["tau"], result["mu"], 0.0, pp
+    )
+
+    # Build per-fracture CSV with tendencies
+    export_df = df_well[[DEPTH_COL, AZIMUTH_COL, DIP_COL]].copy()
+    if WELL_COL in df_well.columns:
+        export_df["Well"] = df_well[WELL_COL]
+    if FRACTURE_TYPE_COL in df_well.columns:
+        export_df["Fracture_Type"] = df_well[FRACTURE_TYPE_COL]
+    export_df["Slip_Tendency"] = result["slip_tend"]
+    export_df["Dilation_Tendency"] = result["dilation_tend"]
+    export_df["Normal_Stress_MPa"] = result["sigma_n"]
+    export_df["Shear_Stress_MPa"] = result["tau"]
+    export_df["Effective_Normal_Stress_MPa"] = result["effective_sigma_n"]
+    export_df["Critically_Stressed"] = (
+        result["tau"] > result["mu"] * (result["sigma_n"] - pp)
+    )
+
+    csv_str = export_df.to_csv(index=False)
+
+    # Summary JSON
+    summary = {
+        "well": well,
+        "regime": regime,
+        "sigma1_MPa": round(float(result["sigma1"]), 2),
+        "sigma2_MPa": round(float(result["sigma2"]), 2),
+        "sigma3_MPa": round(float(result["sigma3"]), 2),
+        "R_ratio": round(float(result["R"]), 4),
+        "SHmax_azimuth_deg": round(float(result["shmax_azimuth_deg"]), 1),
+        "friction_coefficient": round(float(result["mu"]), 4),
+        "pore_pressure_MPa": round(pp, 2),
+        "fracture_count": len(df_well),
+        "critically_stressed_count": cs_result["count_critical"],
+        "critically_stressed_pct": cs_result["pct_critical"],
+    }
+
+    return _sanitize_for_json({
+        "csv": csv_str,
+        "summary": summary,
+        "rows": len(export_df),
+        "filename": f"inversion_{well}_{regime}.csv",
+    })

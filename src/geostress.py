@@ -491,6 +491,128 @@ def _bayesian_stakeholder_summary(parameters: dict, converged: bool) -> str:
     return "".join(parts)
 
 
+# ──────────────────────────────────────────────
+# Auto Regime Detection
+# ──────────────────────────────────────────────
+
+REGIMES = ["normal", "strike_slip", "thrust"]
+
+REGIME_DESCRIPTIONS = {
+    "normal": "Vertical stress is greatest (σ1=σv). Extensional faulting environment. "
+              "Common in rift basins, passive margins, and areas of crustal thinning.",
+    "strike_slip": "Vertical stress is intermediate (σ2=σv). Horizontal shearing dominates. "
+                   "Common in transform boundaries, intracontinental settings.",
+    "thrust": "Vertical stress is least (σ3=σv). Compressional faulting environment. "
+              "Common in foreland basins, subduction zones, and collision margins.",
+}
+
+
+def auto_detect_regime(
+    normals: np.ndarray,
+    depth_m: float = 3000.0,
+    cohesion: float = 0.0,
+    pore_pressure: float = None,
+) -> dict:
+    """Run inversion under all 3 faulting regimes and select the best fit.
+
+    The best regime is the one with the lowest total Mohr-Coulomb misfit,
+    meaning the stress tensor best explains the observed fracture orientations
+    under that faulting assumption.
+
+    Parameters
+    ----------
+    normals : (N, 3) fracture plane normals
+    depth_m : Average depth (m)
+    cohesion : Rock cohesion (MPa)
+    pore_pressure : Pore pressure (MPa), None for hydrostatic estimate
+
+    Returns
+    -------
+    dict with:
+        best_regime : str — winning regime name
+        best_result : dict — full inversion result for the winner
+        all_results : dict — {regime: inversion_result} for all 3
+        comparison : list of dicts with regime, misfit, sigma1, sigma3, R, SHmax, mu
+        confidence : str — "HIGH", "MODERATE", "LOW" based on misfit separation
+        misfit_ratio : float — 2nd_best_misfit / best_misfit (>1.5 = confident)
+        stakeholder_summary : str — plain-language explanation
+    """
+    results = {}
+    for regime in REGIMES:
+        results[regime] = invert_stress(
+            normals, regime=regime, depth_m=depth_m,
+            cohesion=cohesion, pore_pressure=pore_pressure,
+        )
+
+    # Rank by total misfit (lower = better fit)
+    ranked = sorted(results.items(), key=lambda kv: float(np.sum(np.abs(kv[1]["misfit"]))))
+
+    best_regime = ranked[0][0]
+    best_misfit = float(np.sum(np.abs(ranked[0][1]["misfit"])))
+    second_misfit = float(np.sum(np.abs(ranked[1][1]["misfit"])))
+
+    # Confidence: how much better is the winner vs. runner-up?
+    misfit_ratio = second_misfit / max(best_misfit, 1e-6)
+    if misfit_ratio > 1.5:
+        confidence = "HIGH"
+    elif misfit_ratio > 1.15:
+        confidence = "MODERATE"
+    else:
+        confidence = "LOW"
+
+    # Build comparison table
+    comparison = []
+    for regime, res in ranked:
+        total_misfit = float(np.sum(np.abs(res["misfit"])))
+        comparison.append({
+            "regime": regime,
+            "misfit": round(total_misfit, 2),
+            "sigma1": round(float(res["sigma1"]), 2),
+            "sigma2": round(float(res["sigma2"]), 2),
+            "sigma3": round(float(res["sigma3"]), 2),
+            "R": round(float(res["R"]), 4),
+            "shmax_azimuth_deg": round(float(res["shmax_azimuth_deg"]), 1),
+            "mu": round(float(res["mu"]), 4),
+            "is_best": regime == best_regime,
+            "description": REGIME_DESCRIPTIONS[regime],
+        })
+
+    # Stakeholder explanation
+    best_desc = REGIME_DESCRIPTIONS[best_regime]
+    summary_parts = [
+        f"AUTOMATIC REGIME DETECTION: The {best_regime.replace('_', '-')} faulting "
+        f"regime provides the best fit to the fracture data "
+        f"(misfit = {best_misfit:.1f}, vs. {second_misfit:.1f} for the next best). ",
+        f"{best_desc} ",
+    ]
+    if confidence == "HIGH":
+        summary_parts.append(
+            f"Confidence is HIGH — the best regime fits {misfit_ratio:.1f}x better "
+            f"than alternatives. This regime determination is reliable."
+        )
+    elif confidence == "MODERATE":
+        summary_parts.append(
+            f"Confidence is MODERATE — the best regime is {misfit_ratio:.1f}x better "
+            f"than alternatives. Consider geological context for confirmation."
+        )
+    else:
+        summary_parts.append(
+            f"Confidence is LOW — all regimes produce similar fits "
+            f"(ratio = {misfit_ratio:.2f}). The data does not strongly favor one regime. "
+            f"Use regional tectonic knowledge to guide the decision."
+        )
+
+    return {
+        "best_regime": best_regime,
+        "best_result": results[best_regime],
+        "all_results": results,
+        "comparison": comparison,
+        "confidence": confidence,
+        "misfit_ratio": round(misfit_ratio, 3),
+        "stakeholder_summary": "".join(summary_parts),
+    }
+
+
 if __name__ == "__main__":
     from data_loader import load_all_fractures, fracture_plane_normal, AZIMUTH_COL, DIP_COL, WELL_COL
 
