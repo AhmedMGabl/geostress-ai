@@ -229,6 +229,9 @@
                             <button class="btn btn-dark btn-sm" onclick="exportPdfReport()">
                                 <i class="bi bi-file-earmark-pdf"></i> PDF Report
                             </button>
+                            <button class="btn btn-outline-info btn-sm" onclick="runBatchAnalysis()">
+                                <i class="bi bi-collection"></i> Batch All Wells
+                            </button>
                         </div>
                     </div>
 
@@ -253,6 +256,16 @@
 
                     <!-- Guided Wizard Results -->
                     <div id="wizard-results" class="d-none mb-4"></div>
+
+                    <!-- Batch Analysis Results -->
+                    <div id="batch-results" class="d-none mb-4">
+                        <div class="card border-info">
+                            <div class="card-header bg-info text-white">
+                                <i class="bi bi-collection"></i> Batch Field Analysis — All Wells
+                            </div>
+                            <div class="card-body" id="batch-body"></div>
+                        </div>
+                    </div>
 
                     <!-- Safety Check Results -->
                     <div id="safety-results" class="d-none mb-4">

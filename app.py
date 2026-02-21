@@ -1629,6 +1629,150 @@ async def run_overview(request: Request):
     return _sanitize_for_json(overview)
 
 
+# ── Batch Field Analysis ──────────────────────────────
+
+@app.post("/api/analysis/batch")
+async def run_batch_analysis(request: Request):
+    """Run complete analysis pipeline for ALL wells in one call.
+
+    Industrial batch mode: stress inversion + classification + risk
+    for every well, plus a field-level summary.  Streams progress via SSE
+    when task_id is provided.
+
+    Returns per-well results and a consolidated field assessment.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    depth_m = float(body.get("depth", 3000))
+    task_id = body.get("task_id", "")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    wells = sorted(df[WELL_COL].unique().tolist()) if WELL_COL in df.columns else ["All"]
+    well_results = {}
+    total_steps = len(wells) * 3  # 3 sub-analyses per well
+    step = 0
+
+    for well in wells:
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well != "All" else df
+        normals = fracture_plane_normal(
+            df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+        )
+        wr = {"well": well, "n_fractures": len(df_well)}
+
+        # 1. Stress inversion (auto regime)
+        if task_id:
+            _report_progress(task_id, step, total_steps, f"Stress inversion — {well}")
+        try:
+            auto_key = f"auto_{source}_{well}_{depth_m}"
+            if auto_key in _auto_regime_cache:
+                auto_res = _auto_regime_cache[auto_key]
+            else:
+                auto_res = await asyncio.to_thread(
+                    auto_detect_regime, normals, depth_m, 0.0, None,
+                )
+                _auto_regime_cache[auto_key] = auto_res
+            inv = auto_res["best_result"]
+            regime = auto_res["best_regime"]
+            pp_val = inv.get("pore_pressure", 0.0)
+            wr["stress"] = {
+                "regime": regime,
+                "sigma1": round(float(inv["sigma1"]), 1),
+                "sigma3": round(float(inv["sigma3"]), 1),
+                "shmax": round(float(inv["shmax_azimuth_deg"]), 0),
+                "mu": round(float(inv["mu"]), 3),
+                "confidence": auto_res.get("confidence", ""),
+            }
+        except Exception as e:
+            wr["stress"] = {"error": str(e)}
+            inv = None
+            pp_val = 0
+        step += 1
+
+        # 2. Classification
+        if task_id:
+            _report_progress(task_id, step, total_steps, f"Classification — {well}")
+        try:
+            cls_result = await asyncio.to_thread(
+                classify_enhanced, df_well, "random_forest", 3,
+            )
+            wr["classification"] = {
+                "accuracy": round(float(cls_result["cv_mean_accuracy"]), 3),
+                "f1": round(float(cls_result["cv_f1_mean"]), 3),
+                "n_classes": len(cls_result["class_names"]),
+                "class_names": cls_result["class_names"],
+            }
+        except Exception as e:
+            wr["classification"] = {"error": str(e)}
+        step += 1
+
+        # 3. Risk assessment
+        if task_id:
+            _report_progress(task_id, step, total_steps, f"Risk assessment — {well}")
+        try:
+            if inv is not None:
+                cs = critically_stressed_enhanced(
+                    inv["sigma_n"], inv["tau"],
+                    mu=inv["mu"], pore_pressure=pp_val,
+                )
+                pct_cs = float(cs["pct_critical"])
+                risk = "GREEN" if pct_cs < 10 else ("AMBER" if pct_cs < 30 else "RED")
+                wr["risk"] = {
+                    "pct_critically_stressed": round(pct_cs, 1),
+                    "risk_level": risk,
+                    "n_critical": int(cs["count_critical"]),
+                }
+            else:
+                wr["risk"] = {"error": "No inversion available"}
+        except Exception as e:
+            wr["risk"] = {"error": str(e)}
+        step += 1
+
+        well_results[well] = wr
+
+    # Field-level summary
+    shmax_values = [
+        wr["stress"]["shmax"] for wr in well_results.values()
+        if isinstance(wr.get("stress"), dict) and "shmax" in wr["stress"]
+    ]
+    risk_levels = [
+        wr["risk"]["risk_level"] for wr in well_results.values()
+        if isinstance(wr.get("risk"), dict) and "risk_level" in wr["risk"]
+    ]
+
+    field_summary = {
+        "n_wells": len(wells),
+        "total_fractures": int(df.shape[0]),
+    }
+    if shmax_values:
+        field_summary["shmax_range"] = [min(shmax_values), max(shmax_values)]
+        field_summary["shmax_spread"] = round(max(shmax_values) - min(shmax_values), 1)
+        field_summary["shmax_consistent"] = (max(shmax_values) - min(shmax_values)) < 30
+    if risk_levels:
+        worst = "RED" if "RED" in risk_levels else ("AMBER" if "AMBER" in risk_levels else "GREEN")
+        field_summary["worst_risk"] = worst
+        field_summary["risk_breakdown"] = {
+            level: risk_levels.count(level) for level in ["GREEN", "AMBER", "RED"]
+            if risk_levels.count(level) > 0
+        }
+
+    result = {
+        "wells": well_results,
+        "field_summary": field_summary,
+    }
+
+    _audit_record("batch_analysis", {
+        "source": source, "depth_m": depth_m, "n_wells": len(wells),
+    }, {
+        "field_risk": field_summary.get("worst_risk"),
+        "shmax_consistent": field_summary.get("shmax_consistent"),
+    })
+
+    return _sanitize_for_json(result)
+
+
 # ── Uncertainty Budget ────────────────────────────────
 
 @app.post("/api/analysis/uncertainty-budget")

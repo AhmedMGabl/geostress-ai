@@ -475,6 +475,84 @@ async function runEvidenceChain() {
 
 // ── Guided Analysis Wizard ──────────────────────────
 
+async function runBatchAnalysis() {
+    showLoading("Running batch analysis for all wells...");
+    try {
+        var r = await apiPost("/api/analysis/batch", {
+            source: currentSource, depth: getDepth()
+        });
+        var el = document.getElementById("batch-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("batch-body");
+
+        var fs = r.field_summary || {};
+        // Field summary banner
+        var riskColor = fs.worst_risk === "RED" ? "danger" : (fs.worst_risk === "AMBER" ? "warning" : "success");
+        var html = '<div class="alert alert-' + riskColor + ' p-3 mb-3">' +
+            '<h5><i class="bi bi-globe"></i> Field Summary</h5>' +
+            '<div class="row">' +
+            '<div class="col-md-3"><strong>' + fs.n_wells + '</strong> wells analyzed</div>' +
+            '<div class="col-md-3"><strong>' + fs.total_fractures + '</strong> total fractures</div>';
+        if (fs.shmax_range) {
+            html += '<div class="col-md-3">SHmax: <strong>' + fs.shmax_range[0] + '°–' + fs.shmax_range[1] + '°</strong>' +
+                ' (spread: ' + fs.shmax_spread + '°)</div>';
+        }
+        html += '<div class="col-md-3">Worst risk: <span class="badge bg-' + riskColor + '">' + (fs.worst_risk || "N/A") + '</span></div>';
+        html += '</div>';
+        if (fs.shmax_consistent === false) {
+            html += '<small class="text-danger"><i class="bi bi-exclamation-triangle"></i> SHmax is INCONSISTENT across wells — possible structural domain boundary</small>';
+        } else if (fs.shmax_consistent === true) {
+            html += '<small class="text-success"><i class="bi bi-check-circle"></i> SHmax is consistent across wells</small>';
+        }
+        html += '</div>';
+
+        // Per-well cards
+        html += '<div class="row g-3">';
+        Object.keys(r.wells).forEach(function(wellName) {
+            var w = r.wells[wellName];
+            var wRisk = (w.risk && w.risk.risk_level) || "N/A";
+            var wRiskColor = wRisk === "RED" ? "danger" : (wRisk === "AMBER" ? "warning" : "success");
+
+            html += '<div class="col-md-6"><div class="card border-' + wRiskColor + '">';
+            html += '<div class="card-header d-flex justify-content-between align-items-center">' +
+                '<strong><i class="bi bi-droplet"></i> Well ' + wellName + '</strong>' +
+                '<span class="badge bg-' + wRiskColor + '">' + wRisk + '</span></div>';
+            html += '<div class="card-body">';
+            html += '<small class="text-muted">' + w.n_fractures + ' fractures</small>';
+
+            // Stress
+            if (w.stress && !w.stress.error) {
+                html += '<div class="mt-2"><strong>Stress:</strong> ' + w.stress.regime +
+                    ' | SHmax: ' + w.stress.shmax + '° | σ1: ' + w.stress.sigma1 +
+                    ' | σ3: ' + w.stress.sigma3 + ' | μ: ' + w.stress.mu + '</div>';
+            }
+
+            // Classification
+            if (w.classification && !w.classification.error) {
+                html += '<div><strong>ML:</strong> ' + (w.classification.accuracy * 100).toFixed(1) +
+                    '% accuracy | F1: ' + (w.classification.f1 * 100).toFixed(1) +
+                    '% | ' + w.classification.n_classes + ' classes</div>';
+            }
+
+            // Risk
+            if (w.risk && !w.risk.error) {
+                html += '<div><strong>Risk:</strong> ' + w.risk.pct_critically_stressed +
+                    '% critically stressed (' + w.risk.n_critical + ' fractures)</div>';
+            }
+
+            html += '</div></div></div>';
+        });
+        html += '</div>';
+
+        body.innerHTML = html;
+        showToast("Batch: " + fs.n_wells + " wells analyzed, worst risk: " + fs.worst_risk);
+    } catch (err) {
+        showToast("Batch error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 async function runGuidedWizard() {
     var taskId = generateTaskId();
     showLoadingWithProgress("Running guided analysis wizard...", taskId);
