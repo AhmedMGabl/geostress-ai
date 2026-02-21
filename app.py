@@ -1928,8 +1928,48 @@ async def export_pdf_report(request: Request):
             except Exception:
                 pass
 
-            # ── Page 5: Recommendations ───────────
-            _progress_cb("Compiling recommendations...", 85)
+            # ── Page 5: Mohr Circle ───────────────
+            _progress_cb("Generating Mohr circle...", 75)
+            try:
+                normals = fracture_plane_normal(
+                    df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+                )
+                # Get regime from wizard step 2
+                inv_regime = "normal"
+                for s in wizard.get("steps", []):
+                    if s.get("step") == 2 and s.get("details", {}).get("regime"):
+                        inv_regime = s["details"]["regime"]
+                        break
+                inv = invert_stress(normals, regime=inv_regime, depth_m=depth_m)
+                with plot_lock:
+                    fig_mohr, ax_mohr = plt.subplots(figsize=(9, 6))
+                    plot_mohr_circle(inv,
+                        title=f"Mohr Circle — {well} ({inv_regime}, depth={depth_m:.0f}m)",
+                        ax=ax_mohr)
+                    fig_mohr.tight_layout()
+                pdf.savefig(fig_mohr, dpi=120)
+                plt.close(fig_mohr)
+            except Exception:
+                pass
+
+            # ── Page 6: Model Comparison ──────────
+            _progress_cb("Running model comparison...", 82)
+            try:
+                comparison = compare_models(df_well, fast=True)
+                ranking = comparison.get("ranking", [])
+                if ranking:
+                    with plot_lock:
+                        fig_comp = plot_model_comparison(
+                            ranking,
+                            title=f"Model Comparison — {well} ({len(df_well)} samples)"
+                        )
+                    pdf.savefig(fig_comp, dpi=120)
+                    plt.close(fig_comp)
+            except Exception:
+                pass
+
+            # ── Page 7: Recommendations ───────────
+            _progress_cb("Compiling recommendations...", 90)
             fig, ax = plt.subplots(figsize=(8.5, 11))
             ax.axis("off")
             ax.text(0.5, 0.95, "Recommendations & Next Steps", fontsize=20,
@@ -1981,13 +2021,13 @@ async def export_pdf_report(request: Request):
     _audit_record("pdf_report", {
         "source": source, "well": well, "depth_m": depth_m,
     }, {
-        "pages": 5, "size_kb": len(pdf_bytes) // 1024,
+        "pages": 7, "size_kb": len(pdf_bytes) // 1024,
     })
 
     return {
         "pdf_base64": b64,
         "filename": f"GeoStress_Report_{well}_{datetime.now().strftime('%Y%m%d')}.pdf",
-        "pages": 5,
+        "pages": 7,
         "size_kb": len(pdf_bytes) // 1024,
     }
 
