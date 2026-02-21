@@ -166,7 +166,7 @@
                 </div>
                 <div class="mb-2">
                     <label class="form-label-sm">Pore Pressure (MPa)
-                        <i class="bi bi-info-circle" title="Hydrostatic estimate used if left empty. Pore pressure reduces effective normal stress on fractures, shifting Mohr circles left."></i>
+                        <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Hydrostatic estimate used if left empty. Pore pressure reduces effective normal stress on fractures, shifting Mohr circles left."></i>
                     </label>
                     <input type="number" id="pp-input" class="form-control form-control-sm" placeholder="Auto (hydrostatic)" step="0.1" min="0" max="200">
                 </div>
@@ -338,6 +338,7 @@
 
                 <!-- DATA TAB -->
                 <div id="tab-data" class="tab-content">
+                    <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>Data Overview</strong> &mdash; Summary statistics of all fracture measurements loaded from borehole image logs. Check fracture counts, depth ranges, and orientation distributions before running any analysis.</div>
                     <div class="row g-3 mb-4">
                         <div class="col-md-3">
                             <div class="metric-card">
@@ -413,12 +414,12 @@
                             </div>
                             <div class="card-body">
                                 <div class="row g-3 text-center">
-                                    <div class="col"><div class="metric-card"><div class="metric-label">SHmax Direction <i class="bi bi-info-circle" title="Direction of maximum horizontal stress. Determines optimal drilling direction and hydraulic fracture propagation."></i></div><div class="metric-value" id="ov-shmax">--</div></div></div>
-                                    <div class="col"><div class="metric-card"><div class="metric-label">Stress Regime <i class="bi bi-info-circle" title="Auto-detected faulting regime (normal, strike-slip, or thrust) based on best fit to fracture data."></i></div><div class="metric-value" id="ov-regime">--</div></div></div>
-                                    <div class="col"><div class="metric-card"><div class="metric-label">Critically Stressed <i class="bi bi-info-circle" title="Percentage of fractures above the Mohr-Coulomb failure line. These fractures may act as fluid conduits and could reactivate during operations."></i></div><div class="metric-value" id="ov-cs">--</div></div></div>
-                                    <div class="col"><div class="metric-card"><div class="metric-label">Risk Level <i class="bi bi-info-circle" title="Overall operational risk based on critically stressed fractures, data quality, model confidence, and sensitivity analysis."></i></div><div class="metric-value" id="ov-risk">--</div></div></div>
-                                    <div class="col"><div class="metric-card"><div class="metric-label">Data Quality <i class="bi bi-info-circle" title="Grade A-F based on sample size, completeness, value ranges, and consistency of the fracture measurement data."></i></div><div class="metric-value" id="ov-quality">--</div></div></div>
-                                    <div class="col"><div class="metric-card"><div class="metric-label">Decision <i class="bi bi-info-circle" title="GO: Proceed with operations. CONDITIONAL: Proceed with additional monitoring. NO-GO: Do not proceed without further data or analysis."></i></div><div class="metric-value" id="ov-gonogo">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">SHmax Direction <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Direction of maximum horizontal stress. Determines optimal drilling direction and hydraulic fracture propagation."></i></div><div class="metric-value" id="ov-shmax">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">Stress Regime <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Auto-detected faulting regime (normal, strike-slip, or thrust) based on best fit to fracture data."></i></div><div class="metric-value" id="ov-regime">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">Critically Stressed <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Percentage of fractures above the Mohr-Coulomb failure line. These fractures may act as fluid conduits and could reactivate during operations."></i></div><div class="metric-value" id="ov-cs">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">Risk Level <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Overall operational risk based on critically stressed fractures, data quality, model confidence, and sensitivity analysis."></i></div><div class="metric-value" id="ov-risk">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">Data Quality <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Grade A-F based on sample size, completeness, value ranges, and consistency of the fracture measurement data."></i></div><div class="metric-value" id="ov-quality">--</div></div></div>
+                                    <div class="col"><div class="metric-card"><div class="metric-label">Decision <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="GO: Proceed with operations. CONDITIONAL: Proceed with additional monitoring. NO-GO: Do not proceed without further data or analysis."></i></div><div class="metric-value" id="ov-gonogo">--</div></div></div>
                                 </div>
                                 <!-- Warnings & Disclaimers -->
                                 <div id="ov-warnings" class="mt-3"></div>
@@ -500,6 +501,7 @@
 
                 <!-- VISUALIZATIONS TAB -->
                 <div id="tab-viz" class="tab-content">
+                    <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>Visualizations</strong> &mdash; Visual plots showing fracture orientation patterns. <em>Rose diagrams</em> show which compass directions fractures face (like a wind rose). <em>Stereonets</em> project 3D orientations onto a 2D circle. <em>Depth profiles</em> show how fractures change with depth.</div>
                     <div class="d-flex gap-2 mb-3">
                         <button class="btn btn-primary btn-sm" onclick="loadAllViz()">
                             <i class="bi bi-play-fill"></i> Generate All
@@ -535,6 +537,7 @@
 
                 <!-- INVERSION TAB (Enhanced) -->
                 <div id="tab-inversion" class="tab-content">
+                    <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>Stress Inversion</strong> &mdash; The core analysis: estimates underground stress magnitudes and directions from fracture orientations. <strong>Key output:</strong> SHmax (maximum horizontal stress direction) determines optimal drilling direction. The Mohr circle shows which fractures are close to failure.</div>
                     <div class="d-flex gap-2 mb-3 flex-wrap">
                         <button class="btn btn-primary btn-sm" onclick="runInversion()">
                             <i class="bi bi-play-fill"></i> Run Inversion
@@ -595,12 +598,12 @@
                     <!-- Results metrics -->
                     <div id="inversion-results" class="d-none">
                         <div class="row g-3 mb-4">
-                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;1 (MPa) <i class="bi bi-info-circle text-muted" title="Maximum principal stress. The largest compressive stress in the rock mass. Higher values indicate deeper or more compressed rock."></i></div><div class="metric-value" id="inv-sigma1">--</div></div></div>
-                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;2 (MPa) <i class="bi bi-info-circle text-muted" title="Intermediate principal stress. Derived from &sigma;1, &sigma;3, and R ratio."></i></div><div class="metric-value" id="inv-sigma2">--</div></div></div>
-                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;3 (MPa) <i class="bi bi-info-circle text-muted" title="Minimum principal stress. The least compressive stress. Fractures tend to open perpendicular to this direction."></i></div><div class="metric-value" id="inv-sigma3">--</div></div></div>
-                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">R Ratio <i class="bi bi-info-circle text-muted" title="Stress shape ratio: (&sigma;2-&sigma;3)/(&sigma;1-&sigma;3). Range 0-1. R near 0 means &sigma;2&asymp;&sigma;3 (prolate stress); R near 1 means &sigma;1&asymp;&sigma;2 (oblate stress)."></i></div><div class="metric-value" id="inv-R">--</div></div></div>
-                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">SHmax (&deg;) <i class="bi bi-info-circle text-muted" title="Maximum horizontal stress direction (degrees from North). CRITICAL FOR DRILLING: Wells drilled parallel to SHmax are most stable. Hydraulic fractures propagate along SHmax."></i></div><div class="metric-value" id="inv-shmax">--</div></div></div>
-                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">Pore Pressure <i class="bi bi-info-circle text-muted" title="Fluid pressure in rock pores (MPa). Reduces effective normal stress on fractures, making them more likely to slip. Higher Pp = more critically stressed fractures."></i></div><div class="metric-value" id="inv-pp">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;1 (MPa) <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Maximum principal stress. The largest compressive stress in the rock mass. Higher values indicate deeper or more compressed rock."></i></div><div class="metric-value" id="inv-sigma1">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;2 (MPa) <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Intermediate principal stress. Derived from &sigma;1, &sigma;3, and R ratio."></i></div><div class="metric-value" id="inv-sigma2">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;3 (MPa) <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Minimum principal stress. The least compressive stress. Fractures tend to open perpendicular to this direction."></i></div><div class="metric-value" id="inv-sigma3">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">R Ratio <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Stress shape ratio: (&sigma;2-&sigma;3)/(&sigma;1-&sigma;3). Range 0-1. R near 0 means &sigma;2&asymp;&sigma;3 (prolate stress); R near 1 means &sigma;1&asymp;&sigma;2 (oblate stress)."></i></div><div class="metric-value" id="inv-R">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">SHmax (&deg;) <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Maximum horizontal stress direction (degrees from North). CRITICAL FOR DRILLING: Wells drilled parallel to SHmax are most stable. Hydraulic fractures propagate along SHmax."></i></div><div class="metric-value" id="inv-shmax">--</div></div></div>
+                            <div class="col-md-2"><div class="metric-card"><div class="metric-label">Pore Pressure <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Fluid pressure in rock pores (MPa). Reduces effective normal stress on fractures, making them more likely to slip. Higher Pp = more critically stressed fractures."></i></div><div class="metric-value" id="inv-pp">--</div></div></div>
                         </div>
 
                         <!-- Risk Assessment Banner -->
@@ -623,19 +626,19 @@
                         <div class="row g-3 mb-4">
                             <div class="col-md-4">
                                 <div class="metric-card" style="border-left:4px solid #dc3545">
-                                    <div class="metric-label">High Risk Fractures <i class="bi bi-info-circle text-muted" title="Fractures with slip tendency > 0.8. These are very close to failure and may reactivate during drilling or injection. Avoid operations near these fractures."></i></div>
+                                    <div class="metric-label">High Risk Fractures <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Fractures with slip tendency > 0.8. These are very close to failure and may reactivate during drilling or injection. Avoid operations near these fractures."></i></div>
                                     <div class="metric-value text-danger" id="inv-high-risk">--</div>
                                 </div>
                             </div>
                             <div class="col-md-4">
                                 <div class="metric-card" style="border-left:4px solid #ffc107">
-                                    <div class="metric-label">Moderate Risk <i class="bi bi-info-circle text-muted" title="Fractures with slip tendency 0.6-0.8. These could be reactivated under pressure changes. Monitor during operations and plan contingencies."></i></div>
+                                    <div class="metric-label">Moderate Risk <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Fractures with slip tendency 0.6-0.8. These could be reactivated under pressure changes. Monitor during operations and plan contingencies."></i></div>
                                     <div class="metric-value text-warning" id="inv-mod-risk">--</div>
                                 </div>
                             </div>
                             <div class="col-md-4">
                                 <div class="metric-card" style="border-left:4px solid #198754">
-                                    <div class="metric-label">Low Risk <i class="bi bi-info-circle text-muted" title="Fractures with slip tendency < 0.6. These are relatively stable under current stress conditions. Normal operations are safe."></i></div>
+                                    <div class="metric-label">Low Risk <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Fractures with slip tendency < 0.6. These are relatively stable under current stress conditions. Normal operations are safe."></i></div>
                                     <div class="metric-value text-success" id="inv-low-risk">--</div>
                                 </div>
                             </div>
@@ -688,7 +691,7 @@
                             <i class="bi bi-lightning"></i> Quick Compare (~3x faster)
                         </button>
                     </div>
-                    <p class="text-muted small">Compares Random Forest, Gradient Boosting, XGBoost, LightGBM, SVM, Neural Network, and <strong>Stacking Ensemble</strong> (meta-learner) on fracture classification using 21 physics-informed features. Includes conformal prediction confidence.</p>
+                    <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>Model Comparison</strong> &mdash; Runs 7 different AI algorithms on the same data and ranks them by accuracy. The best model is recommended automatically. <em>Why multiple models?</em> Different algorithms capture different patterns &mdash; comparing ensures the most reliable one is chosen for your specific data.</div>
 
                     <div id="model-results" class="d-none">
                         <!-- Ranking criterion notice -->
@@ -1017,6 +1020,7 @@
 
                 <!-- SHAP EXPLAINABILITY TAB (NEW) -->
                 <div id="tab-shap" class="tab-content">
+                    <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>Why It Predicts</strong> &mdash; Shows which fracture features (depth, angle, orientation) most influence the AI classification. SHAP values reveal the &ldquo;reasoning&rdquo; behind each prediction &mdash; critical for trusting AI decisions in operations.</div>
                     <div class="d-flex gap-2 mb-3">
                         <select id="shap-classifier-select" class="form-select form-select-sm" style="width:auto">
                             <option value="gradient_boosting" selected>Gradient Boosting</option>
@@ -1109,6 +1113,7 @@
 
                 <!-- CLASSIFICATION TAB (Enhanced) -->
                 <div id="tab-classify" class="tab-content">
+                    <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>ML Classification</strong> &mdash; Uses machine learning to automatically categorize fractures by type (e.g., continuous, discontinuous, brecciated). Accuracy metrics show how reliable the classification is. Conformal prediction adds calibrated confidence intervals.</div>
                     <div class="d-flex gap-2 mb-3">
                         <select id="classifier-select" class="form-select form-select-sm" style="width:auto">
                             <option value="random_forest">Random Forest</option>
@@ -1176,6 +1181,7 @@
 
                 <!-- CLUSTERING TAB -->
                 <div id="tab-cluster" class="tab-content">
+                    <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>Fracture Clustering</strong> &mdash; Groups fractures that share similar orientations into &ldquo;fracture sets.&rdquo; Each set likely formed under the same stress conditions. Knowing fracture sets helps predict reservoir connectivity and fluid flow paths.</div>
                     <div class="d-flex gap-2 mb-3">
                         <select id="n-clusters-select" class="form-select form-select-sm" style="width:auto">
                             <option value="auto">Auto-detect</option>
@@ -1224,6 +1230,7 @@
 
                 <!-- FEEDBACK TAB (NEW) -->
                 <div id="tab-feedback" class="tab-content">
+                    <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>Feedback Loop</strong> &mdash; Tell the AI when its predictions are wrong. Each correction improves future accuracy. The trust score shows how much confidence to place in the model based on data quality and correction history.</div>
 
                     <!-- Trust Score Banner -->
                     <div class="card mb-4 border-0 shadow-sm" id="trust-score-card">
@@ -2383,6 +2390,13 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // Initialize all Bootstrap tooltips
+    document.addEventListener("DOMContentLoaded", function() {
+        var ttEls = document.querySelectorAll('[data-bs-toggle="tooltip"]');
+        ttEls.forEach(function(el) { new bootstrap.Tooltip(el, {trigger: "hover focus", html: true}); });
+    });
+    </script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

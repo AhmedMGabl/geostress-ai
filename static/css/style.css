@@ -307,6 +307,23 @@ body {
     .plot-img { max-width: 100%; height: auto; }
 }
 
+/* Bootstrap tooltip overrides for readability */
+.tooltip-inner {
+    max-width: 320px;
+    text-align: left;
+    font-size: 0.82rem;
+    line-height: 1.4;
+    padding: 8px 12px;
+}
+.bi-info-circle {
+    cursor: help;
+    opacity: 0.6;
+    transition: opacity 0.15s;
+}
+.bi-info-circle:hover {
+    opacity: 1;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     #sidebar { width: 220px; }
