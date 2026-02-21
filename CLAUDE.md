@@ -105,6 +105,14 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/data/sufficiency` | Data sufficiency assessment per analysis type |
 | POST | `/api/analysis/safety-check` | Prediction safety: go/no-go with failure mode detection |
 | POST | `/api/analysis/field-consistency` | Cross-well SHmax/type consistency, separate vs combined recommendation |
+| GET | `/api/research/methods` | Scientific methods and 2025-2026 research basis |
+| POST | `/api/analysis/physics-check` | Physics constraint validation (Byerlee, stress ordering) |
+| POST | `/api/analysis/physics-predict` | Physics-constrained ML prediction with adjusted confidence |
+| POST | `/api/analysis/misclassification` | WHERE/WHY model fails: confused pairs, depth/dip patterns |
+| POST | `/api/analysis/evidence-chain` | Full evidence chain for every conclusion (stakeholder decisions) |
+| POST | `/api/analysis/model-bias` | Systematic bias detection (class, depth, dip biases) |
+| POST | `/api/analysis/reliability-report` | Prediction reliability grade (A-D) with improvement roadmap |
+| GET | `/api/cache/status` | Cache sizes for performance monitoring |
 
 ## Domain Concepts
 
@@ -191,3 +199,13 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - `_azimuth_to_direction()` converts degrees to cardinal (N/NNE/NE/etc.) for plain-language descriptions
 - Data sufficiency: 3/5 analyses READY with current 1022 samples, ML and cross-well are MARGINAL
 - `auto_detect_regime` must be called separately before `invert_stress` — regime="auto" not valid for invert_stress
+- `auto_detect_regime` returns dict with `all_results` key (not `results`), misfit values are numpy arrays
+- Physics constraint check: validates Byerlee's friction (0.4-0.85), stress ordering, frictional equilibrium, R-ratio
+- Physics-constrained predict: adjusts ML confidence by physics_score (0-1), penalizes violations/warnings
+- Misclassification analysis: Continuous→Discontinuous is the biggest confusion (78.3%)
+- Model bias: HIGH for Well 3P — dip-dependent accuracy (74% low-dip vs lower high-dip)
+- Prediction reliability: Grade C for Well 3P (64.8% accuracy, 5 limitations)
+- Evidence chain: 6 items covering data quality, regime, SHmax, critically stressed, physics, ML accuracy
+- Response timing middleware logs SLOW requests (>2s) to server console
+- Cache keys include source+well+params; cleared on upload; cache status endpoint at GET /api/cache/status
+- `_audit_record()` (not `_log_audit`) for audit trail logging
