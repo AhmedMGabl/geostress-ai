@@ -1646,6 +1646,228 @@ async def export_inversion(request: Request):
     })
 
 
+@app.post("/api/export/pdf-report")
+async def export_pdf_report(request: Request):
+    """Generate a multi-page PDF report for stakeholder distribution.
+
+    Combines: cover page, data summary, stress analysis, risk assessment,
+    confusion matrix, and recommendations into a downloadable PDF.
+    Returns base64-encoded PDF.
+    """
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+    task_id = body.get("task_id", "")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+
+    def _progress_cb(step, pct, detail=""):
+        if task_id:
+            _emit_progress(task_id, step, pct, detail)
+
+    def _build_pdf():
+        buf = io.BytesIO()
+        with PdfPages(buf) as pdf:
+            _progress_cb("Generating cover page...", 5)
+
+            # ── Page 1: Cover ─────────────────────
+            fig, ax = plt.subplots(figsize=(8.5, 11))
+            ax.axis("off")
+            ax.text(0.5, 0.75, "GeoStress AI", fontsize=36, fontweight="bold",
+                    ha="center", va="center", color="#1a365d")
+            ax.text(0.5, 0.65, "Geostress Analysis Report", fontsize=20,
+                    ha="center", va="center", color="#4a5568")
+            ax.text(0.5, 0.55, f"Well: {well}", fontsize=16,
+                    ha="center", va="center", color="#2d3748")
+            ax.text(0.5, 0.48, f"Depth: {depth_m:.0f} m  |  Fractures: {len(df_well)}",
+                    fontsize=14, ha="center", va="center", color="#718096")
+            ax.text(0.5, 0.38, f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+                    fontsize=11, ha="center", va="center", color="#a0aec0")
+            ax.text(0.5, 0.15, "CONFIDENTIAL — For Authorized Personnel Only",
+                    fontsize=10, ha="center", va="center", color="#e53e3e",
+                    style="italic")
+            fig.patch.set_facecolor("white")
+            pdf.savefig(fig, dpi=120)
+            plt.close(fig)
+
+            _progress_cb("Running guided analysis...", 15)
+
+            # Run the wizard to get all analysis results
+            wizard = guided_analysis_wizard(df_well, well_name=well, depth_m=depth_m)
+
+            # ── Page 2: Executive Summary ─────────
+            _progress_cb("Building executive summary...", 40)
+            fig, ax = plt.subplots(figsize=(8.5, 11))
+            ax.axis("off")
+
+            ax.text(0.5, 0.95, "Executive Summary", fontsize=20, fontweight="bold",
+                    ha="center", va="top", color="#1a365d")
+
+            # Status badge
+            status_colors = {"PROCEED": "#38a169", "PROCEED_WITH_REVIEW": "#3182ce",
+                             "CAUTION": "#d69e2e", "HALT": "#e53e3e"}
+            status = wizard.get("overall_status", "UNKNOWN")
+            badge_color = status_colors.get(status, "#718096")
+            ax.text(0.5, 0.88, f"Overall: {status.replace('_', ' ')}",
+                    fontsize=16, fontweight="bold", ha="center", va="top",
+                    color="white",
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor=badge_color, alpha=0.9))
+
+            # Key findings
+            y = 0.78
+            ax.text(0.05, y, "Key Findings:", fontsize=13, fontweight="bold",
+                    va="top", color="#2d3748")
+            y -= 0.04
+            for finding in wizard.get("key_findings", []):
+                ax.text(0.08, y, f"• {finding}", fontsize=10, va="top",
+                        color="#4a5568", wrap=True)
+                y -= 0.035
+
+            # Step results
+            y -= 0.03
+            ax.text(0.05, y, "Analysis Steps:", fontsize=13, fontweight="bold",
+                    va="top", color="#2d3748")
+            y -= 0.04
+            step_colors = {"PASS": "#38a169", "WARN": "#d69e2e", "FAIL": "#e53e3e",
+                           "HALT": "#e53e3e", "CAUTION": "#d69e2e",
+                           "PROCEED": "#38a169", "PROCEED_WITH_REVIEW": "#3182ce"}
+            for step in wizard.get("steps", []):
+                sc = step_colors.get(step["status"], "#718096")
+                ax.text(0.08, y, f"Step {step['step']}: {step['title']}", fontsize=10,
+                        fontweight="bold", va="top", color="#2d3748")
+                ax.text(0.55, y, step["status"], fontsize=10, fontweight="bold",
+                        va="top", color=sc)
+                y -= 0.03
+                # Truncate summary to fit
+                summary = step.get("summary", "")[:100]
+                ax.text(0.10, y, summary, fontsize=8, va="top", color="#718096")
+                y -= 0.025
+                action = step.get("next_action", "")[:100]
+                ax.text(0.10, y, f"→ {action}", fontsize=8, va="top",
+                        color="#4a5568", style="italic")
+                y -= 0.035
+
+            fig.patch.set_facecolor("white")
+            pdf.savefig(fig, dpi=120)
+            plt.close(fig)
+
+            # ── Page 3: Rose Diagram + Stereonet ──
+            _progress_cb("Generating visualizations...", 55)
+            fig, axes = plt.subplots(1, 2, figsize=(11, 5.5),
+                                     subplot_kw={"projection": "polar"})
+            # Rose diagram
+            azimuths = df_well[AZIMUTH_COL].values
+            bins = np.linspace(0, 360, 37)
+            hist, _ = np.histogram(azimuths, bins=bins)
+            theta = np.deg2rad((bins[:-1] + bins[1:]) / 2)
+            width = np.deg2rad(10)
+            axes[0].bar(theta, hist, width=width, color="#4299e1", alpha=0.7, edgecolor="white")
+            axes[0].set_title(f"Rose Diagram — {well}", pad=20)
+            axes[0].set_theta_zero_location("N")
+            axes[0].set_theta_direction(-1)
+
+            # Simple pole plot (stereonet-like)
+            dips = df_well[DIP_COL].values
+            r = 90 - dips  # Distance from center = 90 - dip
+            theta2 = np.deg2rad(azimuths)
+            axes[1].scatter(theta2, r, s=8, c="#e53e3e", alpha=0.5)
+            axes[1].set_title(f"Pole Plot — {well}", pad=20)
+            axes[1].set_theta_zero_location("N")
+            axes[1].set_theta_direction(-1)
+            axes[1].set_ylim(0, 90)
+
+            fig.suptitle("Fracture Orientation Analysis", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            pdf.savefig(fig, dpi=120)
+            plt.close(fig)
+
+            # ── Page 4: Confusion Matrix ──────────
+            _progress_cb("Building confusion matrix...", 70)
+            try:
+                misclass = misclassification_analysis(df_well, fast=True)
+                cm_data = misclass.get("confusion_matrix")
+                class_names = misclass.get("class_names", [])
+                if cm_data and class_names:
+                    with plot_lock:
+                        fig_cm = plot_confusion_matrix(
+                            cm_data, class_names,
+                            title=f"Confusion Matrix — {well} ({misclass.get('overall_accuracy', 0):.1%} accuracy)"
+                        )
+                    pdf.savefig(fig_cm, dpi=120)
+                    plt.close(fig_cm)
+            except Exception:
+                pass
+
+            # ── Page 5: Recommendations ───────────
+            _progress_cb("Compiling recommendations...", 85)
+            fig, ax = plt.subplots(figsize=(8.5, 11))
+            ax.axis("off")
+            ax.text(0.5, 0.95, "Recommendations & Next Steps", fontsize=20,
+                    fontweight="bold", ha="center", va="top", color="#1a365d")
+
+            y = 0.85
+            # Gather all recommendations
+            recs = []
+            for step in wizard.get("steps", []):
+                if step.get("next_action"):
+                    recs.append((step["title"], step["next_action"], step["status"]))
+
+            for title_str, action, sstatus in recs:
+                sc = step_colors.get(sstatus, "#718096")
+                ax.text(0.08, y, f"• {title_str}: ", fontsize=11,
+                        fontweight="bold", va="top", color=sc)
+                y -= 0.03
+                ax.text(0.10, y, action[:120], fontsize=9, va="top",
+                        color="#4a5568", wrap=True)
+                y -= 0.04
+
+            # Disclaimer
+            y -= 0.05
+            ax.text(0.5, y, "Disclaimer", fontsize=12, fontweight="bold",
+                    ha="center", va="top", color="#e53e3e")
+            y -= 0.04
+            disclaimer = (
+                "This report is generated by GeoStress AI and is intended as a "
+                "decision-support tool only. All results should be validated by "
+                "qualified geomechanics engineers before operational decisions. "
+                "The accuracy of predictions depends on input data quality and "
+                "the assumptions inherent in Mohr-Coulomb theory."
+            )
+            ax.text(0.1, y, disclaimer, fontsize=9, va="top", color="#718096",
+                    wrap=True, multialignment="left",
+                    bbox=dict(boxstyle="round", facecolor="#fff5f5", alpha=0.5))
+
+            fig.patch.set_facecolor("white")
+            pdf.savefig(fig, dpi=120)
+            plt.close(fig)
+
+        _progress_cb("PDF complete", 100)
+        buf.seek(0)
+        return buf.read()
+
+    pdf_bytes = await asyncio.to_thread(_build_pdf)
+    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+
+    _audit_record("pdf_report", {
+        "source": source, "well": well, "depth_m": depth_m,
+    }, {
+        "pages": 5, "size_kb": len(pdf_bytes) // 1024,
+    })
+
+    return {
+        "pdf_base64": b64,
+        "filename": f"GeoStress_Report_{well}_{datetime.now().strftime('%Y%m%d')}.pdf",
+        "pages": 5,
+        "size_kb": len(pdf_bytes) // 1024,
+    }
+
+
 # ── OOD Detection ─────────────────────────────────
 @app.post("/api/analysis/ood-check")
 async def ood_check(request: Request):

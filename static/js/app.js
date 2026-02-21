@@ -1040,6 +1040,37 @@ async function exportData() {
     }
 }
 
+async function exportPdfReport() {
+    var taskId = generateTaskId();
+    showLoadingWithProgress("Generating PDF report...", taskId);
+    try {
+        var r = await apiPost("/api/export/pdf-report", {
+            source: currentSource, well: getWell(), depth: getDepth(),
+            task_id: taskId
+        });
+        // Convert base64 to blob and trigger download
+        var byteChars = atob(r.pdf_base64);
+        var byteArray = new Uint8Array(byteChars.length);
+        for (var i = 0; i < byteChars.length; i++) {
+            byteArray[i] = byteChars.charCodeAt(i);
+        }
+        var blob = new Blob([byteArray], { type: "application/pdf" });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = r.filename || "GeoStress_Report.pdf";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast("PDF report downloaded (" + r.pages + " pages, " + r.size_kb + " KB)");
+    } catch (err) {
+        showToast("PDF export error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 async function runAllRegimes() {
     showLoading("Comparing all stress regimes...");
     try {
