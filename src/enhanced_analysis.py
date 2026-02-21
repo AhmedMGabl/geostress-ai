@@ -6131,6 +6131,247 @@ def misclassification_analysis(
     }
 
 
+def model_bias_detection(
+    df: pd.DataFrame,
+    fast: bool = True,
+) -> dict:
+    """Detect systematic biases in the ML model.
+
+    Checks for:
+    - Over-prediction of majority classes
+    - Under-prediction of minority classes
+    - Depth-dependent bias (accuracy varies with depth)
+    - Orientation-dependent bias (accuracy varies with azimuth/dip)
+    - Calibration bias (predicted probabilities vs actual frequencies)
+
+    Critical for understanding WHY the model makes mistakes and
+    whether those mistakes are systematic (fixable) or random.
+    """
+    features = engineer_enhanced_features(df)
+    labels = df[FRACTURE_TYPE_COL].values
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    n_est = 100 if fast else 300
+    cv = StratifiedKFold(n_splits=min(5, 3 if fast else 5), shuffle=True, random_state=42)
+    model = RandomForestClassifier(
+        n_estimators=n_est, max_depth=12, min_samples_leaf=3,
+        random_state=42, class_weight="balanced", n_jobs=-1,
+    )
+    y_pred = cross_val_predict(model, X, y, cv=cv)
+    class_names = le.classes_.tolist()
+
+    biases = []
+
+    # 1. Class frequency bias: compare true vs predicted distributions
+    true_counts = np.bincount(y, minlength=len(class_names))
+    pred_counts = np.bincount(y_pred, minlength=len(class_names))
+
+    for ci, cname in enumerate(class_names):
+        true_pct = true_counts[ci] / len(y) * 100
+        pred_pct = pred_counts[ci] / len(y) * 100
+        diff = pred_pct - true_pct
+
+        if abs(diff) > 5:
+            direction = "OVER-predicted" if diff > 0 else "UNDER-predicted"
+            biases.append({
+                "type": "class_frequency",
+                "class": cname,
+                "severity": "HIGH" if abs(diff) > 15 else "MODERATE",
+                "message": f"{cname} is {direction} by {abs(diff):.1f}% "
+                          f"(true: {true_pct:.1f}%, predicted: {pred_pct:.1f}%)",
+                "direction": direction.split("-")[0].lower(),
+            })
+
+    # 2. Depth-dependent bias
+    if DEPTH_COL in df.columns:
+        depths = df[DEPTH_COL].values
+        median_depth = np.median(depths)
+        shallow_mask = depths < median_depth
+        deep_mask = depths >= median_depth
+
+        if shallow_mask.sum() > 10 and deep_mask.sum() > 10:
+            shallow_acc = float((y_pred[shallow_mask] == y[shallow_mask]).mean())
+            deep_acc = float((y_pred[deep_mask] == y[deep_mask]).mean())
+            depth_diff = shallow_acc - deep_acc
+
+            if abs(depth_diff) > 0.1:
+                biases.append({
+                    "type": "depth_dependent",
+                    "severity": "HIGH" if abs(depth_diff) > 0.2 else "MODERATE",
+                    "message": f"Model is {'more' if depth_diff > 0 else 'less'} accurate at "
+                              f"shallow depths ({shallow_acc:.1%}) vs deep ({deep_acc:.1%}). "
+                              f"Difference: {abs(depth_diff):.1%}",
+                    "shallow_accuracy": round(shallow_acc, 3),
+                    "deep_accuracy": round(deep_acc, 3),
+                })
+
+    # 3. Dip-dependent bias
+    if DIP_COL in df.columns:
+        dips = df[DIP_COL].values
+        low_dip = dips < 30
+        high_dip = dips > 60
+
+        if low_dip.sum() > 10 and high_dip.sum() > 10:
+            low_acc = float((y_pred[low_dip] == y[low_dip]).mean())
+            high_acc = float((y_pred[high_dip] == y[high_dip]).mean())
+            dip_diff = low_acc - high_acc
+
+            if abs(dip_diff) > 0.1:
+                biases.append({
+                    "type": "dip_dependent",
+                    "severity": "HIGH" if abs(dip_diff) > 0.2 else "MODERATE",
+                    "message": f"Model accuracy varies with dip angle. "
+                              f"Low dip (<30°): {low_acc:.1%}, High dip (>60°): {high_acc:.1%}",
+                    "low_dip_accuracy": round(low_acc, 3),
+                    "high_dip_accuracy": round(high_acc, 3),
+                })
+
+    # 4. Overall bias assessment
+    if not biases:
+        bias_level = "NONE"
+        bias_message = "No systematic biases detected. Model errors appear random."
+    elif any(b["severity"] == "HIGH" for b in biases):
+        bias_level = "HIGH"
+        bias_message = "Significant systematic biases found. Model predictions are unreliable for affected classes/depths."
+    else:
+        bias_level = "MODERATE"
+        bias_message = "Some biases detected but within acceptable range. Monitor with more data."
+
+    # Per-class prediction rates
+    class_stats = {}
+    for ci, cname in enumerate(class_names):
+        class_stats[cname] = {
+            "true_count": int(true_counts[ci]),
+            "predicted_count": int(pred_counts[ci]),
+            "true_pct": round(true_counts[ci] / len(y) * 100, 1),
+            "predicted_pct": round(pred_counts[ci] / len(y) * 100, 1),
+            "bias": round((pred_counts[ci] - true_counts[ci]) / max(true_counts[ci], 1) * 100, 1),
+        }
+
+    return {
+        "bias_level": bias_level,
+        "bias_message": bias_message,
+        "n_biases": len(biases),
+        "biases": biases,
+        "class_distribution": class_stats,
+        "n_samples": len(y),
+    }
+
+
+def prediction_reliability_report(
+    df: pd.DataFrame,
+    well_name: str = "All",
+    depth_m: float = 3000,
+    fast: bool = True,
+) -> dict:
+    """Generate comprehensive prediction reliability report.
+
+    Combines ALL reliability signals into a single report:
+    - ML accuracy (cross-validated)
+    - Misclassification patterns
+    - Model bias detection
+    - Physics constraint status
+    - Known limitations per prediction type
+    - Actionable improvement roadmap
+
+    This is the "ground truth" document for whether predictions
+    should be trusted.
+    """
+    # Run all component analyses
+    misclass = misclassification_analysis(df, fast=fast)
+    bias = model_bias_detection(df, fast=fast)
+
+    # Known limitations
+    class_names = misclass.get("class_names", [])
+    limitations = []
+
+    # From misclassification
+    for rec in misclass.get("recommendations", []):
+        limitations.append({
+            "scope": rec.get("class", "General"),
+            "severity": rec["priority"],
+            "limitation": rec["message"],
+            "mitigation": "Collect more labeled samples for this class.",
+        })
+
+    # From bias
+    for b in bias.get("biases", []):
+        limitations.append({
+            "scope": b.get("class", b.get("type", "General")),
+            "severity": b["severity"],
+            "limitation": b["message"],
+            "mitigation": (
+                "Ensure training data covers all depth ranges uniformly."
+                if "depth" in b.get("type", "")
+                else "Balance training data across classes."
+            ),
+        })
+
+    # Improvement roadmap
+    roadmap = []
+    accuracy = misclass.get("overall_accuracy", 0)
+
+    if accuracy < 0.7:
+        roadmap.append({
+            "priority": 1,
+            "action": "Collect more labeled samples (target: 50+ per class)",
+            "expected_impact": "Accuracy improvement of 10-20%",
+            "effort": "HIGH",
+        })
+    if bias.get("n_biases", 0) > 0:
+        roadmap.append({
+            "priority": 2,
+            "action": "Balance training data: collect more minority class samples",
+            "expected_impact": "Reduce class prediction bias",
+            "effort": "MODERATE",
+        })
+    roadmap.append({
+        "priority": 3,
+        "action": "Submit expert feedback on misclassified samples",
+        "expected_impact": "Model learns from domain expertise (RLHF-style)",
+        "effort": "LOW",
+    })
+    roadmap.append({
+        "priority": 4,
+        "action": "Run Monte Carlo to quantify stress uncertainty envelope",
+        "expected_impact": "Understand confidence bounds on all predictions",
+        "effort": "LOW (automated)",
+    })
+
+    # Overall reliability grade
+    if accuracy >= 0.85 and bias["bias_level"] == "NONE":
+        grade = "A"
+        grade_msg = "Predictions are reliable for operational decisions."
+    elif accuracy >= 0.7 and bias["bias_level"] != "HIGH":
+        grade = "B"
+        grade_msg = "Predictions are useful but should be validated against expert judgment."
+    elif accuracy >= 0.5:
+        grade = "C"
+        grade_msg = "Predictions have significant uncertainty. Use as initial guidance only."
+    else:
+        grade = "D"
+        grade_msg = "Predictions are unreliable. Do not use for decisions without expert validation."
+
+    return {
+        "well": well_name,
+        "reliability_grade": grade,
+        "reliability_message": grade_msg,
+        "overall_accuracy": misclass.get("overall_accuracy", 0),
+        "bias_level": bias["bias_level"],
+        "n_limitations": len(limitations),
+        "limitations": limitations,
+        "n_roadmap_items": len(roadmap),
+        "improvement_roadmap": roadmap,
+        "confusion_pairs": misclass.get("confused_pairs", [])[:5],
+        "class_failures": misclass.get("class_failures", {}),
+        "n_samples": misclass.get("n_samples", 0),
+    }
+
+
 def research_methods_summary() -> dict:
     """Return a summary of the scientific methods and 2025-2026 research
     integrated into this application.

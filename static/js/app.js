@@ -3827,6 +3827,125 @@ async function runMisclassification() {
 }
 
 
+// ── Model Bias Detection ──────────────────────────
+
+async function runModelBias() {
+    showLoading("Detecting model biases...");
+    try {
+        var r = await apiPost("/api/analysis/model-bias", {
+            source: currentSource, well: getWell(), fast: true
+        });
+        var el = document.getElementById("bias-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("bias-body");
+
+        var biasColors = {NONE: "success", MODERATE: "warning", HIGH: "danger"};
+        var html = '<div class="alert alert-' + (biasColors[r.bias_level] || "info") + '">' +
+            '<h5 class="mb-1"><i class="bi bi-sliders2"></i> Bias Level: ' + r.bias_level + '</h5>' +
+            '<p class="mb-0">' + r.bias_message + '</p></div>';
+
+        // Biases found
+        if (r.biases && r.biases.length > 0) {
+            html += '<h6><i class="bi bi-exclamation-diamond"></i> Biases Detected</h6>';
+            r.biases.forEach(function(b) {
+                var color = b.severity === "HIGH" ? "danger" : "warning";
+                html += '<div class="alert alert-' + color + ' py-2 mb-2 small">' +
+                    '<strong>' + b.severity + ' — ' + b.type.replace(/_/g, ' ') + '</strong>: ' + b.message + '</div>';
+            });
+        }
+
+        // Class distribution comparison
+        if (r.class_distribution) {
+            html += '<h6 class="mt-3"><i class="bi bi-bar-chart"></i> Class Distribution: True vs Predicted</h6>';
+            html += '<table class="table table-sm"><thead><tr>' +
+                '<th>Type</th><th>True %</th><th>Predicted %</th><th>Bias</th></tr></thead><tbody>';
+            Object.entries(r.class_distribution).forEach(function(e) {
+                var cls = e[0], info = e[1];
+                var biasColor = Math.abs(info.bias) > 15 ? "text-danger" : Math.abs(info.bias) > 5 ? "text-warning" : "";
+                html += '<tr><td>' + cls + '</td><td>' + info.true_pct + '%</td>' +
+                    '<td>' + info.predicted_pct + '%</td>' +
+                    '<td class="' + biasColor + ' fw-bold">' + (info.bias > 0 ? '+' : '') + info.bias + '%</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+
+        body.innerHTML = html;
+        showToast("Bias detection: " + r.bias_level);
+    } catch (err) {
+        showToast("Bias detection error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Reliability Report ────────────────────────────
+
+async function runReliabilityReport() {
+    showLoading("Generating reliability report...");
+    try {
+        var r = await apiPost("/api/analysis/reliability-report", {
+            source: currentSource, well: getWell(), depth: getDepth(), fast: true
+        });
+        var el = document.getElementById("reliability-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("reliability-body");
+
+        var gradeColors = {A: "success", B: "info", C: "warning", D: "danger"};
+        var html = '<div class="alert alert-' + (gradeColors[r.reliability_grade] || "secondary") + ' p-3">' +
+            '<h4 class="mb-1">Grade: ' + r.reliability_grade + '</h4>' +
+            '<p class="mb-1">' + r.reliability_message + '</p>' +
+            '<small>Accuracy: ' + (r.overall_accuracy * 100).toFixed(1) + '% | Bias: ' + r.bias_level +
+            ' | Limitations: ' + r.n_limitations + '</small></div>';
+
+        // Limitations
+        if (r.limitations && r.limitations.length > 0) {
+            html += '<h6><i class="bi bi-exclamation-triangle"></i> Known Limitations (' + r.n_limitations + ')</h6>';
+            r.limitations.forEach(function(lim) {
+                var color = lim.severity === "HIGH" ? "danger" : "warning";
+                html += '<div class="card mb-2 border-' + color + '"><div class="card-body py-2">' +
+                    '<div class="d-flex justify-content-between"><strong class="small">' + lim.scope + '</strong>' +
+                    '<span class="badge bg-' + color + '">' + lim.severity + '</span></div>' +
+                    '<p class="small mb-1">' + lim.limitation + '</p>' +
+                    '<small class="text-muted"><i class="bi bi-tools"></i> ' + lim.mitigation + '</small>' +
+                    '</div></div>';
+            });
+        }
+
+        // Improvement roadmap
+        if (r.improvement_roadmap && r.improvement_roadmap.length > 0) {
+            html += '<h6 class="mt-3"><i class="bi bi-map"></i> Improvement Roadmap</h6>';
+            html += '<ol class="list-group list-group-numbered">';
+            r.improvement_roadmap.forEach(function(step) {
+                html += '<li class="list-group-item d-flex justify-content-between align-items-start">' +
+                    '<div class="ms-2 me-auto"><div class="fw-bold">' + step.action + '</div>' +
+                    '<small>Expected: ' + step.expected_impact + '</small></div>' +
+                    '<span class="badge bg-primary rounded-pill">' + step.effort + '</span></li>';
+            });
+            html += '</ol>';
+        }
+
+        // Top confusion pairs
+        if (r.confusion_pairs && r.confusion_pairs.length > 0) {
+            html += '<h6 class="mt-3"><i class="bi bi-shuffle"></i> Top Error Patterns</h6>';
+            html += '<table class="table table-sm"><thead><tr>' +
+                '<th>True</th><th>Predicted As</th><th>Count</th></tr></thead><tbody>';
+            r.confusion_pairs.forEach(function(p) {
+                html += '<tr><td>' + p.true_class + '</td><td>' + p.predicted_as + '</td><td>' + p.count + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+
+        body.innerHTML = html;
+        showToast("Reliability: Grade " + r.reliability_grade);
+    } catch (err) {
+        showToast("Reliability report error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
 // ── Audit Trail ───────────────────────────────────
 
 async function loadAuditLog() {

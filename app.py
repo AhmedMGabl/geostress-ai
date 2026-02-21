@@ -53,7 +53,8 @@ from src.enhanced_analysis import (
     prediction_safety_check, field_consistency_check,
     physics_constraint_check, research_methods_summary,
     physics_constrained_predict, misclassification_analysis,
-    evidence_chain_analysis,
+    evidence_chain_analysis, model_bias_detection,
+    prediction_reliability_report,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -2252,6 +2253,53 @@ async def run_evidence_chain(request: Request):
         well_name=well, depth_m=depth_m,
     )
     _audit_record("evidence_chain", {"well": well, "depth": depth_m}, result)
+    return _sanitize_for_json(result)
+
+
+@app.post("/api/analysis/model-bias")
+async def run_model_bias_detection(request: Request):
+    """Detect systematic biases in model predictions.
+
+    Shows whether the model over-predicts certain types, has
+    depth-dependent accuracy, or other systematic issues.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+    fast = body.get("fast", True)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well:
+        df = df[df[WELL_COL] == well].reset_index(drop=True)
+
+    result = await asyncio.to_thread(model_bias_detection, df, fast=fast)
+    return _sanitize_for_json(result)
+
+
+@app.post("/api/analysis/reliability-report")
+async def run_reliability_report(request: Request):
+    """Generate comprehensive prediction reliability report.
+
+    Combines accuracy, bias, limitations, and improvement roadmap
+    into a single decision-support document.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+    fast = body.get("fast", True)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+
+    result = await asyncio.to_thread(
+        prediction_reliability_report, df_well,
+        well_name=well, depth_m=depth_m, fast=fast,
+    )
     return _sanitize_for_json(result)
 
 

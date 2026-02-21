@@ -2010,9 +2010,31 @@
                         <button class="btn btn-outline-danger btn-sm" onclick="runMisclassification()">
                             <i class="bi bi-bug"></i> Misclassification Analysis
                         </button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="runModelBias()">
+                            <i class="bi bi-sliders2"></i> Bias Detection
+                        </button>
+                        <button class="btn btn-warning btn-sm" onclick="runReliabilityReport()">
+                            <i class="bi bi-award"></i> Reliability Report
+                        </button>
                     </div>
 
                     <div id="research-body"></div>
+
+                    <!-- Model Bias Results -->
+                    <div id="bias-results" class="d-none mt-3">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-sliders2"></i> Model Bias Detection</div>
+                            <div class="card-body" id="bias-body"></div>
+                        </div>
+                    </div>
+
+                    <!-- Reliability Report Results -->
+                    <div id="reliability-results" class="d-none mt-3">
+                        <div class="card border-warning">
+                            <div class="card-header bg-warning text-dark"><i class="bi bi-award"></i> Prediction Reliability Report</div>
+                            <div class="card-body" id="reliability-body"></div>
+                        </div>
+                    </div>
 
                     <!-- Physics Constrained Prediction Results -->
                     <div id="physics-predict-results" class="d-none mt-3">
