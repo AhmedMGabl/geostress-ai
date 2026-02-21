@@ -8,11 +8,14 @@ var feedbackRating = 3;
 
 var _loadingTimer = null;
 var _loadingStart = 0;
+var _progressSource = null;
 
 function showLoading(text) {
     var el = document.getElementById("loading-text");
     el.textContent = text || "Processing";
     document.getElementById("loading-overlay").classList.remove("d-none");
+    document.getElementById("loading-progress").style.display = "none";
+    document.getElementById("loading-detail").textContent = "";
     _loadingStart = Date.now();
     if (_loadingTimer) clearInterval(_loadingTimer);
     _loadingTimer = setInterval(function() {
@@ -21,9 +24,38 @@ function showLoading(text) {
     }, 1000);
 }
 
+function showLoadingWithProgress(text, taskId) {
+    showLoading(text);
+    // Show progress bar and connect to SSE
+    document.getElementById("loading-progress").style.display = "flex";
+    document.getElementById("loading-bar").style.width = "0%";
+    if (_progressSource) { _progressSource.close(); _progressSource = null; }
+    _progressSource = new EventSource("/api/progress/" + taskId);
+    _progressSource.onmessage = function(e) {
+        try {
+            var d = JSON.parse(e.data);
+            document.getElementById("loading-bar").style.width = d.pct + "%";
+            document.getElementById("loading-text").textContent = d.step;
+            if (d.detail) document.getElementById("loading-detail").textContent = d.detail;
+            if (d.pct >= 100) {
+                _progressSource.close();
+                _progressSource = null;
+            }
+        } catch (err) {}
+    };
+    _progressSource.onerror = function() {
+        if (_progressSource) { _progressSource.close(); _progressSource = null; }
+    };
+}
+
 function hideLoading() {
     document.getElementById("loading-overlay").classList.add("d-none");
     if (_loadingTimer) { clearInterval(_loadingTimer); _loadingTimer = null; }
+    if (_progressSource) { _progressSource.close(); _progressSource = null; }
+}
+
+function generateTaskId() {
+    return "task_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6);
 }
 
 function showToast(msg, title) {
@@ -48,6 +80,14 @@ async function api(url, options) {
         throw new Error(text || resp.statusText);
     }
     return resp.json();
+}
+
+async function apiPost(url, data) {
+    return api(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(data)
+    });
 }
 
 function setImg(id, src) {
@@ -363,10 +403,12 @@ async function runFieldConsistency() {
 // ── Evidence Chain ─────────────────────────────────
 
 async function runEvidenceChain() {
-    showLoading("Building evidence chain (runs ALL analyses)...");
+    var taskId = generateTaskId();
+    showLoadingWithProgress("Building evidence chain...", taskId);
     try {
         var r = await apiPost("/api/analysis/evidence-chain", {
-            source: currentSource, well: getWell(), depth: getDepth()
+            source: currentSource, well: getWell(), depth: getDepth(),
+            task_id: taskId
         });
 
         document.getElementById("evidence-results").classList.remove("d-none");

@@ -24,7 +24,7 @@ import pandas as pd
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from src.data_loader import (
     load_all_fractures, load_single_file, fracture_summary,
@@ -83,6 +83,24 @@ _physics_predict_cache = {}
 # Audit trail for regulatory compliance (max 1000 entries in-memory)
 _audit_log: deque = deque(maxlen=1000)
 _audit_lock = threading.Lock()
+
+# Progress tracking for SSE (Server-Sent Events)
+_progress_queues: dict[str, asyncio.Queue] = {}
+_progress_lock = threading.Lock()
+
+
+def _emit_progress(task_id: str, step: str, pct: int = 0, detail: str = ""):
+    """Publish a progress update for a running task.
+
+    Called from within long-running operations (potentially in threads).
+    """
+    with _progress_lock:
+        q = _progress_queues.get(task_id)
+    if q:
+        try:
+            q.put_nowait({"step": step, "pct": pct, "detail": detail})
+        except asyncio.QueueFull:
+            pass  # Drop if client isn't reading fast enough
 
 
 async def _cached_inversion(normals, well, regime, depth_m, pore_pressure, source):
@@ -248,6 +266,46 @@ async def cache_status():
         "shap": len(_shap_cache),
         "sensitivity": len(_sensitivity_cache),
     }
+
+
+# ── SSE Progress Streaming ────────────────────────────
+
+@app.get("/api/progress/{task_id}")
+async def progress_stream(task_id: str):
+    """Server-Sent Events endpoint for long-running task progress.
+
+    Frontend subscribes to this during long operations. Events contain
+    step name, percentage, and detail text.
+    """
+    q = asyncio.Queue(maxsize=50)
+    with _progress_lock:
+        _progress_queues[task_id] = q
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=30.0)
+                    data = json.dumps(msg)
+                    yield f"data: {data}\n\n"
+                    if msg.get("pct", 0) >= 100:
+                        break
+                except asyncio.TimeoutError:
+                    # Send keepalive
+                    yield f": keepalive\n\n"
+        finally:
+            with _progress_lock:
+                _progress_queues.pop(task_id, None)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ── Page routes ──────────────────────────────────────
@@ -2248,10 +2306,21 @@ async def run_evidence_chain(request: Request):
         raise HTTPException(400, "No data loaded")
     df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
 
+    task_id = body.get("task_id", "")
+
+    def _progress_cb(step, pct, detail=""):
+        if task_id:
+            _emit_progress(task_id, step, pct, detail)
+
     result = await asyncio.to_thread(
         evidence_chain_analysis, df_well,
         well_name=well, depth_m=depth_m,
+        progress_fn=_progress_cb,
     )
+
+    if task_id:
+        _emit_progress(task_id, "Complete", 100)
+
     _audit_record("evidence_chain", {"well": well, "depth": depth_m}, result)
     return _sanitize_for_json(result)
 

@@ -4508,6 +4508,7 @@ def evidence_chain_analysis(
     df: pd.DataFrame,
     well_name: str = "All",
     depth_m: float = 3000,
+    progress_fn=None,
 ) -> dict:
     """Generate a comprehensive evidence chain for every recommendation.
 
@@ -4517,18 +4518,26 @@ def evidence_chain_analysis(
 
     Designed for non-technical stakeholders who need to understand the
     basis for drilling decisions.
+
+    progress_fn: optional callback(step, pct, detail) for progress reporting.
     """
+    def _progress(step, pct, detail=""):
+        if progress_fn:
+            progress_fn(step, pct, detail)
+
     try:
         from src.geostress import invert_stress, auto_detect_regime
     except ImportError:
         from geostress import invert_stress, auto_detect_regime
 
+    _progress("Preparing data...", 5)
     normals = fracture_plane_normal(
         df[AZIMUTH_COL].values, df[DIP_COL].values
     )
 
     evidence_items = []
 
+    _progress("Checking data quality...", 10, "Validating input data")
     # ── Evidence 1: Data Quality ──
     quality = validate_data_quality(df)
     evidence_items.append({
@@ -4545,6 +4554,7 @@ def evidence_chain_analysis(
         "action": "Review flagged data quality issues before proceeding." if quality["score"] < 70 else "Data quality is acceptable.",
     })
 
+    _progress("Detecting stress regime...", 20, "Testing all 3 regimes (~6s)")
     # ── Evidence 2: Stress Regime ──
     try:
         auto = auto_detect_regime(normals, depth_m)
@@ -4582,6 +4592,7 @@ def evidence_chain_analysis(
             "action": "Check input data format and try again.",
         })
 
+    _progress("Running stress inversion...", 45, "Optimizing stress tensor")
     # ── Evidence 3: Stress Inversion ──
     try:
         inv = invert_stress(normals, regime=regime, depth_m=depth_m)
@@ -4611,6 +4622,7 @@ def evidence_chain_analysis(
             "action": "Run Monte Carlo to quantify SHmax uncertainty envelope.",
         })
 
+        _progress("Analyzing critically stressed fractures...", 60, "Mohr-Coulomb analysis")
         # ── Evidence 4: Critically Stressed ──
         pp_val = inv.get("pore_pressure", 0.0)
         cs = critically_stressed_enhanced(
@@ -4643,6 +4655,7 @@ def evidence_chain_analysis(
             ),
         })
 
+        _progress("Validating physics constraints...", 75, "Checking Byerlee, frictional eq")
         # ── Evidence 5: Physics Constraints ──
         phys = physics_constraint_check(inv, depth_m)
         evidence_items.append({
@@ -4675,6 +4688,7 @@ def evidence_chain_analysis(
             "action": "Check input data and parameters.",
         })
 
+    _progress("Running ML classification...", 85, "Cross-validated accuracy")
     # ── Evidence 6: ML Model Performance ──
     try:
         misclass = misclassification_analysis(df, fast=True)
