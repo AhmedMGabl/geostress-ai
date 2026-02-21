@@ -898,6 +898,54 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Active Learning Section -->
+                    <div class="card mt-4 border-info">
+                        <div class="card-header bg-info text-white">
+                            <i class="bi bi-bullseye"></i> Active Learning — Which Fractures to Review Next
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">
+                                The AI identifies fractures it's most uncertain about. Reviewing these
+                                gives the biggest improvement per expert-hour — this is human-in-the-loop learning.
+                            </p>
+                            <div class="d-flex gap-2 mb-3">
+                                <button class="btn btn-info btn-sm" onclick="runActiveLearning()">
+                                    <i class="bi bi-bullseye"></i> Find Uncertain Fractures
+                                </button>
+                            </div>
+
+                            <div id="al-results" class="d-none">
+                                <div class="mb-3" id="al-summary-text"></div>
+
+                                <!-- Learning Curve -->
+                                <div id="al-learning-curve" class="d-none mb-3">
+                                    <h6><i class="bi bi-graph-up-arrow"></i> Learning Curve</h6>
+                                    <div id="al-curve-body"></div>
+                                </div>
+
+                                <!-- Coverage Gaps -->
+                                <div id="al-coverage" class="d-none mb-3">
+                                    <h6><i class="bi bi-exclamation-diamond"></i> Data Coverage Gaps</h6>
+                                    <div id="al-coverage-body"></div>
+                                </div>
+
+                                <!-- Suggested Samples -->
+                                <div id="al-suggestions" class="d-none">
+                                    <h6><i class="bi bi-list-check"></i> Fractures for Expert Review</h6>
+                                    <div class="table-responsive">
+                                        <table class="table table-sm table-hover">
+                                            <thead><tr>
+                                                <th>#</th><th>Well</th><th>Depth</th><th>Az</th><th>Dip</th>
+                                                <th>Current Label</th><th>Predicted</th><th>Confidence</th><th>Mismatch</th>
+                                            </tr></thead>
+                                            <tbody id="al-table-body"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- ═══════ Sensitivity Tab ═══════ -->

@@ -2582,3 +2582,210 @@ def compute_uncertainty_budget(
         "stakeholder_summary": stakeholder_summary,
         "n_sources": len(sources),
     }
+
+
+# ──────────────────────────────────────────────────────
+# Active Learning: Identify Samples for Expert Review
+# ──────────────────────────────────────────────────────
+
+def active_learning_query(
+    df: pd.DataFrame,
+    n_suggest: int = 20,
+    classifier: str = "xgboost",
+) -> dict:
+    """Identify the fractures the model is most uncertain about.
+
+    Uses prediction entropy and margin sampling to rank fractures
+    by how much the model would benefit from an expert label.
+    This is the practical equivalent of RLHF for geoscience:
+    humans correct the highest-value samples, model retrains.
+
+    Parameters
+    ----------
+    df : DataFrame with fracture data
+    n_suggest : Number of samples to suggest for review
+    classifier : Which model to use for uncertainty estimation
+
+    Returns
+    -------
+    dict with:
+        suggestions : list of fractures to review (most uncertain first)
+        learning_curve : estimated accuracy gains from labeling more data
+        coverage_gaps : fracture types or regions with sparse data
+        summary : plain-language explanation
+    """
+    features = engineer_enhanced_features(df)
+    labels = df[FRACTURE_TYPE_COL].values
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    all_models = _get_models()
+    model = all_models.get(classifier, all_models.get("random_forest"))
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    # Get cross-validated probabilities for each sample
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        n_classes = len(np.unique(y))
+        probs = np.zeros((len(y), n_classes))
+
+        for train_idx, test_idx in cv.split(X, y):
+            model.fit(X[train_idx], y[train_idx])
+            probs[test_idx] = model.predict_proba(X[test_idx])
+
+    # ── Uncertainty metrics per sample ──
+    # 1. Entropy: higher = more uncertain
+    entropy = -np.sum(probs * np.log(probs + 1e-10), axis=1)
+    max_entropy = np.log(n_classes)
+    normalized_entropy = entropy / max_entropy
+
+    # 2. Margin: smallest gap between top-2 predicted classes
+    sorted_probs = np.sort(probs, axis=1)[:, ::-1]
+    margin = sorted_probs[:, 0] - sorted_probs[:, 1]
+
+    # 3. Combined active learning score (lower margin + higher entropy = more valuable)
+    al_score = normalized_entropy - margin  # higher = more uncertain
+    ranked_indices = np.argsort(al_score)[::-1]
+
+    # ── Build suggestions ──
+    suggestions = []
+    predicted_classes = le.inverse_transform(probs.argmax(axis=1))
+    actual_classes = labels
+
+    for idx in ranked_indices[:n_suggest]:
+        idx = int(idx)
+        row = df.iloc[idx]
+        suggestions.append({
+            "index": idx,
+            "depth": round(float(row.get(DEPTH_COL, 0)), 1),
+            "azimuth": round(float(row.get(AZIMUTH_COL, 0)), 1),
+            "dip": round(float(row.get(DIP_COL, 0)), 1),
+            "well": str(row.get(WELL_COL, "")),
+            "current_label": str(actual_classes[idx]),
+            "predicted_label": str(predicted_classes[idx]),
+            "confidence": round(float(sorted_probs[idx, 0]) * 100, 1),
+            "entropy": round(float(normalized_entropy[idx]), 3),
+            "margin": round(float(margin[idx]), 3),
+            "mismatch": str(actual_classes[idx]) != str(predicted_classes[idx]),
+            "top_probabilities": {
+                le.classes_[i]: round(float(probs[idx, i]), 3)
+                for i in np.argsort(probs[idx])[::-1][:3]
+            },
+        })
+
+    # ── Coverage gaps ──
+    coverage_gaps = []
+    type_counts = pd.Series(labels).value_counts()
+    median_count = type_counts.median()
+    for ftype, count in type_counts.items():
+        if count < median_count * 0.5:
+            coverage_gaps.append({
+                "type": str(ftype),
+                "count": int(count),
+                "issue": f"Only {count} samples (median is {int(median_count)}). "
+                         f"Model may underperform on this type.",
+                "recommendation": f"Collect ~{int(max(0, median_count - count))} "
+                                  f"more {ftype} fractures.",
+            })
+
+    # Check depth coverage gaps
+    if DEPTH_COL in df.columns:
+        depths = df[DEPTH_COL].dropna()
+        if len(depths) > 10:
+            depth_range = depths.max() - depths.min()
+            n_bins = 5
+            bin_edges = np.linspace(depths.min(), depths.max(), n_bins + 1)
+            for i in range(n_bins):
+                bin_mask = (depths >= bin_edges[i]) & (depths < bin_edges[i+1])
+                bin_count = int(bin_mask.sum())
+                if bin_count < len(depths) * 0.05:  # <5% of data in this bin
+                    coverage_gaps.append({
+                        "type": f"Depth {bin_edges[i]:.0f}-{bin_edges[i+1]:.0f}m",
+                        "count": bin_count,
+                        "issue": f"Sparse coverage ({bin_count} samples) in depth range.",
+                        "recommendation": "Collect fracture data in this depth interval.",
+                    })
+
+    # ── Learning curve estimate ──
+    # Simulate accuracy at different data fractions
+    learning_curve_data = []
+    fractions = [0.2, 0.4, 0.6, 0.8, 1.0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for frac in fractions:
+            n_samples = max(n_classes * 2, int(len(y) * frac))
+            if n_samples > len(y):
+                n_samples = len(y)
+            # Use stratified subset
+            if frac < 1.0:
+                from sklearn.model_selection import train_test_split
+                try:
+                    X_sub, _, y_sub, _ = train_test_split(
+                        X, y, train_size=frac, stratify=y, random_state=42,
+                    )
+                except ValueError:
+                    X_sub, y_sub = X, y
+            else:
+                X_sub, y_sub = X, y
+
+            sub_cv = StratifiedKFold(
+                n_splits=min(5, max(2, len(np.unique(y_sub)))),
+                shuffle=True, random_state=42,
+            )
+            try:
+                scores = cross_val_score(model, X_sub, y_sub, cv=sub_cv, scoring="accuracy")
+                learning_curve_data.append({
+                    "fraction": frac,
+                    "n_samples": len(y_sub),
+                    "accuracy": round(float(scores.mean()), 4),
+                    "std": round(float(scores.std()), 4),
+                })
+            except Exception:
+                pass
+
+    # ── Estimate benefit of more data ──
+    if len(learning_curve_data) >= 2:
+        last = learning_curve_data[-1]
+        second = learning_curve_data[-2]
+        improvement_rate = last["accuracy"] - second["accuracy"]
+        projected = min(1.0, last["accuracy"] + improvement_rate * 0.5)
+    else:
+        projected = None
+
+    # ── Summary ──
+    n_mismatches = sum(1 for s in suggestions if s["mismatch"])
+    low_conf = sum(1 for s in suggestions if s["confidence"] < 50)
+    summary_parts = [
+        f"Identified {n_suggest} fractures for expert review. ",
+        f"{n_mismatches} show current label/prediction mismatch. ",
+        f"{low_conf} have <50% prediction confidence. ",
+    ]
+    if coverage_gaps:
+        summary_parts.append(
+            f"{len(coverage_gaps)} data coverage gaps identified. "
+        )
+    if projected:
+        summary_parts.append(
+            f"Estimated accuracy with 50% more data: "
+            f"{projected*100:.1f}% (current: {last['accuracy']*100:.1f}%)."
+        )
+
+    return {
+        "suggestions": suggestions,
+        "n_suggested": len(suggestions),
+        "coverage_gaps": coverage_gaps,
+        "learning_curve": learning_curve_data,
+        "projected_accuracy": round(projected, 4) if projected else None,
+        "current_accuracy": (
+            round(learning_curve_data[-1]["accuracy"], 4)
+            if learning_curve_data else None
+        ),
+        "summary": "".join(summary_parts),
+        "total_samples": len(y),
+        "n_classes": n_classes,
+        "class_names": le.classes_.tolist(),
+    }

@@ -1172,6 +1172,85 @@ async function runShapExplanation() {
     }
 }
 
+// ── Active Learning ───────────────────────────────
+
+async function runActiveLearning() {
+    showLoading("Identifying most uncertain fractures...");
+    try {
+        var r = await api("/api/analysis/active-learning", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({source: currentSource, n_suggest: 20, classifier: "xgboost"})
+        });
+
+        document.getElementById("al-results").classList.remove("d-none");
+
+        // Summary
+        document.getElementById("al-summary-text").innerHTML =
+            '<div class="alert alert-info small">' + (r.summary || '') + '</div>';
+
+        // Learning curve
+        var curveEl = document.getElementById("al-learning-curve");
+        var curveBody = document.getElementById("al-curve-body");
+        clearChildren(curveBody);
+        if (r.learning_curve && r.learning_curve.length > 1) {
+            curveEl.classList.remove("d-none");
+            var tbl = '<table class="table table-sm"><thead><tr><th>Data Fraction</th><th>Samples</th><th>Accuracy</th></tr></thead><tbody>';
+            r.learning_curve.forEach(function(lc) {
+                tbl += '<tr><td>' + (lc.fraction * 100).toFixed(0) + '%</td><td>' + lc.n_samples + '</td>' +
+                    '<td>' + (lc.accuracy * 100).toFixed(1) + '% ± ' + (lc.std * 100).toFixed(1) + '%</td></tr>';
+            });
+            tbl += '</tbody></table>';
+            if (r.projected_accuracy) {
+                tbl += '<div class="small text-muted">Projected with 50% more data: <strong>' +
+                    (r.projected_accuracy * 100).toFixed(1) + '%</strong></div>';
+            }
+            curveBody.innerHTML = tbl;
+        }
+
+        // Coverage gaps
+        var covEl = document.getElementById("al-coverage");
+        var covBody = document.getElementById("al-coverage-body");
+        clearChildren(covBody);
+        if (r.coverage_gaps && r.coverage_gaps.length > 0) {
+            covEl.classList.remove("d-none");
+            r.coverage_gaps.forEach(function(g) {
+                var div = document.createElement("div");
+                div.className = "alert alert-warning py-2 small mb-2";
+                div.innerHTML = '<strong>' + g.type + '</strong> (' + g.count + ' samples): ' +
+                    g.issue + '<br><i class="bi bi-arrow-right"></i> ' + g.recommendation;
+                covBody.appendChild(div);
+            });
+        }
+
+        // Suggestions table
+        var sugEl = document.getElementById("al-suggestions");
+        var tbody = document.getElementById("al-table-body");
+        clearChildren(tbody);
+        if (r.suggestions && r.suggestions.length > 0) {
+            sugEl.classList.remove("d-none");
+            r.suggestions.forEach(function(s) {
+                var tr = document.createElement("tr");
+                if (s.mismatch) tr.className = "table-warning";
+                tr.innerHTML = '<td>' + s.index + '</td><td>' + s.well + '</td>' +
+                    '<td>' + s.depth + '</td><td>' + s.azimuth + '°</td><td>' + s.dip + '°</td>' +
+                    '<td>' + s.current_label + '</td><td>' + s.predicted_label + '</td>' +
+                    '<td><span class="badge bg-' + (s.confidence >= 50 ? 'warning' : 'danger') + '">' +
+                    s.confidence + '%</span></td>' +
+                    '<td>' + (s.mismatch ? '<i class="bi bi-exclamation-triangle text-danger"></i>' : '') + '</td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        showToast("Active learning: " + r.n_suggested + " samples suggested for review");
+    } catch (err) {
+        showToast("Active learning error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
 // ── Sensitivity Analysis ─────────────────────────
 
 async function runSensitivity() {

@@ -38,7 +38,7 @@ from src.enhanced_analysis import (
     validate_data_quality, retrain_with_corrections,
     sensitivity_analysis, compute_risk_matrix,
     generate_well_report, compare_wells,
-    compute_uncertainty_budget,
+    compute_uncertainty_budget, active_learning_query,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -58,6 +58,24 @@ uploaded_df: pd.DataFrame = None
 # Cache for expensive computations
 _model_comparison_cache = {}
 _inversion_cache = {}
+
+
+async def _cached_inversion(normals, well, regime, depth_m, pore_pressure, source):
+    """Cache inversion results to avoid re-running the expensive optimization.
+
+    Keyed by (source, well, regime, depth, pp_rounded). Returns dict.
+    """
+    pp_key = round(pore_pressure, 1) if pore_pressure else "auto"
+    cache_key = f"inv_{source}_{well}_{regime}_{depth_m}_{pp_key}"
+    if cache_key in _inversion_cache:
+        return _inversion_cache[cache_key]
+
+    result = await asyncio.to_thread(
+        invert_stress, normals, regime=regime,
+        depth_m=depth_m, pore_pressure=pore_pressure,
+    )
+    _inversion_cache[cache_key] = result
+    return result
 
 
 # ── Helpers ──────────────────────────────────────────
@@ -213,9 +231,11 @@ async def upload_file(file: UploadFile = File(...)):
     try:
         new_df = load_single_file(tmp_path)
         uploaded_df = new_df
-        # Clear caches when new data is uploaded
+        # Clear all caches when new data is uploaded
         _model_comparison_cache.clear()
         _inversion_cache.clear()
+        _sensitivity_cache.clear()
+        _shap_cache.clear()
         return {
             "filename": file.filename,
             "rows": len(new_df),
@@ -302,10 +322,9 @@ async def run_inversion(request: Request):
     if np.isnan(avg_depth):
         avg_depth = depth_m
 
-    # Run inversion with pore pressure support
-    result = await asyncio.to_thread(
-        invert_stress, normals, regime=regime, depth_m=avg_depth,
-        cohesion=cohesion, pore_pressure=pore_pressure
+    # Run inversion with pore pressure support (cached)
+    result = await _cached_inversion(
+        normals, well, regime, avg_depth, pore_pressure, source
     )
 
     # Generate plots
@@ -663,9 +682,8 @@ async def run_sensitivity(request: Request):
     )
     pp = float(pore_pressure) if pore_pressure else None
 
-    inv_result = await asyncio.to_thread(
-        invert_stress, normals, regime=regime,
-        depth_m=depth_m, pore_pressure=pp,
+    inv_result = await _cached_inversion(
+        normals, well, regime, depth_m, pp, source
     )
 
     sens_result = await asyncio.to_thread(
@@ -704,10 +722,9 @@ async def run_bayesian(request: Request):
     )
     pp = float(pore_pressure) if pore_pressure else None
 
-    # Run optimization first (gives initial point for MCMC)
-    inv_result = await asyncio.to_thread(
-        invert_stress, normals, regime=regime,
-        depth_m=depth_m, pore_pressure=pp,
+    # Run optimization first (gives initial point for MCMC) — cached
+    inv_result = await _cached_inversion(
+        normals, well, regime, depth_m, pp, source
     )
 
     pp_val = inv_result.get("pore_pressure", 0.0)
@@ -746,10 +763,9 @@ async def run_risk_matrix(request: Request):
     )
     pp = float(pore_pressure) if pore_pressure else None
 
-    # Run all prerequisite analyses
-    inv_result = await asyncio.to_thread(
-        invert_stress, normals, regime=regime,
-        depth_m=depth_m, pore_pressure=pp,
+    # Run all prerequisite analyses (cached inversion)
+    inv_result = await _cached_inversion(
+        normals, well, regime, depth_m, pp, source
     )
 
     pp_val = inv_result.get("pore_pressure", 0)
@@ -806,9 +822,8 @@ async def generate_report(request: Request):
     )
     pp = float(pore_pressure) if pore_pressure else None
 
-    inv_result = await asyncio.to_thread(
-        invert_stress, normals, regime=regime,
-        depth_m=depth_m, pore_pressure=pp,
+    inv_result = await _cached_inversion(
+        normals, well, regime, depth_m, pp, source
     )
 
     pp_val = inv_result.get("pore_pressure", 0)
@@ -904,8 +919,8 @@ async def run_overview(request: Request):
         normals = fracture_plane_normal(
             df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
         )
-        inv = await asyncio.to_thread(
-            invert_stress, normals, regime=regime, depth_m=depth_m,
+        inv = await _cached_inversion(
+            normals, well, regime, depth_m, None, source
         )
         pp_val = inv.get("pore_pressure", 0.0)
 
@@ -973,10 +988,9 @@ async def run_uncertainty_budget(request: Request):
     )
     pp = float(pore_pressure) if pore_pressure else None
 
-    # 1. Stress inversion (always needed)
-    inv_result = await asyncio.to_thread(
-        invert_stress, normals, regime=regime,
-        depth_m=depth_m, pore_pressure=pp,
+    # 1. Stress inversion (always needed — cached)
+    inv_result = await _cached_inversion(
+        normals, well, regime, depth_m, pp, source
     )
 
     # 2. Sensitivity analysis
@@ -1018,3 +1032,27 @@ async def run_uncertainty_budget(request: Request):
     )
 
     return _sanitize_for_json(budget)
+
+
+# ── Active Learning ───────────────────────────────────
+
+@app.post("/api/analysis/active-learning")
+async def run_active_learning(request: Request):
+    """Identify fractures the model is most uncertain about.
+
+    Suggests the highest-value samples for expert review using entropy
+    and margin sampling. This is the practical human-in-the-loop
+    equivalent of RLHF: experts label the most uncertain cases,
+    model retrains on the corrections.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    n_suggest = int(body.get("n_suggest", 20))
+    classifier = body.get("classifier", "xgboost")
+
+    df = get_df(source)
+
+    result = await asyncio.to_thread(
+        active_learning_query, df, n_suggest=n_suggest, classifier=classifier,
+    )
+    return _sanitize_for_json(result)
