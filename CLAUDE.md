@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
-app.py              - FastAPI backend (v3.2.0), 90+ API endpoints, serves templates
+app.py              - FastAPI backend (v3.2.1), 95+ API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
   geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC, auto regime detection
@@ -146,6 +146,8 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | GET | `/api/db/stats` | SQLite persistent storage statistics (audit/model/preference counts) |
 | POST | `/api/db/export` | Export entire database as JSON for backup |
 | POST | `/api/db/import` | Import records from a previously exported backup |
+| POST | `/api/analysis/augmented-classify` | Adversarial robustness test: noise + boundary + edge case augmentation |
+| GET | `/api/help/glossary` | 9-term plain-language glossary for non-technical stakeholders |
 | POST | `/api/analysis/decision-readiness` | GO/CAUTION/NO-GO with 6 independent signals |
 
 ## Domain Concepts
@@ -191,6 +193,10 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - PDF report uses fpdf2 (lightweight, no external deps), includes verdict banner, executive summary, data stats
 - Comprehensive report caching: first call ~77s, subsequent calls 0.01s (BoundedCache, maxsize=10)
 - Per-well classification pre-warming at startup reduces comprehensive report cold-start from ~130s to ~77s
+- v3.2.1: Adversarial augmentation with 3 strategies (Gaussian noise ±5°, boundary interpolation, edge cases)
+- Augmented classify improved Well 3P from 66.1% → 78.0% (+12% accuracy with 446 synthetic samples)
+- Contextual glossary: 9 terms with plain language, technical detail, "why it matters" for each
+- Floating help button (bottom-right) opens searchable glossary modal
 - Stacking ensemble (RF+XGBoost+LightGBM with LR meta-learner) is typically the best model
 - SHAP TreeExplainer for XGBoost/LightGBM/RF; GradientBoosting only supports binary in SHAP
 - Conformal prediction provides calibrated per-sample confidence scores
