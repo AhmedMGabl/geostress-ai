@@ -2479,6 +2479,49 @@ async function runWhatIf() {
 }
 
 
+async function runSensitivityHeatmap() {
+    showLoading("Generating sensitivity heatmap (81 scenarios)...");
+    try {
+        var r = await apiPost("/api/analysis/sensitivity-heatmap", {
+            source: currentSource, well: getWell(), depth: getDepth()
+        });
+        var el = document.getElementById("heatmap-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("heatmap-body");
+
+        var html = '';
+        if (r.chart_img) {
+            html += '<div class="text-center mb-3"><img src="data:image/png;base64,' + r.chart_img +
+                '" class="img-fluid" alt="Sensitivity heatmap"></div>';
+        }
+
+        // Summary info
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><small><strong>Well:</strong> ' + r.well + '</small></div>';
+        html += '<div class="col-md-4"><small><strong>Depth:</strong> ' + r.depth_m + 'm</small></div>';
+        html += '<div class="col-md-4"><small><strong>Regime:</strong> ' + r.regime + '</small></div>';
+        html += '</div>';
+
+        // Quick risk summary from matrix
+        if (r.cs_matrix) {
+            var allVals = [];
+            r.cs_matrix.forEach(function(row) { row.forEach(function(v) { allVals.push(v); }); });
+            var minCS = Math.min.apply(null, allVals);
+            var maxCS = Math.max.apply(null, allVals);
+            html += '<div class="alert alert-info py-2 px-3">' +
+                '<small>Critically stressed ranges from <strong>' + minCS + '%</strong> to <strong>' + maxCS +
+                '%</strong> across the parameter space (' + r.n_fractures + ' fractures)</small></div>';
+        }
+
+        body.innerHTML = html;
+        showToast("Heatmap: " + (r.friction_values || []).length + "×" + (r.pp_values_mpa || []).length + " grid computed");
+    } catch (err) {
+        showToast("Heatmap error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 async function runSensitivity() {
     showLoading("Running sensitivity analysis");
     try {

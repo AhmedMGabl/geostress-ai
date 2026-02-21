@@ -664,3 +664,66 @@ def plot_abstention_chart(confidence_distribution: list,
 
     fig.tight_layout()
     return fig
+
+
+def plot_sensitivity_heatmap(
+    friction_values: list,
+    pp_values: list,
+    cs_matrix: list,
+    title: str = "Sensitivity Heatmap — Critically Stressed %",
+) -> plt.Figure:
+    """2D heatmap: friction vs pore pressure, colored by critically stressed %.
+
+    Parameters
+    ----------
+    friction_values : list of floats (x-axis)
+    pp_values : list of floats (y-axis, in MPa)
+    cs_matrix : 2D list [len(pp)][len(friction)] of critically stressed %
+    title : str
+
+    Returns
+    -------
+    matplotlib Figure
+    """
+    Z = np.array(cs_matrix, dtype=float)
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    im = ax.imshow(Z, cmap="RdYlGn_r", aspect="auto",
+                   extent=[friction_values[0], friction_values[-1],
+                           pp_values[-1], pp_values[0]],
+                   vmin=0, vmax=100)
+
+    # Contour lines for risk thresholds
+    X, Y = np.meshgrid(friction_values, pp_values)
+    cs10 = ax.contour(X, Y, Z, levels=[10], colors=["green"], linewidths=2, linestyles="--")
+    cs30 = ax.contour(X, Y, Z, levels=[30], colors=["orange"], linewidths=2, linestyles="--")
+    cs50 = ax.contour(X, Y, Z, levels=[50], colors=["red"], linewidths=2, linestyles="-")
+
+    ax.clabel(cs10, fmt="10%% (GREEN)", fontsize=8)
+    ax.clabel(cs30, fmt="30%% (AMBER)", fontsize=8)
+    ax.clabel(cs50, fmt="50%% (RED)", fontsize=8)
+
+    # Annotate cells
+    for i in range(len(pp_values)):
+        for j in range(len(friction_values)):
+            val = Z[i, j]
+            text_color = "white" if val > 50 else "black"
+            ax.text(friction_values[j], pp_values[i], f"{val:.0f}%",
+                    ha="center", va="center", fontsize=7,
+                    color=text_color, fontweight="bold")
+
+    ax.set_xlabel("Friction Coefficient (μ)", fontsize=11)
+    ax.set_ylabel("Pore Pressure (MPa)", fontsize=11)
+    ax.set_title(title, fontsize=12, fontweight="bold")
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.8)
+    cbar.set_label("Critically Stressed %", fontsize=10)
+
+    # Risk legend
+    legend_text = "Risk zones:\n  GREEN: <10%\n  AMBER: 10-30%\n  RED: >30%"
+    ax.text(0.02, 0.02, legend_text, transform=ax.transAxes,
+            fontsize=8, verticalalignment="bottom",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9))
+
+    fig.tight_layout()
+    return fig

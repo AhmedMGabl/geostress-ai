@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
-app.py              - FastAPI backend (v2.8), all API endpoints, serves templates
+app.py              - FastAPI backend (v2.9), all API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
   geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC, auto regime detection
@@ -230,3 +230,9 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Well 6P at 50% threshold: 0% abstained (only 2 classes = easy separation, 100% confident)
 - Abstained samples show tentative prediction + top-2 candidates with probabilities for expert guidance
 - `_safe_float()` helper in abstention handles NaN depths (Well 6P has NaN depth values)
+- Batch analysis runs stress+classify+risk for all wells; uses `count_critical` key (not `n_critical`)
+- Overview endpoint wraps each sub-analysis with `asyncio.wait_for` timeout (stress=10s, cal=5s, recs=3s)
+- Anomaly detection flags: physical impossibility, IQR outliers (2.5x), duplicates, depth gaps, low-dip uncertainty
+- Well 6P anomaly: 79.6% flagged (494 missing depths, 27 outliers) — data quality issue surfaced before analysis
+- Feedback effectiveness: shows per-class correction priority (Continuous 17%, Boundary 23% accuracy = HIGH priority)
+- 66 total API routes at v2.9

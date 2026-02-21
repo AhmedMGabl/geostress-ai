@@ -1476,9 +1476,22 @@
                         </div>
                     </div>
 
-                    <button class="btn btn-primary btn-sm mb-3" onclick="runSensitivity()">
-                        <i class="bi bi-sliders"></i> Run Full Sensitivity Analysis
-                    </button>
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="runSensitivity()">
+                            <i class="bi bi-sliders"></i> Run Full Sensitivity Analysis
+                        </button>
+                        <button class="btn btn-outline-danger btn-sm" onclick="runSensitivityHeatmap()">
+                            <i class="bi bi-grid-3x3"></i> Sensitivity Heatmap
+                        </button>
+                    </div>
+                    <div id="heatmap-results" class="d-none mb-4">
+                        <div class="card border-danger">
+                            <div class="card-header bg-danger text-white">
+                                <i class="bi bi-grid-3x3"></i> Sensitivity Heatmap — Friction × Pore Pressure
+                            </div>
+                            <div class="card-body" id="heatmap-body"></div>
+                        </div>
+                    </div>
 
                     <!-- Tornado Diagram -->
                     <div id="sens-tornado" class="d-none mb-4">

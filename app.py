@@ -64,6 +64,7 @@ from src.visualization import (
     plot_analysis_dashboard,
     plot_model_comparison, plot_learning_curve, plot_bootstrap_ci,
     plot_confusion_matrix, plot_abstention_chart,
+    plot_sensitivity_heatmap,
 )
 
 # ── Globals ──────────────────────────────────────────
@@ -1282,6 +1283,83 @@ async def run_what_if(request: Request):
         "critically_stressed_pct": round(cs["pct_critical"], 1),
         "high_risk_count": cs["high_risk_count"],
         "risk_level": risk_level,
+        "n_fractures": len(df_well),
+    })
+
+
+# ── Sensitivity Heatmap ───────────────────────────────
+
+@app.post("/api/analysis/sensitivity-heatmap")
+async def run_sensitivity_heatmap(request: Request):
+    """Generate 2D heatmap of critically stressed % across friction × Pp space.
+
+    Shows the full parameter landscape so stakeholders can see risk
+    sensitivity at a glance, not just one scenario at a time.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+
+    # Grid parameters
+    friction_values = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    pp_values = [0, 5, 10, 15, 20, 25, 30, 35, 40]  # MPa
+
+    # Pre-compute inversion (regime doesn't change across grid)
+    auto_key = f"auto_{source}_{well}_{depth_m}"
+    if auto_key in _auto_regime_cache:
+        auto_res = _auto_regime_cache[auto_key]
+    else:
+        auto_res = await asyncio.to_thread(
+            auto_detect_regime, normals, depth_m, 0.0, None,
+        )
+        _auto_regime_cache[auto_key] = auto_res
+
+    inv = auto_res["best_result"]
+
+    # Compute CS% for each (friction, pp) pair
+    def _compute_grid():
+        cs_matrix = []
+        for pp in pp_values:
+            row = []
+            for mu in friction_values:
+                cs = critically_stressed_enhanced(
+                    inv["sigma_n"], inv["tau"],
+                    mu=mu, pore_pressure=pp,
+                )
+                row.append(round(float(cs["pct_critical"]), 1))
+            cs_matrix.append(row)
+        return cs_matrix
+
+    cs_matrix = await asyncio.to_thread(_compute_grid)
+
+    # Generate chart
+    try:
+        chart_img = await asyncio.to_thread(
+            render_plot, plot_sensitivity_heatmap,
+            friction_values, pp_values, cs_matrix,
+            title=f"Sensitivity — Well {well} at {depth_m:.0f}m",
+        )
+    except Exception:
+        chart_img = None
+
+    return _sanitize_for_json({
+        "well": well,
+        "depth_m": depth_m,
+        "regime": auto_res["best_regime"],
+        "friction_values": friction_values,
+        "pp_values_mpa": pp_values,
+        "cs_matrix": cs_matrix,
+        "chart_img": chart_img,
         "n_fractures": len(df_well),
     })
 
