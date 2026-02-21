@@ -270,6 +270,15 @@ def _prewarm_caches():
                 inv = invert_stress(normals, regime=regime, depth_m=depth_to_warm)
                 _inversion_cache[inv_key] = inv
 
+        # Pre-warm default classifier (gradient_boosting enhanced)
+        clf_key = "clf_demo_gradient_boosting_enh"
+        if clf_key not in _classify_cache and demo_df is not None:
+            try:
+                clf_result = classify_enhanced(demo_df, classifier="gradient_boosting")
+                _classify_cache[clf_key] = clf_result
+            except Exception:
+                pass  # Classification pre-warm is best-effort
+
         elapsed = _time.perf_counter() - start
         print(f"Cache pre-warm complete: {len(wells)} wells in {elapsed:.1f}s")
     except Exception as e:
@@ -747,16 +756,21 @@ async def run_classification(request: Request):
     source = body.get("source", "demo")
     use_enhanced = body.get("enhanced", True)
 
-    df = get_df(source)
-
-    if use_enhanced:
-        clf_result = await asyncio.to_thread(
-            classify_enhanced, df, classifier=classifier
-        )
+    # Check cache
+    cache_key = f"clf_{source}_{classifier}_{'enh' if use_enhanced else 'basic'}"
+    if cache_key in _classify_cache:
+        clf_result = _classify_cache[cache_key]
     else:
-        clf_result = await asyncio.to_thread(
-            classify_fracture_types, df, classifier=classifier
-        )
+        df = get_df(source)
+        if use_enhanced:
+            clf_result = await asyncio.to_thread(
+                classify_enhanced, df, classifier=classifier
+            )
+        else:
+            clf_result = await asyncio.to_thread(
+                classify_fracture_types, df, classifier=classifier
+            )
+        _classify_cache[cache_key] = clf_result
 
     class_names = clf_result.get("class_names",
                                   clf_result.get("label_encoder", {}).classes_.tolist()
