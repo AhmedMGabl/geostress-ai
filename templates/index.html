@@ -1989,9 +1989,31 @@
                         <button class="btn btn-outline-warning btn-sm" onclick="runPhysicsCheck()">
                             <i class="bi bi-gear-wide"></i> Physics Constraint Check
                         </button>
+                        <button class="btn btn-outline-info btn-sm" onclick="runPhysicsPredict()">
+                            <i class="bi bi-shield-check"></i> Physics-Constrained Predict
+                        </button>
+                        <button class="btn btn-outline-danger btn-sm" onclick="runMisclassification()">
+                            <i class="bi bi-bug"></i> Misclassification Analysis
+                        </button>
                     </div>
 
                     <div id="research-body"></div>
+
+                    <!-- Physics Constrained Prediction Results -->
+                    <div id="physics-predict-results" class="d-none mt-3">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-shield-check"></i> Physics-Constrained Prediction</div>
+                            <div class="card-body" id="physics-predict-body"></div>
+                        </div>
+                    </div>
+
+                    <!-- Misclassification Analysis Results -->
+                    <div id="misclass-results" class="d-none mt-3">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-bug"></i> Misclassification Analysis</div>
+                            <div class="card-body" id="misclass-body"></div>
+                        </div>
+                    </div>
 
                     <!-- Physics Check Results -->
                     <div id="physics-results" class="d-none mt-3">

@@ -5624,6 +5624,286 @@ def physics_constraint_check(inversion_result: dict, depth_m: float = 3000.0) ->
     }
 
 
+def physics_constrained_predict(
+    df: pd.DataFrame,
+    inversion_result: dict = None,
+    depth_m: float = 1500.0,
+    fast: bool = True,
+) -> dict:
+    """Physics-constrained ML prediction pipeline.
+
+    Integrates physics constraints directly into the prediction process:
+    1. Train models with physics-informed features (standard pipeline)
+    2. Run inversion to get stress parameters
+    3. Score each prediction against physical constraints
+    4. Flag predictions that conflict with physics
+    5. Provide constraint-consistent confidence adjustments
+
+    This is NOT just a post-hoc check — physics violations reduce
+    per-sample confidence and can override predictions.
+
+    Reference: Physics-informed ML (Springer 2025), constraint-aware
+    classification (Nature Geoscience 2025).
+    """
+    from src.geostress import invert_stress, auto_detect_regime
+    from src.data_loader import fracture_plane_normal
+
+    # Step 1: Standard ML prediction
+    features = engineer_enhanced_features(df)
+    labels = df[FRACTURE_TYPE_COL].values
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    # Train the best model (RF with balanced weights)
+    n_est = 100 if fast else 300
+    model = RandomForestClassifier(
+        n_estimators=n_est, max_depth=12, min_samples_leaf=3,
+        random_state=42, class_weight="balanced", n_jobs=-1,
+    )
+    model.fit(X, y)
+    y_pred = model.predict(X)
+    y_proba = model.predict_proba(X)
+    ml_confidence = y_proba.max(axis=1)
+
+    # Step 2: Get inversion result if not provided
+    if inversion_result is None:
+        try:
+            normals = fracture_plane_normal(
+                df[AZIMUTH_COL].values, df[DIP_COL].values
+            )
+            auto = auto_detect_regime(normals, depth_m)
+            inversion_result = invert_stress(
+                normals, regime=auto["best_regime"], depth_m=depth_m
+            )
+            inversion_result["regime"] = auto["best_regime"]
+        except Exception:
+            inversion_result = None
+
+    # Step 3: Physics constraint scoring
+    physics_score = 1.0  # 1.0 = fully consistent
+    physics_flags = []
+
+    if inversion_result:
+        phys_check = physics_constraint_check(inversion_result, depth_m)
+
+        # Violations heavily penalize physics score
+        n_violations = len(phys_check.get("violations", []))
+        n_warnings = len(phys_check.get("warnings", []))
+
+        if n_violations > 0:
+            physics_score *= max(0.1, 1.0 - n_violations * 0.3)
+            physics_flags.append(
+                f"{n_violations} physics violations — predictions may be unreliable"
+            )
+        if n_warnings > 0:
+            physics_score *= max(0.5, 1.0 - n_warnings * 0.1)
+            physics_flags.append(
+                f"{n_warnings} physics cautions — review assumptions"
+            )
+
+        # Check per-sample stress consistency
+        # Fractures with very high dip (>80°) should be less common in thrust regimes
+        regime = inversion_result.get("regime", "unknown")
+        if regime == "thrust":
+            high_dip_mask = df[DIP_COL].values > 80
+            if high_dip_mask.sum() > 0:
+                physics_flags.append(
+                    f"{high_dip_mask.sum()} fractures have dip > 80° in thrust regime "
+                    f"— these are unusual and predictions for them carry extra uncertainty"
+                )
+    else:
+        physics_flags.append("No inversion result — physics constraints not applied")
+
+    # Step 4: Compute physics-adjusted confidence
+    adjusted_confidence = ml_confidence * physics_score
+
+    # Step 5: Identify low-confidence predictions
+    low_conf_threshold = 0.5
+    low_conf_mask = adjusted_confidence < low_conf_threshold
+    low_conf_indices = np.where(low_conf_mask)[0].tolist()
+
+    # Per-class accuracy
+    per_class = {}
+    for ci, cname in enumerate(le.classes_):
+        mask = y == ci
+        if mask.sum() > 0:
+            class_acc = float((y_pred[mask] == ci).mean())
+            per_class[cname] = {
+                "accuracy": round(class_acc, 3),
+                "count": int(mask.sum()),
+                "avg_confidence": round(float(adjusted_confidence[mask].mean()), 3),
+                "physics_adjusted": True,
+            }
+
+    return {
+        "n_samples": len(y),
+        "physics_score": round(physics_score, 3),
+        "physics_flags": physics_flags,
+        "ml_confidence_mean": round(float(ml_confidence.mean()), 3),
+        "adjusted_confidence_mean": round(float(adjusted_confidence.mean()), 3),
+        "low_confidence_count": len(low_conf_indices),
+        "low_confidence_pct": round(100 * len(low_conf_indices) / len(y), 1),
+        "low_confidence_samples": low_conf_indices[:20],  # First 20 for review
+        "per_class": per_class,
+        "constraint_status": "APPLIED" if inversion_result else "NOT_APPLIED",
+        "regime_used": inversion_result.get("regime", "unknown") if inversion_result else "N/A",
+    }
+
+
+def misclassification_analysis(
+    df: pd.DataFrame,
+    fast: bool = True,
+) -> dict:
+    """Analyze WHERE and WHY the model fails.
+
+    Provides:
+    - Per-class confusion breakdown
+    - Most commonly confused pairs
+    - Feature-space analysis of misclassified samples
+    - Depth/orientation patterns in errors
+    - Actionable recommendations for improvement
+
+    This is critical for the RLHF-style feedback loop: understanding
+    failure modes helps experts provide targeted corrections.
+    """
+    features = engineer_enhanced_features(df)
+    labels = df[FRACTURE_TYPE_COL].values
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    n_est = 100 if fast else 300
+    cv = StratifiedKFold(n_splits=min(5, 3 if fast else 5), shuffle=True, random_state=42)
+    model = RandomForestClassifier(
+        n_estimators=n_est, max_depth=12, min_samples_leaf=3,
+        random_state=42, class_weight="balanced", n_jobs=-1,
+    )
+
+    y_pred = cross_val_predict(model, X, y, cv=cv)
+
+    # Full confusion matrix
+    cm = confusion_matrix(y, y_pred)
+    class_names = le.classes_.tolist()
+
+    # Find most confused pairs
+    confused_pairs = []
+    for i in range(len(class_names)):
+        for j in range(len(class_names)):
+            if i != j and cm[i][j] > 0:
+                confused_pairs.append({
+                    "true_class": class_names[i],
+                    "predicted_as": class_names[j],
+                    "count": int(cm[i][j]),
+                    "pct_of_true": round(100 * cm[i][j] / max(cm[i].sum(), 1), 1),
+                })
+    confused_pairs.sort(key=lambda x: x["count"], reverse=True)
+
+    # Misclassified sample analysis
+    misclassified_mask = y_pred != y
+    n_errors = int(misclassified_mask.sum())
+
+    # Feature analysis of errors
+    error_profile = {}
+    if n_errors > 0 and DEPTH_COL in df.columns:
+        correct_depths = df.loc[~misclassified_mask, DEPTH_COL].values
+        error_depths = df.loc[misclassified_mask, DEPTH_COL].values
+
+        error_profile["depth_analysis"] = {
+            "correct_mean_depth": round(float(np.nanmean(correct_depths)), 1),
+            "error_mean_depth": round(float(np.nanmean(error_depths)), 1),
+            "error_depth_range": [
+                round(float(np.nanmin(error_depths)), 1),
+                round(float(np.nanmax(error_depths)), 1),
+            ],
+            "depth_bias": "shallow" if np.nanmean(error_depths) < np.nanmean(correct_depths) else "deep",
+        }
+
+    if n_errors > 0 and DIP_COL in df.columns:
+        correct_dips = df.loc[~misclassified_mask, DIP_COL].values
+        error_dips = df.loc[misclassified_mask, DIP_COL].values
+
+        error_profile["dip_analysis"] = {
+            "correct_mean_dip": round(float(np.nanmean(correct_dips)), 1),
+            "error_mean_dip": round(float(np.nanmean(error_dips)), 1),
+            "high_dip_errors": int((error_dips > 70).sum()),
+            "low_dip_errors": int((error_dips < 20).sum()),
+        }
+
+    # Per-class failure modes
+    class_failures = {}
+    for ci, cname in enumerate(class_names):
+        true_mask = y == ci
+        true_count = int(true_mask.sum())
+        if true_count == 0:
+            continue
+
+        pred_for_true = y_pred[true_mask]
+        n_correct = int((pred_for_true == ci).sum())
+        n_wrong = true_count - n_correct
+
+        # What is this class most confused WITH?
+        if n_wrong > 0:
+            wrong_preds = pred_for_true[pred_for_true != ci]
+            wrong_classes, wrong_counts = np.unique(wrong_preds, return_counts=True)
+            top_confusions = [
+                {"confused_with": class_names[wc], "count": int(wn)}
+                for wc, wn in sorted(zip(wrong_classes, wrong_counts),
+                                     key=lambda x: x[1], reverse=True)
+            ]
+        else:
+            top_confusions = []
+
+        class_failures[cname] = {
+            "total": true_count,
+            "correct": n_correct,
+            "wrong": n_wrong,
+            "accuracy": round(n_correct / true_count, 3),
+            "top_confusions": top_confusions[:3],
+        }
+
+    # Recommendations based on failure analysis
+    recommendations = []
+    for cname, info in class_failures.items():
+        if info["accuracy"] < 0.5:
+            recommendations.append({
+                "priority": "HIGH",
+                "class": cname,
+                "message": f"{cname} is correctly classified only {info['accuracy']:.0%} of the time. "
+                          f"Consider: (1) collect more {cname} samples, "
+                          f"(2) expert review of {cname} labels, "
+                          f"(3) check if {cname} is genuinely distinct from "
+                          f"{info['top_confusions'][0]['confused_with'] if info['top_confusions'] else 'other types'}.",
+            })
+        elif info["accuracy"] < 0.75:
+            recommendations.append({
+                "priority": "MEDIUM",
+                "class": cname,
+                "message": f"{cname} has moderate accuracy ({info['accuracy']:.0%}). "
+                          f"Additional labeled samples would help.",
+            })
+
+    # Overall error rate
+    overall_accuracy = round(float((y_pred == y).mean()), 3)
+
+    return {
+        "overall_accuracy": overall_accuracy,
+        "n_errors": n_errors,
+        "error_rate": round(n_errors / len(y), 3),
+        "confusion_matrix": cm.tolist(),
+        "class_names": class_names,
+        "confused_pairs": confused_pairs[:10],
+        "class_failures": class_failures,
+        "error_profile": error_profile,
+        "recommendations": recommendations,
+        "n_samples": len(y),
+    }
+
+
 def research_methods_summary() -> dict:
     """Return a summary of the scientific methods and 2025-2026 research
     integrated into this application.

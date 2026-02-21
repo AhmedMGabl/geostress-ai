@@ -3589,6 +3589,165 @@ async function runPhysicsCheck() {
 }
 
 
+// ── Physics-Constrained Prediction ────────────────
+
+async function runPhysicsPredict() {
+    showLoading("Running physics-constrained prediction...");
+    try {
+        var r = await apiPost("/api/analysis/physics-predict", {
+            source: currentSource, well: getWell(), depth: getDepth(), fast: true
+        });
+        var el = document.getElementById("physics-predict-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("physics-predict-body");
+
+        // Physics score banner
+        var scoreColor = r.physics_score >= 0.8 ? "success" : r.physics_score >= 0.5 ? "warning" : "danger";
+        var html = '<div class="alert alert-' + scoreColor + '">' +
+            '<h5 class="mb-1"><i class="bi bi-shield-check"></i> Physics Score: ' +
+            (r.physics_score * 100).toFixed(0) + '%</h5>' +
+            '<small>Constraint Status: ' + r.constraint_status + ' | Regime: ' + r.regime_used + '</small>' +
+            '</div>';
+
+        // Confidence comparison
+        html += '<div class="row mb-3">' +
+            '<div class="col-md-4"><div class="card border-primary"><div class="card-body text-center">' +
+            '<div class="h5 mb-0">' + (r.ml_confidence_mean * 100).toFixed(1) + '%</div>' +
+            '<small class="text-muted">Raw ML Confidence</small></div></div></div>' +
+            '<div class="col-md-4"><div class="card border-' + scoreColor + '"><div class="card-body text-center">' +
+            '<div class="h5 mb-0">' + (r.adjusted_confidence_mean * 100).toFixed(1) + '%</div>' +
+            '<small class="text-muted">Physics-Adjusted</small></div></div></div>' +
+            '<div class="col-md-4"><div class="card border-warning"><div class="card-body text-center">' +
+            '<div class="h5 mb-0">' + r.low_confidence_count + ' (' + r.low_confidence_pct + '%)</div>' +
+            '<small class="text-muted">Low-Confidence Samples</small></div></div></div></div>';
+
+        // Physics flags
+        if (r.physics_flags && r.physics_flags.length > 0) {
+            html += '<h6><i class="bi bi-flag"></i> Physics Flags</h6>';
+            r.physics_flags.forEach(function(f) {
+                html += '<div class="alert alert-warning py-2 mb-1 small"><i class="bi bi-exclamation-triangle"></i> ' + f + '</div>';
+            });
+        }
+
+        // Per-class physics-adjusted confidence
+        if (r.per_class) {
+            html += '<h6 class="mt-3"><i class="bi bi-bar-chart"></i> Per-Class Physics-Adjusted Metrics</h6>';
+            html += '<table class="table table-sm"><thead><tr>' +
+                '<th>Fracture Type</th><th>Count</th><th>Accuracy</th><th>Avg Confidence</th></tr></thead><tbody>';
+            Object.entries(r.per_class).forEach(function(e) {
+                var cls = e[0], info = e[1];
+                var confColor = info.avg_confidence >= 0.7 ? "text-success" : info.avg_confidence >= 0.5 ? "text-warning" : "text-danger";
+                html += '<tr><td>' + cls + '</td><td>' + info.count + '</td>' +
+                    '<td>' + (info.accuracy * 100).toFixed(1) + '%</td>' +
+                    '<td class="' + confColor + ' fw-bold">' + (info.avg_confidence * 100).toFixed(1) + '%</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+
+        body.innerHTML = html;
+        showToast("Physics-constrained: " + (r.physics_score * 100).toFixed(0) + '% physics score');
+    } catch (err) {
+        showToast("Physics predict error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Misclassification Analysis ────────────────────
+
+async function runMisclassification() {
+    showLoading("Analyzing misclassifications...");
+    try {
+        var r = await apiPost("/api/analysis/misclassification", {
+            source: currentSource, well: getWell(), fast: true
+        });
+        var el = document.getElementById("misclass-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("misclass-body");
+
+        // Overall accuracy banner
+        var accColor = r.overall_accuracy >= 0.85 ? "success" : r.overall_accuracy >= 0.7 ? "warning" : "danger";
+        var html = '<div class="alert alert-' + accColor + '">' +
+            '<h5 class="mb-1"><i class="bi bi-bullseye"></i> CV Accuracy: ' +
+            (r.overall_accuracy * 100).toFixed(1) + '% (' + r.n_errors + ' errors out of ' + r.n_samples + ')</h5>' +
+            '</div>';
+
+        // Top confused pairs
+        if (r.confused_pairs && r.confused_pairs.length > 0) {
+            html += '<h6><i class="bi bi-shuffle"></i> Most Confused Pairs (Where Errors Happen)</h6>';
+            html += '<table class="table table-sm table-hover"><thead><tr>' +
+                '<th>True Type</th><th>Predicted As</th><th>Count</th><th>% of True</th></tr></thead><tbody>';
+            r.confused_pairs.slice(0, 8).forEach(function(p) {
+                var severity = p.pct_of_true > 30 ? "table-danger" : p.pct_of_true > 10 ? "table-warning" : "";
+                html += '<tr class="' + severity + '"><td>' + p.true_class + '</td>' +
+                    '<td>' + p.predicted_as + '</td><td>' + p.count + '</td>' +
+                    '<td>' + p.pct_of_true + '%</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+
+        // Per-class failure breakdown
+        if (r.class_failures) {
+            html += '<h6 class="mt-3"><i class="bi bi-pie-chart"></i> Per-Class Accuracy & Failure Modes</h6>';
+            Object.entries(r.class_failures).forEach(function(e) {
+                var cls = e[0], info = e[1];
+                var barWidth = Math.max(5, info.accuracy * 100);
+                var barColor = info.accuracy >= 0.85 ? "#198754" : info.accuracy >= 0.6 ? "#ffc107" : "#dc3545";
+                html += '<div class="mb-2"><div class="d-flex justify-content-between">' +
+                    '<strong>' + cls + '</strong><span>' + (info.accuracy * 100).toFixed(0) + '% (' + info.correct + '/' + info.total + ')</span></div>' +
+                    '<div class="progress" style="height:8px"><div class="progress-bar" style="width:' + barWidth + '%;background:' + barColor + '"></div></div>';
+                if (info.top_confusions && info.top_confusions.length > 0) {
+                    html += '<small class="text-muted">Most confused with: ' +
+                        info.top_confusions.map(function(c) { return c.confused_with + ' (' + c.count + ')'; }).join(', ') +
+                        '</small>';
+                }
+                html += '</div>';
+            });
+        }
+
+        // Error profile
+        if (r.error_profile) {
+            html += '<h6 class="mt-3"><i class="bi bi-graph-down"></i> Error Pattern Analysis</h6><div class="row">';
+            if (r.error_profile.depth_analysis) {
+                var da = r.error_profile.depth_analysis;
+                html += '<div class="col-md-6"><div class="card"><div class="card-body">' +
+                    '<h6 class="card-title">Depth Pattern</h6>' +
+                    '<p class="small">Errors cluster at <strong>' + da.depth_bias + '</strong> depths</p>' +
+                    '<p class="small mb-0">Correct mean: ' + da.correct_mean_depth + 'm | Error mean: ' + da.error_mean_depth + 'm</p>' +
+                    '</div></div></div>';
+            }
+            if (r.error_profile.dip_analysis) {
+                var dip = r.error_profile.dip_analysis;
+                html += '<div class="col-md-6"><div class="card"><div class="card-body">' +
+                    '<h6 class="card-title">Dip Pattern</h6>' +
+                    '<p class="small">High-dip errors: ' + dip.high_dip_errors + ' | Low-dip: ' + dip.low_dip_errors + '</p>' +
+                    '<p class="small mb-0">Correct mean dip: ' + dip.correct_mean_dip + '° | Error mean: ' + dip.error_mean_dip + '°</p>' +
+                    '</div></div></div>';
+            }
+            html += '</div>';
+        }
+
+        // Recommendations
+        if (r.recommendations && r.recommendations.length > 0) {
+            html += '<h6 class="mt-3"><i class="bi bi-lightbulb"></i> Improvement Recommendations</h6>';
+            r.recommendations.forEach(function(rec) {
+                var recColor = rec.priority === "HIGH" ? "danger" : "warning";
+                html += '<div class="alert alert-' + recColor + ' py-2 mb-2 small">' +
+                    '<strong>' + rec.priority + ' — ' + rec["class"] + ':</strong> ' + rec.message + '</div>';
+            });
+        }
+
+        body.innerHTML = html;
+        showToast("Misclassification: " + r.n_errors + " errors found");
+    } catch (err) {
+        showToast("Misclassification error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
 // ── Audit Trail ───────────────────────────────────
 
 async function loadAuditLog() {

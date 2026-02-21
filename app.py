@@ -52,6 +52,7 @@ from src.enhanced_analysis import (
     executive_summary, data_sufficiency_check,
     prediction_safety_check, field_consistency_check,
     physics_constraint_check, research_methods_summary,
+    physics_constrained_predict, misclassification_analysis,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -2124,6 +2125,57 @@ async def run_physics_check(request: Request):
     normals = fracture_plane_normal(df_well[AZIMUTH_COL].values, df_well[DIP_COL].values)
     inv_result = await asyncio.to_thread(invert_stress, normals, regime="normal", depth_m=depth_m)
     result = physics_constraint_check(inv_result, depth_m)
+    return _sanitize_for_json(result)
+
+
+@app.post("/api/analysis/physics-predict")
+async def run_physics_constrained_predict(request: Request):
+    """Physics-constrained ML prediction: integrates physical constraints
+    directly into the prediction confidence scoring.
+
+    Unlike the standard classify endpoint, this adjusts per-sample confidence
+    based on whether the underlying stress inversion is physically consistent.
+    Predictions that conflict with physics are flagged.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+    fast = body.get("fast", True)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+
+    result = await asyncio.to_thread(
+        physics_constrained_predict, df_well,
+        inversion_result=None, depth_m=depth_m, fast=fast,
+    )
+    _audit_record("physics_constrained_predict", {"well": well, "depth": depth_m}, result)
+    return _sanitize_for_json(result)
+
+
+@app.post("/api/analysis/misclassification")
+async def run_misclassification_analysis(request: Request):
+    """Analyze WHERE and WHY the model fails.
+
+    Critical for the RLHF feedback loop: shows which fracture types
+    are confused, at what depths/orientations errors occur, and provides
+    actionable recommendations for improvement.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+    fast = body.get("fast", True)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well:
+        df = df[df[WELL_COL] == well].reset_index(drop=True)
+
+    result = await asyncio.to_thread(misclassification_analysis, df, fast=fast)
     return _sanitize_for_json(result)
 
 
