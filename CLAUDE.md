@@ -113,6 +113,10 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/model-bias` | Systematic bias detection (class, depth, dip biases) |
 | POST | `/api/analysis/reliability-report` | Prediction reliability grade (A-D) with improvement roadmap |
 | GET | `/api/cache/status` | Cache sizes for performance monitoring |
+| POST | `/api/analysis/guided-wizard` | 5-step guided analysis pipeline (Data→Stress→Risk→Model→Decision) |
+| POST | `/api/analysis/what-if` | Quick single-inversion with user-specified friction/Pp/depth |
+| POST | `/api/export/pdf-report` | Multi-page PDF report for stakeholder distribution |
+| GET | `/api/progress/{task_id}` | SSE progress streaming for long-running operations |
 
 ## Domain Concepts
 
@@ -208,4 +212,12 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Evidence chain: 6 items covering data quality, regime, SHmax, critically stressed, physics, ML accuracy
 - Response timing middleware logs SLOW requests (>2s) to server console
 - Cache keys include source+well+params; cleared on upload; cache status endpoint at GET /api/cache/status
-- `_audit_record()` (not `_log_audit`) for audit trail logging
+- `_audit_record()` takes 3 positional args: action, params, result_summary (not 2)
+- `data_sufficiency_check` returns `analyses` as a LIST of dicts (not a dict keyed by name)
+- Guided wizard: 5 steps (Data/Stress/Risk/Model/Decision), each PASS/WARN/FAIL, overall HALT/CAUTION/PROCEED_WITH_REVIEW/PROCEED
+- What-if endpoint runs quick inversion with user-specified friction/Pp/depth, shows risk impact
+- PDF report uses matplotlib PdfPages: cover, executive summary, rose+pole, confusion matrix, recommendations
+- Upload uses original filename in temp dir (not NamedTemporaryFile) so parse_filename can extract well/type
+- Upload validation returns quality score, sufficiency status, domain warnings, preview stats, OOD check
+- Confusion matrix plot: row-normalized (recall-based) heatmap with raw count + percentage annotations
+- 9 caches: inversion, model_comparison, auto_regime, classify, misclass, physics_predict, shap, sensitivity, wizard
