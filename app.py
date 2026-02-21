@@ -51,6 +51,7 @@ from src.enhanced_analysis import (
     cross_validate_wells, validate_domain_constraints,
     executive_summary, data_sufficiency_check,
     prediction_safety_check, field_consistency_check,
+    physics_constraint_check, research_methods_summary,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -2096,6 +2097,33 @@ async def run_field_consistency(request: Request):
                       source=source, elapsed_s=elapsed)
 
     result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── Research Methods ─────────────────────────────────
+
+@app.get("/api/research/methods")
+async def get_research_methods():
+    """Return a summary of scientific methods and 2025-2026 research integrated."""
+    return research_methods_summary()
+
+
+@app.post("/api/analysis/physics-check")
+async def run_physics_check(request: Request):
+    """Validate inversion results against physical constraints."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+
+    normals = fracture_plane_normal(df_well[AZIMUTH_COL].values, df_well[DIP_COL].values)
+    inv_result = await asyncio.to_thread(invert_stress, normals, regime="normal", depth_m=depth_m)
+    result = physics_constraint_check(inv_result, depth_m)
     return _sanitize_for_json(result)
 
 

@@ -127,6 +127,11 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link" data-tab="research" href="#">
+                        <i class="bi bi-mortarboard"></i> Research & Methods
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link" data-tab="glossary" href="#">
                         <i class="bi bi-book"></i> Glossary
                     </a>
@@ -1972,6 +1977,35 @@
                 </div>
 
                 <!-- Glossary Tab -->
+                <!-- Research & Methods Tab -->
+                <div id="tab-research" class="tab-content">
+                    <h5 class="mb-3"><i class="bi bi-mortarboard"></i> Scientific Methods & Research Basis</h5>
+                    <p class="text-muted">Understanding what factors are accounted for and the scientific basis of each analysis. Based on peer-reviewed geomechanics research through 2025-2026.</p>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="loadResearchMethods()">
+                            <i class="bi bi-arrow-clockwise"></i> Load Methods
+                        </button>
+                        <button class="btn btn-outline-warning btn-sm" onclick="runPhysicsCheck()">
+                            <i class="bi bi-gear-wide"></i> Physics Constraint Check
+                        </button>
+                    </div>
+
+                    <div id="research-body"></div>
+
+                    <!-- Physics Check Results -->
+                    <div id="physics-results" class="d-none mt-3">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-gear-wide"></i> Physics Constraint Validation</div>
+                            <div class="card-body">
+                                <div id="physics-status" class="alert mb-3"></div>
+                                <div id="physics-issues"></div>
+                                <div id="physics-constraints" class="mt-3"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="tab-glossary" class="tab-content">
                     <h5 class="mb-3"><i class="bi bi-book"></i> Geomechanics Glossary & Decision Guide</h5>
                     <p class="text-muted">Plain-language explanations for non-technical stakeholders. Understand what the numbers mean before making drilling decisions.</p>

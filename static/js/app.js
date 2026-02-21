@@ -97,6 +97,7 @@ var tabNames = {
     decision: "Decision Support",
     montecarlo: "Monte Carlo Uncertainty",
     validation: "Data Validation",
+    research: "Research & Methods",
     audit: "Audit Trail"
 };
 
@@ -3455,6 +3456,133 @@ async function runExpertEnsemble() {
         showToast("Expert ensemble: " + (r.expert_weight_accuracy * 100).toFixed(1) + "% accuracy, " + r.n_models + " models");
     } catch (err) {
         showToast("Expert ensemble error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
+// ── Research & Physics ────────────────────────────
+
+async function loadResearchMethods() {
+    try {
+        var r = await api("/api/research/methods");
+        var body = document.getElementById("research-body");
+        clearChildren(body);
+
+        // Title
+        var h = document.createElement("h5");
+        h.className = "mb-3";
+        h.textContent = r.title || "Scientific Methods";
+        body.appendChild(h);
+
+        // Methods cards
+        (r.methods || []).forEach(function(m) {
+            var card = document.createElement("div");
+            card.className = "card mb-3";
+            var html = '<div class="card-body"><h6 class="card-title">' + m.name + '</h6>';
+            html += '<p class="card-text small">' + m.description + '</p>';
+            if (m.reference) {
+                html += '<small class="text-muted"><i class="bi bi-journal"></i> ' + m.reference + '</small>';
+            }
+            if (m.factors && m.factors.length > 0) {
+                html += '<div class="mt-2">';
+                m.factors.forEach(function(f) {
+                    html += '<span class="badge bg-light text-dark me-1 mb-1">' + f + '</span>';
+                });
+                html += '</div>';
+            }
+            html += '</div>';
+            card.innerHTML = html;
+            body.appendChild(card);
+        });
+
+        // Factors accounted
+        if (r.factors_accounted) {
+            var facCard = document.createElement("div");
+            facCard.className = "card mt-4 border-success";
+            var facHtml = '<div class="card-header bg-success text-white">Factors Accounted For</div><div class="card-body">';
+            Object.keys(r.factors_accounted).forEach(function(cat) {
+                facHtml += '<h6 class="small fw-bold text-capitalize mt-2">' + cat + '</h6><ul class="small mb-2">';
+                r.factors_accounted[cat].forEach(function(f) {
+                    facHtml += '<li>' + f + '</li>';
+                });
+                facHtml += '</ul>';
+            });
+            facHtml += '</div>';
+            facCard.innerHTML = facHtml;
+            body.appendChild(facCard);
+        }
+
+        // Limitations
+        if (r.limitations && r.limitations.length > 0) {
+            var limCard = document.createElement("div");
+            limCard.className = "card mt-3 border-warning";
+            var limHtml = '<div class="card-header bg-warning text-dark">Known Limitations</div><div class="card-body"><ul class="small mb-0">';
+            r.limitations.forEach(function(l) {
+                limHtml += '<li>' + l + '</li>';
+            });
+            limHtml += '</ul></div>';
+            limCard.innerHTML = limHtml;
+            body.appendChild(limCard);
+        }
+    } catch (err) {
+        showToast("Research methods error: " + err.message, "Error");
+    }
+}
+
+async function runPhysicsCheck() {
+    showLoading("Checking physics constraints...");
+    try {
+        var r = await api("/api/analysis/physics-check", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                source: currentSource,
+                well: currentWell || "3P",
+                depth: parseFloat(document.getElementById("depth-input").value) || 3000
+            })
+        });
+
+        document.getElementById("physics-results").classList.remove("d-none");
+
+        var statusColors = {PASS: "success", CAUTION: "warning", FAIL: "danger"};
+        var statusEl = document.getElementById("physics-status");
+        statusEl.className = "alert alert-" + (statusColors[r.status] || "info") + " mb-3";
+        statusEl.innerHTML = '<strong>' + r.status + '</strong> — ' + r.status_message;
+
+        var issuesEl = document.getElementById("physics-issues");
+        clearChildren(issuesEl);
+        if (r.violations && r.violations.length > 0) {
+            r.violations.forEach(function(v) {
+                var div = document.createElement("div");
+                div.className = "alert alert-danger py-2 mb-2 small";
+                div.innerHTML = '<strong>VIOLATION: ' + v.constraint + '</strong><br>' +
+                    'Expected: ' + v.expected + '<br>Actual: ' + v.actual;
+                issuesEl.appendChild(div);
+            });
+        }
+        if (r.warnings && r.warnings.length > 0) {
+            r.warnings.forEach(function(w) {
+                var div = document.createElement("div");
+                div.className = "alert alert-warning py-2 mb-2 small";
+                div.innerHTML = '<strong>' + w.constraint + '</strong><br>' +
+                    'Expected: ' + w.expected + '<br>Actual: ' + w.actual + '<br>' +
+                    '<i>' + (w.note || '') + '</i>';
+                issuesEl.appendChild(div);
+            });
+        }
+
+        // Constraints checked
+        var constEl = document.getElementById("physics-constraints");
+        constEl.innerHTML = '<h6 class="small fw-bold">Constraints Checked</h6>' +
+            '<div class="small text-muted">' +
+            (r.constraints_checked || []).map(function(c) { return '<i class="bi bi-check-circle text-success"></i> ' + c; }).join('<br>') +
+            '</div>';
+
+        showToast("Physics: " + r.status);
+    } catch (err) {
+        showToast("Physics check error: " + err.message, "Error");
     } finally {
         hideLoading();
     }
