@@ -53,6 +53,7 @@ from src.enhanced_analysis import (
     prediction_safety_check, field_consistency_check,
     physics_constraint_check, research_methods_summary,
     physics_constrained_predict, misclassification_analysis,
+    evidence_chain_analysis,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -2227,6 +2228,31 @@ async def run_misclassification_analysis(request: Request):
     response = _sanitize_for_json(result)
     _misclass_cache[cache_key] = response
     return response
+
+
+@app.post("/api/analysis/evidence-chain")
+async def run_evidence_chain(request: Request):
+    """Generate comprehensive evidence chain for stakeholder decisions.
+
+    Shows WHAT was concluded, WHY (evidence), HOW CONFIDENT,
+    WHAT COULD GO WRONG, and WHAT TO DO NEXT — for every conclusion.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+
+    result = await asyncio.to_thread(
+        evidence_chain_analysis, df_well,
+        well_name=well, depth_m=depth_m,
+    )
+    _audit_record("evidence_chain", {"well": well, "depth": depth_m}, result)
+    return _sanitize_for_json(result)
 
 
 # ── Audit Trail ──────────────────────────────────────

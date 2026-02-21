@@ -360,6 +360,77 @@ async function runFieldConsistency() {
 }
 
 
+// ── Evidence Chain ─────────────────────────────────
+
+async function runEvidenceChain() {
+    showLoading("Building evidence chain (runs ALL analyses)...");
+    try {
+        var r = await apiPost("/api/analysis/evidence-chain", {
+            source: currentSource, well: getWell(), depth: getDepth()
+        });
+
+        document.getElementById("evidence-results").classList.remove("d-none");
+
+        // Overall recommendation banner
+        var recColors = {PROCEED: "success", REVIEW: "warning", CAUTION: "danger"};
+        var sumEl = document.getElementById("evidence-summary");
+        sumEl.className = "alert alert-" + (recColors[r.overall_recommendation] || "info") + " p-3";
+        sumEl.innerHTML = '<h5 class="mb-1"><i class="bi bi-clipboard-check"></i> ' +
+            r.overall_recommendation + '</h5>' +
+            '<p class="mb-1">' + r.overall_message + '</p>' +
+            '<small>' + r.high_confidence_count + ' high-confidence, ' +
+            r.low_confidence_count + ' low-confidence out of ' + r.n_evidence_items + ' evidence items</small>';
+
+        // Evidence items
+        var itemsEl = document.getElementById("evidence-items");
+        itemsEl.innerHTML = '';
+
+        var confColors = {HIGH: "success", MODERATE: "warning", LOW: "danger", NONE: "secondary"};
+        var confIcons = {HIGH: "check-circle", MODERATE: "exclamation-triangle", LOW: "x-circle", NONE: "question-circle"};
+
+        (r.evidence || []).forEach(function(item) {
+            var color = confColors[item.confidence] || "secondary";
+            var icon = confIcons[item.confidence] || "info-circle";
+
+            var card = document.createElement("div");
+            card.className = "card mb-3 border-" + color;
+
+            var header = '<div class="card-header d-flex justify-content-between align-items-center">' +
+                '<span><i class="bi bi-' + icon + ' text-' + color + '"></i> ' +
+                '<strong>' + item.category + '</strong></span>' +
+                '<span class="badge bg-' + color + '">' + item.confidence + '</span></div>';
+
+            var body = '<div class="card-body">';
+            body += '<h6 class="card-title">' + item.conclusion + '</h6>';
+
+            // Evidence bullets
+            body += '<div class="mb-2"><strong class="small text-muted">Evidence:</strong><ul class="small mb-2">';
+            item.evidence.forEach(function(e) {
+                body += '<li>' + e + '</li>';
+            });
+            body += '</ul></div>';
+
+            // Risk and action
+            body += '<div class="row">' +
+                '<div class="col-md-6"><div class="alert alert-danger py-1 px-2 mb-1 small">' +
+                '<strong>Risk if wrong:</strong> ' + item.risk_if_wrong + '</div></div>' +
+                '<div class="col-md-6"><div class="alert alert-info py-1 px-2 mb-1 small">' +
+                '<strong>Action:</strong> ' + item.action + '</div></div></div>';
+
+            body += '</div>';
+            card.innerHTML = header + body;
+            itemsEl.appendChild(card);
+        });
+
+        showToast("Evidence chain: " + r.overall_recommendation);
+    } catch (err) {
+        showToast("Evidence chain error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
 // ── Data Loading ──────────────────────────────────
 
 async function loadSummary() {

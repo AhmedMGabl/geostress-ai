@@ -216,6 +216,9 @@
                             <button class="btn btn-outline-info btn-sm" onclick="runFieldConsistency()">
                                 <i class="bi bi-globe2"></i> Field Consistency
                             </button>
+                            <button class="btn btn-success btn-sm" onclick="runEvidenceChain()">
+                                <i class="bi bi-list-check"></i> Full Evidence Chain
+                            </button>
                         </div>
                     </div>
 
@@ -226,6 +229,17 @@
 
                     <!-- Summary Sections -->
                     <div id="exec-sections" class="mb-4"></div>
+
+                    <!-- Evidence Chain Results -->
+                    <div id="evidence-results" class="d-none mb-4">
+                        <div class="card border-success">
+                            <div class="card-header bg-success text-white"><i class="bi bi-list-check"></i> Evidence Chain — Decision Support</div>
+                            <div class="card-body">
+                                <div id="evidence-summary" class="alert mb-3"></div>
+                                <div id="evidence-items"></div>
+                            </div>
+                        </div>
+                    </div>
 
                     <!-- Safety Check Results -->
                     <div id="safety-results" class="d-none mb-4">

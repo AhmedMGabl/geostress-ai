@@ -4504,6 +4504,233 @@ def decision_support_matrix(df, well_name="All", depth_m=3000):
     }
 
 
+def evidence_chain_analysis(
+    df: pd.DataFrame,
+    well_name: str = "All",
+    depth_m: float = 3000,
+) -> dict:
+    """Generate a comprehensive evidence chain for every recommendation.
+
+    This is the CORE industrial decision support function. For each conclusion,
+    it shows WHAT was concluded, WHY (evidence), HOW CONFIDENT we are,
+    WHAT COULD GO WRONG, and WHAT TO DO NEXT.
+
+    Designed for non-technical stakeholders who need to understand the
+    basis for drilling decisions.
+    """
+    try:
+        from src.geostress import invert_stress, auto_detect_regime
+    except ImportError:
+        from geostress import invert_stress, auto_detect_regime
+
+    normals = fracture_plane_normal(
+        df[AZIMUTH_COL].values, df[DIP_COL].values
+    )
+
+    evidence_items = []
+
+    # ── Evidence 1: Data Quality ──
+    quality = validate_data_quality(df)
+    evidence_items.append({
+        "id": "data_quality",
+        "category": "Data Foundation",
+        "conclusion": f"Data quality is {quality['grade']} (score {quality['score']}/100)",
+        "evidence": [
+            f"Total fractures: {len(df)}",
+            f"Quality score: {quality['score']}/100",
+            f"Issues found: {len(quality.get('issues', []))}",
+        ] + [f"Issue: {issue}" for issue in quality.get("issues", [])[:3]],
+        "confidence": "HIGH" if quality["score"] >= 70 else "LOW",
+        "risk_if_wrong": "Using poor-quality data leads to unreliable stress estimates and wrong drilling decisions.",
+        "action": "Review flagged data quality issues before proceeding." if quality["score"] < 70 else "Data quality is acceptable.",
+    })
+
+    # ── Evidence 2: Stress Regime ──
+    try:
+        auto = auto_detect_regime(normals, depth_m)
+        regime = auto["best_regime"]
+        evidence_items.append({
+            "id": "stress_regime",
+            "category": "Stress State",
+            "conclusion": f"Best-fit stress regime: {regime} (confidence: {auto['confidence']})",
+            "evidence": [
+                f"Tested all 3 regimes (normal, strike-slip, thrust)",
+                f"Best-fit misfit: {float(np.asarray(auto['all_results'][regime]['misfit']).flat[0]):.4f}",
+                f"Misfit ratio between best/worst: {auto['misfit_ratio']:.2f}",
+                f"Confidence: {auto['confidence']} (LOW if ratio < 1.1)",
+            ],
+            "confidence": auto["confidence"],
+            "risk_if_wrong": (
+                "Wrong regime assumption changes SHmax direction by up to 90°, "
+                "which directly affects wellbore stability predictions."
+            ),
+            "action": (
+                "Regime is well-constrained. Proceed with confidence."
+                if auto["confidence"] == "HIGH"
+                else "Run Bayesian analysis and scenario comparison to quantify regime uncertainty."
+            ),
+        })
+    except Exception as e:
+        regime = "normal"
+        evidence_items.append({
+            "id": "stress_regime",
+            "category": "Stress State",
+            "conclusion": "Could not determine stress regime",
+            "evidence": [f"Error: {str(e)[:100]}"],
+            "confidence": "NONE",
+            "risk_if_wrong": "Cannot make any stress-based recommendations.",
+            "action": "Check input data format and try again.",
+        })
+
+    # ── Evidence 3: Stress Inversion ──
+    try:
+        inv = invert_stress(normals, regime=regime, depth_m=depth_m)
+
+        def _s(v):
+            return float(v.flat[0]) if isinstance(v, np.ndarray) else float(v)
+
+        shmax = _s(inv["shmax_azimuth_deg"])
+        direction = _azimuth_to_direction(shmax)
+
+        evidence_items.append({
+            "id": "stress_inversion",
+            "category": "Stress State",
+            "conclusion": f"SHmax direction: {shmax:.0f}° ({direction})",
+            "evidence": [
+                f"σ1 = {_s(inv['sigma1']):.1f} MPa",
+                f"σ3 = {_s(inv['sigma3']):.1f} MPa",
+                f"R ratio = {_s(inv['R']):.3f}",
+                f"Friction coefficient μ = {_s(inv['mu']):.3f}",
+                f"Misfit: {_s(inv['misfit']):.4f} (lower = better fit)",
+            ],
+            "confidence": "HIGH" if _s(inv["misfit"]) < 0.3 else "LOW",
+            "risk_if_wrong": (
+                f"If SHmax is wrong by >30°, optimal drilling direction changes. "
+                f"Drill perpendicular to SHmax ({(shmax + 90) % 360:.0f}°) for stability."
+            ),
+            "action": "Run Monte Carlo to quantify SHmax uncertainty envelope.",
+        })
+
+        # ── Evidence 4: Critically Stressed ──
+        pp_val = inv.get("pore_pressure", 0.0)
+        cs = critically_stressed_enhanced(
+            inv["sigma_n"], inv["tau"],
+            mu=inv["mu"], pore_pressure=pp_val,
+        )
+        pct = cs["pct_critical"]
+
+        risk_level = "GREEN" if pct < 10 else "AMBER" if pct < 30 else "RED"
+        evidence_items.append({
+            "id": "critically_stressed",
+            "category": "Risk Assessment",
+            "conclusion": f"{pct:.1f}% of fractures are critically stressed ({risk_level})",
+            "evidence": [
+                f"Using Mohr-Coulomb criterion: τ ≥ μ(σn - Pp)",
+                f"Friction μ = {_s(inv['mu']):.3f}",
+                f"Pore pressure = {pp_val:.1f} MPa",
+                f"Total fractures analyzed: {len(df)}",
+                f"Critically stressed count: {cs['high_risk_count']}",
+            ],
+            "confidence": "HIGH",
+            "risk_if_wrong": (
+                "Critically stressed fractures are likely fluid conduits. "
+                "Under-estimating this percentage could lead to unexpected fluid losses or kicks."
+            ),
+            "action": (
+                "Low risk — proceed with standard drilling parameters."
+                if pct < 10
+                else "Elevated critically stressed %. Consider mud weight increase and lost-circulation material on standby."
+            ),
+        })
+
+        # ── Evidence 5: Physics Constraints ──
+        phys = physics_constraint_check(inv, depth_m)
+        evidence_items.append({
+            "id": "physics_check",
+            "category": "Validation",
+            "conclusion": f"Physics validation: {phys['status']}",
+            "evidence": [
+                f"Checked {len(phys['constraints_checked'])} constraints",
+                f"Violations: {len(phys['violations'])}",
+                f"Warnings: {len(phys['warnings'])}",
+            ] + [f"⚠ {v['constraint']}: {v['actual']}" for v in phys.get("violations", [])]
+              + [f"⚠ {w['constraint']}: {w['actual']}" for w in phys.get("warnings", [])],
+            "confidence": "HIGH" if phys["status"] == "PASS" else "MODERATE",
+            "risk_if_wrong": "Physics violations mean the inversion result may be non-physical. Do not use for safety-critical decisions.",
+            "action": (
+                "All physics constraints satisfied."
+                if phys["status"] == "PASS"
+                else "Review physics warnings and adjust parameters if needed."
+            ),
+        })
+
+    except Exception as e:
+        evidence_items.append({
+            "id": "stress_inversion",
+            "category": "Stress State",
+            "conclusion": "Stress inversion failed",
+            "evidence": [f"Error: {str(e)[:100]}"],
+            "confidence": "NONE",
+            "risk_if_wrong": "Cannot determine stress state.",
+            "action": "Check input data and parameters.",
+        })
+
+    # ── Evidence 6: ML Model Performance ──
+    try:
+        misclass = misclassification_analysis(df, fast=True)
+        acc = misclass["overall_accuracy"]
+        evidence_items.append({
+            "id": "ml_accuracy",
+            "category": "Model Performance",
+            "conclusion": f"Fracture classification accuracy: {acc:.1%}",
+            "evidence": [
+                f"Cross-validated on {misclass['n_samples']} samples",
+                f"Error count: {misclass['n_errors']}",
+            ] + [
+                f"Class '{k}' accuracy: {v['accuracy']:.0%} ({v['correct']}/{v['total']})"
+                for k, v in misclass.get("class_failures", {}).items()
+            ],
+            "confidence": "HIGH" if acc >= 0.85 else "MODERATE" if acc >= 0.7 else "LOW",
+            "risk_if_wrong": (
+                "Misclassifying fracture types leads to wrong permeability and stability predictions. "
+                "Focus on the per-class accuracy — overall accuracy can mask poor performance on rare types."
+            ),
+            "action": (
+                "Model is reliable for classification."
+                if acc >= 0.85
+                else "Collect more data for underperforming classes. See misclassification analysis for details."
+            ),
+        })
+    except Exception:
+        pass
+
+    # ── Overall recommendation ──
+    high_conf = sum(1 for e in evidence_items if e["confidence"] == "HIGH")
+    low_conf = sum(1 for e in evidence_items if e["confidence"] in ("LOW", "NONE"))
+    total = len(evidence_items)
+
+    if low_conf == 0 and high_conf >= total * 0.7:
+        overall = "PROCEED"
+        overall_msg = "Evidence supports proceeding with the analysis results. All key indicators are well-constrained."
+    elif low_conf >= total * 0.3:
+        overall = "CAUTION"
+        overall_msg = "Multiple evidence items have low confidence. Additional data or analysis recommended before making critical decisions."
+    else:
+        overall = "REVIEW"
+        overall_msg = "Mixed evidence — some indicators are well-constrained but others need attention. Review the specific concerns below."
+
+    return {
+        "well": well_name,
+        "depth_m": depth_m,
+        "n_evidence_items": total,
+        "high_confidence_count": high_conf,
+        "low_confidence_count": low_conf,
+        "overall_recommendation": overall,
+        "overall_message": overall_msg,
+        "evidence": evidence_items,
+    }
+
+
 # ──────────────────────────────────────────────────────
 # Expert-Weighted Ensemble (RLHF-style)
 # ──────────────────────────────────────────────────────
