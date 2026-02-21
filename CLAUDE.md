@@ -72,7 +72,9 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/cluster` | Fracture clustering |
 | POST | `/api/analysis/compare-models` | Multi-model comparison (6 models) |
 | POST | `/api/feedback/submit` | Expert feedback submission |
-| GET | `/api/feedback/summary` | Feedback analytics |
+| GET | `/api/feedback/summary` | Feedback analytics + insights |
+| POST | `/api/feedback/correct-label` | Expert label correction |
+| POST | `/api/feedback/retrain` | Retrain model with corrections |
 | POST | `/api/analysis/shap` | SHAP explainability (feature attribution) |
 | GET | `/api/analysis/features` | Enhanced feature info |
 
