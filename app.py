@@ -3755,3 +3755,219 @@ async def run_worst_case(request: Request):
         ),
         "computation_time_s": elapsed,
     })
+
+
+# ── Decision Readiness Dashboard ─────────────────────
+
+@app.post("/api/analysis/decision-readiness")
+async def run_decision_readiness(request: Request):
+    """Aggregate all quality signals into a single GO/CAUTION/NO-GO verdict.
+
+    Designed for executive stakeholders who need to know: "Can I trust
+    these results enough to make a drilling decision?"
+
+    Checks 6 independent signals, each graded GREEN/AMBER/RED:
+    1. Data quality (anomaly rate)
+    2. Model reliability (classification accuracy)
+    3. Stress inversion confidence (auto-regime misfit ratio)
+    4. Uncertainty level (budget score)
+    5. Worst-case resilience (scenario spread)
+    6. Physics compliance (constraint violations)
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth", 3000))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well else df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+    avg_depth = df_well[DEPTH_COL].mean()
+    if np.isnan(avg_depth):
+        avg_depth = depth_m
+
+    signals = []
+
+    # 1. Data quality
+    try:
+        anomalies = await asyncio.to_thread(detect_data_anomalies, df_well)
+        pct_flagged = anomalies["flagged_pct"]
+        errors = anomalies["severity_counts"].get("ERROR", 0)
+        if errors > 0 or pct_flagged > 50:
+            grade = "RED"
+        elif pct_flagged > 15:
+            grade = "AMBER"
+        else:
+            grade = "GREEN"
+        signals.append({
+            "signal": "Data Quality",
+            "grade": grade,
+            "detail": f"{pct_flagged:.1f}% flagged ({errors} errors)",
+            "action": "Review and clean flagged measurements" if grade != "GREEN" else "Data quality is acceptable",
+        })
+    except Exception as e:
+        signals.append({"signal": "Data Quality", "grade": "AMBER", "detail": f"Check failed: {str(e)[:50]}", "action": "Run anomaly detection manually"})
+
+    # 2. Model reliability
+    try:
+        cls = await asyncio.to_thread(classify_enhanced, df_well, "random_forest", 3)
+        acc = float(cls["cv_mean_accuracy"])
+        if acc >= 0.75:
+            grade = "GREEN"
+        elif acc >= 0.55:
+            grade = "AMBER"
+        else:
+            grade = "RED"
+        signals.append({
+            "signal": "Model Reliability",
+            "grade": grade,
+            "detail": f"{acc*100:.1f}% cross-validated accuracy",
+            "action": "Classification is reliable" if grade == "GREEN" else "Consider prediction abstention or expert review",
+        })
+    except Exception as e:
+        signals.append({"signal": "Model Reliability", "grade": "AMBER", "detail": f"Check failed: {str(e)[:50]}", "action": "Run classification manually"})
+
+    # 3. Stress inversion confidence
+    try:
+        auto_key = f"auto_{source}_{well}_{depth_m}"
+        if auto_key in _auto_regime_cache:
+            auto_res = _auto_regime_cache[auto_key]
+        else:
+            auto_res = await asyncio.to_thread(
+                auto_detect_regime, normals, avg_depth, 0.0, None,
+            )
+            _auto_regime_cache[auto_key] = auto_res
+        conf = auto_res.get("confidence", "LOW")
+        ratio = auto_res.get("misfit_ratio", 1.0)
+        if conf == "HIGH":
+            grade = "GREEN"
+        elif conf == "MODERATE":
+            grade = "AMBER"
+        else:
+            grade = "RED"
+        signals.append({
+            "signal": "Stress Confidence",
+            "grade": grade,
+            "detail": f"{conf} confidence (misfit ratio {ratio:.2f})",
+            "action": "Regime is well-constrained" if grade == "GREEN" else "Consider Bayesian analysis or additional data",
+        })
+    except Exception as e:
+        signals.append({"signal": "Stress Confidence", "grade": "RED", "detail": f"Inversion failed: {str(e)[:50]}", "action": "Check data and retry"})
+
+    # 4. Uncertainty level
+    try:
+        inv = auto_res["best_result"] if auto_res else None
+        if inv:
+            unc = await asyncio.to_thread(compute_uncertainty_budget, inv)
+            score = unc.get("total_score", 100)
+            level = unc.get("uncertainty_level", "HIGH")
+            if level == "LOW":
+                grade = "GREEN"
+            elif level == "MODERATE":
+                grade = "AMBER"
+            else:
+                grade = "RED"
+            signals.append({
+                "signal": "Uncertainty Level",
+                "grade": grade,
+                "detail": f"{level} (score {score}/100)",
+                "action": unc.get("recommended_actions", [{}])[0].get("action", "Reduce uncertainty") if unc.get("recommended_actions") else "Acceptable",
+            })
+    except Exception as e:
+        signals.append({"signal": "Uncertainty Level", "grade": "AMBER", "detail": f"Check failed: {str(e)[:50]}", "action": "Run uncertainty analysis"})
+
+    # 5. Worst-case resilience (quick check: does baseline regime change with different pp?)
+    try:
+        if inv:
+            pp_val = inv.get("pore_pressure", 0.0)
+            mu_val = float(inv["mu"])
+            # Check: how much does CS% change with mu-30%?
+            cs_base = critically_stressed_enhanced(inv["sigma_n"], inv["tau"], mu=mu_val, pore_pressure=pp_val)
+            cs_low_mu = critically_stressed_enhanced(inv["sigma_n"], inv["tau"], mu=max(0.1, mu_val * 0.7), pore_pressure=pp_val)
+            base_pct = float(cs_base["pct_critical"])
+            low_mu_pct = float(cs_low_mu["pct_critical"])
+            spread = abs(low_mu_pct - base_pct)
+            if spread < 10:
+                grade = "GREEN"
+            elif spread < 25:
+                grade = "AMBER"
+            else:
+                grade = "RED"
+            signals.append({
+                "signal": "Worst-Case Resilience",
+                "grade": grade,
+                "detail": f"CS% changes by {spread:.0f} pp with friction -30%",
+                "action": "Results are robust" if grade == "GREEN" else "Run full worst-case analysis for details",
+            })
+    except Exception as e:
+        signals.append({"signal": "Worst-Case Resilience", "grade": "AMBER", "detail": f"Check failed: {str(e)[:50]}", "action": "Run worst-case scenarios"})
+
+    # 6. Physics compliance
+    try:
+        phys = await asyncio.to_thread(physics_constraint_check, inv, avg_depth)
+        violations = phys.get("violations", [])
+        warnings = phys.get("warnings", [])
+        if violations:
+            grade = "RED"
+        elif warnings:
+            grade = "AMBER"
+        else:
+            grade = "GREEN"
+        signals.append({
+            "signal": "Physics Compliance",
+            "grade": grade,
+            "detail": f"{len(violations)} violations, {len(warnings)} warnings",
+            "action": "Physics-consistent" if grade == "GREEN" else "; ".join([v.get("message", "")[:60] for v in (violations + warnings)[:2]]),
+        })
+    except Exception as e:
+        signals.append({"signal": "Physics Compliance", "grade": "AMBER", "detail": f"Check failed: {str(e)[:50]}", "action": "Run physics check manually"})
+
+    # Overall verdict
+    grades = [s["grade"] for s in signals]
+    n_red = grades.count("RED")
+    n_amber = grades.count("AMBER")
+    n_green = grades.count("GREEN")
+
+    if n_red >= 2:
+        verdict = "NO_GO"
+        verdict_detail = (
+            f"{n_red} critical issues found. Do NOT use these results for "
+            "operational decisions without addressing the RED signals first."
+        )
+    elif n_red == 1 or n_amber >= 3:
+        verdict = "CAUTION"
+        verdict_detail = (
+            f"{n_red} critical and {n_amber} moderate issues. Results may be "
+            "directionally useful but should be validated before commitment."
+        )
+    else:
+        verdict = "GO"
+        verdict_detail = (
+            f"{n_green} signals GREEN, {n_amber} AMBER. Analysis is "
+            "sufficiently reliable for informed operational decisions."
+        )
+
+    elapsed = round(time.time() - t0, 2)
+
+    _audit_record(
+        "decision_readiness", {"well": well, "depth_m": depth_m},
+        {"verdict": verdict, "signals": {s["signal"]: s["grade"] for s in signals}},
+        source, well, elapsed,
+    )
+
+    return _sanitize_for_json({
+        "verdict": verdict,
+        "verdict_detail": verdict_detail,
+        "signals": signals,
+        "signal_summary": {"GREEN": n_green, "AMBER": n_amber, "RED": n_red},
+        "well": well,
+        "computation_time_s": elapsed,
+    })

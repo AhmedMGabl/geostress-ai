@@ -1336,6 +1336,55 @@ async function exportFullJsonReport() {
     }
 }
 
+async function runDecisionReadiness() {
+    showLoading("Assessing decision readiness (6 quality signals)...");
+    try {
+        var r = await apiPost("/api/analysis/decision-readiness", {
+            source: currentSource, well: getWell(), depth: getDepth()
+        });
+        var el = document.getElementById("readiness-results");
+        el.classList.remove("d-none");
+        var body = document.getElementById("readiness-body");
+
+        var verdictColor = r.verdict === "NO_GO" ? "danger" : (r.verdict === "CAUTION" ? "warning" : "success");
+        var verdictIcon = r.verdict === "NO_GO" ? "x-octagon" : (r.verdict === "CAUTION" ? "exclamation-triangle" : "check-circle");
+
+        // Verdict banner
+        var html = '<div class="alert alert-' + verdictColor + ' p-3 mb-3">' +
+            '<h5><i class="bi bi-' + verdictIcon + '"></i> ' + r.verdict.replace(/_/g, " ") + '</h5>' +
+            '<p class="mb-0">' + r.verdict_detail + '</p></div>';
+
+        // Signal summary (traffic light)
+        var ss = r.signal_summary || {};
+        html += '<div class="d-flex gap-3 mb-3">';
+        html += '<span class="badge bg-success fs-6">' + (ss.GREEN || 0) + ' GREEN</span>';
+        html += '<span class="badge bg-warning text-dark fs-6">' + (ss.AMBER || 0) + ' AMBER</span>';
+        html += '<span class="badge bg-danger fs-6">' + (ss.RED || 0) + ' RED</span>';
+        html += '</div>';
+
+        // Signal details table
+        html += '<div class="table-responsive"><table class="table table-sm table-hover">';
+        html += '<thead class="table-dark"><tr><th>Signal</th><th>Status</th><th>Detail</th><th>Action Required</th></tr></thead><tbody>';
+        (r.signals || []).forEach(function(sig) {
+            var gc = sig.grade === "RED" ? "danger" : (sig.grade === "AMBER" ? "warning" : "success");
+            html += '<tr><td><strong>' + sig.signal + '</strong></td>' +
+                '<td><span class="badge bg-' + gc + '">' + sig.grade + '</span></td>' +
+                '<td>' + sig.detail + '</td>' +
+                '<td><small>' + sig.action + '</small></td></tr>';
+        });
+        html += '</tbody></table></div>';
+
+        html += '<small class="text-muted">Well: ' + r.well + ' | Computed in ' + r.computation_time_s + 's</small>';
+
+        body.innerHTML = html;
+        showToast("Decision: " + r.verdict.replace(/_/g, " ") + " (" + (ss.GREEN || 0) + " GREEN, " + (ss.RED || 0) + " RED)");
+    } catch (err) {
+        showToast("Decision readiness error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 async function runAllRegimes() {
     showLoading("Comparing all stress regimes...");
     try {

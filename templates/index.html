@@ -235,6 +235,19 @@
                             <button class="btn btn-outline-info btn-sm" onclick="runBatchAnalysis()">
                                 <i class="bi bi-collection"></i> Batch All Wells
                             </button>
+                            <button class="btn btn-outline-dark btn-sm" onclick="runDecisionReadiness()">
+                                <i class="bi bi-clipboard-check"></i> Decision Readiness
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Decision Readiness -->
+                    <div id="readiness-results" class="d-none mb-4">
+                        <div class="card border-dark">
+                            <div class="card-header bg-dark text-white">
+                                <i class="bi bi-clipboard-check"></i> Decision Readiness Assessment
+                            </div>
+                            <div class="card-body" id="readiness-body"></div>
                         </div>
                     </div>
 
