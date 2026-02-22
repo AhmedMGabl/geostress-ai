@@ -2294,6 +2294,14 @@ async function runClassification() {
         val("clf-f1", r.cv_f1_mean ? (r.cv_f1_mean * 100).toFixed(1) + "%" : "--");
         val("clf-type", classifier.replace("_", " "));
 
+        // Confidence gate: color-code accuracy and add warning for low accuracy
+        var accEl = document.getElementById("clf-accuracy");
+        if (accEl) {
+            if (r.cv_mean_accuracy >= 0.85) accEl.className = "metric-value text-success";
+            else if (r.cv_mean_accuracy >= 0.70) accEl.className = "metric-value text-warning";
+            else accEl.className = "metric-value text-danger";
+        }
+
         // Feature importances
         var container = document.getElementById("feat-imp-container");
         clearChildren(container);
@@ -4069,6 +4077,11 @@ async function runOverview() {
         // Critically stressed
         var cs = r.critically_stressed || {};
         val("ov-cs", cs.pct != null ? cs.pct + "%" : "N/A");
+        // Color-code CS% based on risk thresholds
+        var csEl = document.getElementById("ov-cs");
+        if (csEl && cs.pct != null) {
+            csEl.className = "metric-value " + (cs.pct < 10 ? "text-success" : cs.pct <= 30 ? "text-warning" : "text-danger");
+        }
 
         // Risk
         var risk = r.risk || {};

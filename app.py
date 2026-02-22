@@ -1439,6 +1439,25 @@ async def upload_file(file: UploadFile = File(...)):
 
         result["report_card"] = go_nogo
 
+        # Upload stakeholder brief
+        go_count = sum(1 for g in go_nogo if g["status"] == "GO")
+        nogo_count = sum(1 for g in go_nogo if g["status"] == "NO-GO")
+        if nogo_count > 0:
+            upload_headline = f"Data uploaded but {nogo_count} analysis type(s) are NOT READY. Fix data issues before proceeding."
+        elif go_count == len(go_nogo):
+            upload_headline = f"Data uploaded successfully. All {go_count} analysis types are ready to run."
+        else:
+            upload_headline = f"Data uploaded. {go_count}/{len(go_nogo)} analyses are ready, some need attention."
+        result["stakeholder_brief"] = {
+            "headline": upload_headline,
+            "data_improvement_tip": (
+                "To improve accuracy: upload data from additional wells, include all fracture types "
+                "(especially rare ones like Brecciated), and ensure depth coverage is continuous."
+                if n_rows < 200 else
+                "Dataset is substantial. Run Model Comparison to find the best algorithm for your data."
+            ),
+        }
+
         # Preview stats
         result["preview"] = {
             "depth_range": [

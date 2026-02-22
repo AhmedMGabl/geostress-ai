@@ -197,6 +197,7 @@
             <!-- Upload -->
             <div class="sidebar-section">
                 <h6 class="sidebar-heading">Upload Data</h6>
+                <p class="text-muted-light small mb-1" style="font-size:0.7rem">Upload your Excel files (Depth, Azimuth, Dip) to improve accuracy with your own well data.</p>
                 <input type="file" id="file-upload" class="form-control form-control-sm" accept=".xls,.xlsx">
                 <div id="upload-status" class="small mt-1"></div>
                 <div class="mt-2">
@@ -222,6 +223,18 @@
             </div>
 
             <div class="content-area p-4">
+                <!-- Industrial Disclaimer Banner -->
+                <div id="industrial-disclaimer" class="alert alert-warning border-warning py-2 mb-3 small d-flex align-items-start">
+                    <i class="bi bi-shield-exclamation text-warning me-2 mt-1 fs-6"></i>
+                    <div>
+                        <strong>Industrial Use Notice:</strong>
+                        This tool provides AI-assisted geostress estimates for planning purposes.
+                        Results are <u>not</u> a substitute for certified geomechanical analysis by a qualified engineer.
+                        Stress magnitudes require field calibration (LOT/XLOT/DFIT) before use in casing or completion design.
+                        Always validate against independent data sources before operational decisions.
+                        <a href="#" onclick="document.getElementById('industrial-disclaimer').classList.add('d-none'); return false;" class="ms-2 text-decoration-none"><i class="bi bi-x-circle"></i> Dismiss</a>
+                    </div>
+                </div>
                 <!-- Pipeline Progress Panel -->
                 <div id="pipeline-panel" class="d-none mb-4">
                     <div class="card border-warning">
