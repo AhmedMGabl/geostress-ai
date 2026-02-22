@@ -8847,20 +8847,17 @@ async def batch_analyze_all(request: Request):
         raise HTTPException(400, "No data loaded")
 
     wells = df[WELL_COL].unique().tolist() if WELL_COL in df.columns else ["all"]
-    results = []
-    n_wells = len(wells)
 
-    for i, w in enumerate(wells):
+    async def _process_well(w, idx):
+        """Process a single well — runs in parallel via asyncio.gather."""
         df_w = df[df[WELL_COL] == w] if WELL_COL in df.columns else df
         if len(df_w) < 5:
-            results.append({"well": w, "status": "SKIPPED", "reason": "Too few samples"})
-            continue
+            return {"well": w, "status": "SKIPPED", "reason": "Too few samples"}
 
         well_result = {"well": w, "n_fractures": len(df_w), "status": "OK"}
 
         if task_id:
-            base_pct = int(i / n_wells * 90)
-            _emit_progress(task_id, f"Analyzing well {w}", base_pct, f"Well {i+1}/{n_wells}")
+            _emit_progress(task_id, f"Analyzing well {w}", int(idx / len(wells) * 90))
 
         # Stress inversion
         try:
@@ -8925,7 +8922,12 @@ async def batch_analyze_all(request: Request):
         except Exception:
             pass
 
-        results.append(well_result)
+        return well_result
+
+    # Process all wells in parallel
+    results = await asyncio.gather(
+        *[_process_well(w, i) for i, w in enumerate(wells)]
+    )
 
     elapsed = round(time.time() - t0, 2)
 
