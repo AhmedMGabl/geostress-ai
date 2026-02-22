@@ -75,6 +75,8 @@ from src.persistence import (
     insert_failure_case, get_failure_cases, resolve_failure_case,
     count_failure_cases,
     insert_rlhf_review, get_rlhf_reviews, count_rlhf_reviews,
+    insert_field_measurement, get_field_measurements as db_get_field_measurements,
+    count_field_measurements,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -8430,16 +8432,16 @@ async def rlhf_retrain(request: Request):
 
 # ── Field Calibration & Ground-Truth Validation ──────
 
-_field_measurements: dict[str, list] = {}  # well -> list of measurements
-
 
 @app.post("/api/calibration/add-measurement")
-async def add_field_measurement(request: Request):
+async def add_field_measurement_endpoint(request: Request):
     """Record a field stress measurement (LOT, XLOT, minifrac) for model validation.
 
     In the oil industry, these are ground-truth measurements that the model
     predictions should match. Comparing predictions against field data is how
     engineers build trust in geomechanical models.
+
+    Measurements are persisted in SQLite and survive server restarts.
     """
     body = await request.json()
     well = body.get("well", "")
@@ -8466,10 +8468,20 @@ async def add_field_measurement(request: Request):
 
     notes = body.get("notes", "")
 
+    meas_id = hashlib.sha256(
+        f"{well}_{test_type}_{depth_m}_{datetime.now().timestamp()}".encode()
+    ).hexdigest()[:10]
+
+    # Persist to SQLite
+    insert_field_measurement(
+        measurement_id=meas_id, well=well, test_type=test_type,
+        depth_m=depth_m, measured_stress_mpa=measured_stress_mpa,
+        stress_direction=stress_direction, azimuth_deg=azimuth_deg,
+        notes=notes,
+    )
+
     measurement = {
-        "id": hashlib.sha256(
-            f"{well}_{test_type}_{depth_m}_{datetime.now().timestamp()}".encode()
-        ).hexdigest()[:10],
+        "id": meas_id,
         "well": well,
         "test_type": test_type,
         "depth_m": depth_m,
@@ -8480,22 +8492,39 @@ async def add_field_measurement(request: Request):
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
-    if well not in _field_measurements:
-        _field_measurements[well] = []
-    _field_measurements[well].append(measurement)
-
     _audit_record("field_measurement_added", measurement, {}, well=well)
 
+    total = count_field_measurements(well)
     return {"status": "ok", "measurement": measurement,
-            "total_for_well": len(_field_measurements[well])}
+            "total_for_well": total}
 
 
 @app.get("/api/calibration/measurements")
-async def get_field_measurements(well: str = None):
+async def get_field_measurements_endpoint(well: str = None):
     """Get all recorded field measurements, optionally filtered by well."""
+    rows = db_get_field_measurements(well)
+    # Normalize column names for API consistency
+    measurements = []
+    for r in rows:
+        measurements.append({
+            "id": r.get("measurement_id", ""),
+            "well": r.get("well", ""),
+            "test_type": r.get("test_type", ""),
+            "depth_m": r.get("depth_m", 0),
+            "measured_stress_mpa": r.get("measured_stress_mpa", 0),
+            "stress_direction": r.get("stress_direction", ""),
+            "azimuth_deg": r.get("azimuth_deg"),
+            "notes": r.get("notes", ""),
+            "timestamp": r.get("timestamp", ""),
+        })
     if well:
-        return {"well": well, "measurements": _field_measurements.get(well, [])}
-    return {"measurements": _field_measurements}
+        return {"well": well, "measurements": measurements}
+    # Group by well for backward compatibility
+    by_well: dict[str, list] = {}
+    for m in measurements:
+        w = m.get("well", "unknown")
+        by_well.setdefault(w, []).append(m)
+    return {"measurements": by_well}
 
 
 @app.post("/api/calibration/validate")
@@ -8512,7 +8541,19 @@ async def validate_against_field(request: Request):
     depth_m = _validate_float(body.get("depth_m", 3000), "depth_m", *DEPTH_RANGE)
     pp_mpa = _validate_float(body.get("pp_mpa", 30), "pp_mpa", *PP_RANGE)
 
-    measurements = _field_measurements.get(well, [])
+    rows = db_get_field_measurements(well)
+    measurements = [
+        {
+            "id": r.get("measurement_id", ""),
+            "test_type": r.get("test_type", ""),
+            "depth_m": r.get("depth_m", 0),
+            "measured_stress_mpa": r.get("measured_stress_mpa", 0),
+            "stress_direction": r.get("stress_direction", ""),
+            "azimuth_deg": r.get("azimuth_deg"),
+            "notes": r.get("notes", ""),
+        }
+        for r in rows
+    ]
     if not measurements:
         return _sanitize_for_json({
             "status": "no_measurements",

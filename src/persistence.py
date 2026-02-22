@@ -158,12 +158,26 @@ def init_db(db_path: str = None):
 
         CREATE INDEX IF NOT EXISTS idx_rlhf_well ON rlhf_reviews(well);
         CREATE INDEX IF NOT EXISTS idx_rlhf_verdict ON rlhf_reviews(expert_verdict);
+        CREATE TABLE IF NOT EXISTS field_measurements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            measurement_id TEXT UNIQUE NOT NULL,
+            timestamp TEXT NOT NULL,
+            well TEXT NOT NULL,
+            test_type TEXT NOT NULL,
+            depth_m REAL NOT NULL,
+            measured_stress_mpa REAL NOT NULL,
+            stress_direction TEXT NOT NULL,
+            azimuth_deg REAL,
+            notes TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_model_ver_active ON model_versions(is_active);
         CREATE INDEX IF NOT EXISTS idx_model_ver_well ON model_versions(well);
         CREATE INDEX IF NOT EXISTS idx_drift_well ON drift_baselines(well);
         CREATE INDEX IF NOT EXISTS idx_failure_well ON failure_cases(well);
         CREATE INDEX IF NOT EXISTS idx_failure_type ON failure_cases(failure_type);
         CREATE INDEX IF NOT EXISTS idx_failure_resolved ON failure_cases(resolved);
+        CREATE INDEX IF NOT EXISTS idx_field_meas_well ON field_measurements(well);
     """)
     conn.commit()
 
@@ -766,3 +780,55 @@ def count_failure_cases(well: str = None, resolved: bool = None) -> int:
         query += " AND resolved = ?"
         params.append(1 if resolved else 0)
     return conn.execute(query, params).fetchone()[0]
+
+
+# ── Field Measurements ──────────────────────────────
+
+def insert_field_measurement(
+    measurement_id: str, well: str, test_type: str,
+    depth_m: float, measured_stress_mpa: float,
+    stress_direction: str, azimuth_deg: float = None,
+    notes: str = "",
+) -> int:
+    """Insert a field stress measurement (LOT, XLOT, minifrac, etc.)."""
+    conn = _get_conn()
+    cur = conn.execute(
+        """INSERT OR REPLACE INTO field_measurements
+           (measurement_id, timestamp, well, test_type, depth_m,
+            measured_stress_mpa, stress_direction, azimuth_deg, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            measurement_id,
+            datetime.now(timezone.utc).isoformat(),
+            well, test_type, depth_m,
+            measured_stress_mpa, stress_direction,
+            azimuth_deg, notes,
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_field_measurements(well: str = None) -> list[dict]:
+    """Get field measurements, optionally filtered by well."""
+    conn = _get_conn()
+    if well:
+        rows = conn.execute(
+            "SELECT * FROM field_measurements WHERE well = ? ORDER BY depth_m",
+            (well,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM field_measurements ORDER BY well, depth_m"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_field_measurements(well: str = None) -> int:
+    """Count field measurements."""
+    conn = _get_conn()
+    if well:
+        return conn.execute(
+            "SELECT COUNT(*) FROM field_measurements WHERE well = ?", (well,)
+        ).fetchone()[0]
+    return conn.execute("SELECT COUNT(*) FROM field_measurements").fetchone()[0]
