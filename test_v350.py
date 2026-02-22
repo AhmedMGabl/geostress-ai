@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 / v3.6.0 / v3.7.0 / v3.8.0 / v3.9.0.
+"""Test suite for GeoStress AI v3.5.0 through v3.10.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -792,7 +792,7 @@ check("Has stakeholder brief", "headline" in dip.get("stakeholder_brief", {}))
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.9.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.10.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

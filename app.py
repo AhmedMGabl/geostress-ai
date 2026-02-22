@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.9.0 - Stakeholder Intelligence)."""
+"""GeoStress AI - FastAPI Web Application (v3.10.0 - Industrial Grade)."""
 
 import os
 import io
@@ -9586,7 +9586,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.9.0",
+        "app_version": "3.10.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else
