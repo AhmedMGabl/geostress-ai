@@ -1,6 +1,7 @@
-"""Test suite for GeoStress AI v3.5.0.
+"""Test suite for GeoStress AI v3.5.0 / v3.6.0.
 
-Tests: input validation, field calibration, error boundaries.
+Tests: input validation, field calibration, error boundaries,
+uncertainty quantification, decision matrix.
 """
 import json
 import urllib.request
@@ -152,9 +153,8 @@ print("\n[5] Global Error Boundaries")
 
 d = api("GET", "/api/system/health")
 check("Health endpoint works", d.get("status") == "HEALTHY")
-check("Version is 3.4+",
-      d.get("app_version", "").startswith("3.4") or
-      d.get("app_version", "").startswith("3.5"))
+check("Version is 3.x",
+      d.get("app_version", "").startswith("3."))
 
 
 # ── 6. Field Calibration: Add Measurement ────────────
@@ -275,10 +275,65 @@ clf = api("POST", "/api/analysis/classify", {
 check("Classification works", clf.get("cv_mean_accuracy", 0) > 0)
 
 
+# ── 12. v3.6.0: Inversion Uncertainty ─────────────────
+
+print("\n[12] Inversion Uncertainty (v3.6.0)")
+
+inv2 = api("POST", "/api/analysis/inversion", {
+    "well": "3P", "regime": "strike_slip", "source": "demo"
+})
+unc = inv2.get("uncertainty", {})
+check("Has uncertainty block", len(unc) > 0)
+check("Has shmax_ci_90", isinstance(unc.get("shmax_ci_90"), list) and len(unc["shmax_ci_90"]) == 2)
+check("Has shmax_std_deg", isinstance(unc.get("shmax_std_deg"), (int, float)))
+check("Has quality assessment", unc.get("quality") in ["WELL_CONSTRAINED", "MODERATELY_CONSTRAINED", "POORLY_CONSTRAINED"])
+check("Has sigma1_ci_90", isinstance(unc.get("sigma1_ci_90"), list) and len(unc["sigma1_ci_90"]) == 2)
+
+cs_range = inv2.get("critically_stressed_range", {})
+check("Has CS% range", "best_estimate" in cs_range and "low_friction" in cs_range)
+check("CS% range has note", "note" in cs_range)
+
+
+# ── 13. v3.6.0: Classification Confidence ──────────────
+
+print("\n[13] Classification Confidence (v3.6.0)")
+
+clf2 = api("POST", "/api/analysis/classify", {
+    "classifier": "random_forest", "source": "demo"
+})
+conf = clf2.get("confidence", {})
+check("Has confidence block", len(conf) > 0)
+check("Has mean_prediction_confidence", isinstance(conf.get("mean_prediction_confidence"), (int, float)))
+check("Mean confidence > 0.5", (conf.get("mean_prediction_confidence") or 0) > 0.5)
+check("Has per_class_confidence", len(conf.get("per_class_confidence", {})) > 0)
+check("Has accuracy_range", isinstance(conf.get("accuracy_range"), list) and len(conf["accuracy_range"]) == 2)
+
+
+# ── 14. v3.6.0: Executive Decision Matrix ─────────────
+
+print("\n[14] Executive Decision Matrix (v3.6.0)")
+
+exec_r = api("POST", "/api/analysis/executive-summary", {
+    "source": "demo", "well": "3P", "depth": 3000
+}, timeout=120)
+dm = exec_r.get("decision_matrix", {})
+check("Has decision_matrix", len(dm) > 0)
+check("Has verdict", dm.get("verdict") in ["GO", "CONDITIONAL GO", "NO-GO"])
+check("Has verdict_note", isinstance(dm.get("verdict_note"), str) and len(dm["verdict_note"]) > 0)
+check("Has 4 factors", len(dm.get("factors", [])) == 4)
+factor_names = [f["factor"] for f in dm.get("factors", [])]
+check("Has Data Sufficiency factor", "Data Sufficiency" in factor_names)
+check("Has Safety Margin factor", "Safety Margin" in factor_names)
+for f in dm.get("factors", []):
+    check(f'Factor "{f["factor"]}" has valid status',
+          f.get("status") in ["GREEN", "AMBER", "RED"],
+          f.get("status"))
+
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.5.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.6.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:
