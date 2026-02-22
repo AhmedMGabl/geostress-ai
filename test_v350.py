@@ -734,6 +734,26 @@ if vc.get("verdict"):
 else:
     check("Version compare needs 2+ versions (ok)", "message" in vc)
 
+# ── [41] Stacking Ensemble Classifier ─────────────
+print("\n[41] Stacking Ensemble Classifier")
+stk = api("POST", "/api/analysis/classify",
+          {"source": "demo", "classifier": "stacking"}, timeout=120)
+check("Stacking returns accuracy", stk.get("cv_mean_accuracy", 0) > 0.3)
+check("Stacking has confusion matrix", isinstance(stk.get("confusion_matrix"), list))
+check("Stacking has class names", len(stk.get("class_names", [])) > 0)
+check("Stacking has stakeholder brief", "headline" in stk.get("stakeholder_brief", {}))
+
+# ── [42] Top Feature Drivers in Classification ─────
+print("\n[42] Top Feature Drivers in Classification")
+clf_rf = api("POST", "/api/analysis/classify",
+             {"source": "demo", "classifier": "random_forest"})
+drivers = clf_rf.get("top_drivers", [])
+check("Has top_drivers", len(drivers) > 0)
+check("Top driver has feature name", len(drivers[0].get("feature", "")) > 0 if drivers else False)
+check("Top driver has importance", drivers[0].get("importance", 0) > 0 if drivers else False)
+check("Top driver has explanation", len(drivers[0].get("explanation", "")) > 3 if drivers else False)
+check("At most 5 drivers", len(drivers) <= 5)
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")

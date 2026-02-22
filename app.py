@@ -132,7 +132,7 @@ _startup_snapshot = {}
 VALID_REGIMES = {"normal", "strike_slip", "thrust", "auto"}
 VALID_CLASSIFIERS = {
     "random_forest", "gradient_boosting", "svm", "mlp",
-    "xgboost", "lightgbm", "catboost",
+    "xgboost", "lightgbm", "catboost", "stacking",
 }
 VALID_SOURCES = {"demo", "uploaded"}
 VALID_FRACTURE_TYPES = {
@@ -1984,6 +1984,31 @@ async def run_classification(request: Request):
     # Conformal prediction — guaranteed coverage bounds (ARMA 2025)
     if "conformal_prediction" in clf_result:
         resp["conformal_prediction"] = clf_result["conformal_prediction"]
+    # Stakeholder-friendly: top 5 feature drivers (sorted by importance)
+    if feat_imp:
+        sorted_feats = sorted(feat_imp.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
+        _feature_labels = {
+            "az_sin": "Fracture direction (N-S component)",
+            "az_cos": "Fracture direction (E-W component)",
+            "dip": "Fracture dip angle",
+            "depth": "Depth below surface",
+            "fracture_density": "Local fracture density",
+            "fracture_spacing": "Distance to nearest fracture",
+            "pole_cluster_distance": "Distance from fracture cluster center",
+            "azimuth_dispersion_100m": "Orientation variability (100m window)",
+            "fracture_intensity_10m": "Fracture count per 10m",
+            "nz": "Fracture pole vertical component",
+            "nx": "Fracture pole east component",
+            "ny": "Fracture pole north component",
+            "overburden_mpa": "Overburden stress",
+            "pore_pressure_mpa": "Pore pressure",
+            "temperature_c": "Formation temperature",
+        }
+        resp["top_drivers"] = [
+            {"feature": f, "importance": round(v, 4),
+             "explanation": _feature_labels.get(f, f.replace("_", " ").title())}
+            for f, v in sorted_feats
+        ]
     # Stakeholder brief — plain-English decision summary
     resp["stakeholder_brief"] = _classify_stakeholder_brief(clf_result, class_names)
     return _sanitize_for_json(resp)

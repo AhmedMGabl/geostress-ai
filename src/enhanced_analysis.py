@@ -340,6 +340,30 @@ def _get_models(fast: bool = False) -> dict:
             random_seed=42, verbose=0,
         )
 
+    # ── Stacking Ensemble (2025 best practice) ──
+    # Per MDPI 2025 & Springer 2025: stacking XGBoost+LightGBM+CatBoost
+    # with RF meta-learner consistently outperforms individual models.
+    base_learners = []
+    if "xgboost" in models:
+        base_learners.append(("xgb", models["xgboost"]))
+    if "lightgbm" in models:
+        base_learners.append(("lgb", models["lightgbm"]))
+    if "catboost" in models:
+        base_learners.append(("cb", models["catboost"]))
+    if len(base_learners) < 2:
+        # Fallback: use RF + GBM as base
+        base_learners = [
+            ("rf", models["random_forest"]),
+            ("gbm", models["gradient_boosting"]),
+        ]
+    models["stacking"] = StackingClassifier(
+        estimators=base_learners,
+        final_estimator=LogisticRegression(max_iter=500, random_state=42),
+        cv=min(3, n_est),  # Use 3-fold for stacking CV
+        stack_method="predict_proba",
+        n_jobs=-1,
+    )
+
     return models
 
 
