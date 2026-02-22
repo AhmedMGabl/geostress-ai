@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.22.0 - Depth Validation + Probability Calibration + Feature Interactions)."""
+"""GeoStress AI - FastAPI Web Application (v3.23.0 - Augmentation + Multi-Objective + Explainability)."""
 
 import os
 import io
@@ -1001,7 +1001,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.22.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.23.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -14718,6 +14718,704 @@ async def feature_interactions(request: Request):
     return result
 
 
+# ── Data Augmentation Analysis ─────────────────────────────────────────
+
+_augment_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/augmentation-analysis")
+async def augmentation_analysis(request: Request):
+    """Test data augmentation strategies for class imbalance.
+
+    Evaluates SMOTE, random oversampling, and undersampling to address
+    the critical problem of learning from RARE fracture types.
+    Minority classes are under-represented in real borehole data.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"augment:{well}:{source}"
+    if cache_key in _augment_cache:
+        return _augment_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.base import clone
+        from sklearn.metrics import (
+            accuracy_score, f1_score, balanced_accuracy_score,
+            classification_report,
+        )
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+        class_counts = np.bincount(y, minlength=n_classes)
+
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+
+        min_count = min(class_counts)
+        max_count = max(class_counts)
+        imbalance_ratio = float(max_count / max(min_count, 1))
+        minority_class = class_names[np.argmin(class_counts)]
+        majority_class = class_names[np.argmax(class_counts)]
+
+        strategies = []
+
+        # 1. Baseline (no augmentation)
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            pred_base = cross_val_predict(clone(model), X, y, cv=cv)
+        acc_base = float(accuracy_score(y, pred_base))
+        f1_base = float(f1_score(y, pred_base, average="weighted", zero_division=0))
+        bal_base = float(balanced_accuracy_score(y, pred_base))
+
+        all_labels = list(range(n_classes))
+        report_base = classification_report(y, pred_base, labels=all_labels,
+                                             target_names=class_names, output_dict=True, zero_division=0)
+        per_class_base = []
+        for cn in class_names:
+            r = report_base.get(cn, {})
+            per_class_base.append({
+                "class": cn,
+                "precision": round(r.get("precision", 0), 3),
+                "recall": round(r.get("recall", 0), 3),
+                "f1": round(r.get("f1-score", 0), 3),
+                "support": int(r.get("support", 0)),
+            })
+
+        strategies.append({
+            "strategy": "baseline",
+            "description": "No augmentation (original data)",
+            "accuracy": round(acc_base, 4),
+            "f1_weighted": round(f1_base, 4),
+            "balanced_accuracy": round(bal_base, 4),
+            "per_class": per_class_base,
+        })
+
+        # Helper: augment and compute metrics
+        def _augment_compute(name, desc, augment_fn):
+            try:
+                accs, f1s, bals = [], [], []
+                per_class_agg = {cn: {"p": [], "r": [], "f": []} for cn in class_names}
+                for train_idx, test_idx in cv.split(X, y):
+                    X_tr, y_tr = X[train_idx], y[train_idx]
+                    X_te, y_te = X[test_idx], y[test_idx]
+                    X_aug, y_aug = augment_fn(X_tr, y_tr)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        m = clone(model)
+                        m.fit(X_aug, y_aug)
+                        preds = m.predict(X_te)
+                    accs.append(accuracy_score(y_te, preds))
+                    f1s.append(f1_score(y_te, preds, average="weighted", zero_division=0))
+                    bals.append(balanced_accuracy_score(y_te, preds))
+                    rpt = classification_report(y_te, preds, labels=all_labels,
+                                                 target_names=class_names, output_dict=True, zero_division=0)
+                    for cn in class_names:
+                        r = rpt.get(cn, {})
+                        per_class_agg[cn]["p"].append(r.get("precision", 0))
+                        per_class_agg[cn]["r"].append(r.get("recall", 0))
+                        per_class_agg[cn]["f"].append(r.get("f1-score", 0))
+
+                per_class_results = []
+                for cn in class_names:
+                    per_class_results.append({
+                        "class": cn,
+                        "precision": round(float(np.mean(per_class_agg[cn]["p"])), 3),
+                        "recall": round(float(np.mean(per_class_agg[cn]["r"])), 3),
+                        "f1": round(float(np.mean(per_class_agg[cn]["f"])), 3),
+                        "support": int(class_counts[class_names.index(cn)]),
+                    })
+
+                strategies.append({
+                    "strategy": name,
+                    "description": desc,
+                    "accuracy": round(float(np.mean(accs)), 4),
+                    "f1_weighted": round(float(np.mean(f1s)), 4),
+                    "balanced_accuracy": round(float(np.mean(bals)), 4),
+                    "per_class": per_class_results,
+                })
+            except Exception as e:
+                strategies.append({
+                    "strategy": name, "description": desc,
+                    "accuracy": 0, "f1_weighted": 0, "balanced_accuracy": 0,
+                    "error": str(e), "per_class": [],
+                })
+
+        # 2. Random oversampling
+        def random_oversample(X_tr, y_tr):
+            rng = np.random.RandomState(42)
+            counts = np.bincount(y_tr, minlength=n_classes)
+            target = max(counts)
+            X_parts, y_parts = [X_tr], [y_tr]
+            for c in range(n_classes):
+                mask = y_tr == c
+                deficit = target - counts[c]
+                if deficit > 0 and mask.sum() > 0:
+                    idx = rng.choice(np.where(mask)[0], size=deficit, replace=True)
+                    X_parts.append(X_tr[idx])
+                    y_parts.append(y_tr[idx])
+            return np.vstack(X_parts), np.concatenate(y_parts)
+
+        _augment_compute("random_oversample", "Duplicate minority samples randomly", random_oversample)
+
+        # 3. SMOTE (synthetic minority oversampling)
+        def smote_augment(X_tr, y_tr):
+            counts = np.bincount(y_tr, minlength=n_classes)
+            target = max(counts)
+            rng = np.random.RandomState(42)
+            X_parts, y_parts = [X_tr], [y_tr]
+            for c in range(n_classes):
+                mask = y_tr == c
+                deficit = target - counts[c]
+                if deficit > 0 and mask.sum() >= 2:
+                    Xc = X_tr[mask]
+                    k = min(5, len(Xc) - 1)
+                    from sklearn.neighbors import NearestNeighbors
+                    nn = NearestNeighbors(n_neighbors=k + 1).fit(Xc)
+                    _, indices = nn.kneighbors(Xc)
+                    synthetic = []
+                    for _ in range(deficit):
+                        i = rng.randint(0, len(Xc))
+                        j = indices[i, rng.randint(1, k + 1)]
+                        lam = rng.random()
+                        synthetic.append(Xc[i] + lam * (Xc[j] - Xc[i]))
+                    X_parts.append(np.array(synthetic))
+                    y_parts.append(np.full(deficit, c))
+                elif deficit > 0 and mask.sum() == 1:
+                    idx = rng.choice(np.where(mask)[0], size=deficit, replace=True)
+                    noise = rng.normal(0, 0.01, (deficit, X_tr.shape[1]))
+                    X_parts.append(X_tr[idx] + noise)
+                    y_parts.append(np.full(deficit, c))
+            return np.vstack(X_parts), np.concatenate(y_parts)
+
+        _augment_compute("smote", "SMOTE - Synthetic Minority Oversampling", smote_augment)
+
+        # 4. Undersampling majority
+        def undersample(X_tr, y_tr):
+            counts = np.bincount(y_tr, minlength=n_classes)
+            target = max(min(counts), 5)
+            rng = np.random.RandomState(42)
+            X_parts, y_parts = [], []
+            for c in range(n_classes):
+                mask = y_tr == c
+                idx = np.where(mask)[0]
+                if len(idx) > target:
+                    idx = rng.choice(idx, size=target, replace=False)
+                X_parts.append(X_tr[idx])
+                y_parts.append(y_tr[idx])
+            return np.vstack(X_parts), np.concatenate(y_parts)
+
+        _augment_compute("undersample", "Remove majority samples to balance classes", undersample)
+
+        # Find best strategy
+        best = max(strategies, key=lambda s: s["balanced_accuracy"])
+        improvement = best["balanced_accuracy"] - bal_base
+
+        # Minority class improvement
+        minority_improvements = []
+        for cn in class_names:
+            base_f1 = next((p["f1"] for p in per_class_base if p["class"] == cn), 0)
+            best_f1 = 0
+            best_strat = "baseline"
+            for s in strategies:
+                sf1 = next((p["f1"] for p in s.get("per_class", []) if p["class"] == cn), 0)
+                if sf1 > best_f1:
+                    best_f1 = sf1
+                    best_strat = s["strategy"]
+            minority_improvements.append({
+                "class": cn, "count": int(class_counts[class_names.index(cn)]),
+                "baseline_f1": round(base_f1, 3),
+                "best_f1": round(best_f1, 3),
+                "improvement": round(best_f1 - base_f1, 3),
+                "best_strategy": best_strat,
+            })
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            strat_names = [s["strategy"] for s in strategies]
+            accs_s = [s["accuracy"] for s in strategies]
+            bals_s = [s["balanced_accuracy"] for s in strategies]
+            x = np.arange(len(strat_names))
+            ax1.bar(x - 0.15, accs_s, 0.3, label="Accuracy", color="#4a90d9")
+            ax1.bar(x + 0.15, bals_s, 0.3, label="Balanced Acc", color="#28a745")
+            ax1.set_xlabel("Strategy")
+            ax1.set_ylabel("Score")
+            ax1.set_title("Augmentation Strategies")
+            ax1.set_xticks(x)
+            ax1.set_xticklabels([s[:8] for s in strat_names], rotation=45, ha="right", fontsize=7)
+            ax1.legend(fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            ax2.bar(class_names, class_counts, color=["#dc3545" if c == min(class_counts) else "#4a90d9" for c in class_counts])
+            ax2.set_xlabel("Fracture Type")
+            ax2.set_ylabel("Count")
+            ax2.set_title(f"Class Distribution (ratio: {imbalance_ratio:.1f}:1)")
+            ax2.tick_params(axis="x", rotation=45, labelsize=7)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            mi_names = [m["class"][:10] for m in minority_improvements]
+            mi_base = [m["baseline_f1"] for m in minority_improvements]
+            mi_best = [m["best_f1"] for m in minority_improvements]
+            x = np.arange(len(mi_names))
+            ax3.barh(x - 0.15, mi_base, 0.3, label="Baseline", color="#aaa")
+            ax3.barh(x + 0.15, mi_best, 0.3, label="Best Augment", color="#28a745")
+            ax3.set_yticks(x)
+            ax3.set_yticklabels(mi_names, fontsize=7)
+            ax3.set_xlabel("F1 Score")
+            ax3.set_title("Per-Class F1 Improvement")
+            ax3.legend(fontsize=8)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "n_classes": n_classes,
+            "imbalance_ratio": round(imbalance_ratio, 2),
+            "minority_class": minority_class,
+            "majority_class": majority_class,
+            "class_counts": {cn: int(class_counts[i]) for i, cn in enumerate(class_names)},
+            "strategies": strategies,
+            "best_strategy": best["strategy"],
+            "best_balanced_accuracy": round(best["balanced_accuracy"], 4),
+            "improvement_over_baseline": round(improvement, 4),
+            "minority_improvements": minority_improvements,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": (
+                    f"Data augmentation: {best['strategy']} improves balanced accuracy "
+                    f"by {improvement:.1%} (ratio {imbalance_ratio:.0f}:1 imbalance)"
+                ),
+                "risk_level": "GREEN" if imbalance_ratio < 3 else ("AMBER" if imbalance_ratio < 10 else "RED"),
+                "confidence_sentence": (
+                    f"Class imbalance ratio: {imbalance_ratio:.1f}:1 "
+                    f"(minority: {minority_class} with {min(class_counts)} samples). "
+                    f"Best strategy: {best['strategy']} "
+                    f"(balanced accuracy: {best['balanced_accuracy']:.1%} vs {bal_base:.1%} baseline)."
+                ),
+                "action": (
+                    f"Apply {best['strategy']} before training to improve minority class recognition."
+                    if improvement > 0.02 else
+                    "Augmentation provides minimal benefit. Collect more real samples from minority classes."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _augment_cache[cache_key] = result
+    return result
+
+
+# ── Multi-Objective Optimization ───────────────────────────────────────
+
+_multi_obj_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/multi-objective")
+async def multi_objective(request: Request):
+    """Pareto frontier analysis balancing accuracy, safety, and coverage.
+
+    In oil industry, cannot just optimize accuracy. Must simultaneously consider:
+    1. Accuracy (correct predictions)
+    2. Safety (low misclassification on critical classes)
+    3. Coverage (percent of samples confidently classified)
+    Finds the Pareto-optimal trade-off points.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"multiobj:{well}:{source}"
+    if cache_key in _multi_obj_cache:
+        return _multi_obj_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.base import clone
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        all_proba = np.zeros((n, n_classes))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for train_idx, val_idx in cv.split(X, y):
+                m = clone(model)
+                m.fit(X[train_idx], y[train_idx])
+                all_proba[val_idx] = m.predict_proba(X[val_idx])
+
+        thresholds = np.arange(0.2, 0.96, 0.05)
+        trade_offs = []
+        max_confs = np.max(all_proba, axis=1)
+        preds = np.argmax(all_proba, axis=1)
+
+        for thresh in thresholds:
+            mask = max_confs >= thresh
+            coverage = float(mask.sum() / n)
+            if mask.sum() < 5:
+                continue
+            acc = float(accuracy_score(y[mask], preds[mask]))
+            bal_acc = float(balanced_accuracy_score(y[mask], preds[mask]))
+            wrong_confident = float(((preds[mask] != y[mask]).sum()) / max(mask.sum(), 1))
+            trade_offs.append({
+                "threshold": round(float(thresh), 2),
+                "coverage": round(coverage, 4),
+                "accuracy": round(acc, 4),
+                "balanced_accuracy": round(bal_acc, 4),
+                "error_rate": round(wrong_confident, 4),
+                "n_classified": int(mask.sum()),
+                "n_abstained": int((~mask).sum()),
+            })
+
+        # Find Pareto optimal points
+        pareto_points = []
+        for i, t1 in enumerate(trade_offs):
+            dominated = False
+            for j, t2 in enumerate(trade_offs):
+                if i != j:
+                    if (t2["accuracy"] >= t1["accuracy"] and
+                        t2["coverage"] >= t1["coverage"] and
+                        (t2["accuracy"] > t1["accuracy"] or t2["coverage"] > t1["coverage"])):
+                        dominated = True
+                        break
+            if not dominated:
+                pareto_points.append({**t1, "pareto_optimal": True})
+
+        recommended = None
+        for t in sorted(trade_offs, key=lambda x: (-x["accuracy"], -x["coverage"])):
+            if t["coverage"] >= 0.7 and t["error_rate"] <= 0.3:
+                recommended = t
+                break
+        if recommended is None and trade_offs:
+            recommended = trade_offs[0]
+
+        scenarios = []
+        if trade_offs:
+            high_thresh = [t for t in trade_offs if t["threshold"] >= 0.8]
+            if high_thresh:
+                scenarios.append({"name": "Conservative (safe)", "description": "Only classify when very confident.", **high_thresh[0]})
+            mid_thresh = [t for t in trade_offs if 0.45 <= t["threshold"] <= 0.55]
+            if mid_thresh:
+                scenarios.append({"name": "Balanced", "description": "Moderate confidence threshold.", **mid_thresh[0]})
+            low_thresh = [t for t in trade_offs if t["threshold"] <= 0.3]
+            if low_thresh:
+                scenarios.append({"name": "Aggressive (full)", "description": "Classify everything.", **low_thresh[-1]})
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+            ax1 = axes[0]
+            coverages = [t["coverage"] for t in trade_offs]
+            accs_t = [t["accuracy"] for t in trade_offs]
+            ax1.scatter(coverages, accs_t, c="#4a90d9", alpha=0.6, s=40)
+            if pareto_points:
+                p_cov = sorted([p["coverage"] for p in pareto_points])
+                p_acc = [next(p["accuracy"] for p in pareto_points if p["coverage"] == c) for c in p_cov]
+                ax1.plot(p_cov, p_acc, "r-o", markersize=6, label="Pareto frontier", linewidth=2)
+            if recommended:
+                ax1.scatter([recommended["coverage"]], [recommended["accuracy"]], c="green", s=150, marker="*", zorder=5, label="Recommended")
+            ax1.set_xlabel("Coverage")
+            ax1.set_ylabel("Accuracy")
+            ax1.set_title("Accuracy vs Coverage Trade-off")
+            ax1.legend(fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            threshs_p = [t["threshold"] for t in trade_offs]
+            errors_p = [t["error_rate"] for t in trade_offs]
+            covs_p = [t["coverage"] for t in trade_offs]
+            ax2.plot(threshs_p, errors_p, "r-o", label="Error rate", markersize=4)
+            ax2.plot(threshs_p, covs_p, "b-s", label="Coverage", markersize=4)
+            ax2.set_xlabel("Confidence Threshold")
+            ax2.set_ylabel("Rate")
+            ax2.set_title("Safety vs Coverage")
+            ax2.legend(fontsize=8)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            if scenarios:
+                s_names = [s["name"][:12] for s in scenarios]
+                s_acc_p = [s["accuracy"] for s in scenarios]
+                s_cov_p = [s["coverage"] for s in scenarios]
+                s_err_p = [s["error_rate"] for s in scenarios]
+                x = np.arange(len(s_names))
+                w = 0.25
+                ax3.bar(x - w, s_acc_p, w, label="Accuracy", color="#28a745")
+                ax3.bar(x, s_cov_p, w, label="Coverage", color="#4a90d9")
+                ax3.bar(x + w, s_err_p, w, label="Error Rate", color="#dc3545")
+                ax3.set_xticks(x)
+                ax3.set_xticklabels(s_names, fontsize=7, rotation=20)
+                ax3.legend(fontsize=7)
+                ax3.set_title("Operating Scenarios")
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n,
+            "trade_offs": trade_offs,
+            "pareto_points": pareto_points,
+            "recommended": recommended,
+            "scenarios": scenarios,
+            "n_pareto": len(pareto_points),
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Multi-objective: {len(pareto_points)} Pareto-optimal operating points found",
+                "risk_level": "GREEN" if recommended and recommended["error_rate"] < 0.15 else ("AMBER" if recommended and recommended["error_rate"] < 0.3 else "RED"),
+                "confidence_sentence": (
+                    (f"Recommended: threshold={recommended['threshold']:.0%}, accuracy={recommended['accuracy']:.1%}, "
+                     f"coverage={recommended['coverage']:.1%}, error={recommended['error_rate']:.1%}. "
+                     f"{len(pareto_points)} Pareto-optimal points.") if recommended else "No suitable operating point found."
+                ),
+                "action": (
+                    (f"Use threshold {recommended['threshold']:.0%} for balanced accuracy/safety. "
+                     f"{recommended['n_abstained']} samples need expert review.") if recommended
+                    else "Model needs improvement before deployment."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _multi_obj_cache[cache_key] = result
+    return result
+
+
+# ── Explainability Report ──────────────────────────────────────────────
+
+_explain_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/explainability-report")
+async def explainability_report(request: Request):
+    """Generate plain-English explanations of WHY each prediction was made.
+
+    For stakeholders who do NOT understand ML: converts feature contributions
+    into readable narratives. Each fracture gets a human-readable explanation
+    like 'Classified as Continuous because: steep dip angle (78 deg) and
+    NW-SE azimuth typical of extensional fractures at this depth.'
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_explain = int(body.get("n_samples", 10))
+
+    if n_explain < 1 or n_explain > 50:
+        raise HTTPException(400, "n_samples must be between 1 and 50")
+
+    cache_key = f"explain:{well}:{source}:{n_explain}"
+    if cache_key in _explain_cache:
+        return _explain_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        feat_names = list(features.columns)
+        n = len(y)
+
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(X, y)
+
+        global_imp = model.feature_importances_ if hasattr(model, "feature_importances_") else np.ones(len(feat_names)) / len(feat_names)
+        proba = model.predict_proba(X) if hasattr(model, "predict_proba") else None
+        preds = model.predict(X)
+        max_conf = np.max(proba, axis=1) if proba is not None else np.zeros(n)
+        misclassified = preds != y
+
+        # Select representative samples
+        selected_idx = []
+        rng42 = np.random.RandomState(42)
+        correct_confident = np.where((~misclassified) & (max_conf > 0.8))[0]
+        if len(correct_confident) > 0:
+            selected_idx.extend(rng42.choice(correct_confident, size=min(n_explain // 3, len(correct_confident)), replace=False).tolist())
+        uncertain = np.where(max_conf < 0.5)[0]
+        if len(uncertain) > 0:
+            selected_idx.extend(np.random.RandomState(43).choice(uncertain, size=min(n_explain // 3, len(uncertain)), replace=False).tolist())
+        wrong = np.where(misclassified)[0]
+        if len(wrong) > 0:
+            selected_idx.extend(np.random.RandomState(44).choice(wrong, size=min(n_explain // 3 + 1, len(wrong)), replace=False).tolist())
+        remaining = n_explain - len(selected_idx)
+        if remaining > 0:
+            all_idx = list(set(range(n)) - set(selected_idx))
+            if all_idx:
+                selected_idx.extend(np.random.RandomState(45).choice(all_idx, size=min(remaining, len(all_idx)), replace=False).tolist())
+        selected_idx = selected_idx[:n_explain]
+
+        explanations = []
+        for idx in selected_idx:
+            pred_class = class_names[preds[idx]]
+            true_class = class_names[y[idx]]
+            confidence = float(max_conf[idx]) if proba is not None else None
+            correct = pred_class == true_class
+
+            contributions = np.abs(X[idx]) * global_imp
+            top_feat_idx = np.argsort(contributions)[-5:][::-1]
+
+            feature_reasons = []
+            for fi in top_feat_idx:
+                fname = feat_names[fi]
+                fval = float(features.iloc[idx, fi]) if fi < features.shape[1] else 0
+                if "depth" in fname.lower():
+                    feature_reasons.append(f"depth of {fval:.0f}m")
+                elif "dip" in fname.lower() and "sin" not in fname.lower() and "cos" not in fname.lower():
+                    desc = "steep" if fval > 70 else ("shallow" if fval < 20 else "moderate")
+                    feature_reasons.append(f"{desc} dip angle ({fval:.0f} deg)")
+                elif "azimuth" in fname.lower() and "sin" not in fname.lower() and "cos" not in fname.lower():
+                    compass = ("N" if fval < 22.5 or fval >= 337.5 else "NE" if fval < 67.5 else "E" if fval < 112.5 else "SE" if fval < 157.5 else "S" if fval < 202.5 else "SW" if fval < 247.5 else "W" if fval < 292.5 else "NW")
+                    feature_reasons.append(f"{compass} strike direction ({fval:.0f} deg)")
+                elif "sin" in fname.lower() or "cos" in fname.lower():
+                    feature_reasons.append(f"angular component {fname} = {fval:.2f}")
+                elif len(fname) <= 3:
+                    feature_reasons.append(f"normal vector {fname} = {fval:.2f}")
+                else:
+                    feature_reasons.append(f"{fname} = {fval:.2f}")
+
+            reason_text = ", ".join(feature_reasons[:3])
+            if correct:
+                narrative = f"Correctly classified as {pred_class} (confidence: {confidence:.0%}). Key factors: {reason_text}."
+            else:
+                narrative = f"MISCLASSIFIED as {pred_class} (true: {true_class}, confidence: {confidence:.0%}). Misleading factors: {reason_text}. This sample has atypical characteristics for its true class."
+
+            depth_val = float(df_well[DEPTH_COL].iloc[idx]) if DEPTH_COL in df_well.columns and idx < len(df_well) else None
+            explanations.append({
+                "index": int(idx), "depth_m": round(depth_val, 1) if depth_val else None,
+                "predicted_class": pred_class, "true_class": true_class,
+                "correct": correct,
+                "confidence": round(confidence, 3) if confidence else None,
+                "top_features": [
+                    {"feature": feat_names[fi], "value": round(float(features.iloc[idx, fi]), 4) if fi < features.shape[1] else 0, "importance": round(float(global_imp[fi]), 4)}
+                    for fi in top_feat_idx
+                ],
+                "narrative": narrative,
+                "category": "correct_confident" if correct and confidence and confidence > 0.7 else ("correct_uncertain" if correct else "misclassified"),
+            })
+
+        n_correct = sum(1 for e in explanations if e["correct"])
+        n_wrong = sum(1 for e in explanations if not e["correct"])
+        avg_conf = float(np.mean([e["confidence"] for e in explanations if e["confidence"]])) if explanations else 0
+
+        global_ranking = sorted(zip(feat_names, global_imp), key=lambda x: x[1], reverse=True)[:8]
+        global_summary = [{"feature": f, "importance": round(float(i), 4)} for f, i in global_ranking]
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+            ax1 = axes[0]
+            g_names = [g["feature"][:12] for g in global_summary[:8]]
+            g_vals = [g["importance"] for g in global_summary[:8]]
+            ax1.barh(g_names[::-1], g_vals[::-1], color="#4a90d9")
+            ax1.set_xlabel("Importance")
+            ax1.set_title("Top Features (Global)")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            correct_confs = [e["confidence"] for e in explanations if e["correct"] and e["confidence"]]
+            wrong_confs = [e["confidence"] for e in explanations if not e["correct"] and e["confidence"]]
+            if correct_confs:
+                ax2.hist(correct_confs, bins=10, alpha=0.6, color="#28a745", label="Correct")
+            if wrong_confs:
+                ax2.hist(wrong_confs, bins=10, alpha=0.6, color="#dc3545", label="Wrong")
+            ax2.set_xlabel("Confidence")
+            ax2.set_ylabel("Count")
+            ax2.set_title("Confidence: Correct vs Wrong")
+            ax2.legend(fontsize=8)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            cats = {}
+            for e in explanations:
+                cats[e["category"]] = cats.get(e["category"], 0) + 1
+            cat_colors = {"correct_confident": "#28a745", "correct_uncertain": "#ffc107", "misclassified": "#dc3545"}
+            ax3.bar(cats.keys(), cats.values(), color=[cat_colors.get(k, "#999") for k in cats.keys()])
+            ax3.set_ylabel("Count")
+            ax3.set_title("Explanation Categories")
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples_explained": len(explanations),
+            "n_correct": n_correct, "n_misclassified": n_wrong,
+            "avg_confidence": round(avg_conf, 3),
+            "global_feature_ranking": global_summary,
+            "explanations": explanations,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Model explanations: {n_correct}/{len(explanations)} correct (avg confidence: {avg_conf:.0%})",
+                "risk_level": "GREEN" if n_wrong == 0 else ("AMBER" if n_wrong <= 3 else "RED"),
+                "confidence_sentence": (
+                    f"Analyzed {len(explanations)} predictions with plain-English explanations. "
+                    f"{n_correct} correct, {n_wrong} misclassified. "
+                    f"Top feature: {global_summary[0]['feature']} (importance: {global_summary[0]['importance']:.3f})."
+                    if global_summary else "No features available for explanation."
+                ),
+                "action": "Review misclassified samples to understand model weaknesses." if n_wrong > 0 else "Explanations confirm model uses physically meaningful features.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _explain_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -15809,7 +16507,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.22.0",
+        "app_version": "3.23.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

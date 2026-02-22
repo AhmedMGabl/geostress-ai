@@ -805,6 +805,93 @@
                         </div>
                     </div>
 
+                    <!-- Data Augmentation Analysis -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-plus-circle"></i> Data Augmentation Analysis</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runAugmentation()">
+                                <i class="bi bi-play-fill"></i> Analyze
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Tests SMOTE, random oversampling, and undersampling to improve recognition of rare fracture types. Addresses class imbalance where minority classes are under-represented.</p>
+                            <div id="aug-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Strategy</div><div class="metric-value" id="aug-best">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Improvement</div><div class="metric-value" id="aug-improve">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Imbalance Ratio</div><div class="metric-value" id="aug-ratio">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Minority Class</div><div class="metric-value" id="aug-minority">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="aug-brief"></div>
+                                <h6>Strategy Comparison</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Strategy</th><th>Accuracy</th><th>F1</th><th>Balanced Acc</th></tr></thead><tbody id="aug-strat-body"></tbody></table>
+                                </div>
+                                <h6>Per-Class Improvement</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Class</th><th>Count</th><th>Baseline F1</th><th>Best F1</th><th>Gain</th><th>Best Strategy</th></tr></thead><tbody id="aug-class-body"></tbody></table>
+                                </div>
+                                <div class="text-center"><img id="aug-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Multi-Objective Optimization -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bullseye"></i> Multi-Objective Optimization</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runMultiObj()">
+                                <i class="bi bi-play-fill"></i> Optimize
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Pareto frontier analysis balancing accuracy, safety, and coverage. In the oil industry, you cannot just optimize accuracy - you must balance multiple objectives simultaneously.</p>
+                            <div id="mo-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Pareto Points</div><div class="metric-value" id="mo-pareto">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Recommended Acc</div><div class="metric-value" id="mo-acc">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Coverage</div><div class="metric-value" id="mo-cov">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Error Rate</div><div class="metric-value" id="mo-err">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="mo-brief"></div>
+                                <h6>Operating Scenarios</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Scenario</th><th>Threshold</th><th>Accuracy</th><th>Coverage</th><th>Error Rate</th><th>Classified</th></tr></thead><tbody id="mo-scen-body"></tbody></table>
+                                </div>
+                                <div class="text-center"><img id="mo-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Explainability Report -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-chat-text"></i> Explainability Report</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runExplainReport()">
+                                <i class="bi bi-play-fill"></i> Explain
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Plain-English explanations of WHY each prediction was made. For stakeholders who do not understand ML - converts feature contributions into readable narratives.</p>
+                            <div id="expl-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Explained</div><div class="metric-value" id="expl-count">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Correct</div><div class="metric-value" id="expl-correct">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Misclassified</div><div class="metric-value" id="expl-wrong">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Avg Confidence</div><div class="metric-value" id="expl-conf">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="expl-brief"></div>
+                                <h6>Sample Explanations</h6>
+                                <div id="expl-narratives" class="mb-2"></div>
+                                <h6>Global Feature Ranking</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Feature</th><th>Importance</th></tr></thead><tbody id="expl-feat-body"></tbody></table>
+                                </div>
+                                <div class="text-center"><img id="expl-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

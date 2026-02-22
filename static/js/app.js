@@ -9741,3 +9741,121 @@ async function runFeatInteract() {
         hideLoading();
     }
 }
+
+// ── Data Augmentation Analysis ────────────────────────────────────────
+async function runAugmentation() {
+    showLoading('Testing augmentation strategies...');
+    var results = document.getElementById('aug-results');
+    try {
+        var r = await apiPost('/api/analysis/augmentation-analysis', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('aug-best').textContent = r.best_strategy || '-';
+        var imp = r.improvement_over_baseline || 0;
+        document.getElementById('aug-improve').textContent = (imp >= 0 ? '+' : '') + (imp * 100).toFixed(1) + '%';
+        document.getElementById('aug-ratio').textContent = (r.imbalance_ratio || 0).toFixed(1) + ':1';
+        document.getElementById('aug-minority').textContent = r.minority_class || '-';
+        if (r.stakeholder_brief) {
+            document.getElementById('aug-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var sb = document.getElementById('aug-strat-body');
+        sb.innerHTML = '';
+        if (r.strategies) {
+            for (var i = 0; i < r.strategies.length; i++) {
+                var s = r.strategies[i];
+                var isBest = s.strategy === r.best_strategy;
+                sb.innerHTML += '<tr' + (isBest ? ' class="table-success"' : '') + '><td>' + s.strategy + '</td><td>' + (s.accuracy * 100).toFixed(1) + '%</td><td>' + (s.f1_weighted * 100).toFixed(1) + '%</td><td>' + (s.balanced_accuracy * 100).toFixed(1) + '%</td></tr>';
+            }
+        }
+        var cb = document.getElementById('aug-class-body');
+        cb.innerHTML = '';
+        if (r.minority_improvements) {
+            for (var i = 0; i < r.minority_improvements.length; i++) {
+                var m = r.minority_improvements[i];
+                var gc = m.improvement > 0.05 ? 'success' : (m.improvement > 0 ? 'warning' : 'danger');
+                cb.innerHTML += '<tr><td>' + m['class'] + '</td><td>' + m.count + '</td><td>' + m.baseline_f1.toFixed(3) + '</td><td>' + m.best_f1.toFixed(3) + '</td><td><span class="text-' + gc + '">' + (m.improvement >= 0 ? '+' : '') + m.improvement.toFixed(3) + '</span></td><td>' + m.best_strategy + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('aug-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Multi-Objective Optimization ──────────────────────────────────────
+async function runMultiObj() {
+    showLoading('Computing Pareto frontier...');
+    var results = document.getElementById('mo-results');
+    try {
+        var r = await apiPost('/api/analysis/multi-objective', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('mo-pareto').textContent = r.n_pareto || 0;
+        if (r.recommended) {
+            document.getElementById('mo-acc').textContent = (r.recommended.accuracy * 100).toFixed(1) + '%';
+            document.getElementById('mo-cov').textContent = (r.recommended.coverage * 100).toFixed(1) + '%';
+            document.getElementById('mo-err').textContent = (r.recommended.error_rate * 100).toFixed(1) + '%';
+        }
+        if (r.stakeholder_brief) {
+            document.getElementById('mo-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var sb = document.getElementById('mo-scen-body');
+        sb.innerHTML = '';
+        if (r.scenarios) {
+            for (var i = 0; i < r.scenarios.length; i++) {
+                var s = r.scenarios[i];
+                sb.innerHTML += '<tr><td>' + s.name + '</td><td>' + (s.threshold * 100).toFixed(0) + '%</td><td>' + (s.accuracy * 100).toFixed(1) + '%</td><td>' + (s.coverage * 100).toFixed(1) + '%</td><td>' + (s.error_rate * 100).toFixed(1) + '%</td><td>' + s.n_classified + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('mo-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Explainability Report ─────────────────────────────────────────────
+async function runExplainReport() {
+    showLoading('Generating explanations...');
+    var results = document.getElementById('expl-results');
+    try {
+        var r = await apiPost('/api/analysis/explainability-report', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('expl-count').textContent = r.n_samples_explained || 0;
+        document.getElementById('expl-correct').textContent = r.n_correct || 0;
+        document.getElementById('expl-wrong').textContent = r.n_misclassified || 0;
+        document.getElementById('expl-conf').textContent = ((r.avg_confidence || 0) * 100).toFixed(0) + '%';
+        if (r.stakeholder_brief) {
+            document.getElementById('expl-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence;
+        }
+        // Render narratives
+        var nd = document.getElementById('expl-narratives');
+        nd.innerHTML = '';
+        if (r.explanations) {
+            for (var i = 0; i < Math.min(r.explanations.length, 10); i++) {
+                var ex = r.explanations[i];
+                var bc = ex.correct ? 'success' : 'danger';
+                var icon = ex.correct ? 'check-circle' : 'x-circle';
+                nd.innerHTML += '<div class="alert alert-' + bc + ' py-1 px-2 mb-1 small"><i class="bi bi-' + icon + '"></i> ' + (ex.depth_m ? '<strong>[' + ex.depth_m + 'm]</strong> ' : '') + ex.narrative + '</div>';
+            }
+        }
+        // Feature ranking
+        var fb = document.getElementById('expl-feat-body');
+        fb.innerHTML = '';
+        if (r.global_feature_ranking) {
+            for (var i = 0; i < r.global_feature_ranking.length; i++) {
+                var f = r.global_feature_ranking[i];
+                fb.innerHTML += '<tr><td>' + f.feature + '</td><td>' + f.importance.toFixed(4) + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('expl-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

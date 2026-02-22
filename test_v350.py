@@ -1572,10 +1572,108 @@ fi5 = api("POST", "/api/analysis/feature-interactions", {"source": "demo", "well
 check("top_k=5 works", fi5 is not None and isinstance(fi5.get("interactions"), list))
 check("top_k limits results", len(fi5.get("interactions", [])) <= 5)
 
+# ── [79] Data Augmentation Analysis ──────────────────
+print("\n[79] Data Augmentation Analysis")
+aug = api("POST", "/api/analysis/augmentation-analysis", {"source": "demo", "well": "3P"}, timeout=180)
+check("Status 200", aug is not None)
+check("Has well", aug.get("well") == "3P")
+check("Has n_samples", isinstance(aug.get("n_samples"), int) and aug["n_samples"] > 0)
+check("Has n_classes", isinstance(aug.get("n_classes"), int) and aug["n_classes"] >= 2)
+check("Has imbalance_ratio", isinstance(aug.get("imbalance_ratio"), (int, float)) and aug["imbalance_ratio"] >= 1)
+check("Has minority_class", isinstance(aug.get("minority_class"), str))
+check("Has majority_class", isinstance(aug.get("majority_class"), str))
+check("Has class_counts", isinstance(aug.get("class_counts"), dict))
+check("Has strategies", isinstance(aug.get("strategies"), list) and len(aug["strategies"]) >= 3)
+s0 = aug["strategies"][0]
+check("Strategy has strategy", isinstance(s0.get("strategy"), str))
+check("Strategy has accuracy", isinstance(s0.get("accuracy"), (int, float)))
+check("Strategy has f1_weighted", isinstance(s0.get("f1_weighted"), (int, float)))
+check("Strategy has balanced_accuracy", isinstance(s0.get("balanced_accuracy"), (int, float)))
+check("Strategy has per_class", isinstance(s0.get("per_class"), list))
+check("Has best_strategy", isinstance(aug.get("best_strategy"), str))
+check("Has best_balanced_accuracy", isinstance(aug.get("best_balanced_accuracy"), (int, float)))
+check("Has improvement_over_baseline", isinstance(aug.get("improvement_over_baseline"), (int, float)))
+check("Has minority_improvements", isinstance(aug.get("minority_improvements"), list) and len(aug["minority_improvements"]) >= 1)
+mi0 = aug["minority_improvements"][0]
+check("MI has class", isinstance(mi0.get("class"), str))
+check("MI has count", isinstance(mi0.get("count"), int))
+check("MI has baseline_f1", isinstance(mi0.get("baseline_f1"), (int, float)))
+check("MI has best_f1", isinstance(mi0.get("best_f1"), (int, float)))
+check("MI has improvement", isinstance(mi0.get("improvement"), (int, float)))
+check("MI has best_strategy", isinstance(mi0.get("best_strategy"), str))
+check("Has plot", isinstance(aug.get("plot"), str) and len(aug["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(aug.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(aug["stakeholder_brief"].get("headline"), str))
+check("Brief has risk_level", aug["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
+
+# ── [80] Multi-Objective Optimization ──────────────────
+print("\n[80] Multi-Objective Optimization")
+mo = api("POST", "/api/analysis/multi-objective", {"source": "demo", "well": "3P"}, timeout=120)
+check("Status 200", mo is not None)
+check("Has well", mo.get("well") == "3P")
+check("Has n_samples", isinstance(mo.get("n_samples"), int) and mo["n_samples"] > 0)
+check("Has trade_offs", isinstance(mo.get("trade_offs"), list) and len(mo["trade_offs"]) >= 2)
+t0 = mo["trade_offs"][0]
+check("TradeOff has threshold", isinstance(t0.get("threshold"), (int, float)))
+check("TradeOff has coverage", isinstance(t0.get("coverage"), (int, float)))
+check("TradeOff has accuracy", isinstance(t0.get("accuracy"), (int, float)))
+check("TradeOff has error_rate", isinstance(t0.get("error_rate"), (int, float)))
+check("TradeOff has n_classified", isinstance(t0.get("n_classified"), int))
+check("TradeOff has n_abstained", isinstance(t0.get("n_abstained"), int))
+check("Has pareto_points", isinstance(mo.get("pareto_points"), list) and len(mo["pareto_points"]) >= 1)
+check("Pareto has pareto_optimal", mo["pareto_points"][0].get("pareto_optimal") == True)
+check("Has recommended", isinstance(mo.get("recommended"), dict))
+check("Recommended has threshold", isinstance(mo["recommended"].get("threshold"), (int, float)))
+check("Recommended has accuracy", isinstance(mo["recommended"].get("accuracy"), (int, float)))
+check("Has scenarios", isinstance(mo.get("scenarios"), list) and len(mo["scenarios"]) >= 1)
+sc0 = mo["scenarios"][0]
+check("Scenario has name", isinstance(sc0.get("name"), str))
+check("Scenario has accuracy", isinstance(sc0.get("accuracy"), (int, float)))
+check("Has n_pareto", isinstance(mo.get("n_pareto"), int) and mo["n_pareto"] >= 1)
+check("Has plot", isinstance(mo.get("plot"), str) and len(mo["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(mo.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(mo["stakeholder_brief"].get("headline"), str))
+check("Brief has risk_level", mo["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
+
+# ── [81] Explainability Report ──────────────────
+print("\n[81] Explainability Report")
+expl = api("POST", "/api/analysis/explainability-report", {"source": "demo", "well": "3P"}, timeout=120)
+check("Status 200", expl is not None)
+check("Has well", expl.get("well") == "3P")
+check("Has n_samples_explained", isinstance(expl.get("n_samples_explained"), int) and expl["n_samples_explained"] > 0)
+check("Has n_correct", isinstance(expl.get("n_correct"), int))
+check("Has n_misclassified", isinstance(expl.get("n_misclassified"), int))
+check("Has avg_confidence", isinstance(expl.get("avg_confidence"), (int, float)))
+check("Has global_feature_ranking", isinstance(expl.get("global_feature_ranking"), list) and len(expl["global_feature_ranking"]) >= 2)
+gf0 = expl["global_feature_ranking"][0]
+check("GF has feature", isinstance(gf0.get("feature"), str))
+check("GF has importance", isinstance(gf0.get("importance"), (int, float)))
+check("Has explanations", isinstance(expl.get("explanations"), list) and len(expl["explanations"]) >= 1)
+e0 = expl["explanations"][0]
+check("Explanation has index", isinstance(e0.get("index"), int))
+check("Explanation has predicted_class", isinstance(e0.get("predicted_class"), str))
+check("Explanation has true_class", isinstance(e0.get("true_class"), str))
+check("Explanation has correct", isinstance(e0.get("correct"), bool))
+check("Explanation has confidence", isinstance(e0.get("confidence"), (int, float)))
+check("Explanation has narrative", isinstance(e0.get("narrative"), str) and len(e0["narrative"]) > 20)
+check("Explanation has top_features", isinstance(e0.get("top_features"), list) and len(e0["top_features"]) >= 1)
+check("Explanation has category", e0.get("category") in ("correct_confident", "correct_uncertain", "misclassified"))
+check("Has plot", isinstance(expl.get("plot"), str) and len(expl["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(expl.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(expl["stakeholder_brief"].get("headline"), str))
+
+# Param validation
+check("n_samples=0 rejected", api_expect_error("POST", "/api/analysis/explainability-report", {"source": "demo", "well": "3P", "n_samples": 0}))
+check("n_samples=100 rejected", api_expect_error("POST", "/api/analysis/explainability-report", {"source": "demo", "well": "3P", "n_samples": 100}))
+
+# Custom n_samples
+expl5 = api("POST", "/api/analysis/explainability-report", {"source": "demo", "well": "3P", "n_samples": 5}, timeout=120)
+check("n_samples=5 works", expl5 is not None and expl5.get("n_samples_explained") == 5)
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.22.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.23.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:
