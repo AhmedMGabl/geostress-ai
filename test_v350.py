@@ -754,6 +754,28 @@ check("Top driver has importance", drivers[0].get("importance", 0) > 0 if driver
 check("Top driver has explanation", len(drivers[0].get("explanation", "")) > 3 if drivers else False)
 check("At most 5 drivers", len(drivers) <= 5)
 
+# ── [43] Ensemble Vote Endpoint ─────────────────────
+print("\n[43] Ensemble Vote Endpoint")
+ev = api("POST", "/api/models/ensemble-vote", {"source": "demo"}, timeout=180)
+check("Has n_models", ev.get("n_models", 0) >= 2)
+check("Has n_fractures", ev.get("n_fractures", 0) > 0)
+check("Has models dict", isinstance(ev.get("models"), dict))
+ens = ev.get("ensemble", {})
+check("Has mean_agreement_pct", 0 <= ens.get("mean_agreement_pct", -1) <= 100)
+check("Has unanimous_count", ens.get("unanimous_count", -1) >= 0)
+check("Has contested_count", ens.get("contested_count", -1) >= 0)
+check("Has predictions list", len(ens.get("predictions", [])) == ev.get("n_fractures", 0))
+check("Has contested_fractures", isinstance(ev.get("contested_fractures"), list))
+
+# ── [44] Ensemble Vote Stakeholder Brief ────────────
+print("\n[44] Ensemble Vote Stakeholder Brief")
+ev_sb = ev.get("stakeholder_brief", {})
+check("Has headline", len(ev_sb.get("headline", "")) > 10)
+check("Has risk_level", ev_sb.get("risk_level") in ("GREEN", "AMBER", "RED"))
+check("Has confidence_sentence", "models" in ev_sb.get("confidence_sentence", "").lower())
+check("Has action", len(ev_sb.get("action", "")) > 5)
+check("Has models_used list", isinstance(ev_sb.get("models_used"), list))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")

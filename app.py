@@ -8671,6 +8671,152 @@ async def rollback_model(request: Request):
     }
 
 
+@app.post("/api/models/ensemble-vote")
+async def ensemble_vote(request: Request):
+    """Run all available classifiers and take majority vote per fracture.
+
+    This is the most trustworthy production approach: instead of relying on
+    one model, we run ALL models and report:
+    - Per-fracture majority vote prediction
+    - Agreement rate (how many models agree)
+    - Per-fracture uncertainty (fraction of models that disagree)
+    - Which fractures have contested predictions (need expert review)
+
+    Based on 2025 MDPI/Springer: ensemble voting consistently outperforms
+    individual models and provides calibrated uncertainty.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    # Run all available classifiers
+    model_names = ["random_forest", "gradient_boosting", "xgboost", "lightgbm", "catboost"]
+    models_run = {}
+
+    for m_name in model_names:
+        cache_key = f"clf_{source}_{m_name}_enh"
+        if cache_key in _classify_cache:
+            res = _classify_cache[cache_key]
+        else:
+            try:
+                res = await asyncio.to_thread(classify_enhanced, df, classifier=m_name)
+                _classify_cache[cache_key] = res
+            except Exception:
+                continue
+
+        model_obj = res.get("model")
+        scaler = res.get("scaler")
+        le = res.get("label_encoder")
+        if model_obj is None or scaler is None or le is None:
+            continue
+
+        features = engineer_enhanced_features(df)
+        X = scaler.transform(features.values)
+        preds = le.inverse_transform(model_obj.predict(X))
+        models_run[m_name] = {
+            "predictions": preds.tolist(),
+            "accuracy": float(res.get("cv_mean_accuracy", 0)),
+        }
+
+    if len(models_run) < 2:
+        return {"message": "Need at least 2 models for ensemble voting",
+                "models_available": list(models_run.keys())}
+
+    n_total = len(df)
+    n_models = len(models_run)
+
+    # Majority vote per fracture
+    from collections import Counter
+    ensemble_preds = []
+    agreement_scores = []
+    contested_indices = []
+
+    for i in range(n_total):
+        votes = [models_run[m]["predictions"][i] for m in models_run]
+        counter = Counter(votes)
+        winner, max_votes = counter.most_common(1)[0]
+        ensemble_preds.append(winner)
+        agreement = max_votes / n_models
+        agreement_scores.append(agreement)
+        if agreement < 0.8:  # Less than 80% agreement = contested
+            contested_indices.append(i)
+
+    # Per-fracture results with uncertainty
+    mean_agreement = sum(agreement_scores) / n_total
+    n_contested = len(contested_indices)
+    n_unanimous = sum(1 for a in agreement_scores if a == 1.0)
+
+    # Per-model accuracy comparison
+    model_metrics = {m: {"accuracy": round(d["accuracy"], 4)} for m, d in models_run.items()}
+
+    # Contested fractures detail
+    contested_detail = []
+    for idx in contested_indices[:30]:  # Cap at 30
+        row = df.iloc[idx]
+        votes = {m: models_run[m]["predictions"][idx] for m in models_run}
+        contested_detail.append({
+            "index": idx,
+            "depth": round(float(row.get(DEPTH_COL, 0)), 1),
+            "azimuth": round(float(row.get(AZIMUTH_COL, 0)), 1),
+            "dip": round(float(row.get(DIP_COL, 0)), 1),
+            "majority_vote": ensemble_preds[idx],
+            "agreement_pct": round(agreement_scores[idx] * 100, 0),
+            "model_votes": votes,
+        })
+
+    # Stakeholder brief
+    if mean_agreement >= 0.9:
+        risk = "GREEN"
+        headline = (f"Strong consensus: {n_models} models agree on {n_unanimous}/{n_total} "
+                    f"fractures ({mean_agreement:.0%} average agreement). "
+                    f"Ensemble predictions are highly reliable.")
+    elif mean_agreement >= 0.75:
+        risk = "AMBER"
+        headline = (f"Moderate consensus: {n_contested} of {n_total} fractures have contested "
+                    f"predictions ({mean_agreement:.0%} average agreement). "
+                    f"Review the contested fractures below.")
+    else:
+        risk = "RED"
+        headline = (f"Low consensus: models disagree significantly ({mean_agreement:.0%} "
+                    f"average agreement). Results should not be used for decisions "
+                    f"without expert validation.")
+
+    brief = {
+        "headline": headline,
+        "risk_level": risk,
+        "confidence_sentence": (
+            f"Ran {n_models} models ({', '.join(models_run.keys())}). "
+            f"Unanimous on {n_unanimous}/{n_total} fractures. "
+            f"{n_contested} contested (need expert review)."
+        ),
+        "action": (
+            "Use ensemble predictions for operational decisions."
+            if risk == "GREEN"
+            else f"Review the {n_contested} contested fractures with a geomechanist before proceeding."
+            if risk == "AMBER"
+            else "Collect more training data or calibrate with field measurements before using these predictions."
+        ),
+        "models_used": list(models_run.keys()),
+    }
+
+    return _sanitize_for_json({
+        "n_models": n_models,
+        "n_fractures": n_total,
+        "models": model_metrics,
+        "ensemble": {
+            "mean_agreement_pct": round(mean_agreement * 100, 1),
+            "unanimous_count": n_unanimous,
+            "contested_count": n_contested,
+            "predictions": ensemble_preds,
+        },
+        "contested_fractures": contested_detail,
+        "stakeholder_brief": brief,
+    })
+
+
 @app.post("/api/models/ab-test")
 async def ab_test_models(request: Request):
     """A/B test: run two classifiers on the same data and compare predictions.

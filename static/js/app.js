@@ -7547,6 +7547,52 @@ async function runAbTest() {
     }
 }
 
+async function runEnsembleVote() {
+    var el = document.getElementById('model-registry-result');
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running ensemble vote across all models...</div>';
+    try {
+        var r = await fetch('/api/models/ensemble-vote', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource})
+        });
+        var d = await r.json();
+        if (d.message && !d.ensemble) {
+            el.innerHTML = '<div class="alert alert-info">' + d.message + '</div>';
+            return;
+        }
+        var ens = d.ensemble || {};
+        var vc = ens.mean_agreement_pct >= 90 ? 'success' : ens.mean_agreement_pct >= 75 ? 'warning' : 'danger';
+        var html = '<h6>Ensemble Vote: ' + d.n_models + ' Models</h6>';
+        html += '<div class="alert alert-' + vc + '">';
+        html += '<strong>' + ens.mean_agreement_pct + '% agreement</strong> | ';
+        html += 'Unanimous: ' + ens.unanimous_count + '/' + d.n_fractures + ' | ';
+        html += 'Contested: <span class="text-danger">' + ens.contested_count + '</span>';
+        html += '</div>';
+        // Model metrics
+        html += '<div class="row g-2 mb-3">';
+        for (var m in d.models) {
+            html += '<div class="col-auto"><span class="badge bg-secondary">' + m + ': ' + (d.models[m].accuracy * 100).toFixed(1) + '%</span></div>';
+        }
+        html += '</div>';
+        // Contested fractures table
+        if (d.contested_fractures && d.contested_fractures.length > 0) {
+            html += '<h6 class="text-danger">Contested Fractures (need expert review)</h6>';
+            html += '<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Depth</th><th>Azimuth</th><th>Dip</th><th>Vote</th><th>Agreement</th></tr></thead><tbody>';
+            d.contested_fractures.forEach(function(c) {
+                html += '<tr><td>' + c.depth + 'm</td><td>' + c.azimuth + '</td><td>' + c.dip + '</td><td>' + c.majority_vote + '</td><td class="text-danger">' + c.agreement_pct + '%</td></tr>';
+            });
+            html += '</tbody></table></div>';
+        }
+        el.innerHTML = html;
+        if (d.stakeholder_brief) {
+            renderStakeholderBrief('ab-test-brief', d.stakeholder_brief, 'ensemble-vote-detail');
+        }
+    } catch(e) {
+        el.innerHTML = '<div class="text-danger">Ensemble vote failed: ' + e.message + '</div>';
+    }
+}
+
 async function rollbackModel(modelType, version, well) {
     if (!confirm(`Rollback ${modelType} to version ${version}?`)) return;
     try {
