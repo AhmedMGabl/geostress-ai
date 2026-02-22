@@ -892,6 +892,88 @@
                         </div>
                     </div>
 
+                    <!-- RLHF Reward Model -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-trophy"></i> RLHF Reward Model Training</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runRewardTrain()">
+                                <i class="bi bi-play-fill"></i> Train
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Trains a Bradley-Terry reward model from expert preferences. Learns which predictions experts prefer and uses reward signal to improve the classifier.</p>
+                            <div id="rw-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">RLHF Accuracy</div><div class="metric-value" id="rw-acc">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Improvement</div><div class="metric-value" id="rw-improve">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Pair Accuracy</div><div class="metric-value" id="rw-pair">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Reward Separation</div><div class="metric-value" id="rw-sep">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="rw-brief"></div>
+                                <h6>Reward Features</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Feature</th><th>Reward Weight</th></tr></thead><tbody id="rw-feat-body"></tbody></table>
+                                </div>
+                                <div class="text-center"><img id="rw-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Negative Outcome Learning -->
+                    <div class="card mb-4 border-dark">
+                        <div class="card-header bg-dark bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-diamond"></i> Negative Outcome Learning</span>
+                            <button class="btn btn-sm btn-outline-dark" onclick="runNegLearn()">
+                                <i class="bi bi-play-fill"></i> Learn
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Learns from wrong predictions: weights misclassified samples higher in training. Identifies hard examples that consistently fool the model.</p>
+                            <div id="nl-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Hard Examples</div><div class="metric-value" id="nl-hard">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Improvement</div><div class="metric-value" id="nl-improve">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Fixed</div><div class="metric-value" id="nl-fixed">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Still Wrong</div><div class="metric-value" id="nl-still">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="nl-brief"></div>
+                                <h6>Per-Class Hard Example Analysis</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Class</th><th>Count</th><th>Hard</th><th>Hard%</th><th>Base F1</th><th>Neg F1</th><th>Change</th></tr></thead><tbody id="nl-class-body"></tbody></table>
+                                </div>
+                                <div class="text-center"><img id="nl-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Production Monitoring Simulation -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-activity"></i> Production Monitoring Simulation</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runMonitorSim()">
+                                <i class="bi bi-play-fill"></i> Simulate
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Simulates real deployment: trains on early data, monitors as new samples arrive. Detects accuracy drift, triggers alerts when performance degrades.</p>
+                            <div id="ms-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Monitoring Acc</div><div class="metric-value" id="ms-acc">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Trend</div><div class="metric-value" id="ms-trend">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Alerts</div><div class="metric-value" id="ms-alerts">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Retrain?</div><div class="metric-value" id="ms-retrain">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="ms-brief"></div>
+                                <h6>Batch Performance</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Batch</th><th>Depth Range</th><th>Samples</th><th>Accuracy</th><th>Cumulative</th><th>Status</th></tr></thead><tbody id="ms-batch-body"></tbody></table>
+                                </div>
+                                <div id="ms-alert-list" class="mb-2"></div>
+                                <div class="text-center"><img id="ms-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

@@ -1670,10 +1670,105 @@ check("n_samples=100 rejected", api_expect_error("POST", "/api/analysis/explaina
 expl5 = api("POST", "/api/analysis/explainability-report", {"source": "demo", "well": "3P", "n_samples": 5}, timeout=120)
 check("n_samples=5 works", expl5 is not None and expl5.get("n_samples_explained") == 5)
 
+# ── [82] RLHF Reward Model Training ──────────────────
+print("\n[82] RLHF Reward Model Training")
+rw = api("POST", "/api/rlhf/reward-model-train", {"source": "demo", "well": "3P"}, timeout=120)
+check("Status 200", rw is not None)
+check("Has well", rw.get("well") == "3P")
+check("Has n_samples", isinstance(rw.get("n_samples"), int) and rw["n_samples"] > 0)
+check("Has n_pairs_trained", isinstance(rw.get("n_pairs_trained"), int) and rw["n_pairs_trained"] > 0)
+check("Has pair_accuracy", isinstance(rw.get("pair_accuracy"), (int, float)))
+check("Has base_accuracy", isinstance(rw.get("base_accuracy"), (int, float)))
+check("Has rlhf_accuracy", isinstance(rw.get("rlhf_accuracy"), (int, float)))
+check("Has improvement", isinstance(rw.get("improvement"), (int, float)))
+check("Has mean_reward_correct", isinstance(rw.get("mean_reward_correct"), (int, float)))
+check("Has mean_reward_wrong", isinstance(rw.get("mean_reward_wrong"), (int, float)))
+check("Has reward_separation", isinstance(rw.get("reward_separation"), (int, float)))
+check("Correct reward >= wrong", rw.get("mean_reward_correct", 0) >= rw.get("mean_reward_wrong", 1))
+check("Has reward_features", isinstance(rw.get("reward_features"), list) and len(rw["reward_features"]) >= 1)
+rf0 = rw["reward_features"][0]
+check("RF has feature", isinstance(rf0.get("feature"), str))
+check("RF has weight", isinstance(rf0.get("weight"), (int, float)))
+check("Has class_rewards", isinstance(rw.get("class_rewards"), list) and len(rw["class_rewards"]) >= 1)
+check("Has plot", isinstance(rw.get("plot"), str) and len(rw["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(rw.get("stakeholder_brief"), dict))
+
+# ── [83] Negative Outcome Learning ──────────────────
+print("\n[83] Negative Outcome Learning")
+nl = api("POST", "/api/analysis/negative-learning", {"source": "demo", "well": "3P"}, timeout=120)
+check("Status 200", nl is not None)
+check("Has well", nl.get("well") == "3P")
+check("Has n_samples", isinstance(nl.get("n_samples"), int) and nl["n_samples"] > 0)
+check("Has negative_weight", isinstance(nl.get("negative_weight"), (int, float)))
+check("Has n_hard_examples", isinstance(nl.get("n_hard_examples"), int))
+check("Has hard_pct", isinstance(nl.get("hard_pct"), (int, float)))
+check("Has base_accuracy", isinstance(nl.get("base_accuracy"), (int, float)))
+check("Has neg_accuracy", isinstance(nl.get("neg_accuracy"), (int, float)))
+check("Has improvement_accuracy", isinstance(nl.get("improvement_accuracy"), (int, float)))
+check("Has improvement_balanced", isinstance(nl.get("improvement_balanced"), (int, float)))
+check("Has per_class", isinstance(nl.get("per_class"), list) and len(nl["per_class"]) >= 1)
+pc0nl = nl["per_class"][0]
+check("PC has class", isinstance(pc0nl.get("class"), str))
+check("PC has n_hard", isinstance(pc0nl.get("n_hard"), int))
+check("PC has hard_pct", isinstance(pc0nl.get("hard_pct"), (int, float)))
+check("PC has base_f1", isinstance(pc0nl.get("base_f1"), (int, float)))
+check("PC has neg_f1", isinstance(pc0nl.get("neg_f1"), (int, float)))
+check("PC has f1_change", isinstance(pc0nl.get("f1_change"), (int, float)))
+check("Has hard_examples", isinstance(nl.get("hard_examples"), list))
+if nl["hard_examples"]:
+    he0 = nl["hard_examples"][0]
+    check("HE has index", isinstance(he0.get("index"), int))
+    check("HE has true_class", isinstance(he0.get("true_class"), str))
+    check("HE has fixed flag", isinstance(he0.get("fixed"), bool))
+check("Has plot", isinstance(nl.get("plot"), str) and len(nl["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(nl.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(nl["stakeholder_brief"].get("headline"), str))
+
+# Param validation
+check("neg_weight=0.5 rejected", api_expect_error("POST", "/api/analysis/negative-learning", {"source": "demo", "well": "3P", "negative_weight": 0.5}))
+
+# Custom weight
+nl5 = api("POST", "/api/analysis/negative-learning", {"source": "demo", "well": "3P", "negative_weight": 5.0}, timeout=120)
+check("neg_weight=5 works", nl5 is not None and isinstance(nl5.get("neg_accuracy"), (int, float)))
+
+# ── [84] Production Monitoring Simulation ──────────────────
+print("\n[84] Production Monitoring Simulation")
+ms = api("POST", "/api/analysis/monitoring-simulation", {"source": "demo", "well": "3P"}, timeout=120)
+check("Status 200", ms is not None)
+check("Has well", ms.get("well") == "3P")
+check("Has n_samples", isinstance(ms.get("n_samples"), int) and ms["n_samples"] > 0)
+check("Has n_batches", isinstance(ms.get("n_batches"), int) and ms["n_batches"] >= 2)
+check("Has train_size", isinstance(ms.get("train_size"), int) and ms["train_size"] > 0)
+check("Has monitoring_accuracy", isinstance(ms.get("monitoring_accuracy"), (int, float)))
+check("Has trend", ms.get("trend") in ("STABLE", "IMPROVING", "DEGRADING", "INSUFFICIENT_DATA"))
+check("Has trend_slope", isinstance(ms.get("trend_slope"), (int, float)))
+check("Has n_green", isinstance(ms.get("n_green"), int))
+check("Has n_amber", isinstance(ms.get("n_amber"), int))
+check("Has n_red", isinstance(ms.get("n_red"), int))
+check("Has retrain_needed", isinstance(ms.get("retrain_needed"), bool))
+check("Has batches", isinstance(ms.get("batches"), list) and len(ms["batches"]) >= 2)
+b0ms = ms["batches"][0]
+check("Batch has batch_id", isinstance(b0ms.get("batch_id"), int))
+check("Batch has depth_range_m", isinstance(b0ms.get("depth_range_m"), list))
+check("Batch has accuracy", isinstance(b0ms.get("accuracy"), (int, float)))
+check("Batch has cumulative_accuracy", isinstance(b0ms.get("cumulative_accuracy"), (int, float)))
+check("Batch has status", b0ms.get("status") in ("GREEN", "AMBER", "RED"))
+check("Has alerts", isinstance(ms.get("alerts"), list))
+check("Has plot", isinstance(ms.get("plot"), str) and len(ms["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(ms.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(ms["stakeholder_brief"].get("headline"), str))
+
+# Param validation
+check("n_batches=1 rejected", api_expect_error("POST", "/api/analysis/monitoring-simulation", {"source": "demo", "well": "3P", "n_batches": 1}))
+
+# Custom batches
+ms5 = api("POST", "/api/analysis/monitoring-simulation", {"source": "demo", "well": "3P", "n_batches": 5}, timeout=120)
+check("n_batches=5 works", ms5 is not None and isinstance(ms5.get("batches"), list))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.23.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.24.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

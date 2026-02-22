@@ -9859,3 +9859,111 @@ async function runExplainReport() {
         hideLoading();
     }
 }
+
+// ── RLHF Reward Model Training ────────────────────────────────────────
+async function runRewardTrain() {
+    showLoading('Training RLHF reward model...');
+    var results = document.getElementById('rw-results');
+    try {
+        var r = await apiPost('/api/rlhf/reward-model-train', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">' + r.error + '</div>'; return; }
+        document.getElementById('rw-acc').textContent = (r.rlhf_accuracy * 100).toFixed(1) + '%';
+        var imp = r.improvement || 0;
+        document.getElementById('rw-improve').textContent = (imp >= 0 ? '+' : '') + (imp * 100).toFixed(1) + '%';
+        document.getElementById('rw-pair').textContent = (r.pair_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('rw-sep').textContent = (r.reward_separation || 0).toFixed(3);
+        if (r.stakeholder_brief) {
+            document.getElementById('rw-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var fb = document.getElementById('rw-feat-body');
+        fb.innerHTML = '';
+        if (r.reward_features) {
+            for (var i = 0; i < r.reward_features.length; i++) {
+                var f = r.reward_features[i];
+                fb.innerHTML += '<tr><td>' + f.feature + '</td><td>' + f.weight.toFixed(4) + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('rw-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Negative Outcome Learning ─────────────────────────────────────────
+async function runNegLearn() {
+    showLoading('Learning from negative outcomes...');
+    var results = document.getElementById('nl-results');
+    try {
+        var r = await apiPost('/api/analysis/negative-learning', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('nl-hard').textContent = r.n_hard_examples + ' (' + r.hard_pct.toFixed(0) + '%)';
+        var imp = r.improvement_accuracy || 0;
+        document.getElementById('nl-improve').textContent = (imp >= 0 ? '+' : '') + (imp * 100).toFixed(1) + '%';
+        document.getElementById('nl-fixed').textContent = r.n_fixed || 0;
+        document.getElementById('nl-still').textContent = r.n_still_wrong || 0;
+        if (r.stakeholder_brief) {
+            document.getElementById('nl-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var cb = document.getElementById('nl-class-body');
+        cb.innerHTML = '';
+        if (r.per_class) {
+            for (var i = 0; i < r.per_class.length; i++) {
+                var c = r.per_class[i];
+                var gc = c.f1_change > 0.02 ? 'success' : (c.f1_change > -0.02 ? 'secondary' : 'danger');
+                cb.innerHTML += '<tr><td>' + c['class'] + '</td><td>' + c.count + '</td><td>' + c.n_hard + '</td><td>' + c.hard_pct.toFixed(0) + '%</td><td>' + c.base_f1.toFixed(3) + '</td><td>' + c.neg_f1.toFixed(3) + '</td><td><span class="text-' + gc + '">' + (c.f1_change >= 0 ? '+' : '') + c.f1_change.toFixed(3) + '</span></td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('nl-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Production Monitoring Simulation ──────────────────────────────────
+async function runMonitorSim() {
+    showLoading('Simulating production monitoring...');
+    var results = document.getElementById('ms-results');
+    try {
+        var r = await apiPost('/api/analysis/monitoring-simulation', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('ms-acc').textContent = (r.monitoring_accuracy * 100).toFixed(1) + '%';
+        var tc = r.trend === 'STABLE' ? 'success' : (r.trend === 'IMPROVING' ? 'primary' : 'danger');
+        document.getElementById('ms-trend').innerHTML = '<span class="badge bg-' + tc + '">' + r.trend + '</span>';
+        document.getElementById('ms-alerts').textContent = (r.alerts || []).length;
+        document.getElementById('ms-retrain').innerHTML = r.retrain_needed ? '<span class="badge bg-danger">YES</span>' : '<span class="badge bg-success">NO</span>';
+        if (r.stakeholder_brief) {
+            document.getElementById('ms-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var bb = document.getElementById('ms-batch-body');
+        bb.innerHTML = '';
+        if (r.batches) {
+            for (var i = 0; i < r.batches.length; i++) {
+                var b = r.batches[i];
+                var sc = b.status === 'GREEN' ? 'success' : (b.status === 'AMBER' ? 'warning' : 'danger');
+                bb.innerHTML += '<tr><td>' + b.batch_id + '</td><td>' + b.depth_range_m[0].toFixed(0) + '-' + b.depth_range_m[1].toFixed(0) + 'm</td><td>' + b.n_samples + '</td><td>' + (b.accuracy * 100).toFixed(1) + '%</td><td>' + (b.cumulative_accuracy * 100).toFixed(1) + '%</td><td><span class="badge bg-' + sc + '">' + b.status + '</span></td></tr>';
+            }
+        }
+        var al = document.getElementById('ms-alert-list');
+        al.innerHTML = '';
+        if (r.alerts && r.alerts.length > 0) {
+            for (var i = 0; i < r.alerts.length; i++) {
+                var a = r.alerts[i];
+                var ac = a.severity === 'CRITICAL' ? 'danger' : 'warning';
+                al.innerHTML += '<div class="alert alert-' + ac + ' py-1 px-2 mb-1 small"><i class="bi bi-exclamation-triangle"></i> ' + a.message + '</div>';
+            }
+        }
+        if (r.plot) document.getElementById('ms-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

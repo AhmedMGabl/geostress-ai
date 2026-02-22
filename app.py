@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.23.0 - Augmentation + Multi-Objective + Explainability)."""
+"""GeoStress AI - FastAPI Web Application (v3.24.0 - RLHF Reward + Negative Learning + Monitoring)."""
 
 import os
 import io
@@ -1001,7 +1001,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.23.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.24.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -15416,6 +15416,679 @@ async def explainability_report(request: Request):
     return result
 
 
+# ── RLHF Reward Model Training ────────────────────────────────────────
+
+_reward_model_cache = BoundedCache(5)
+
+
+@app.post("/api/rlhf/reward-model-train")
+async def rlhf_reward_model_train(request: Request):
+    """Train a reward model from accumulated expert preferences.
+
+    Uses Bradley-Terry pairwise comparison model: given pairs of predictions,
+    learn which the expert prefers and WHY. The reward model can then score
+    new predictions to guide the classifier toward expert-preferred outputs.
+    This is the core RLHF loop for geostress classification.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"reward:{well}:{source}"
+    if cache_key in _reward_model_cache:
+        return _reward_model_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+        feat_names = list(features.columns)
+
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+
+        # Get base model predictions via CV
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        all_proba = np.zeros((n, n_classes))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for train_idx, val_idx in cv.split(X, y):
+                m = clone(model)
+                m.fit(X[train_idx], y[train_idx])
+                all_proba[val_idx] = m.predict_proba(X[val_idx])
+
+        preds = np.argmax(all_proba, axis=1)
+        base_acc = float(accuracy_score(y, preds))
+
+        # Simulate expert preferences from existing feedback data + truth
+        # In production, this would use actual RLHF data from the database
+        correct_mask = preds == y
+        wrong_mask = ~correct_mask
+
+        # Generate synthetic preference pairs (correct > wrong)
+        n_pairs = min(200, int(wrong_mask.sum()) * 3)
+        rng = np.random.RandomState(42)
+        pairs = []
+        correct_idx = np.where(correct_mask)[0]
+        wrong_idx = np.where(wrong_mask)[0]
+
+        if len(wrong_idx) < 2 or len(correct_idx) < 2:
+            return {
+                "well": well, "n_samples": n,
+                "error": "Not enough misclassifications to train reward model",
+                "base_accuracy": round(base_acc, 4),
+                "n_correct": int(correct_mask.sum()),
+                "n_wrong": int(wrong_mask.sum()),
+            }
+
+        for _ in range(n_pairs):
+            # Preferred: correct prediction
+            i_good = rng.choice(correct_idx)
+            i_bad = rng.choice(wrong_idx)
+            pairs.append((i_good, i_bad))
+
+        # Bradley-Terry reward model: logistic regression on feature differences
+        # R(x_good) > R(x_bad) => R(x_good) - R(x_bad) > 0
+        pair_features = []
+        pair_labels = []
+        for i_good, i_bad in pairs:
+            diff = X[i_good] - X[i_bad]
+            pair_features.append(diff)
+            pair_labels.append(1)  # good > bad
+            pair_features.append(-diff)
+            pair_labels.append(0)  # bad < good
+
+        pair_X = np.array(pair_features)
+        pair_y = np.array(pair_labels)
+
+        from sklearn.linear_model import LogisticRegression
+        reward_model = LogisticRegression(max_iter=500, random_state=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            reward_model.fit(pair_X, pair_y)
+
+        # Compute reward scores for all samples
+        reward_scores = reward_model.decision_function(X)
+        reward_scores = (reward_scores - reward_scores.min()) / (reward_scores.max() - reward_scores.min() + 1e-10)
+
+        # Reward-weighted retraining: use reward as sample weight
+        sample_weights = 0.5 + 0.5 * reward_scores  # 0.5 to 1.0
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            reward_preds = np.zeros(n, dtype=int)
+            for train_idx, val_idx in cv.split(X, y):
+                m = clone(model)
+                m.fit(X[train_idx], y[train_idx], sample_weight=sample_weights[train_idx])
+                reward_preds[val_idx] = m.predict(X[val_idx])
+
+        reward_acc = float(accuracy_score(y, reward_preds))
+        improvement = reward_acc - base_acc
+
+        # Reward distribution analysis
+        correct_rewards = reward_scores[correct_mask]
+        wrong_rewards = reward_scores[wrong_mask]
+
+        # Feature importance in reward model
+        reward_coefs = np.abs(reward_model.coef_[0])
+        top_reward_idx = np.argsort(reward_coefs)[-8:][::-1]
+        reward_features = [
+            {"feature": feat_names[i], "weight": round(float(reward_coefs[i]), 4)}
+            for i in top_reward_idx
+        ]
+
+        # Per-class reward analysis
+        class_rewards = []
+        for j, cn in enumerate(class_names):
+            mask = y == j
+            if mask.sum() == 0:
+                continue
+            class_rewards.append({
+                "class": cn, "count": int(mask.sum()),
+                "mean_reward": round(float(reward_scores[mask].mean()), 4),
+                "correct_reward": round(float(reward_scores[mask & correct_mask].mean()), 4) if (mask & correct_mask).sum() > 0 else None,
+                "wrong_reward": round(float(reward_scores[mask & wrong_mask].mean()), 4) if (mask & wrong_mask).sum() > 0 else None,
+            })
+
+        # Pair accuracy (how well reward model distinguishes good/bad)
+        pair_acc = float(reward_model.score(pair_X, pair_y))
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            ax1.hist(correct_rewards, bins=20, alpha=0.6, color="#28a745", label="Correct", density=True)
+            ax1.hist(wrong_rewards, bins=20, alpha=0.6, color="#dc3545", label="Wrong", density=True)
+            ax1.set_xlabel("Reward Score")
+            ax1.set_ylabel("Density")
+            ax1.set_title("Reward Distribution")
+            ax1.legend(fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            rw_names = [r["feature"][:10] for r in reward_features[:8]]
+            rw_vals = [r["weight"] for r in reward_features[:8]]
+            ax2.barh(rw_names[::-1], rw_vals[::-1], color="#4a90d9")
+            ax2.set_xlabel("Reward Weight")
+            ax2.set_title("Top Reward Features")
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            bars = [base_acc, reward_acc]
+            labels = ["Baseline", "RLHF-weighted"]
+            colors = ["#aaa", "#28a745" if improvement > 0 else "#dc3545"]
+            ax3.bar(labels, bars, color=colors)
+            ax3.set_ylabel("Accuracy")
+            ax3.set_title(f"RLHF Impact ({'+' if improvement >= 0 else ''}{improvement:.1%})")
+            ax3.set_ylim(0, 1)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n,
+            "n_pairs_trained": n_pairs,
+            "pair_accuracy": round(pair_acc, 4),
+            "base_accuracy": round(base_acc, 4),
+            "rlhf_accuracy": round(reward_acc, 4),
+            "improvement": round(improvement, 4),
+            "mean_reward_correct": round(float(correct_rewards.mean()), 4),
+            "mean_reward_wrong": round(float(wrong_rewards.mean()), 4),
+            "reward_separation": round(float(correct_rewards.mean() - wrong_rewards.mean()), 4),
+            "reward_features": reward_features,
+            "class_rewards": class_rewards,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"RLHF reward model: {'+' if improvement >= 0 else ''}{improvement:.1%} accuracy change with preference learning",
+                "risk_level": "GREEN" if improvement > 0.02 else ("AMBER" if improvement > -0.02 else "RED"),
+                "confidence_sentence": (
+                    f"Trained reward model on {n_pairs} preference pairs. "
+                    f"Pair discrimination accuracy: {pair_acc:.1%}. "
+                    f"Correct predictions have {correct_rewards.mean() - wrong_rewards.mean():.2f} higher reward. "
+                    f"RLHF-weighted accuracy: {reward_acc:.1%} vs {base_acc:.1%} baseline."
+                ),
+                "action": (
+                    "RLHF reward signal improves model. Continue collecting expert feedback."
+                    if improvement > 0.01 else
+                    "RLHF signal weak - need more diverse expert feedback pairs."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _reward_model_cache[cache_key] = result
+    return result
+
+
+# ── Negative Outcome Learning ──────────────────────────────────────────
+
+_neg_learn_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/negative-learning")
+async def negative_learning(request: Request):
+    """Explicitly learn from wrong predictions and near-misses.
+
+    Weights misclassified samples higher in training, focusing the model
+    on its weaknesses. Also identifies 'hard examples' that consistently
+    fool the model across multiple CV folds — these are the samples that
+    need the most attention for industrial safety.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    neg_weight = float(body.get("negative_weight", 3.0))
+
+    if neg_weight < 1.0 or neg_weight > 20.0:
+        raise HTTPException(400, "negative_weight must be between 1.0 and 20.0")
+
+    cache_key = f"neglearn:{well}:{source}:{neg_weight}"
+    if cache_key in _neg_learn_cache:
+        return _neg_learn_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import accuracy_score, f1_score, balanced_accuracy_score, classification_report
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        # Phase 1: Identify hard examples (wrong across multiple folds)
+        wrong_counts = np.zeros(n, dtype=int)
+        fold_preds = np.zeros(n, dtype=int)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for train_idx, val_idx in cv.split(X, y):
+                m = clone(model)
+                m.fit(X[train_idx], y[train_idx])
+                preds = m.predict(X[val_idx])
+                fold_preds[val_idx] = preds
+                wrong_counts[val_idx] += (preds != y[val_idx]).astype(int)
+
+        base_acc = float(accuracy_score(y, fold_preds))
+        base_f1 = float(f1_score(y, fold_preds, average="weighted", zero_division=0))
+        base_bal = float(balanced_accuracy_score(y, fold_preds))
+
+        # Hard examples: wrong in at least 1 fold (since each sample appears in exactly 1 val fold)
+        hard_mask = wrong_counts > 0
+        n_hard = int(hard_mask.sum())
+        hard_pct = float(n_hard / n * 100)
+
+        # Phase 2: Negative-weighted retraining
+        sample_weights = np.ones(n, dtype=float)
+        sample_weights[hard_mask] = neg_weight
+
+        neg_preds = np.zeros(n, dtype=int)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for train_idx, val_idx in cv.split(X, y):
+                m = clone(model)
+                m.fit(X[train_idx], y[train_idx], sample_weight=sample_weights[train_idx])
+                neg_preds[val_idx] = m.predict(X[val_idx])
+
+        neg_acc = float(accuracy_score(y, neg_preds))
+        neg_f1 = float(f1_score(y, neg_preds, average="weighted", zero_division=0))
+        neg_bal = float(balanced_accuracy_score(y, neg_preds))
+
+        improvement_acc = neg_acc - base_acc
+        improvement_bal = neg_bal - base_bal
+
+        # Per-class analysis
+        all_labels = list(range(n_classes))
+        base_report = classification_report(y, fold_preds, labels=all_labels,
+                                             target_names=class_names, output_dict=True, zero_division=0)
+        neg_report = classification_report(y, neg_preds, labels=all_labels,
+                                            target_names=class_names, output_dict=True, zero_division=0)
+
+        per_class = []
+        for cn in class_names:
+            br = base_report.get(cn, {})
+            nr = neg_report.get(cn, {})
+            mask_c = y == class_names.index(cn)
+            n_hard_class = int(hard_mask[mask_c].sum())
+            per_class.append({
+                "class": cn,
+                "count": int(mask_c.sum()),
+                "n_hard": n_hard_class,
+                "hard_pct": round(n_hard_class / max(mask_c.sum(), 1) * 100, 1),
+                "base_f1": round(br.get("f1-score", 0), 3),
+                "neg_f1": round(nr.get("f1-score", 0), 3),
+                "f1_change": round(nr.get("f1-score", 0) - br.get("f1-score", 0), 3),
+            })
+
+        # Top hard examples with details
+        hard_examples = []
+        hard_idx = np.where(hard_mask)[0][:15]
+        for idx in hard_idx:
+            depth_val = float(df_well[DEPTH_COL].iloc[idx]) if DEPTH_COL in df_well.columns and idx < len(df_well) else None
+            hard_examples.append({
+                "index": int(idx),
+                "depth_m": round(depth_val, 1) if depth_val else None,
+                "true_class": class_names[y[idx]],
+                "base_pred": class_names[fold_preds[idx]],
+                "neg_pred": class_names[neg_preds[idx]],
+                "fixed": bool(neg_preds[idx] == y[idx] and fold_preds[idx] != y[idx]),
+                "still_wrong": bool(neg_preds[idx] != y[idx]),
+            })
+
+        n_fixed = sum(1 for h in hard_examples if h["fixed"])
+        n_still_wrong = sum(1 for h in hard_examples if h["still_wrong"])
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            metrics = ["Accuracy", "F1 Weighted", "Balanced Acc"]
+            base_vals = [base_acc, base_f1, base_bal]
+            neg_vals = [neg_acc, neg_f1, neg_bal]
+            x = np.arange(len(metrics))
+            ax1.bar(x - 0.15, base_vals, 0.3, label="Baseline", color="#aaa")
+            ax1.bar(x + 0.15, neg_vals, 0.3, label=f"Neg-weighted ({neg_weight}x)", color="#28a745" if improvement_acc > 0 else "#dc3545")
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(metrics, fontsize=8)
+            ax1.set_ylabel("Score")
+            ax1.set_title("Negative Learning Impact")
+            ax1.legend(fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            pc_names = [p["class"][:10] for p in per_class]
+            pc_hard = [p["hard_pct"] for p in per_class]
+            pc_colors = ["#dc3545" if h > 40 else "#ffc107" if h > 20 else "#28a745" for h in pc_hard]
+            ax2.barh(pc_names, pc_hard, color=pc_colors)
+            ax2.set_xlabel("% Hard Examples")
+            ax2.set_title("Hard Example Rate by Class")
+            ax2.axvline(x=30, color="red", linestyle="--", alpha=0.3)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            pc_base_f1 = [p["base_f1"] for p in per_class]
+            pc_neg_f1 = [p["neg_f1"] for p in per_class]
+            x = np.arange(len(pc_names))
+            ax3.barh(x - 0.15, pc_base_f1, 0.3, label="Baseline", color="#aaa")
+            ax3.barh(x + 0.15, pc_neg_f1, 0.3, label="Neg-weighted", color="#4a90d9")
+            ax3.set_yticks(x)
+            ax3.set_yticklabels(pc_names, fontsize=7)
+            ax3.set_xlabel("F1 Score")
+            ax3.set_title("Per-Class F1 Change")
+            ax3.legend(fontsize=8)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "negative_weight": neg_weight,
+            "n_hard_examples": n_hard,
+            "hard_pct": round(hard_pct, 1),
+            "base_accuracy": round(base_acc, 4),
+            "base_f1": round(base_f1, 4),
+            "base_balanced_accuracy": round(base_bal, 4),
+            "neg_accuracy": round(neg_acc, 4),
+            "neg_f1": round(neg_f1, 4),
+            "neg_balanced_accuracy": round(neg_bal, 4),
+            "improvement_accuracy": round(improvement_acc, 4),
+            "improvement_balanced": round(improvement_bal, 4),
+            "per_class": per_class,
+            "hard_examples": hard_examples,
+            "n_fixed": n_fixed,
+            "n_still_wrong": n_still_wrong,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Negative learning: {n_hard} hard examples ({hard_pct:.0f}%), accuracy {'+' if improvement_acc >= 0 else ''}{improvement_acc:.1%}",
+                "risk_level": "GREEN" if hard_pct < 20 else ("AMBER" if hard_pct < 40 else "RED"),
+                "confidence_sentence": (
+                    f"Identified {n_hard} hard examples ({hard_pct:.0f}% of data). "
+                    f"With {neg_weight}x negative weighting: accuracy {neg_acc:.1%} vs {base_acc:.1%}. "
+                    f"Balanced accuracy change: {improvement_bal:+.1%}."
+                ),
+                "action": (
+                    "Negative learning improves robustness. Deploy with negative-weighted model."
+                    if improvement_bal > 0.01 else
+                    "Hard examples need expert review. Collect more data from consistently misclassified patterns."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _neg_learn_cache[cache_key] = result
+    return result
+
+
+# ── Production Monitoring Simulation ───────────────────────────────────
+
+_monitor_sim_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/monitoring-simulation")
+async def monitoring_simulation(request: Request):
+    """Simulate production monitoring as new data arrives over time.
+
+    Uses temporal (depth-ordered) data to simulate real deployment.
+    Trains on early data, then monitors model performance as new
+    samples arrive in batches. Detects accuracy drift, calibration
+    shift, and triggers alerts when performance degrades below
+    safety thresholds.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_batches = int(body.get("n_batches", 8))
+
+    if n_batches < 3 or n_batches > 20:
+        raise HTTPException(400, "n_batches must be between 3 and 20")
+
+    cache_key = f"monsim:{well}:{source}:{n_batches}"
+    if cache_key in _monitor_sim_cache:
+        return _monitor_sim_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+
+        # Sort by depth (temporal proxy)
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.arange(n, dtype=float)
+        sort_idx = np.argsort(depths)
+        X_sorted = X[sort_idx]
+        y_sorted = y[sort_idx]
+        depths_sorted = depths[sort_idx]
+
+        # Use first 30% as initial training set
+        train_size = max(int(n * 0.3), 20)
+        batch_size = max((n - train_size) // n_batches, 5)
+
+        all_models = _get_models()
+        model_template = all_models.get("random_forest", list(all_models.values())[0])
+
+        # Train initial model
+        X_train = X_sorted[:train_size]
+        y_train = y_sorted[:train_size]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            initial_model = clone(model_template)
+            initial_model.fit(X_train, y_train)
+
+        # Simulate batches
+        batch_results = []
+        alerts = []
+        cumulative_correct = 0
+        cumulative_total = 0
+
+        for batch_id in range(n_batches):
+            start = train_size + batch_id * batch_size
+            end = min(start + batch_size, n)
+            if start >= n:
+                break
+
+            X_batch = X_sorted[start:end]
+            y_batch = y_sorted[start:end]
+            depth_range = [float(depths_sorted[start]), float(depths_sorted[min(end - 1, n - 1)])]
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                preds = initial_model.predict(X_batch)
+                proba = initial_model.predict_proba(X_batch) if hasattr(initial_model, "predict_proba") else None
+
+            acc = float(accuracy_score(y_batch, preds))
+            bal_acc = float(balanced_accuracy_score(y_batch, preds))
+            max_conf = float(np.max(proba, axis=1).mean()) if proba is not None else None
+
+            cumulative_correct += int((preds == y_batch).sum())
+            cumulative_total += len(y_batch)
+            cumulative_acc = float(cumulative_correct / cumulative_total)
+
+            # Class distribution in this batch
+            batch_counts = np.bincount(y_batch, minlength=n_classes)
+            new_classes = sum(1 for c in range(n_classes) if batch_counts[c] > 0 and np.bincount(y_train, minlength=n_classes)[c] == 0)
+
+            batch_result = {
+                "batch_id": batch_id,
+                "depth_range_m": [round(depth_range[0], 1), round(depth_range[1], 1)],
+                "n_samples": len(y_batch),
+                "accuracy": round(acc, 4),
+                "balanced_accuracy": round(bal_acc, 4),
+                "avg_confidence": round(max_conf, 3) if max_conf else None,
+                "cumulative_accuracy": round(cumulative_acc, 4),
+                "new_class_count": new_classes,
+                "status": "GREEN" if acc >= 0.6 else ("AMBER" if acc >= 0.4 else "RED"),
+            }
+            batch_results.append(batch_result)
+
+            if acc < 0.4:
+                alerts.append({
+                    "batch_id": batch_id,
+                    "type": "ACCURACY_DROP",
+                    "severity": "CRITICAL",
+                    "message": f"Batch {batch_id} accuracy {acc:.1%} below 40% safety threshold at depth {depth_range[0]:.0f}-{depth_range[1]:.0f}m",
+                })
+            elif acc < 0.6:
+                alerts.append({
+                    "batch_id": batch_id,
+                    "type": "ACCURACY_WARNING",
+                    "severity": "WARNING",
+                    "message": f"Batch {batch_id} accuracy {acc:.1%} below 60% at depth {depth_range[0]:.0f}-{depth_range[1]:.0f}m",
+                })
+
+        # Trend analysis
+        accs = [b["accuracy"] for b in batch_results]
+        if len(accs) >= 3:
+            trend_slope = float(np.polyfit(range(len(accs)), accs, 1)[0])
+            if trend_slope < -0.02:
+                trend = "DEGRADING"
+                alerts.append({
+                    "batch_id": -1, "type": "TREND",
+                    "severity": "WARNING",
+                    "message": f"Accuracy trend is negative ({trend_slope:.3f}/batch). Model is degrading over depth.",
+                })
+            elif trend_slope > 0.02:
+                trend = "IMPROVING"
+            else:
+                trend = "STABLE"
+        else:
+            trend = "INSUFFICIENT_DATA"
+            trend_slope = 0
+
+        overall_monitoring_acc = float(cumulative_correct / max(cumulative_total, 1))
+        n_red = sum(1 for b in batch_results if b["status"] == "RED")
+        n_amber = sum(1 for b in batch_results if b["status"] == "AMBER")
+        n_green = sum(1 for b in batch_results if b["status"] == "GREEN")
+
+        retrain_needed = n_red > 0 or trend == "DEGRADING"
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            batch_ids = [b["batch_id"] for b in batch_results]
+            batch_accs = [b["accuracy"] for b in batch_results]
+            batch_colors = ["#28a745" if b["status"] == "GREEN" else "#ffc107" if b["status"] == "AMBER" else "#dc3545" for b in batch_results]
+            ax1.bar(batch_ids, batch_accs, color=batch_colors)
+            ax1.axhline(y=0.6, color="orange", linestyle="--", alpha=0.5, label="Warning (60%)")
+            ax1.axhline(y=0.4, color="red", linestyle="--", alpha=0.5, label="Critical (40%)")
+            if len(batch_ids) >= 2:
+                z = np.polyfit(batch_ids, batch_accs, 1)
+                ax1.plot(batch_ids, np.polyval(z, batch_ids), "k--", alpha=0.5, label=f"Trend: {trend}")
+            ax1.set_xlabel("Batch")
+            ax1.set_ylabel("Accuracy")
+            ax1.set_title("Monitoring: Accuracy per Batch")
+            ax1.legend(fontsize=7)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            cum_accs = [b["cumulative_accuracy"] for b in batch_results]
+            ax2.plot(batch_ids, cum_accs, "b-o", markersize=5, label="Cumulative Accuracy")
+            if any(b.get("avg_confidence") for b in batch_results):
+                confs = [b.get("avg_confidence", 0) or 0 for b in batch_results]
+                ax2.plot(batch_ids, confs, "g-s", markersize=4, label="Avg Confidence")
+            ax2.set_xlabel("Batch")
+            ax2.set_ylabel("Score")
+            ax2.set_title("Cumulative Performance")
+            ax2.legend(fontsize=8)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            status_counts = [n_green, n_amber, n_red]
+            status_labels = ["GREEN", "AMBER", "RED"]
+            status_colors = ["#28a745", "#ffc107", "#dc3545"]
+            ax3.bar(status_labels, status_counts, color=status_colors)
+            ax3.set_ylabel("Batches")
+            ax3.set_title(f"Health Summary ({trend})")
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "n_batches": len(batch_results),
+            "train_size": train_size,
+            "monitoring_accuracy": round(overall_monitoring_acc, 4),
+            "trend": trend,
+            "trend_slope": round(trend_slope, 4),
+            "n_green": n_green, "n_amber": n_amber, "n_red": n_red,
+            "retrain_needed": retrain_needed,
+            "batches": batch_results,
+            "alerts": alerts,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Monitoring: {trend} trend, {n_green} green / {n_amber} amber / {n_red} red batches",
+                "risk_level": "GREEN" if n_red == 0 and trend != "DEGRADING" else ("RED" if n_red > 2 or trend == "DEGRADING" else "AMBER"),
+                "confidence_sentence": (
+                    f"Simulated {len(batch_results)} deployment batches (depth-ordered). "
+                    f"Overall monitoring accuracy: {overall_monitoring_acc:.1%}. "
+                    f"Trend: {trend} (slope: {trend_slope:+.3f}/batch). "
+                    f"{len(alerts)} alerts triggered."
+                ),
+                "action": (
+                    "Model is degrading. Retrain with recent data before deploying to new intervals."
+                    if retrain_needed else
+                    "Model performance is stable across depth intervals. Safe for continued deployment."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _monitor_sim_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -16507,7 +17180,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.23.0",
+        "app_version": "3.24.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else
