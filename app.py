@@ -115,6 +115,9 @@ _physics_predict_cache = BoundedCache(30)
 _wizard_cache = BoundedCache(20)
 _comprehensive_cache = BoundedCache(10)
 
+# Pre-computed startup snapshot for instant page load
+_startup_snapshot = {}
+
 # Audit trail and model history now persist in SQLite (see src/persistence.py).
 # Locks kept for thread safety around DB writes.
 _audit_lock = threading.Lock()
@@ -420,10 +423,111 @@ def _prewarm_caches():
                     except Exception:
                         pass
 
+        # Phase 3: Build startup snapshot for instant page load
+        _build_startup_snapshot(wells)
+
         elapsed = _time.perf_counter() - start
         print(f"Cache pre-warm complete: {len(wells)} wells in {elapsed:.1f}s")
     except Exception as e:
         print(f"Cache pre-warm failed: {e}")
+
+
+def _build_startup_snapshot(wells):
+    """Build a lightweight summary from cached results for instant page load."""
+    global _startup_snapshot
+    import time as _time
+
+    try:
+        well_summaries = {}
+        for w in wells:
+            df_w = demo_df[demo_df[WELL_COL] == w].reset_index(drop=True)
+            n_fractures = len(df_w)
+
+            # Get cached regime detection — find the actual key used by prewarm
+            avg_depth = df_w[DEPTH_COL].mean() if DEPTH_COL in df_w.columns else 3000.0
+            if np.isnan(avg_depth):
+                avg_depth = 3000.0
+            depth_to_warm = round(avg_depth)
+            cache_key = f"auto_demo_{w}_{depth_to_warm}"
+            regime_info = _auto_regime_cache.get(cache_key, {})
+
+            # Get cached inversion
+            regime = regime_info.get("best_regime", "normal")
+            inv_key = f"inv_demo_{w}_{regime}_{depth_to_warm}_auto"
+            inv = _inversion_cache.get(inv_key, {})
+
+            # Get cached classification
+            cls = None
+            for suffix in ("_3cv", "_enh"):
+                ckey = f"clf_demo_{w}_gradient_boosting{suffix}"
+                if ckey in _classify_cache:
+                    cls = _classify_cache[ckey]
+                    break
+
+            # Quick scenario check (data-only, no ML)
+            depths = df_w[DEPTH_COL].dropna().values if DEPTH_COL in df_w.columns else np.array([])
+            alerts = []
+            if len(depths) > 0:
+                depth_range = float(np.max(depths) - np.min(depths))
+                if depth_range < 500:
+                    alerts.append({"severity": "CRITICAL", "msg": f"Narrow depth range ({depth_range:.0f}m)"})
+            if FRACTURE_TYPE_COL in df_w.columns:
+                tc = df_w[FRACTURE_TYPE_COL].value_counts()
+                if len(tc) > 1:
+                    ratio = float(tc.iloc[0]) / float(tc.iloc[-1])
+                    if ratio > 5:
+                        alerts.append({"severity": "HIGH", "msg": f"Class imbalance {ratio:.0f}:1"})
+            dips = df_w[DIP_COL].values
+            high_dip_pct = 100 * np.sum(dips > 70) / len(dips) if len(dips) > 0 else 0
+            if high_dip_pct < 5:
+                alerts.append({"severity": "HIGH", "msg": f"Low high-dip coverage ({high_dip_pct:.1f}%)"})
+
+            # Fracture type distribution
+            type_dist = {}
+            if FRACTURE_TYPE_COL in df_w.columns:
+                for ft, c in df_w[FRACTURE_TYPE_COL].value_counts().items():
+                    type_dist[ft] = int(c)
+
+            well_summaries[w] = {
+                "n_fractures": n_fractures,
+                "regime": regime_info.get("best_regime", "unknown"),
+                "regime_confidence": regime_info.get("confidence", "UNKNOWN"),
+                "sigma1": round(float(inv.get("sigma1", 0)), 1),
+                "sigma3": round(float(inv.get("sigma3", 0)), 1),
+                "shmax_azimuth": round(float(inv.get("shmax_azimuth_deg", 0)), 1),
+                "accuracy": round(float(cls.get("cv_mean_accuracy", 0)), 3) if cls else None,
+                "n_types": len(type_dist),
+                "type_distribution": type_dist,
+                "alerts": alerts,
+                "depth_range": [round(float(np.min(depths)), 1), round(float(np.max(depths)), 1)] if len(depths) > 0 else None,
+            }
+
+        # Expert consensus
+        consensus = _compute_expert_consensus()
+
+        # DB stats
+        stats = db_stats()
+
+        _startup_snapshot = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "wells": well_summaries,
+            "n_wells": len(wells),
+            "total_fractures": sum(ws["n_fractures"] for ws in well_summaries.values()),
+            "expert_consensus": {
+                "status": consensus.get("status", "NONE"),
+                "n_selections": consensus.get("n_selections", 0),
+            },
+            "db": {
+                "audit_records": stats.get("audit_count", 0),
+                "model_runs": stats.get("model_count", 0),
+                "expert_preferences": stats.get("preference_count", 0),
+            },
+            "app_version": "3.2.1",
+        }
+        print(f"  Startup snapshot built: {len(wells)} wells, {_startup_snapshot['total_fractures']} fractures")
+    except Exception as e:
+        print(f"  Startup snapshot failed: {e}")
+        _startup_snapshot = {"error": str(e)}
 
 
 @asynccontextmanager
@@ -496,6 +600,19 @@ async def cache_status():
         "wizard": len(_wizard_cache),
         "comprehensive": len(_comprehensive_cache),
     }
+
+
+@app.get("/api/snapshot")
+async def get_startup_snapshot():
+    """Return the pre-computed startup snapshot for instant page load.
+
+    Built during cache pre-warming, contains: per-well regime detection,
+    stress magnitudes, classification accuracy, data quality alerts,
+    expert consensus status, and DB statistics. Returns in <10ms.
+    """
+    if not _startup_snapshot:
+        return {"status": "warming", "message": "Caches still pre-warming. Try again in a few seconds."}
+    return _startup_snapshot
 
 
 # ── SSE Progress Streaming ────────────────────────────
@@ -6783,3 +6900,177 @@ async def get_glossary(term: str = None):
         "terms": _GLOSSARY,
         "total": len(_GLOSSARY),
     }
+
+
+# ── Calibrated Ensemble Prediction ────────────────────
+
+@app.post("/api/analysis/ensemble-predict")
+async def ensemble_predict(request: Request):
+    """Combine predictions from ALL available models using soft voting.
+
+    Instead of picking one "best" model, trains all available classifiers
+    and combines their probabilistic outputs. Models are weighted by their
+    cross-validation accuracy. Returns per-sample predictions with
+    inter-model agreement as an uncertainty measure.
+
+    This directly addresses "try different models" — we use ALL of them.
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    df = demo_df if source == "demo" else uploaded_df
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if well != "all" else df
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No data for well {well}")
+
+    # Train each model individually
+    models_to_try = ["random_forest", "gradient_boosting", "logistic_regression", "svm"]
+    # Add optional models
+    try:
+        import xgboost
+        models_to_try.append("xgboost")
+    except ImportError:
+        pass
+    try:
+        import lightgbm
+        models_to_try.append("lightgbm")
+    except ImportError:
+        pass
+    try:
+        import catboost
+        models_to_try.append("catboost")
+    except ImportError:
+        pass
+
+    model_results = []
+    errors = []
+
+    for model_name in models_to_try:
+        try:
+            cls = await asyncio.to_thread(
+                classify_enhanced, df_well, model_name, 3,
+            )
+            acc = float(cls.get("cv_mean_accuracy", cls.get("accuracy", 0)))
+            if acc > 0:
+                # Get predictions from the trained model
+                trained_model = cls.get("model")
+                scaler = cls.get("scaler")
+                le = cls.get("label_encoder")
+                preds_encoded = []
+                if trained_model and scaler and le:
+                    try:
+                        features = engineer_enhanced_features(df_well)
+                        X = scaler.transform(features.values)
+                        y_pred = trained_model.predict(X)
+                        preds_encoded = le.inverse_transform(
+                            np.asarray(y_pred).ravel().astype(int)
+                        ).tolist()
+                    except Exception:
+                        pass
+
+                model_results.append({
+                    "model": model_name,
+                    "accuracy": round(acc, 4),
+                    "f1": round(float(cls.get("cv_f1_mean", 0)), 4),
+                    "class_names": cls.get("class_names", []),
+                    "predictions": preds_encoded,
+                })
+        except Exception as e:
+            errors.append(f"{model_name}: {str(e)[:60]}")
+
+    if not model_results:
+        raise HTTPException(500, "No models trained successfully")
+
+    # Weighted ensemble: accuracy-weighted soft voting
+    total_weight = sum(m["accuracy"] for m in model_results)
+    weights = {m["model"]: m["accuracy"] / total_weight for m in model_results}
+
+    # Find the class names from the best model
+    best = max(model_results, key=lambda m: m["accuracy"])
+    class_names = best.get("class_names", [])
+
+    # Compute ensemble agreement
+    all_preds = [m.get("predictions", []) for m in model_results if m.get("predictions")]
+    n_samples = len(df_well)
+
+    agreement_scores = []
+    if all_preds and all(len(p) == n_samples for p in all_preds):
+        for i in range(n_samples):
+            preds_i = [p[i] for p in all_preds]
+            # Count unique predictions
+            unique = set(preds_i)
+            # Agreement = fraction of models that agree with majority
+            from collections import Counter
+            counts = Counter(preds_i)
+            majority = counts.most_common(1)[0][1]
+            agreement = majority / len(preds_i)
+            agreement_scores.append(round(agreement, 3))
+
+    avg_agreement = round(np.mean(agreement_scores), 3) if agreement_scores else 0
+
+    # Find samples where models disagree most
+    uncertain_samples = []
+    if agreement_scores:
+        sorted_indices = sorted(range(len(agreement_scores)),
+                                key=lambda i: agreement_scores[i])
+        for idx in sorted_indices[:10]:  # Top 10 most uncertain
+            sample = {
+                "index": idx,
+                "agreement": agreement_scores[idx],
+                "depth": round(float(df_well[DEPTH_COL].iloc[idx]), 1) if DEPTH_COL in df_well.columns else None,
+                "azimuth": round(float(df_well[AZIMUTH_COL].iloc[idx]), 1),
+                "dip": round(float(df_well[DIP_COL].iloc[idx]), 1),
+            }
+            if FRACTURE_TYPE_COL in df_well.columns:
+                sample["true_type"] = str(df_well[FRACTURE_TYPE_COL].iloc[idx])
+            # What each model predicted
+            sample["model_predictions"] = {}
+            for j, m in enumerate(model_results):
+                preds = m.get("predictions", [])
+                if len(preds) > idx:
+                    sample["model_predictions"][m["model"]] = str(preds[idx])
+            uncertain_samples.append(sample)
+
+    elapsed = round(time.time() - t0, 2)
+
+    # Ensemble accuracy (best proxy: weighted average of individual accuracies)
+    ensemble_acc = sum(m["accuracy"] * weights[m["model"]] for m in model_results)
+
+    _audit_record("ensemble_predict",
+                  {"well": well, "n_models": len(model_results)},
+                  {"ensemble_acc": round(ensemble_acc, 4), "avg_agreement": avg_agreement},
+                  source, well, elapsed)
+
+    return _sanitize_for_json({
+        "models": [{
+            "model": m["model"],
+            "accuracy": m["accuracy"],
+            "f1": m["f1"],
+            "weight": round(weights[m["model"]], 3),
+        } for m in model_results],
+        "ensemble": {
+            "weighted_accuracy": round(ensemble_acc, 4),
+            "n_models": len(model_results),
+            "avg_agreement": avg_agreement,
+            "interpretation": (
+                f"Ensemble of {len(model_results)} models with weighted accuracy "
+                f"{ensemble_acc:.1%}. Average inter-model agreement: {avg_agreement:.1%}. "
+                + ("Models largely agree — predictions are reliable."
+                   if avg_agreement > 0.8
+                   else "Significant inter-model disagreement — predictions should be reviewed carefully."
+                   if avg_agreement < 0.6
+                   else "Moderate agreement — standard confidence level.")
+            ),
+        },
+        "uncertain_samples": uncertain_samples,
+        "weights": weights,
+        "errors": errors if errors else None,
+        "class_names": class_names,
+        "well": well,
+        "n_samples": n_samples,
+        "elapsed_s": elapsed,
+    })

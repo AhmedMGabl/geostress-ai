@@ -6202,6 +6202,86 @@ var _tooltipObserver = new MutationObserver(function(mutations) {
 _tooltipObserver._timer = null;
 
 
+// ── Calibrated Ensemble Prediction ───────────────────
+
+async function runEnsemblePredict() {
+    const well = document.getElementById('well-select')?.value || '3P';
+    showLoading('Training ensemble of all models...');
+    try {
+        const res = await fetch('/api/analysis/ensemble-predict', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ well, source: 'demo' }),
+        });
+        const d = await res.json();
+        hideLoading();
+
+        const el = id => document.getElementById(id);
+        el('ens-results').classList.remove('d-none');
+
+        const ens = d.ensemble;
+        el('ens-acc').textContent = (ens.weighted_accuracy * 100).toFixed(1) + '%';
+        el('ens-n-models').textContent = ens.n_models + ' models combined';
+
+        const agr = ens.avg_agreement;
+        el('ens-agreement').textContent = (agr * 100).toFixed(0) + '%';
+        el('ens-agreement').style.color = agr > 0.8 ? '#28a745' : agr > 0.6 ? '#ffc107' : '#dc3545';
+
+        el('ens-uncertain').textContent = d.uncertain_samples?.length || 0;
+        el('ens-interpretation').innerHTML = '<i class="bi bi-info-circle"></i> ' + ens.interpretation;
+
+        // Per-model bars
+        const modelsEl = el('ens-models');
+        let mhtml = '<h6>Per-Model Performance</h6>';
+        const sorted = [...d.models].sort((a, b) => b.accuracy - a.accuracy);
+        sorted.forEach(m => {
+            const pct = (m.accuracy * 100).toFixed(1);
+            const wgt = (m.weight * 100).toFixed(0);
+            mhtml += `
+                <div class="d-flex align-items-center mb-1 small">
+                    <div style="width:120px" class="text-end pe-2 fw-bold">${m.model}</div>
+                    <div class="flex-grow-1">
+                        <div class="progress" style="height:18px">
+                            <div class="progress-bar ${m.accuracy > 0.8 ? 'bg-success' : m.accuracy > 0.6 ? 'bg-warning' : 'bg-danger'}"
+                                 style="width:${pct}%">${pct}%</div>
+                        </div>
+                    </div>
+                    <div style="width:50px" class="text-end text-muted">${wgt}%w</div>
+                </div>`;
+        });
+        modelsEl.innerHTML = mhtml;
+
+        // Uncertain samples table
+        if (d.uncertain_samples && d.uncertain_samples.length > 0) {
+            el('ens-uncertain-table').classList.remove('d-none');
+            const tbody = el('ens-uncertain-tbody');
+            tbody.innerHTML = '';
+            d.uncertain_samples.slice(0, 5).forEach(s => {
+                const votes = Object.entries(s.model_predictions || {})
+                    .map(([m, p]) => `<span class="badge bg-secondary bg-opacity-50 me-1">${m.replace(/_/g,' ')}: ${p}</span>`)
+                    .join('');
+                tbody.innerHTML += `
+                    <tr>
+                        <td>${s.depth || '-'}</td>
+                        <td>${s.azimuth}</td>
+                        <td>${s.dip}</td>
+                        <td><strong>${s.true_type || '-'}</strong></td>
+                        <td><span class="badge ${s.agreement < 0.5 ? 'bg-danger' : s.agreement < 0.8 ? 'bg-warning' : 'bg-success'}">${(s.agreement * 100).toFixed(0)}%</span></td>
+                        <td class="small">${votes}</td>
+                    </tr>`;
+            });
+        }
+
+        if (d.errors && d.errors.length > 0) {
+            modelsEl.innerHTML += `<div class="alert alert-warning py-1 small mt-2">${d.errors.length} model(s) failed: ${d.errors.join(', ')}</div>`;
+        }
+    } catch (e) {
+        hideLoading();
+        alert('Ensemble prediction failed: ' + e.message);
+    }
+}
+
+
 // ── Adversarial Robustness Test ──────────────────────
 
 async function runAugmentedClassify() {
@@ -6521,12 +6601,126 @@ async function importDatabase(event) {
 }
 
 
+// ── Instant Startup Snapshot ─────────────────────────
+
+async function loadStartupSnapshot() {
+    try {
+        const res = await fetch('/api/snapshot');
+        const d = await res.json();
+        if (d.status === 'warming') {
+            // Caches still building — retry in 5s
+            setTimeout(loadStartupSnapshot, 5000);
+            return;
+        }
+
+        // Build instant executive summary from snapshot
+        const container = document.getElementById('exec-sections');
+        if (!container) return;
+
+        let html = '';
+
+        // Quick status cards
+        html += '<div class="row g-3 mb-4">';
+        html += `<div class="col-md-3"><div class="metric-card"><div class="metric-label">Total Fractures</div><div class="metric-value">${d.total_fractures || 0}</div><small class="text-muted">${d.n_wells} wells</small></div></div>`;
+
+        const allAlerts = [];
+        for (const [w, ws] of Object.entries(d.wells || {})) {
+            (ws.alerts || []).forEach(a => allAlerts.push({...a, well: w}));
+        }
+        const critCount = allAlerts.filter(a => a.severity === 'CRITICAL').length;
+        const highCount = allAlerts.filter(a => a.severity === 'HIGH').length;
+        const alertColor = critCount > 0 ? 'text-danger' : highCount > 0 ? 'text-warning' : 'text-success';
+        const alertText = critCount + highCount === 0 ? 'No Issues' : `${critCount + highCount} Alerts`;
+        html += `<div class="col-md-3"><div class="metric-card"><div class="metric-label">Data Alerts</div><div class="metric-value ${alertColor}">${alertText}</div><small class="text-muted">${critCount} critical, ${highCount} high</small></div></div>`;
+
+        html += `<div class="col-md-3"><div class="metric-card"><div class="metric-label">Expert Feedback</div><div class="metric-value">${d.expert_consensus?.status || 'NONE'}</div><small class="text-muted">${d.expert_consensus?.n_selections || 0} selections</small></div></div>`;
+
+        html += `<div class="col-md-3"><div class="metric-card"><div class="metric-label">Audit Trail</div><div class="metric-value">${d.db?.audit_records || 0}</div><small class="text-muted">${d.db?.model_runs || 0} model runs</small></div></div>`;
+        html += '</div>';
+
+        // Per-well cards
+        html += '<div class="row g-3 mb-4">';
+        for (const [wellName, ws] of Object.entries(d.wells || {})) {
+            const confColor = ws.regime_confidence === 'HIGH' ? 'success' :
+                              ws.regime_confidence === 'MODERATE' ? 'warning' : 'danger';
+            html += `
+                <div class="col-md-6">
+                    <div class="card border-${confColor}">
+                        <div class="card-header bg-${confColor} bg-opacity-10 d-flex justify-content-between">
+                            <strong><i class="bi bi-geo-alt"></i> Well ${wellName}</strong>
+                            <span class="badge bg-${confColor}">${ws.regime_confidence} Confidence</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 text-center mb-2">
+                                <div class="col-3">
+                                    <div class="fw-bold">${ws.n_fractures}</div>
+                                    <small class="text-muted">Fractures</small>
+                                </div>
+                                <div class="col-3">
+                                    <div class="fw-bold text-primary">${ws.regime || '?'}</div>
+                                    <small class="text-muted">Regime</small>
+                                </div>
+                                <div class="col-3">
+                                    <div class="fw-bold">${ws.shmax_azimuth || 0}&deg;</div>
+                                    <small class="text-muted">SHmax</small>
+                                </div>
+                                <div class="col-3">
+                                    <div class="fw-bold">${ws.accuracy ? (ws.accuracy * 100).toFixed(0) + '%' : 'N/A'}</div>
+                                    <small class="text-muted">ML Acc.</small>
+                                </div>
+                            </div>
+                            <div class="small text-muted mb-1">
+                                &sigma;1 = ${ws.sigma1} MPa | &sigma;3 = ${ws.sigma3} MPa
+                                ${ws.depth_range ? ` | Depth: ${ws.depth_range[0]}-${ws.depth_range[1]}m` : ''}
+                            </div>`;
+
+            // Fracture type badges
+            if (ws.type_distribution) {
+                html += '<div class="mt-1">';
+                for (const [ft, count] of Object.entries(ws.type_distribution)) {
+                    html += `<span class="badge bg-secondary bg-opacity-50 me-1">${ft}: ${count}</span>`;
+                }
+                html += '</div>';
+            }
+
+            // Alerts
+            if (ws.alerts && ws.alerts.length > 0) {
+                html += '<div class="mt-2">';
+                ws.alerts.forEach(a => {
+                    const ac = a.severity === 'CRITICAL' ? 'danger' : 'warning';
+                    html += `<div class="alert alert-${ac} py-1 px-2 mb-1 small"><i class="bi bi-exclamation-triangle"></i> ${a.msg}</div>`;
+                });
+                html += '</div>';
+            }
+
+            html += '</div></div></div>';
+        }
+        html += '</div>';
+
+        // Quick action prompts
+        html += `
+            <div class="alert alert-light border small">
+                <strong><i class="bi bi-lightbulb"></i> Quick Actions:</strong>
+                Click <em>Generate Summary</em> above for detailed analysis, or use the
+                <button class="btn btn-sm btn-outline-info py-0 px-1" onclick="document.querySelector('[data-bs-target=\\'#glossaryModal\\']').click()">
+                <i class="bi bi-question-circle"></i> Help</button> button for term explanations.
+                ${critCount > 0 ? '<span class="text-danger fw-bold ms-2">CRITICAL alerts require attention before proceeding.</span>' : ''}
+            </div>`;
+
+        container.innerHTML = html;
+    } catch (e) {
+        console.warn('Startup snapshot unavailable:', e);
+    }
+}
+
+
 // ── Init ──────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", function() {
     loadSummary();
     loadFeedbackSummary();
     loadDbStats();
+    loadStartupSnapshot();
     // Auto-run overview after a short delay (let summary load first)
     setTimeout(function() { runOverview(); }, 500);
     initTooltips();

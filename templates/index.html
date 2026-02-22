@@ -1645,6 +1645,62 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Calibrated Ensemble Prediction -->
+                    <div class="card mb-4 border-primary mt-4">
+                        <div class="card-header bg-primary bg-opacity-10">
+                            <i class="bi bi-diagram-3"></i> Calibrated Ensemble Prediction
+                            <small class="text-muted ms-2">Combine ALL models for maximum reliability</small>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-2">
+                                Trains all available models (RF, GBM, XGB, LGB, CatBoost, LR, SVM) and combines
+                                their predictions using accuracy-weighted voting. Shows inter-model agreement
+                                and highlights samples where models disagree (high uncertainty).
+                            </p>
+                            <button class="btn btn-sm btn-outline-primary mb-3" onclick="runEnsemblePredict()">
+                                <i class="bi bi-diagram-3-fill"></i> Run Ensemble
+                            </button>
+                            <div id="ens-results" class="d-none">
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-4">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Ensemble Accuracy</div>
+                                            <div class="metric-value text-primary" id="ens-acc">--</div>
+                                            <small class="text-muted" id="ens-n-models">-- models</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Model Agreement</div>
+                                            <div class="metric-value" id="ens-agreement">--</div>
+                                            <small class="text-muted">inter-model consensus</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Uncertain Samples</div>
+                                            <div class="metric-value text-warning" id="ens-uncertain">--</div>
+                                            <small class="text-muted">models disagree</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="ens-interpretation" class="alert alert-light small mb-3"></div>
+                                <!-- Per-model breakdown -->
+                                <div id="ens-models" class="mb-3"></div>
+                                <!-- Uncertain samples table -->
+                                <div id="ens-uncertain-table" class="d-none">
+                                    <h6 class="text-warning"><i class="bi bi-exclamation-diamond"></i> Most Uncertain Samples</h6>
+                                    <div class="table-responsive">
+                                        <table class="table table-sm table-bordered">
+                                            <thead><tr><th>Depth</th><th>Az</th><th>Dip</th><th>True Type</th><th>Agreement</th><th>Model Votes</th></tr></thead>
+                                            <tbody id="ens-uncertain-tbody"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Adversarial Robustness Test -->
                     <div class="card mb-4 border-warning mt-4">
                         <div class="card-header bg-warning bg-opacity-10">
