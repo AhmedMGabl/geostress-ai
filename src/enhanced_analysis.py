@@ -1211,6 +1211,41 @@ def classify_enhanced(
         except Exception:
             pass
 
+    # ── Conformal Prediction (ARMA 2025 best practice) ──
+    # Distribution-free, model-agnostic prediction sets with guaranteed coverage.
+    # Unlike softmax probabilities, conformal prediction provides mathematically
+    # valid coverage: if you request 90% coverage, at least 90% of true labels
+    # fall within the prediction set (under exchangeability assumption).
+    conformal_result = None
+    try:
+        from mapie.classification import CrossConformalClassifier
+        from sklearn.base import clone as _clone_cp
+        cp_model = _clone_cp(all_models[classifier])
+        mapie_clf = CrossConformalClassifier(
+            estimator=cp_model, confidence_level=0.90,
+            conformity_score="lac", cv=n_folds
+        )
+        mapie_clf.fit_conformalize(X, y)
+        y_cp_pred, y_cp_sets = mapie_clf.predict_set(X)
+        # Prediction set size: how many classes are in each set
+        set_sizes = y_cp_sets[:, :, 0].sum(axis=1)
+        # Empirical coverage on training data (should be >= 90%)
+        in_set = np.array([y_cp_sets[i, y[i], 0] for i in range(len(y))])
+        emp_coverage = float(in_set.mean())
+        avg_set_size = float(set_sizes.mean())
+        conformal_result = {
+            "coverage_target": 0.90,
+            "empirical_coverage": round(emp_coverage, 4),
+            "avg_prediction_set_size": round(avg_set_size, 2),
+            "n_classes": int(len(le.classes_)),
+            "precision_ratio": round(1.0 - (avg_set_size - 1) / max(len(le.classes_) - 1, 1), 3),
+            "note": ("Conformal prediction provides distribution-free coverage guarantees "
+                     "(ARMA 2025). A smaller prediction set = higher precision. "
+                     "Set size close to 1 means the model is confident and well-calibrated."),
+        }
+    except Exception:
+        pass
+
     result = {
         "model": model,
         "scaler": scaler,
@@ -1231,6 +1266,8 @@ def classify_enhanced(
     }
     if spatial_cv_result:
         result["spatial_cv"] = spatial_cv_result
+    if conformal_result:
+        result["conformal_prediction"] = conformal_result
     return result
 
 

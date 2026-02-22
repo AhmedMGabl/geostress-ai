@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.7</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.8</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -817,6 +817,24 @@
                         <!-- Mud Weight Window -->
                         <div id="inv-mud-weight" class="d-none mb-4"></div>
 
+                        <!-- 1D Stress Profile -->
+                        <div id="inv-stress-profile" class="d-none mb-4">
+                            <div class="card">
+                                <div class="card-header bg-dark text-white">
+                                    <i class="bi bi-bar-chart"></i> 1D Stress Profile (Mechanical Earth Model)
+                                    <button class="btn btn-sm btn-outline-light float-end" id="btn-load-stress-profile" onclick="loadStressProfile()">
+                                        <i class="bi bi-arrow-clockwise"></i> Generate Profile
+                                    </button>
+                                </div>
+                                <div class="card-body">
+                                    <p class="text-muted small mb-2">Depth-varying principal stresses: Sv (overburden), SHmax, Shmin, Pp (pore pressure). Standard geomechanics deliverable for drilling engineers.</p>
+                                    <div id="stress-profile-content" class="text-center">
+                                        <p class="text-muted">Click "Generate Profile" to compute the 1D stress model.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Risk Assessment Banner -->
                         <div id="risk-banner" class="alert mb-4 d-none">
                             <h5 class="alert-heading" id="risk-title"></h5>
@@ -1408,6 +1426,8 @@
                         </div>
                         <!-- Spatial CV Warning -->
                         <div id="clf-spatial-cv" class="d-none mt-3"></div>
+                        <!-- Conformal Prediction -->
+                        <div id="clf-conformal" class="d-none mt-3"></div>
                     </div>
                 </div>
 

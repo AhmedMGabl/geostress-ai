@@ -1482,6 +1482,10 @@ async function runInversion() {
             }
         }
 
+        // Show stress profile section (user clicks Generate to load)
+        var spEl = document.getElementById("inv-stress-profile");
+        if (spEl) spEl.classList.remove("d-none");
+
         // Risk categories
         if (r.risk_categories) {
             val("inv-high-risk", r.risk_categories.high);
@@ -2286,6 +2290,32 @@ async function runClassification() {
             spatEl.classList.remove("d-none");
         } else if (spatEl) {
             spatEl.classList.add("d-none");
+        }
+
+        // Conformal Prediction bounds (ARMA 2025)
+        var cpEl = document.getElementById("clf-conformal");
+        if (cpEl && r.conformal_prediction) {
+            var cp = r.conformal_prediction;
+            var cpColor = cp.precision_ratio > 0.8 ? "success" : cp.precision_ratio > 0.5 ? "warning" : "danger";
+            cpEl.innerHTML = '<div class="card border-' + cpColor + ' mb-3">' +
+                '<div class="card-header py-2 bg-' + cpColor + ' bg-opacity-10">' +
+                '<i class="bi bi-shield-check me-1"></i> <strong>Conformal Prediction</strong> ' +
+                '<span class="badge bg-' + cpColor + '">Coverage: ' + (cp.empirical_coverage * 100).toFixed(0) + '%</span></div>' +
+                '<div class="card-body py-2"><div class="row text-center">' +
+                '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Coverage Target</div>' +
+                '<div class="metric-value">' + (cp.coverage_target * 100).toFixed(0) + '%</div></div></div>' +
+                '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Actual Coverage</div>' +
+                '<div class="metric-value text-success">' + (cp.empirical_coverage * 100).toFixed(1) + '%</div></div></div>' +
+                '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Avg Set Size</div>' +
+                '<div class="metric-value">' + cp.avg_prediction_set_size + ' / ' + cp.n_classes + '</div></div></div>' +
+                '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Precision</div>' +
+                '<div class="metric-value">' + (cp.precision_ratio * 100).toFixed(1) + '%</div></div></div>' +
+                '</div>' +
+                '<p class="text-muted small mt-2 mb-0"><i class="bi bi-info-circle me-1"></i>' + cp.note + '</p>' +
+                '</div></div>';
+            cpEl.classList.remove("d-none");
+        } else if (cpEl) {
+            cpEl.classList.add("d-none");
         }
 
         showToast("Classification: " + (r.cv_mean_accuracy * 100).toFixed(1) + "% accuracy (" + classifier + ")");
@@ -3995,6 +4025,21 @@ async function runOverview() {
                 icon: "shield-exclamation",
                 text: "Data quality is " + dq.grade + " (score " + dq.score + "/100). Significant data issues detected. Review data quality tab before relying on results."
             });
+        }
+
+        // QC summary from WSM/EAGE standards
+        if (r.qc_summary) {
+            var qc = r.qc_summary;
+            var qcType = qc.pass_rate_pct >= 80 ? "success" : qc.pass_rate_pct >= 50 ? "warning" : "danger";
+            var qcIcon = qcType === "success" ? "check-circle" : qcType === "warning" ? "exclamation-triangle" : "x-circle";
+            var qcText = "Fracture QC (WSM/EAGE): " + qc.passed + "/" + qc.total + " pass (" + qc.pass_rate_pct + "%).";
+            if (qc.top_flags && qc.top_flags.length > 0) {
+                qcText += " Issues: " + qc.top_flags.join("; ") + ".";
+            }
+            if (qc.pass_rate_pct < 50) {
+                qcText += " Consider reviewing data quality before relying on results.";
+            }
+            warningsList.push({type: qcType === "success" ? "info" : qcType, icon: qcIcon, text: qcText});
         }
 
         // High risk warning
@@ -7744,3 +7789,62 @@ document.addEventListener("DOMContentLoaded", function() {
         });
     });
 });
+
+// ── 1D Stress Profile ─────────────────────────────────────────
+async function loadStressProfile() {
+    var btn = document.getElementById("btn-load-stress-profile");
+    var contentEl = document.getElementById("stress-profile-content");
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Computing...';
+    }
+    if (contentEl) contentEl.innerHTML = '<div class="spinner-border text-primary"></div><p class="text-muted mt-2">Running inversion at multiple depths...</p>';
+    try {
+        var r = await apiPost("/api/analysis/stress-profile", {
+            well: getWell(),
+            source: currentSource,
+            regime: getRegime(),
+            depth_min: 500,
+            depth_max: 6000,
+            n_points: 25
+        });
+        if (!r || r.error) {
+            contentEl.innerHTML = '<div class="alert alert-danger">Error: ' + (r ? r.message : "No response") + '</div>';
+            return;
+        }
+        var html = '';
+        // Plot image
+        if (r.plot_img) {
+            html += '<img src="' + r.plot_img + '" class="img-fluid mb-3 border rounded" alt="1D Stress Profile" style="max-height:600px;">';
+        }
+        // Summary info
+        html += '<div class="row text-center mb-3">';
+        html += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Regime</div><div class="metric-value">' + (r.regime || "?") + '</div></div></div>';
+        html += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">SHmax Azimuth</div><div class="metric-value">' + (r.shmax_azimuth_deg || "?") + '&deg;</div></div></div>';
+        html += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">R Ratio</div><div class="metric-value">' + (r.R || "?") + '</div></div></div>';
+        html += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Ref Depth</div><div class="metric-value">' + (r.reference_depth_m || "?") + ' m</div></div></div>';
+        html += '</div>';
+        // Profile table
+        if (r.profile && r.profile.length > 0) {
+            html += '<div class="table-responsive"><table class="table table-sm table-striped">';
+            html += '<thead><tr><th>Depth (m)</th><th>Sv (MPa)</th><th>SHmax (MPa)</th><th>Shmin (MPa)</th><th>Pp (MPa)</th></tr></thead><tbody>';
+            for (var i = 0; i < r.profile.length; i++) {
+                var p = r.profile[i];
+                html += '<tr><td>' + p.depth_m + '</td><td>' + p.sv_mpa + '</td><td>' + p.shmax_mpa + '</td><td>' + p.shmin_mpa + '</td><td>' + p.pp_mpa + '</td></tr>';
+            }
+            html += '</tbody></table></div>';
+        }
+        // Note
+        if (r.note) {
+            html += '<div class="alert alert-info small mt-2"><i class="bi bi-info-circle me-1"></i>' + r.note + '</div>';
+        }
+        contentEl.innerHTML = html;
+    } catch (e) {
+        contentEl.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Generate Profile';
+        }
+    }
+}

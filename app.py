@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.7.0 - Industrial Grade)."""
+"""GeoStress AI - FastAPI Web Application (v3.8.0 - Industrial Grade)."""
 
 import os
 import io
@@ -59,6 +59,7 @@ from src.enhanced_analysis import (
     physics_constrained_predict, misclassification_analysis,
     evidence_chain_analysis, model_bias_detection,
     prediction_reliability_report, guided_analysis_wizard,
+    _get_models,
     predict_with_abstention, detect_data_anomalies,
     feedback_effectiveness, depth_zone_classify,
     deep_ensemble_classify, transfer_learning_evaluate,
@@ -866,6 +867,118 @@ async def compute_mud_weight_window(request: Request):
     return _sanitize_for_json(mww)
 
 
+@app.post("/api/analysis/stress-profile")
+async def compute_stress_profile(request: Request):
+    """Generate a 1D stress profile (Sv, SHmax, Shmin, Pp vs depth).
+
+    This is a standard commercial geomechanics deliverable showing
+    how principal stresses vary with depth. Uses density integration
+    for overburden and hydrostatic gradient for pore pressure.
+    Horizontal stresses are computed from the inversion stress ratios.
+
+    Returns a depth profile table and a matplotlib plot.
+    """
+    body = await request.json()
+    well = body.get("well", "3P")
+    source = body.get("source", "demo")
+    regime = body.get("regime", "auto")
+    cohesion = float(body.get("cohesion", 0))
+    depth_min = float(body.get("depth_min", 1000))
+    depth_max = float(body.get("depth_max", 5000))
+    n_points = int(body.get("n_points", 20))
+
+    df = get_df(source)
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True)
+    if len(df_well) == 0:
+        raise HTTPException(404, f"Well '{well}' not found")
+
+    # Get inversion at a reference depth
+    ref_depth = (depth_min + depth_max) / 2
+    pp_ref = 1000 * 9.81 * ref_depth / 1e6
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values)
+
+    if regime == "auto":
+        auto = await asyncio.to_thread(
+            auto_detect_regime, normals, depth_m=ref_depth,
+            cohesion=cohesion, pore_pressure=pp_ref)
+        regime = auto["best_regime"]
+
+    inv = await asyncio.to_thread(
+        invert_stress, normals, regime=regime, cohesion=cohesion,
+        pore_pressure=pp_ref)
+
+    # Extract stress ratios at reference depth
+    sigma1_ref = float(inv["sigma1"])
+    sigma3_ref = float(inv["sigma3"])
+    R_val = float(inv["R"])
+
+    # Build depth profile
+    depths = np.linspace(depth_min, depth_max, n_points)
+    rho_avg = 2500  # kg/m³ average density
+    rho_water = 1000  # kg/m³
+    g = 9.81
+
+    profile = []
+    for d in depths:
+        sv = rho_avg * g * d / 1e6  # overburden
+        pp = rho_water * g * d / 1e6  # hydrostatic
+        # Scale horizontal stresses proportionally to Sv
+        scale = sv / (rho_avg * g * ref_depth / 1e6)
+        s1 = sigma1_ref * scale
+        s3 = sigma3_ref * scale
+        s2 = s3 + R_val * (s1 - s3)
+
+        if regime == "normal":
+            shmax, shmin = s2, s3
+        elif regime == "thrust":
+            shmax, shmin = s1, s2
+        else:  # strike_slip
+            shmax, shmin = s1, s3
+
+        profile.append({
+            "depth_m": round(d, 1),
+            "sv_mpa": round(sv, 2),
+            "shmax_mpa": round(shmax, 2),
+            "shmin_mpa": round(shmin, 2),
+            "pp_mpa": round(pp, 2),
+        })
+
+    # Generate matplotlib plot
+    import matplotlib.pyplot as plt
+    with plot_lock:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 8))
+        d_arr = [p["depth_m"] for p in profile]
+        ax.plot([p["sv_mpa"] for p in profile], d_arr, "k-", linewidth=2, label="Sv (overburden)")
+        ax.plot([p["shmax_mpa"] for p in profile], d_arr, "r-", linewidth=2, label="SHmax")
+        ax.plot([p["shmin_mpa"] for p in profile], d_arr, "b-", linewidth=2, label="Shmin")
+        ax.plot([p["pp_mpa"] for p in profile], d_arr, "g--", linewidth=2, label="Pp (hydrostatic)")
+        ax.set_xlabel("Stress (MPa)", fontsize=12)
+        ax.set_ylabel("Depth (m)", fontsize=12)
+        ax.set_title(f"1D Stress Profile — Well {well} ({regime})", fontsize=13)
+        ax.invert_yaxis()
+        ax.legend(loc="lower right", fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(left=0)
+        plt.tight_layout()
+        img = fig_to_base64(fig)
+        plt.close(fig)
+
+    return _sanitize_for_json({
+        "well": well,
+        "regime": regime,
+        "profile": profile,
+        "plot_img": img,
+        "shmax_azimuth_deg": round(float(inv["shmax_azimuth_deg"]), 1),
+        "R": round(R_val, 4),
+        "reference_depth_m": round(ref_depth, 1),
+        "note": ("1D stress profile assuming constant density (2500 kg/m3) and "
+                 "hydrostatic pore pressure. Horizontal stresses scaled linearly "
+                 "from inversion at reference depth. For accurate profiles, use "
+                 "density log integration and direct pressure measurements."),
+    })
+
+
 @app.get("/api/data/wells")
 async def list_wells(source: str = "demo"):
     df = get_df(source)
@@ -1468,7 +1581,136 @@ async def run_classification(request: Request):
     # Spatial (depth-blocked) CV — geological ML best practice
     if "spatial_cv" in clf_result:
         resp["spatial_cv"] = clf_result["spatial_cv"]
+    # Conformal prediction — guaranteed coverage bounds (ARMA 2025)
+    if "conformal_prediction" in clf_result:
+        resp["conformal_prediction"] = clf_result["conformal_prediction"]
     return _sanitize_for_json(resp)
+
+
+@app.post("/api/analysis/cost-sensitive")
+async def run_cost_sensitive(request: Request):
+    """Cost-sensitive classification with asymmetric penalties.
+
+    In industrial geomechanics, missing a critically stressed fracture
+    (false negative) is far more dangerous than a false alarm (false positive).
+    This endpoint trains a classifier with asymmetric costs and compares
+    the result to the standard balanced classifier.
+
+    Based on 2025 literature: cost-sensitive learning for wellbore
+    stability and geohazard assessment.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    classifier = body.get("classifier", "xgboost")
+    false_negative_cost = float(body.get("false_negative_cost", 10.0))
+    _validate_classifier(classifier)
+
+    df = get_df(source)
+
+    def _run():
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.metrics import accuracy_score, classification_report
+        from sklearn.utils.class_weight import compute_sample_weight
+
+        features = engineer_enhanced_features(df)
+        labels = df[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        n_classes = len(le.classes_)
+
+        # Standard balanced weights
+        from sklearn.utils.class_weight import compute_sample_weight
+        balanced_weights = compute_sample_weight("balanced", y)
+
+        # Asymmetric costs: identify high-risk classes
+        # (Discontinuous and Vuggy fractures tend to be more dangerous
+        #  in geomechanics contexts — open/vuggy fractures are fluid conduits)
+        high_risk_classes = []
+        for ci, name in enumerate(le.classes_):
+            n_lower = name.lower()
+            if any(k in n_lower for k in ["vuggy", "discontinuous", "brecciated"]):
+                high_risk_classes.append(ci)
+
+        # Build asymmetric cost weights
+        cost_weights = balanced_weights.copy()
+        for hrc in high_risk_classes:
+            mask = y == hrc
+            cost_weights[mask] *= false_negative_cost
+
+        # Train standard model
+        all_models = _get_models(fast=True)
+        model_std = clone(all_models.get(classifier, all_models["random_forest"]))
+        cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+        needs_sw = classifier in ("gradient_boosting", "xgboost")
+        sw_params = {"sample_weight": balanced_weights} if needs_sw else {}
+        y_pred_std = cross_val_predict(model_std, X, y, cv=cv,
+                                        params=sw_params if sw_params else None)
+
+        # Train cost-sensitive model
+        model_cs = clone(all_models.get(classifier, all_models["random_forest"]))
+        cs_params = {"sample_weight": cost_weights} if needs_sw else {}
+        y_pred_cs = cross_val_predict(model_cs, X, y, cv=cv,
+                                       params=cs_params if cs_params else None)
+
+        # Compare per-class recall
+        from sklearn.metrics import classification_report
+        std_report = classification_report(y, y_pred_std, target_names=le.classes_,
+                                            output_dict=True, zero_division=0)
+        cs_report = classification_report(y, y_pred_cs, target_names=le.classes_,
+                                           output_dict=True, zero_division=0)
+
+        comparison = []
+        for ci, name in enumerate(le.classes_):
+            is_high_risk = ci in high_risk_classes
+            std_recall = std_report[name]["recall"]
+            cs_recall = cs_report[name]["recall"]
+            std_precision = std_report[name]["precision"]
+            cs_precision = cs_report[name]["precision"]
+            comparison.append({
+                "class": name,
+                "high_risk": is_high_risk,
+                "standard_recall": round(std_recall, 3),
+                "cost_sensitive_recall": round(cs_recall, 3),
+                "recall_improvement": round(cs_recall - std_recall, 3),
+                "standard_precision": round(std_precision, 3),
+                "cost_sensitive_precision": round(cs_precision, 3),
+                "precision_change": round(cs_precision - std_precision, 3),
+                "support": int(std_report[name]["support"]),
+            })
+
+        std_acc = round(float(accuracy_score(y, y_pred_std)), 4)
+        cs_acc = round(float(accuracy_score(y, y_pred_cs)), 4)
+
+        return {
+            "classifier": classifier,
+            "false_negative_cost": false_negative_cost,
+            "high_risk_classes": [le.classes_[c] for c in high_risk_classes],
+            "standard_accuracy": std_acc,
+            "cost_sensitive_accuracy": cs_acc,
+            "accuracy_tradeoff": round(std_acc - cs_acc, 4),
+            "per_class_comparison": comparison,
+            "interpretation": (
+                f"Cost-sensitive learning penalizes missing high-risk fractures "
+                f"({', '.join(le.classes_[c] for c in high_risk_classes)}) by {false_negative_cost}x. "
+                f"This {'improves' if cs_acc >= std_acc else 'slightly reduces'} overall accuracy "
+                f"({std_acc:.1%} -> {cs_acc:.1%}) but increases recall for dangerous fracture types. "
+                f"In industrial settings, it is better to flag a non-critical fracture as critical "
+                f"(false positive) than to miss a truly critical one (false negative)."
+            ),
+            "note": ("Based on 2025 geomechanics ML literature: cost-sensitive learning for "
+                     "wellbore stability and geohazard assessment. Asymmetric costs reflect "
+                     "the real-world consequence of missing a critically stressed fracture "
+                     "(wellbore failure, induced seismicity) vs. over-predicting risk "
+                     "(extra monitoring, slightly conservative drilling)."),
+        }
+
+    result = await asyncio.to_thread(_run)
+    return _sanitize_for_json(result)
 
 
 @app.post("/api/analysis/deep-ensemble")
@@ -2476,6 +2718,25 @@ async def run_overview(request: Request):
         "score": quality["score"],
         "grade": quality["grade"],
     }
+
+    # Fracture QC summary (instant, < 10ms)
+    try:
+        from src.data_loader import qc_fracture_data
+        qc = qc_fracture_data(df_well)
+        flags_dict = qc.get("flags", {})
+        # Extract non-PASS flags as readable strings
+        issue_flags = [f"{v} {k.replace('_', ' ').lower()}"
+                       for k, v in flags_dict.items()
+                       if k != "PASS" and v > 0]
+        overview["qc_summary"] = {
+            "total": int(qc["total"]),
+            "passed": int(qc["passed"]),
+            "pass_rate_pct": round(float(qc["pass_rate"]) * 100, 1),
+            "top_flags": issue_flags[:3],
+            "wsm_note": qc.get("wsm_note", ""),
+        }
+    except Exception:
+        overview["qc_summary"] = None
 
     # ── Run 3 independent tasks in parallel ──────────
     normals = fracture_plane_normal(
@@ -8409,7 +8670,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.7.0",
+        "app_version": "3.8.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

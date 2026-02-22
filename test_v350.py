@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 / v3.6.0 / v3.7.0.
+"""Test suite for GeoStress AI v3.5.0 / v3.6.0 / v3.7.0 / v3.8.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -458,10 +458,117 @@ check("Spatial CV < random CV (spatial autocorrelation)",
       f"spatial={sp_cv.get('spatial_cv_accuracy')}, random={clf3.get('cv_mean_accuracy')}")
 
 
+# ── [22] 1D Stress Profile ─────────────────────────────────────
+print("\n[22] 1D Stress Profile")
+sp = api("POST", "/api/analysis/stress-profile", {
+    "well": "3P", "depth_min": 1000, "depth_max": 5000, "n_points": 10
+})
+check("Has profile array", isinstance(sp.get("profile"), list) and len(sp["profile"]) > 0)
+check("Has plot image", isinstance(sp.get("plot_img"), str) and len(sp["plot_img"]) > 100)
+check("Has regime", sp.get("regime") in ["normal", "thrust", "strike_slip"])
+check("Has SHmax azimuth", isinstance(sp.get("shmax_azimuth_deg"), (int, float)))
+check("Has R ratio", isinstance(sp.get("R"), (int, float)) and 0 <= sp["R"] <= 1)
+check("Has reference depth", isinstance(sp.get("reference_depth_m"), (int, float)))
+check("Has note with caveats", "hydrostatic" in sp.get("note", "").lower())
+
+# Verify depth ordering
+if sp.get("profile"):
+    depths = [p["depth_m"] for p in sp["profile"]]
+    check("Depths are monotonically increasing", depths == sorted(depths))
+    # Sv should increase with depth
+    sv_vals = [p["sv_mpa"] for p in sp["profile"]]
+    check("Sv increases with depth", sv_vals == sorted(sv_vals))
+    # All stresses should be positive
+    all_pos = all(p["sv_mpa"] > 0 and p["shmax_mpa"] > 0 and p["shmin_mpa"] > 0 and p["pp_mpa"] > 0 for p in sp["profile"])
+    check("All stresses positive", all_pos)
+    # Sv > Pp at all depths (physical requirement)
+    sv_gt_pp = all(p["sv_mpa"] > p["pp_mpa"] for p in sp["profile"])
+    check("Sv > Pp at all depths", sv_gt_pp)
+
+# Test with well 6P
+sp2 = api("POST", "/api/analysis/stress-profile", {
+    "well": "6P", "depth_min": 2000, "depth_max": 4000, "n_points": 5
+})
+check("6P stress profile works", len(sp2.get("profile", [])) == 5)
+
+# Test invalid well
+sp3_ok = api_expect_error("POST", "/api/analysis/stress-profile",
+                          {"well": "INVALID_WELL"}, expected_status=404)
+check("Invalid well returns 404", sp3_ok)
+
+# ── [23] QC in Overview ────────────────────────────────────────
+print("\n[23] QC in Overview")
+ov = api("POST", "/api/analysis/overview", {"well": "3P"})
+qc_s = ov.get("qc_summary")
+check("Overview has QC summary", qc_s is not None)
+if qc_s:
+    check("QC has total", isinstance(qc_s.get("total"), int) and qc_s["total"] > 0)
+    check("QC has passed count", isinstance(qc_s.get("passed"), int))
+    check("QC has pass rate pct", isinstance(qc_s.get("pass_rate_pct"), (int, float)))
+    check("QC pass rate is percentage", 0 <= qc_s["pass_rate_pct"] <= 100)
+    check("QC has WSM note", len(qc_s.get("wsm_note", "")) > 10)
+    check("3P pass rate > 90%", qc_s["pass_rate_pct"] > 90,
+          f"pass_rate={qc_s['pass_rate_pct']}%")
+
+# ── [24] Conformal Prediction (v3.8.0) ─────────────────────────
+print("\n[24] Conformal Prediction")
+clf4 = api("POST", "/api/analysis/classify", {
+    "well": "3P", "classifier": "xgboost", "source": "demo"
+})
+cp = clf4.get("conformal_prediction")
+check("Has conformal prediction", cp is not None)
+if cp:
+    check("Has coverage target", cp.get("coverage_target") == 0.9)
+    check("Empirical coverage >= target",
+          cp.get("empirical_coverage", 0) >= cp.get("coverage_target", 1))
+    check("Has avg prediction set size",
+          isinstance(cp.get("avg_prediction_set_size"), (int, float)))
+    check("Set size <= n_classes",
+          cp["avg_prediction_set_size"] <= cp.get("n_classes", 999))
+    check("Has precision ratio",
+          isinstance(cp.get("precision_ratio"), (int, float)))
+    check("Precision > 0.5 (model is useful)", cp["precision_ratio"] > 0.5,
+          f"precision={cp['precision_ratio']}")
+    check("Has explanatory note", len(cp.get("note", "")) > 20)
+
+
+# ── [25] Cost-Sensitive Learning (v3.8.0) ──────────────────────
+print("\n[25] Cost-Sensitive Learning")
+cs = api("POST", "/api/analysis/cost-sensitive", {
+    "classifier": "xgboost", "false_negative_cost": 10
+})
+check("Has high-risk classes", isinstance(cs.get("high_risk_classes"), list) and len(cs["high_risk_classes"]) > 0)
+check("Has standard accuracy", isinstance(cs.get("standard_accuracy"), (int, float)))
+check("Has cost-sensitive accuracy", isinstance(cs.get("cost_sensitive_accuracy"), (int, float)))
+check("Has per-class comparison", isinstance(cs.get("per_class_comparison"), list))
+check("Has interpretation", len(cs.get("interpretation", "")) > 30)
+check("Has note about 2025 literature", "2025" in cs.get("note", ""))
+# Check that high-risk classes have recall data
+for cc in cs.get("per_class_comparison", []):
+    if cc.get("high_risk"):
+        check(f"High-risk {cc['class']} has recall data",
+              isinstance(cc.get("cost_sensitive_recall"), (int, float)))
+        break
+
+# ── [26] Physics Check (v3.8.0) ────────────────────────────────
+print("\n[26] Physics Check")
+pc = api("POST", "/api/analysis/physics-check", {
+    "well": "3P", "depth": 3000
+})
+check("Physics check returns result", isinstance(pc, dict))
+check("Has checks or constraints", len(pc) > 0)
+
+# ── [27] Physics-Constrained Prediction ────────────────────────
+print("\n[27] Physics-Constrained Prediction")
+pp = api("POST", "/api/analysis/physics-predict", {
+    "well": "3P", "depth": 3000, "fast": True
+})
+check("Physics prediction returns result", isinstance(pp, dict))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.7.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.8.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:
