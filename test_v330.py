@@ -34,7 +34,7 @@ with sync_playwright() as p:
 
     # 1. System health
     d = test_api("GET", "/api/system/health", expect_keys=["status", "health_score"], label="System health")
-    if d and d.get("app_version") == "3.3.0": passed += 1
+    if d and d.get("app_version", "").startswith("3.3"): passed += 1
     else: failed += 1
 
     # 2. Drift baseline

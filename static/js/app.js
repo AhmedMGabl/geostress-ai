@@ -7213,11 +7213,12 @@ async function runBatchAnalysis() {
     const el = document.getElementById('batch-result');
     const depth = document.getElementById('depth-input')?.value || 3000;
     const pp = document.getElementById('pp-input')?.value || 30;
-    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running full pipeline on all wells... (30-60s)</div>';
+    var taskId = generateTaskId();
+    showLoadingWithProgress("Running batch analysis on all wells...", taskId);
     try {
         const r = await fetch('/api/batch/analyze-all', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({source: window._source || 'demo', depth_m: +depth, pp_mpa: +pp})
+            body: JSON.stringify({source: window._source || 'demo', depth_m: +depth, pp_mpa: +pp, task_id: taskId})
         });
         const d = await r.json();
         let html = '';
@@ -7234,7 +7235,8 @@ async function runBatchAnalysis() {
         }
         html += '<div class="text-muted small">' + d.elapsed_s + 's</div>';
         el.innerHTML = html;
-    } catch(e) { el.innerHTML = '<div class="text-danger">Error: ' + e.message + '</div>'; }
+        hideLoading();
+    } catch(e) { el.innerHTML = '<div class="text-danger">Error: ' + e.message + '</div>'; hideLoading(); }
 }
 
 

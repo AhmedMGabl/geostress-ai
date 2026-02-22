@@ -8244,6 +8244,7 @@ async def batch_analyze_all(request: Request):
     source = body.get("source", "demo")
     depth_m = float(body.get("depth_m", 3000))
     pp_mpa = float(body.get("pp_mpa", 30))
+    task_id = body.get("task_id", "")
 
     df = get_df(source)
     if df is None:
@@ -8251,14 +8252,19 @@ async def batch_analyze_all(request: Request):
 
     wells = df[WELL_COL].unique().tolist() if WELL_COL in df.columns else ["all"]
     results = []
+    n_wells = len(wells)
 
-    for w in wells:
+    for i, w in enumerate(wells):
         df_w = df[df[WELL_COL] == w] if WELL_COL in df.columns else df
         if len(df_w) < 5:
             results.append({"well": w, "status": "SKIPPED", "reason": "Too few samples"})
             continue
 
         well_result = {"well": w, "n_fractures": len(df_w), "status": "OK"}
+
+        if task_id:
+            base_pct = int(i / n_wells * 90)
+            _emit_progress(task_id, f"Analyzing well {w}", base_pct, f"Well {i+1}/{n_wells}")
 
         # Stress inversion
         try:
@@ -8270,9 +8276,20 @@ async def batch_analyze_all(request: Request):
                 avg_depth = depth_m
 
             normals = fracture_plane_normal(df_w[AZIMUTH_COL].values, df_w[DIP_COL].values)
-            regime_result = await asyncio.to_thread(auto_detect_regime, normals, depth_m=avg_depth, pore_pressure=pp_mpa)
+            ar_key = f"ar_{source}_{w}_{round(avg_depth)}_{round(pp_mpa,1)}"
+            if ar_key in _auto_regime_cache:
+                regime_result = _auto_regime_cache[ar_key]
+            else:
+                regime_result = await asyncio.to_thread(auto_detect_regime, normals, depth_m=avg_depth, pore_pressure=pp_mpa)
+                _auto_regime_cache[ar_key] = regime_result
             best_regime = regime_result.get("best_regime", "Normal")
-            inv = await asyncio.to_thread(invert_stress, normals, regime=best_regime, depth_m=avg_depth, pore_pressure=pp_mpa)
+
+            inv_key = f"inv_{source}_{w}_{best_regime}_{round(avg_depth)}_{round(pp_mpa,1)}"
+            if inv_key in _inversion_cache:
+                inv = _inversion_cache[inv_key]
+            else:
+                inv = await asyncio.to_thread(invert_stress, normals, regime=best_regime, depth_m=avg_depth, pore_pressure=pp_mpa)
+                _inversion_cache[inv_key] = inv
 
             well_result["regime"] = best_regime
             well_result["shmax_deg"] = round(float(inv.get("shmax_azimuth_deg", 0)), 1)
@@ -8289,9 +8306,14 @@ async def batch_analyze_all(request: Request):
         except Exception as e:
             well_result["stress_error"] = str(e)[:100]
 
-        # ML Classification
+        # ML Classification (cached)
         try:
-            cls = await asyncio.to_thread(classify_enhanced, df_w, n_folds=3)
+            cls_key = f"cls_{source}_{w}_xgboost_3"
+            if cls_key in _classify_cache:
+                cls = _classify_cache[cls_key]
+            else:
+                cls = await asyncio.to_thread(classify_enhanced, df_w, n_folds=3)
+                _classify_cache[cls_key] = cls
             well_result["accuracy"] = round(cls.get("cv_mean_accuracy", 0), 3)
             well_result["f1_weighted"] = round(cls.get("cv_f1_mean", 0), 3)
             well_result["best_model"] = cls.get("best_model", "xgboost")
@@ -8324,6 +8346,9 @@ async def batch_analyze_all(request: Request):
             "avg_accuracy": round(float(np.mean(acc_vals)), 3) if acc_vals else None,
             "all_regimes": list(set(r.get("regime", "?") for r in valid_stress)),
         }
+
+    if task_id:
+        _emit_progress(task_id, "Complete", 100, f"{len(valid_stress)} wells analyzed")
 
     _audit_record("batch_analyze_all",
                   {"n_wells": len(wells), "depth_m": depth_m},

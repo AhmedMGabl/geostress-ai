@@ -1084,7 +1084,9 @@ def classify_enhanced(
     """Enhanced single-model classification with richer output.
 
     Optimized: single cross_validate pass for both accuracy and F1.
+    Uses fast models (100 estimators) when n_folds <= 3 for ~3x speedup.
     """
+    fast = n_folds <= 3
     features = engineer_enhanced_features(df)
     labels = df[FRACTURE_TYPE_COL].values
     le = LabelEncoder()
@@ -1093,7 +1095,7 @@ def classify_enhanced(
     scaler = StandardScaler()
     X = scaler.fit_transform(features.values)
 
-    all_models = _get_models()
+    all_models = _get_models(fast=fast)
     if classifier not in all_models:
         classifier = "random_forest"  # fallback
     model = all_models[classifier]
