@@ -581,6 +581,49 @@
                         </div>
                     </div>
 
+                    <!-- Geological Context -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-globe-americas"></i> Geological Context &amp; Well Comparison</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runGeologicalContext()">
+                                <i class="bi bi-play-fill"></i> Analyze
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Identifies fracture sets, infers tectonic regime, analyzes depth zones, and compares geology across wells. Helps stakeholders understand the geological setting before trusting model outputs.</p>
+                            <div id="gc-results" class="d-none">
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Wells Analyzed</div><div class="metric-value" id="gc-n-wells">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Regime</div><div class="metric-value" id="gc-regime">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Risk Level</div><div class="metric-value" id="gc-risk">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Cross-Well</div><div class="metric-value" id="gc-crosswell">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="gc-brief"></div>
+                                <div class="row g-3 mb-3">
+                                    <div class="col-12">
+                                        <h6>Fracture Sets per Well</h6>
+                                        <div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Well</th><th>Set</th><th>Count</th><th>Mean Azimuth</th><th>Mean Dip</th><th>Interpretation</th></tr></thead><tbody id="gc-sets-body"></tbody></table></div>
+                                    </div>
+                                </div>
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-6">
+                                        <h6>Depth Zones</h6>
+                                        <div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Well</th><th>Zone</th><th>Depth Range</th><th>Count</th><th>Mean Az</th><th>Mean Dip</th></tr></thead><tbody id="gc-zones-body"></tbody></table></div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <h6>Type Distribution</h6>
+                                        <div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Well</th><th>Type</th><th>Count</th></tr></thead><tbody id="gc-types-body"></tbody></table></div>
+                                    </div>
+                                </div>
+                                <div id="gc-comparison" class="d-none">
+                                    <h6>Cross-Well Comparison</h6>
+                                    <div class="alert alert-info small" id="gc-comp-text"></div>
+                                </div>
+                                <div class="text-center"><img id="gc-plot" class="img-fluid" style="max-width:900px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
@@ -2644,6 +2687,58 @@
                                         </div>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Decision Confidence Dashboard -->
+                    <div class="card border-danger mt-4 mb-4">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-stoplights"></i> <strong>GO / NO-GO Decision Dashboard</strong></span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runDecisionDashboard()">
+                                <i class="bi bi-play-fill"></i> Evaluate
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-2">
+                                Traffic-light system evaluating 6 quality signals: model accuracy, balanced accuracy, data volume,
+                                class balance, expert review coverage, and per-class reliability. Includes best/expected/worst scenario analysis.
+                            </p>
+                            <div id="dd-results" class="d-none">
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-3">
+                                        <div class="metric-card"><div class="metric-label">Overall Decision</div>
+                                        <div class="metric-value fs-3" id="dd-decision">--</div></div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="metric-card"><div class="metric-label">Accuracy</div>
+                                        <div class="metric-value" id="dd-accuracy">--</div></div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="metric-card"><div class="metric-label">Balanced Acc</div>
+                                        <div class="metric-value" id="dd-bal-acc">--</div></div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="metric-card"><div class="metric-label">Samples</div>
+                                        <div class="metric-value" id="dd-samples">--</div></div>
+                                    </div>
+                                </div>
+                                <h6><i class="bi bi-stoplights"></i> Quality Signals</h6>
+                                <div class="row g-2 mb-3" id="dd-signals-row"></div>
+                                <h6><i class="bi bi-list-check"></i> Per-Class Decisions</h6>
+                                <div class="table-responsive mb-3">
+                                    <table class="table table-sm table-hover">
+                                        <thead class="table-light"><tr><th>Class</th><th>Recall</th><th>Precision</th><th>Support</th><th>Decision</th><th>Reason</th></tr></thead>
+                                        <tbody id="dd-class-body"></tbody>
+                                    </table>
+                                </div>
+                                <h6><i class="bi bi-graph-up-arrow"></i> Scenario Analysis</h6>
+                                <div class="row g-2 mb-3" id="dd-scenarios-row"></div>
+                                <div id="dd-actions" class="d-none">
+                                    <h6><i class="bi bi-arrow-right-circle"></i> Recommended Actions</h6>
+                                    <ul id="dd-action-list" class="small"></ul>
+                                </div>
+                                <div class="text-center"><img id="dd-plot" class="img-fluid" style="max-width:800px" /></div>
                             </div>
                         </div>
                     </div>

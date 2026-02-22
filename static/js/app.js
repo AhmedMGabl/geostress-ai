@@ -9217,3 +9217,149 @@ async function loadStressProfile() {
         }
     }
 }
+
+// ── Geological Context ─────────────────────────────────────────────
+async function runGeologicalContext() {
+    var results = document.getElementById('gc-results');
+    results.classList.add('d-none');
+    showLoading('Analyzing geological context...');
+    try {
+        var r = await apiPost('/api/analysis/geological-context', {source: currentSource()});
+        results.classList.remove('d-none');
+        document.getElementById('gc-n-wells').textContent = r.n_wells;
+        var regime = r.wells && r.wells.length > 0 ? r.wells[0].inferred_regime : '-';
+        document.getElementById('gc-regime').textContent = regime.replace(/\s*\(.*\)/, '');
+        if (r.stakeholder_brief) {
+            document.getElementById('gc-risk').innerHTML = '<span class="badge bg-' + (r.stakeholder_brief.risk_level === 'GREEN' ? 'success' : r.stakeholder_brief.risk_level === 'AMBER' ? 'warning' : 'danger') + '">' + r.stakeholder_brief.risk_level + '</span>';
+            document.getElementById('gc-crosswell').textContent = r.cross_well_comparison ? 'Available' : 'Single Well';
+            document.getElementById('gc-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        // Fracture sets table
+        var setsBody = document.getElementById('gc-sets-body');
+        setsBody.innerHTML = '';
+        if (r.wells) {
+            for (var i = 0; i < r.wells.length; i++) {
+                var w = r.wells[i];
+                if (w.fracture_sets) {
+                    for (var j = 0; j < w.fracture_sets.length; j++) {
+                        var s = w.fracture_sets[j];
+                        setsBody.innerHTML += '<tr><td>' + w.well + '</td><td>Set ' + s.set_id + '</td><td>' + s.count + '</td><td>' + (s.mean_azimuth || '-') + '</td><td>' + (s.mean_dip || '-') + '</td><td>' + s.interpretation + '</td></tr>';
+                    }
+                }
+            }
+        }
+        // Depth zones table
+        var zonesBody = document.getElementById('gc-zones-body');
+        zonesBody.innerHTML = '';
+        if (r.wells) {
+            for (var i = 0; i < r.wells.length; i++) {
+                var w = r.wells[i];
+                if (w.depth_zones) {
+                    for (var j = 0; j < w.depth_zones.length; j++) {
+                        var z = w.depth_zones[j];
+                        zonesBody.innerHTML += '<tr><td>' + w.well + '</td><td>' + z.zone + '</td><td>' + z.depth_range + '</td><td>' + z.count + '</td><td>' + (z.mean_azimuth || '-') + '</td><td>' + (z.mean_dip || '-') + '</td></tr>';
+                    }
+                }
+            }
+        }
+        // Type distribution table
+        var typesBody = document.getElementById('gc-types-body');
+        typesBody.innerHTML = '';
+        if (r.wells) {
+            for (var i = 0; i < r.wells.length; i++) {
+                var w = r.wells[i];
+                if (w.type_distribution) {
+                    var types = Object.keys(w.type_distribution);
+                    for (var j = 0; j < types.length; j++) {
+                        typesBody.innerHTML += '<tr><td>' + w.well + '</td><td>' + types[j] + '</td><td>' + w.type_distribution[types[j]] + '</td></tr>';
+                    }
+                }
+            }
+        }
+        // Cross-well comparison
+        var compDiv = document.getElementById('gc-comparison');
+        if (r.cross_well_comparison) {
+            compDiv.classList.remove('d-none');
+            document.getElementById('gc-comp-text').textContent = r.cross_well_comparison.interpretation;
+        } else {
+            compDiv.classList.add('d-none');
+        }
+        // Plot
+        if (r.plot) document.getElementById('gc-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Decision Dashboard ─────────────────────────────────────────────
+async function runDecisionDashboard() {
+    var results = document.getElementById('dd-results');
+    results.classList.add('d-none');
+    showLoading('Evaluating decision confidence...');
+    try {
+        var r = await apiPost('/api/report/decision-dashboard', {well: currentWell(), source: currentSource()});
+        results.classList.remove('d-none');
+        var decColor = r.overall_color === 'GREEN' ? 'success' : r.overall_color === 'AMBER' ? 'warning' : 'danger';
+        document.getElementById('dd-decision').innerHTML = '<span class="badge bg-' + decColor + ' fs-5">' + r.overall_decision + '</span>';
+        document.getElementById('dd-accuracy').textContent = (r.accuracy * 100).toFixed(1) + '%';
+        document.getElementById('dd-bal-acc').textContent = (r.balanced_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('dd-samples').textContent = r.n_samples;
+        // Signals
+        var sigRow = document.getElementById('dd-signals-row');
+        sigRow.innerHTML = '';
+        if (r.signals) {
+            var sigs = Object.keys(r.signals);
+            for (var i = 0; i < sigs.length; i++) {
+                var sig = r.signals[sigs[i]];
+                var sc = sig.status === 'GREEN' ? 'success' : sig.status === 'AMBER' ? 'warning' : 'danger';
+                sigRow.innerHTML += '<div class="col-md-2 col-4"><div class="card border-' + sc + '"><div class="card-body text-center p-2"><span class="badge bg-' + sc + '">' + sig.status + '</span><br><small class="text-muted">' + sigs[i].replace(/_/g, ' ') + '</small><br><strong>' + sig.value + '</strong></div></div></div>';
+            }
+        }
+        // Class decisions table
+        var classBody = document.getElementById('dd-class-body');
+        classBody.innerHTML = '';
+        if (r.class_decisions) {
+            for (var i = 0; i < r.class_decisions.length; i++) {
+                var c = r.class_decisions[i];
+                var cd = c.decision === 'GO' ? 'success' : c.decision === 'CONDITIONAL' ? 'warning' : 'danger';
+                classBody.innerHTML += '<tr><td>' + c['class'] + '</td><td>' + (c.recall * 100).toFixed(0) + '%</td><td>' + (c.precision * 100).toFixed(0) + '%</td><td>' + c.support + '</td><td><span class="badge bg-' + cd + '">' + c.decision + '</span></td><td class="small">' + c.reason + '</td></tr>';
+            }
+        }
+        // Scenarios
+        var scenRow = document.getElementById('dd-scenarios-row');
+        scenRow.innerHTML = '';
+        if (r.scenarios) {
+            var scens = ['best_case', 'expected', 'worst_case'];
+            var scenColors = ['success', 'primary', 'danger'];
+            var scenLabels = ['Best Case', 'Expected', 'Worst Case'];
+            for (var i = 0; i < scens.length; i++) {
+                var s = r.scenarios[scens[i]];
+                if (s) {
+                    scenRow.innerHTML += '<div class="col-md-4"><div class="card border-' + scenColors[i] + '"><div class="card-header bg-' + scenColors[i] + ' bg-opacity-10 py-1 small"><strong>' + scenLabels[i] + '</strong></div><div class="card-body p-2 small"><div class="fs-5 fw-bold">' + (s.accuracy * 100).toFixed(1) + '%</div><p class="mb-1">' + s.description + '</p><em>' + s.risk + '</em></div></div></div>';
+                }
+            }
+        }
+        // Actions
+        var actionsDiv = document.getElementById('dd-actions');
+        if (r.recommended_actions && r.recommended_actions.length > 0) {
+            actionsDiv.classList.remove('d-none');
+            var actList = document.getElementById('dd-action-list');
+            actList.innerHTML = '';
+            for (var i = 0; i < r.recommended_actions.length; i++) {
+                actList.innerHTML += '<li>' + r.recommended_actions[i] + '</li>';
+            }
+        } else {
+            actionsDiv.classList.add('d-none');
+        }
+        // Plot
+        if (r.plot) document.getElementById('dd-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

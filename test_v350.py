@@ -1221,10 +1221,102 @@ if len(ad.get("anomalies", [])) > 0:
 check("Has plot", isinstance(ad.get("plot"), str) and ad["plot"].startswith("data:image"))
 check("Has stakeholder_brief", "headline" in ad.get("stakeholder_brief", {}))
 
+# ── [68] Geological Context ─────────────────────────────
+print("\n[68] Geological Context")
+gc = api("POST", "/api/analysis/geological-context", {"source": "demo"})
+check("Status 200", gc is not None)
+check("Has n_wells", isinstance(gc.get("n_wells"), int) and gc["n_wells"] >= 1)
+check("Has wells list", isinstance(gc.get("wells"), list) and len(gc["wells"]) >= 1)
+w0 = gc["wells"][0]
+check("Well has well name", isinstance(w0.get("well"), str))
+check("Well has n_fractures", isinstance(w0.get("n_fractures"), int) and w0["n_fractures"] > 0)
+check("Well has depth_range", isinstance(w0.get("depth_range"), str) and "m" in w0["depth_range"])
+check("Well has mean_azimuth", isinstance(w0.get("mean_azimuth"), (int, float)))
+check("Well has mean_dip", isinstance(w0.get("mean_dip"), (int, float)))
+check("Well has azimuth_spread", isinstance(w0.get("azimuth_spread"), (int, float)))
+check("Well has inferred_regime", isinstance(w0.get("inferred_regime"), str))
+check("Well has regime_detail", isinstance(w0.get("regime_detail"), str))
+check("Well has fracture_sets", isinstance(w0.get("fracture_sets"), list))
+if len(w0.get("fracture_sets", [])) > 0:
+    fs = w0["fracture_sets"][0]
+    check("Set has set_id", isinstance(fs.get("set_id"), int))
+    check("Set has count", isinstance(fs.get("count"), int) and fs["count"] > 0)
+    check("Set has mean_azimuth", isinstance(fs.get("mean_azimuth"), (int, float)))
+    check("Set has interpretation", isinstance(fs.get("interpretation"), str))
+check("Well has depth_zones", isinstance(w0.get("depth_zones"), list) and len(w0["depth_zones"]) >= 1)
+if len(w0.get("depth_zones", [])) > 0:
+    dz = w0["depth_zones"][0]
+    check("Zone has zone name", isinstance(dz.get("zone"), str))
+    check("Zone has depth_range", isinstance(dz.get("depth_range"), str))
+    check("Zone has count", isinstance(dz.get("count"), int) and dz["count"] > 0)
+check("Well has type_distribution", isinstance(w0.get("type_distribution"), dict) and len(w0["type_distribution"]) >= 1)
+# Multi-well features
+if gc["n_wells"] >= 2:
+    check("Has cross_well_comparison", isinstance(gc.get("cross_well_comparison"), dict))
+    cw = gc["cross_well_comparison"]
+    check("CW has wells", isinstance(cw.get("wells"), list) and len(cw["wells"]) == 2)
+    check("CW has azimuth_difference", isinstance(cw.get("azimuth_difference"), (int, float)))
+    check("CW has dip_difference", isinstance(cw.get("dip_difference"), (int, float)))
+    check("CW has same_regime", isinstance(cw.get("same_regime"), bool))
+    check("CW has interpretation", isinstance(cw.get("interpretation"), str))
+check("Has plot", isinstance(gc.get("plot"), str) and len(gc["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(gc.get("stakeholder_brief"), dict))
+sb = gc.get("stakeholder_brief", {})
+check("Brief has headline", isinstance(sb.get("headline"), str))
+check("Brief has risk_level", sb.get("risk_level") in ("GREEN", "AMBER", "RED"))
+check("Brief has action", isinstance(sb.get("action"), str))
+
+# ── [69] Decision Confidence Dashboard ──────────────────
+print("\n[69] Decision Confidence Dashboard")
+dd = api("POST", "/api/report/decision-dashboard", {"well": "3P", "source": "demo"}, timeout=120)
+check("Status 200", dd is not None)
+check("Has well", dd.get("well") == "3P")
+check("Has overall_decision", dd.get("overall_decision") in ("GO", "CONDITIONAL", "NO-GO"))
+check("Has overall_color", dd.get("overall_color") in ("GREEN", "AMBER", "RED"))
+check("Has n_samples", isinstance(dd.get("n_samples"), int) and dd["n_samples"] > 0)
+check("Has accuracy", isinstance(dd.get("accuracy"), (int, float)) and 0 <= dd["accuracy"] <= 1)
+check("Has f1", isinstance(dd.get("f1"), (int, float)) and 0 <= dd["f1"] <= 1)
+check("Has balanced_accuracy", isinstance(dd.get("balanced_accuracy"), (int, float)) and 0 <= dd["balanced_accuracy"] <= 1)
+# Signals
+check("Has signals dict", isinstance(dd.get("signals"), dict))
+sigs = dd.get("signals", {})
+for sig_name in ["model_accuracy", "balanced_accuracy", "data_volume", "class_balance", "expert_reviews", "go_classes"]:
+    check(f"Signal {sig_name} exists", sig_name in sigs)
+    check(f"Signal {sig_name} has value", "value" in sigs.get(sig_name, {}))
+    check(f"Signal {sig_name} has status", sigs.get(sig_name, {}).get("status") in ("GREEN", "AMBER", "RED"))
+# Class decisions
+check("Has class_decisions", isinstance(dd.get("class_decisions"), list) and len(dd["class_decisions"]) >= 2)
+cd0 = dd["class_decisions"][0]
+check("CD has class", isinstance(cd0.get("class"), str))
+check("CD has recall", isinstance(cd0.get("recall"), (int, float)))
+check("CD has precision", isinstance(cd0.get("precision"), (int, float)))
+check("CD has support", isinstance(cd0.get("support"), int))
+check("CD has decision", cd0.get("decision") in ("GO", "CONDITIONAL", "NO-GO"))
+check("CD has reason", isinstance(cd0.get("reason"), str))
+# Scenarios
+check("Has scenarios", isinstance(dd.get("scenarios"), dict))
+for sc in ["best_case", "expected", "worst_case"]:
+    check(f"Scenario {sc} exists", sc in dd.get("scenarios", {}))
+    check(f"Scenario {sc} has accuracy", isinstance(dd["scenarios"][sc].get("accuracy"), (int, float)))
+    check(f"Scenario {sc} has risk", isinstance(dd["scenarios"][sc].get("risk"), str))
+# Recommended actions
+check("Has recommended_actions", isinstance(dd.get("recommended_actions"), list))
+# Plot and brief
+check("Has plot", isinstance(dd.get("plot"), str) and len(dd["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(dd.get("stakeholder_brief"), dict))
+dsb = dd.get("stakeholder_brief", {})
+check("Brief has headline", isinstance(dsb.get("headline"), str))
+check("Brief has risk_level", dsb.get("risk_level") in ("GREEN", "AMBER", "RED"))
+check("Brief has action", isinstance(dsb.get("action"), str))
+# Test with different well
+dd6 = api("POST", "/api/report/decision-dashboard", {"well": "6P", "source": "demo"}, timeout=120)
+check("6P returns result", dd6 is not None and dd6.get("well") == "6P")
+check("6P has decision", dd6.get("overall_decision") in ("GO", "CONDITIONAL", "NO-GO"))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.17.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.18.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

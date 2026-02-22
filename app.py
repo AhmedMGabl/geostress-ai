@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.17.0 - Pore Pressure + Hetero-Ensemble + Anomaly Detection)."""
+"""GeoStress AI - FastAPI Web Application (v3.18.0 - Pore Pressure + Hetero-Ensemble + Anomaly Detection)."""
 
 import os
 import io
@@ -968,7 +968,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.17.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.18.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -12494,6 +12494,369 @@ async def anomaly_detection(request: Request):
     return result
 
 
+# ── Geological Context & Well Comparison ──────────────────────────────
+
+_geo_context_cache = BoundedCache(10)
+
+@app.post("/api/analysis/geological-context")
+async def geological_context(request: Request):
+    """Provide geological interpretation of fracture data and stress results."""
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    cache_key = f"geo:{source}"
+    if cache_key in _geo_context_cache:
+        return _geo_context_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from scipy.stats import circmean, circstd
+
+        wells = list(df[WELL_COL].unique()) if WELL_COL in df.columns else ["all"]
+        well_analyses = []
+
+        for well in wells:
+            df_w = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+            azimuths = df_w[AZIMUTH_COL].values if AZIMUTH_COL in df_w.columns else np.array([])
+            dips = df_w[DIP_COL].values if DIP_COL in df_w.columns else np.array([])
+            depths = df_w[DEPTH_COL].values if DEPTH_COL in df_w.columns else np.array([])
+
+            if len(azimuths) > 0:
+                mean_az = float(np.degrees(circmean(np.radians(azimuths * 2)) / 2) % 180)
+                std_az = float(np.degrees(circstd(np.radians(azimuths * 2)) / 2))
+            else:
+                mean_az, std_az = 0, 0
+
+            mean_dip = float(np.mean(dips)) if len(dips) > 0 else 0
+            std_dip = float(np.std(dips)) if len(dips) > 0 else 0
+
+            # Fracture set identification
+            sets = []
+            if len(azimuths) > 5:
+                from sklearn.cluster import KMeans
+                from sklearn.metrics import silhouette_score
+                az_features = np.column_stack([np.sin(np.radians(azimuths * 2)), np.cos(np.radians(azimuths * 2))])
+                best_k, best_score = 2, -1
+                for k in range(2, min(5, len(azimuths) // 5)):
+                    km = KMeans(n_clusters=k, random_state=42, n_init=10)
+                    labels = km.fit_predict(az_features)
+                    try:
+                        sc = silhouette_score(az_features, labels)
+                        if sc > best_score:
+                            best_score, best_k = sc, k
+                    except Exception:
+                        pass
+                km = KMeans(n_clusters=best_k, random_state=42, n_init=10)
+                labels = km.fit_predict(az_features)
+                for k_i in range(best_k):
+                    mask = labels == k_i
+                    set_az = azimuths[mask]
+                    set_dip = dips[mask] if len(dips) > 0 else np.array([])
+                    set_mean_az = float(np.degrees(circmean(np.radians(set_az * 2)) / 2) % 180)
+                    dip_label = (f"high-angle ({np.mean(set_dip):.0f}°)" if len(set_dip) > 0 and np.mean(set_dip) > 60
+                                 else f"moderate ({np.mean(set_dip):.0f}°)" if len(set_dip) > 0 and np.mean(set_dip) > 30
+                                 else f"low-angle ({np.mean(set_dip):.0f}°)" if len(set_dip) > 0 else "unknown dip")
+                    sets.append({
+                        "set_id": k_i + 1, "count": int(mask.sum()),
+                        "mean_azimuth": round(set_mean_az, 1),
+                        "mean_dip": round(float(np.mean(set_dip)), 1) if len(set_dip) > 0 else None,
+                        "interpretation": f"Strike ~{set_mean_az:.0f}°, {dip_label}",
+                    })
+
+            # Depth zones
+            depth_zones = []
+            if len(depths) > 10:
+                p33, p66 = np.percentile(depths, 33), np.percentile(depths, 66)
+                for zname, zmask in [("shallow", depths <= p33), ("middle", (depths > p33) & (depths <= p66)), ("deep", depths > p66)]:
+                    if zmask.sum() == 0:
+                        continue
+                    zone_az = azimuths[zmask] if len(azimuths) > 0 else np.array([])
+                    zone_dip = dips[zmask] if len(dips) > 0 else np.array([])
+                    depth_zones.append({
+                        "zone": zname,
+                        "depth_range": f"{depths[zmask].min():.0f}-{depths[zmask].max():.0f} m",
+                        "count": int(zmask.sum()),
+                        "mean_azimuth": round(float(np.degrees(circmean(np.radians(zone_az * 2)) / 2) % 180), 1) if len(zone_az) > 2 else None,
+                        "mean_dip": round(float(np.mean(zone_dip)), 1) if len(zone_dip) > 0 else None,
+                    })
+
+            # Tectonic regime inference
+            if mean_dip > 60:
+                regime, detail = "Extensional (Normal Faulting)", "Steep fractures indicate extensional regime, vertical S1."
+            elif mean_dip < 30:
+                regime, detail = "Compressional (Thrust Faulting)", "Shallow fractures indicate compressional regime, horizontal S1."
+            else:
+                regime, detail = "Strike-Slip", "Moderate dips indicate strike-slip regime, S2 vertical."
+
+            type_dist = {}
+            if FRACTURE_TYPE_COL in df_w.columns:
+                type_dist = {str(k): int(v) for k, v in df_w[FRACTURE_TYPE_COL].value_counts().to_dict().items()}
+
+            well_analyses.append({
+                "well": well, "n_fractures": len(df_w),
+                "depth_range": f"{depths.min():.0f}-{depths.max():.0f} m" if len(depths) > 0 else "N/A",
+                "mean_azimuth": round(mean_az, 1), "azimuth_spread": round(std_az, 1),
+                "mean_dip": round(mean_dip, 1), "dip_spread": round(std_dip, 1),
+                "inferred_regime": regime, "regime_detail": detail,
+                "fracture_sets": sets, "depth_zones": depth_zones, "type_distribution": type_dist,
+            })
+
+        # Cross-well comparison
+        comparison = None
+        if len(well_analyses) >= 2:
+            w1, w2 = well_analyses[0], well_analyses[1]
+            az_diff = abs(w1["mean_azimuth"] - w2["mean_azimuth"])
+            if az_diff > 90: az_diff = 180 - az_diff
+            dip_diff = abs(w1["mean_dip"] - w2["mean_dip"])
+            same_regime = w1["inferred_regime"] == w2["inferred_regime"]
+            comparison = {
+                "wells": [w1["well"], w2["well"]],
+                "azimuth_difference": round(az_diff, 1), "dip_difference": round(dip_diff, 1),
+                "same_regime": same_regime,
+                "interpretation": (
+                    f"Wells {w1['well']} and {w2['well']} "
+                    + (f"share {w1['inferred_regime']} regime. " if same_regime else
+                       f"differ: {w1['inferred_regime']} vs {w2['inferred_regime']}. ")
+                    + f"Az offset: {az_diff:.0f}°, dip offset: {dip_diff:.0f}°. "
+                    + ("Structural heterogeneity limits cross-well transfer." if az_diff > 20 or dip_diff > 15 else
+                       "Similar geology — cross-well predictions viable.")
+                ),
+            }
+
+        # Plot
+        with plot_lock:
+            import numpy as np
+            n_w = len(well_analyses)
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            for i, wa in enumerate(well_analyses[:2]):
+                ax = axes[i]
+                if wa["fracture_sets"]:
+                    slabels = [f"Set {s['set_id']}\n({s['count']})" for s in wa["fracture_sets"]]
+                    scounts = [s["count"] for s in wa["fracture_sets"]]
+                    ax.pie(scounts, labels=slabels, autopct="%1.0f%%",
+                          colors=["#2E86AB", "#E8630A", "#28a745", "#dc3545"][:len(scounts)], startangle=90)
+                ax.set_title(f"{wa['well']}: {wa['inferred_regime']}\n({wa['n_fractures']} fractures)")
+
+            ax3 = axes[2]
+            if n_w >= 2:
+                cats = ["Mean Az", "Az Spread", "Mean Dip", "Dip Spread"]
+                v1 = [well_analyses[0][k] for k in ["mean_azimuth", "azimuth_spread", "mean_dip", "dip_spread"]]
+                v2 = [well_analyses[1][k] for k in ["mean_azimuth", "azimuth_spread", "mean_dip", "dip_spread"]]
+                x = np.arange(len(cats))
+                ax3.bar(x - 0.2, v1, 0.35, label=well_analyses[0]["well"], color="#2E86AB")
+                ax3.bar(x + 0.2, v2, 0.35, label=well_analyses[1]["well"], color="#E8630A")
+                ax3.set_xticks(x); ax3.set_xticklabels(cats, fontsize=8)
+                ax3.set_title("Well Comparison"); ax3.legend()
+            ax3.spines["top"].set_visible(False); ax3.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "n_wells": len(well_analyses), "wells": well_analyses,
+            "cross_well_comparison": comparison, "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Geological context: {len(well_analyses)} wells, {well_analyses[0]['inferred_regime'] if well_analyses else 'N/A'}",
+                "risk_level": "GREEN" if comparison and comparison.get("same_regime") else "AMBER",
+                "confidence_sentence": (
+                    f"Analyzed {sum(wa['n_fractures'] for wa in well_analyses)} fractures across {len(well_analyses)} wells. "
+                    + (comparison["interpretation"] if comparison else "Single well analysis.")
+                ),
+                "action": ("Wells differ — use well-specific models." if comparison and not comparison.get("same_regime") else
+                          "Similar geology — cross-well transfer viable."),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _geo_context_cache[cache_key] = result
+    return result
+
+
+# ── Decision Confidence Dashboard ──────────────────────────────────────
+
+_decision_dashboard_cache = BoundedCache(10)
+
+@app.post("/api/report/decision-dashboard")
+async def decision_dashboard(request: Request):
+    """Comprehensive decision-support dashboard aggregating ALL quality signals."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"{well}:{source}"
+    if cache_key in _decision_dashboard_cache:
+        return _decision_dashboard_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.metrics import accuracy_score, f1_score, balanced_accuracy_score, classification_report
+        from sklearn.base import clone
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        features = engineer_enhanced_features(df_well)
+        labels = df_well[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        class_names = le.classes_.tolist()
+
+        all_models = _get_models()
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+            preds = cross_val_predict(model, X, y, cv=cv)
+
+        acc = float(accuracy_score(y, preds))
+        f1 = float(f1_score(y, preds, average="weighted", zero_division=0))
+        bal_acc = float(balanced_accuracy_score(y, preds))
+        report = classification_report(y, preds, target_names=class_names, output_dict=True, zero_division=0)
+
+        class_decisions = []
+        for cn in class_names:
+            recall = report.get(cn, {}).get("recall", 0)
+            support = report.get(cn, {}).get("support", 0)
+            if recall >= 0.8 and support >= 20: decision = "GO"
+            elif recall >= 0.5 or support >= 10: decision = "CONDITIONAL"
+            else: decision = "NO-GO"
+            class_decisions.append({
+                "class": cn, "recall": round(recall, 3),
+                "precision": round(report.get(cn, {}).get("precision", 0), 3),
+                "support": int(support), "decision": decision,
+                "reason": f"Recall {recall:.0%}, {support} samples" +
+                          (f" — too few" if support < 10 else "") +
+                          (f" — recall low" if recall < 0.5 else ""),
+            })
+
+        n_total = len(y)
+        class_counts = {cn: int((y == i).sum()) for i, cn in enumerate(class_names)}
+        imbalance = max(class_counts.values()) / (min(class_counts.values()) + 1)
+
+        stats = db_stats()
+        n_reviews = stats.get("total_reviews", 0)
+        review_coverage = min(1.0, n_reviews / max(n_total * 0.05, 1))
+
+        go_classes = sum(1 for cd in class_decisions if cd["decision"] == "GO")
+        nogo_classes = sum(1 for cd in class_decisions if cd["decision"] == "NO-GO")
+        n_classes = len(class_decisions)
+
+        signals = {
+            "model_accuracy": {"value": round(acc, 3), "status": "GREEN" if acc >= 0.85 else ("AMBER" if acc >= 0.7 else "RED")},
+            "balanced_accuracy": {"value": round(bal_acc, 3), "status": "GREEN" if bal_acc >= 0.7 else ("AMBER" if bal_acc >= 0.5 else "RED")},
+            "data_volume": {"value": n_total, "status": "GREEN" if n_total >= 2000 else ("AMBER" if n_total >= 500 else "RED")},
+            "class_balance": {"value": round(imbalance, 1), "status": "GREEN" if imbalance < 5 else ("AMBER" if imbalance < 20 else "RED")},
+            "expert_reviews": {"value": n_reviews, "status": "GREEN" if review_coverage >= 0.8 else ("AMBER" if review_coverage >= 0.3 else "RED")},
+            "go_classes": {"value": f"{go_classes}/{n_classes}", "status": "GREEN" if go_classes == n_classes else ("AMBER" if nogo_classes == 0 else "RED")},
+        }
+
+        red_count = sum(1 for s in signals.values() if s["status"] == "RED")
+        amber_count = sum(1 for s in signals.values() if s["status"] == "AMBER")
+
+        if red_count >= 2 or nogo_classes >= 2:
+            overall_decision, overall_color = "NO-GO", "RED"
+        elif red_count >= 1 or amber_count >= 3 or nogo_classes >= 1:
+            overall_decision, overall_color = "CONDITIONAL", "AMBER"
+        else:
+            overall_decision, overall_color = "GO", "GREEN"
+
+        scenarios = {
+            "best_case": {"description": "All classes at best recall", "accuracy": round(acc + 0.05, 3),
+                         "risk": "Low — model performs as expected"},
+            "expected": {"description": "Current performance", "accuracy": round(acc, 3),
+                        "risk": f"{'Low' if acc >= 0.85 else 'Moderate' if acc >= 0.7 else 'High'} — {nogo_classes} NO-GO class(es)"},
+            "worst_case": {"description": "Minority classes fail + drift", "accuracy": round(max(0.3, acc - 0.15), 3),
+                          "risk": "High — misclassification risk"},
+        }
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            signal_names = list(signals.keys())
+            scolors = {"GREEN": "#28a745", "AMBER": "#ffc107", "RED": "#dc3545"}
+            for i, name in enumerate(signal_names):
+                c = scolors[signals[name]["status"]]
+                ax1.barh(i, 1, color=c, alpha=0.8)
+                ax1.text(0.5, i, f"{name}: {signals[name]['value']}", ha="center", va="center", fontsize=8,
+                        color="white" if signals[name]["status"] == "RED" else "black")
+            ax1.set_yticks([]); ax1.set_xticks([])
+            ax1.set_title(f"Decision: {overall_decision}", fontsize=12, fontweight="bold"); ax1.set_xlim(0, 1)
+
+            ax2 = axes[1]
+            dcolors = {"GO": "#28a745", "CONDITIONAL": "#ffc107", "NO-GO": "#dc3545"}
+            for i, cd in enumerate(class_decisions):
+                ax2.barh(i, cd["recall"], color=dcolors[cd["decision"]], alpha=0.8)
+                ax2.text(max(cd["recall"] + 0.02, 0.15), i,
+                        f"{cd['class'][:12]}: {cd['decision']} ({cd['recall']:.0%})", va="center", fontsize=8)
+            ax2.set_yticks([]); ax2.set_xlabel("Recall"); ax2.set_title("Per-Class"); ax2.set_xlim(0, 1.1)
+            ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            sc_accs = [scenarios[k]["accuracy"] for k in ("best_case", "expected", "worst_case")]
+            bars = ax3.bar(["Best", "Expected", "Worst"], sc_accs, color=["#28a745", "#ffc107", "#dc3545"])
+            ax3.set_ylabel("Accuracy"); ax3.set_title("Scenarios"); ax3.set_ylim(0, 1)
+            for b, v in zip(bars, sc_accs): ax3.text(b.get_x() + b.get_width()/2, v + 0.02, f"{v:.0%}", ha="center")
+            ax3.spines["top"].set_visible(False); ax3.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        recommended_actions = []
+        if signals["data_volume"]["status"] != "GREEN":
+            recommended_actions.append("Collect more fracture data (target 500+ per well).")
+        if signals["class_balance"]["status"] != "GREEN":
+            min_cls = min(class_counts, key=class_counts.get)
+            recommended_actions.append(f"Address class imbalance: '{min_cls}' has only {class_counts[min_cls]} samples.")
+        if signals["expert_reviews"]["status"] != "GREEN":
+            recommended_actions.append("Submit expert feedback via RLHF review queue to improve model confidence.")
+        if nogo_classes > 0:
+            nogo_names = [cd["class"] for cd in class_decisions if cd["decision"] == "NO-GO"]
+            recommended_actions.append(f"Focus data collection on NO-GO classes: {', '.join(nogo_names)}.")
+        if signals["balanced_accuracy"]["status"] == "RED":
+            recommended_actions.append("Use balanced classification (SMOTE) to improve minority class recall.")
+
+        return {
+            "well": well, "overall_decision": overall_decision, "overall_color": overall_color,
+            "n_samples": n_total, "accuracy": round(acc, 4), "f1": round(f1, 4),
+            "balanced_accuracy": round(bal_acc, 4), "signals": signals,
+            "class_decisions": class_decisions, "scenarios": scenarios, "plot": plot_img,
+            "recommended_actions": recommended_actions,
+            "stakeholder_brief": {
+                "headline": f"Decision Dashboard: {overall_decision} for {well} ({acc:.1%} accuracy)",
+                "risk_level": overall_color,
+                "confidence_sentence": (
+                    f"6 signals: {6 - red_count - amber_count} GREEN, {amber_count} AMBER, {red_count} RED. "
+                    f"Per-class: {go_classes} GO, {n_classes - go_classes - nogo_classes} CONDITIONAL, {nogo_classes} NO-GO. "
+                    f"Expected: {acc:.1%} (worst: {scenarios['worst_case']['accuracy']:.1%})."
+                ),
+                "action": ("Approved for operational use." if overall_decision == "GO" else
+                          f"Conditional: {red_count} RED signals to resolve." if overall_decision == "CONDITIONAL" else
+                          f"NOT recommended: {red_count} critical issues."),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _decision_dashboard_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -13585,7 +13948,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.17.0",
+        "app_version": "3.18.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else
