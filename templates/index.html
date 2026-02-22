@@ -624,6 +624,47 @@
                         </div>
                     </div>
 
+                    <!-- Data Collection Planner -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-clipboard2-data"></i> Data Collection Planner</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runCollectionPlanner()">
+                                <i class="bi bi-play-fill"></i> Analyze Gaps
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Identifies class imbalance gaps, depth coverage holes, and estimates accuracy gain from collecting more data. Provides prioritized actions for field teams.</p>
+                            <div id="cp-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Priority Actions</div><div class="metric-value" id="cp-n-actions">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Current Accuracy</div><div class="metric-value" id="cp-current-acc">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Projected (2x data)</div><div class="metric-value" id="cp-projected-acc">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Risk</div><div class="metric-value" id="cp-risk">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="cp-brief"></div>
+                                <h6>Class Balance Gaps</h6>
+                                <div class="table-responsive mb-3">
+                                    <table class="table table-sm table-hover">
+                                        <thead class="table-light"><tr><th>Well</th><th>Class</th><th>Current</th><th>Target</th><th>Gap</th><th>Priority</th><th>Action</th></tr></thead>
+                                        <tbody id="cp-class-body"></tbody>
+                                    </table>
+                                </div>
+                                <h6>Depth Coverage</h6>
+                                <div class="table-responsive mb-3">
+                                    <table class="table table-sm table-hover">
+                                        <thead class="table-light"><tr><th>Well</th><th>Depth Range</th><th>Count</th><th>Density %</th><th>Status</th></tr></thead>
+                                        <tbody id="cp-depth-body"></tbody>
+                                    </table>
+                                </div>
+                                <div id="cp-priorities" class="d-none">
+                                    <h6>Prioritized Actions</h6>
+                                    <ul id="cp-priority-list" class="small"></ul>
+                                </div>
+                                <div class="text-center"><img id="cp-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
@@ -1772,6 +1813,39 @@
                                         </table>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Model Significance Testing -->
+                    <div class="card border-dark mb-3">
+                        <div class="card-header bg-dark text-white py-2">
+                            <i class="bi bi-graph-up-arrow"></i> <strong>Model Significance Testing</strong>
+                            <small class="text-white-50 ms-2">Are differences between models real?</small>
+                        </div>
+                        <div class="card-body py-2">
+                            <p class="text-muted small mb-2">
+                                Runs all classifiers and performs pairwise McNemar's test to determine if accuracy
+                                differences are statistically significant (p&lt;0.05). Prevents over-reading noise.
+                            </p>
+                            <button class="btn btn-dark btn-sm" onclick="runModelSignificance()">
+                                <i class="bi bi-calculator"></i> Run Significance Test
+                            </button>
+                            <div id="msig-results" class="d-none mt-2">
+                                <div class="row g-2 mb-2">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Model</div><div class="metric-value" id="msig-best">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Accuracy</div><div class="metric-value" id="msig-acc">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Sig. Better Than</div><div class="metric-value" id="msig-sig-count">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Models Tested</div><div class="metric-value" id="msig-n-models">--</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="msig-verdict"></div>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover">
+                                        <thead class="table-light"><tr><th>Rank</th><th>Model</th><th>Accuracy</th><th>F1</th><th>Balanced Acc</th><th>Time (s)</th></tr></thead>
+                                        <tbody id="msig-table-body"></tbody>
+                                    </table>
+                                </div>
+                                <div class="text-center"><img id="msig-plot" class="img-fluid" style="max-width:800px" /></div>
                             </div>
                         </div>
                     </div>

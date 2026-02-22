@@ -1313,10 +1313,71 @@ dd6 = api("POST", "/api/report/decision-dashboard", {"well": "6P", "source": "de
 check("6P returns result", dd6 is not None and dd6.get("well") == "6P")
 check("6P has decision", dd6.get("overall_decision") in ("GO", "CONDITIONAL", "NO-GO"))
 
+# ── [70] Model Significance Testing ─────────────────────
+print("\n[70] Model Significance Testing")
+ms = api("POST", "/api/analysis/model-significance", {"well": "3P", "source": "demo"}, timeout=300)
+check("Status 200", ms is not None)
+check("Has well", ms.get("well") == "3P")
+check("Has n_models", isinstance(ms.get("n_models"), int) and ms["n_models"] >= 2)
+check("Has n_samples", isinstance(ms.get("n_samples"), int) and ms["n_samples"] > 0)
+check("Has class_names", isinstance(ms.get("class_names"), list))
+check("Has models list", isinstance(ms.get("models"), list) and len(ms["models"]) >= 2)
+m0 = ms["models"][0]
+check("Model has model name", isinstance(m0.get("model"), str))
+check("Model has accuracy", isinstance(m0.get("accuracy"), (int, float)) and 0 <= m0["accuracy"] <= 1)
+check("Model has f1", isinstance(m0.get("f1"), (int, float)))
+check("Model has balanced_accuracy", isinstance(m0.get("balanced_accuracy"), (int, float)))
+check("Model has time_s", isinstance(m0.get("time_s"), (int, float)))
+check("Has significance_matrix", isinstance(ms.get("significance_matrix"), list))
+sm0 = ms["significance_matrix"][0]
+check("SM has model", isinstance(sm0.get("model"), str))
+check("SM has comparisons", isinstance(sm0.get("comparisons"), dict))
+check("Has recommendation", isinstance(ms.get("recommendation"), dict))
+rec = ms.get("recommendation", {})
+check("Rec has best_model", isinstance(rec.get("best_model"), str))
+check("Rec has accuracy", isinstance(rec.get("accuracy"), (int, float)))
+check("Rec has significantly_better_than", isinstance(rec.get("significantly_better_than"), int))
+check("Rec has verdict", isinstance(rec.get("verdict"), str))
+check("Has plot", isinstance(ms.get("plot"), str) and len(ms["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(ms.get("stakeholder_brief"), dict))
+
+# ── [71] Data Collection Planner ────────────────────────
+print("\n[71] Data Collection Planner")
+cp = api("POST", "/api/data/collection-planner", {"source": "demo"}, timeout=120)
+check("Status 200", cp is not None)
+check("Has n_wells", isinstance(cp.get("n_wells"), int) and cp["n_wells"] >= 1)
+check("Has wells list", isinstance(cp.get("wells"), list) and len(cp["wells"]) >= 1)
+w0 = cp["wells"][0]
+check("Well has well name", isinstance(w0.get("well"), str))
+check("Well has total_samples", isinstance(w0.get("total_samples"), int) and w0["total_samples"] > 0)
+check("Well has class_gaps", isinstance(w0.get("class_gaps"), list) and len(w0["class_gaps"]) >= 1)
+cg0 = w0["class_gaps"][0]
+check("CG has class", isinstance(cg0.get("class"), str))
+check("CG has current_count", isinstance(cg0.get("current_count"), int))
+check("CG has ideal_count", isinstance(cg0.get("ideal_count"), int))
+check("CG has gap", isinstance(cg0.get("gap"), int))
+check("CG has priority", cg0.get("priority") in ("HIGH", "MEDIUM", "LOW"))
+check("CG has action", isinstance(cg0.get("action"), str))
+check("Well has depth_gaps", isinstance(w0.get("depth_gaps"), list) and len(w0["depth_gaps"]) >= 1)
+dg0 = w0["depth_gaps"][0]
+check("DG has range", isinstance(dg0.get("range"), str))
+check("DG has count", isinstance(dg0.get("count"), int))
+check("DG has density", isinstance(dg0.get("density"), (int, float)))
+check("DG has status", dg0.get("status") in ("OK", "SPARSE"))
+check("Well has current_accuracy", isinstance(w0.get("current_accuracy"), (int, float)))
+check("Well has projected_accuracy_2x", isinstance(w0.get("projected_accuracy_2x"), (int, float)))
+check("Has priorities", isinstance(cp.get("priorities"), list))
+check("Has n_priorities", isinstance(cp.get("n_priorities"), int))
+check("Has plot", isinstance(cp.get("plot"), str) and len(cp["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(cp.get("stakeholder_brief"), dict))
+sb = cp.get("stakeholder_brief", {})
+check("Brief has headline", isinstance(sb.get("headline"), str))
+check("Brief has risk_level", sb.get("risk_level") in ("GREEN", "AMBER", "RED"))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.18.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.19.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

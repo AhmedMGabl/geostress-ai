@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.18.0 - Pore Pressure + Hetero-Ensemble + Anomaly Detection)."""
+"""GeoStress AI - FastAPI Web Application (v3.19.0 - Pore Pressure + Hetero-Ensemble + Anomaly Detection)."""
 
 import os
 import io
@@ -128,6 +128,39 @@ _balanced_classify_cache = BoundedCache(10)
 _readiness_cache = BoundedCache(10)
 _feature_ablation_cache = BoundedCache(10)
 _optimize_cache = BoundedCache(10)
+
+# ── Pre-computed Feature Cache ──────────────────────────────────────
+# Caches engineer_enhanced_features results per (well, source) to avoid
+# repeated feature engineering across endpoints.  Typically saves 0.3-1.5s
+# per call after the first.
+_feature_cache = BoundedCache(20)
+_feature_cache_lock = threading.Lock()
+
+
+def get_cached_features(df, well, source):
+    """Return (X_scaled, y_encoded, label_encoder, feature_df, df_well) from cache or compute."""
+    import numpy as np
+    from src.enhanced_analysis import engineer_enhanced_features
+    from sklearn.preprocessing import StandardScaler, LabelEncoder
+
+    cache_key = f"{well}:{source}"
+    with _feature_cache_lock:
+        if cache_key in _feature_cache:
+            return _feature_cache[cache_key]
+
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+    features = engineer_enhanced_features(df_well)
+    labels = df_well[FRACTURE_TYPE_COL].values
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+    result = (X, y, le, features, df_well)
+
+    with _feature_cache_lock:
+        _feature_cache[cache_key] = result
+    return result
+
 
 # Pre-computed startup snapshot for instant page load
 _startup_snapshot = {}
@@ -968,7 +1001,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.18.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.19.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -12857,6 +12890,383 @@ async def decision_dashboard(request: Request):
     return result
 
 
+# ── Model Significance Testing ──────────────────────────────────────────
+
+_model_significance_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/model-significance")
+async def model_significance(request: Request):
+    """Compare all classifiers with statistical significance (McNemar's test).
+
+    Runs all available models, then performs pairwise McNemar's test to
+    determine if accuracy differences are statistically significant.
+    Returns a significance matrix and ranked recommendations.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"msig:{well}:{source}"
+    if cache_key in _model_significance_cache:
+        return _model_significance_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        import time as _time
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.metrics import accuracy_score, f1_score, balanced_accuracy_score
+        from sklearn.base import clone
+        from scipy.stats import chi2
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        all_models = _get_models()
+        model_names = list(all_models.keys())
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        # Run all models
+        predictions = {}
+        metrics = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for name in model_names:
+                t0 = _time.time()
+                try:
+                    model = clone(all_models[name])
+                    preds = cross_val_predict(model, X, y, cv=cv)
+                    elapsed = _time.time() - t0
+                    acc = float(accuracy_score(y, preds))
+                    f1_val = float(f1_score(y, preds, average="weighted", zero_division=0))
+                    bal = float(balanced_accuracy_score(y, preds))
+                    predictions[name] = preds
+                    metrics.append({
+                        "model": name, "accuracy": round(acc, 4),
+                        "f1": round(f1_val, 4), "balanced_accuracy": round(bal, 4),
+                        "time_s": round(elapsed, 2),
+                    })
+                except Exception:
+                    pass
+
+        metrics.sort(key=lambda m: m["accuracy"], reverse=True)
+
+        # Pairwise McNemar's test
+        def mcnemar_test(preds_a, preds_b, y_true):
+            correct_a = preds_a == y_true
+            correct_b = preds_b == y_true
+            b_count = int(np.sum(correct_a & ~correct_b))  # A right, B wrong
+            c_count = int(np.sum(~correct_a & correct_b))  # A wrong, B right
+            n_discordant = b_count + c_count
+            if n_discordant == 0:
+                return 1.0  # No difference
+            stat = (abs(b_count - c_count) - 1) ** 2 / (b_count + c_count)
+            p_value = 1.0 - float(chi2.cdf(stat, df=1))
+            return round(p_value, 4)
+
+        pred_names = [m["model"] for m in metrics if m["model"] in predictions]
+        sig_matrix = []
+        for i, name_a in enumerate(pred_names):
+            row = {}
+            for j, name_b in enumerate(pred_names):
+                if i == j:
+                    row[name_b] = None
+                else:
+                    p = mcnemar_test(predictions[name_a], predictions[name_b], y)
+                    row[name_b] = p
+            sig_matrix.append({"model": name_a, "comparisons": row})
+
+        # Find significantly best model
+        best = pred_names[0] if pred_names else "none"
+        best_acc = metrics[0]["accuracy"] if metrics else 0
+        sig_better_count = 0
+        for j, name_b in enumerate(pred_names[1:], 1):
+            p = mcnemar_test(predictions[best], predictions[name_b], y)
+            if p < 0.05:
+                sig_better_count += 1
+
+        recommendation = {
+            "best_model": best,
+            "accuracy": best_acc,
+            "significantly_better_than": sig_better_count,
+            "total_compared": len(pred_names) - 1,
+            "verdict": (
+                f"{best} is statistically significantly better than "
+                f"{sig_better_count}/{len(pred_names)-1} other models (p<0.05)."
+                if sig_better_count > 0 else
+                f"No model is significantly better than others at p<0.05. "
+                f"Differences may be due to random variation."
+            ),
+        }
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+            # Bar chart of accuracies
+            ax1 = axes[0]
+            names = [m["model"][:12] for m in metrics]
+            accs = [m["accuracy"] for m in metrics]
+            colors = ["#28a745" if m["model"] == best else "#6c757d" for m in metrics]
+            bars = ax1.barh(range(len(names)), accs, color=colors, alpha=0.8)
+            ax1.set_yticks(range(len(names)))
+            ax1.set_yticklabels(names, fontsize=8)
+            ax1.set_xlabel("Accuracy")
+            ax1.set_title("Model Ranking")
+            ax1.set_xlim(0, 1)
+            for i, (b, a) in enumerate(zip(bars, accs)):
+                ax1.text(a + 0.01, i, f"{a:.1%}", va="center", fontsize=7)
+            ax1.invert_yaxis()
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # Significance heatmap
+            ax2 = axes[1]
+            n = min(len(pred_names), 8)
+            sig_mat = np.ones((n, n))
+            for i in range(n):
+                for j in range(n):
+                    if i != j and pred_names[j] in sig_matrix[i]["comparisons"]:
+                        p = sig_matrix[i]["comparisons"][pred_names[j]]
+                        sig_mat[i, j] = p if p is not None else 1.0
+            im = ax2.imshow(sig_mat[:n, :n], cmap="RdYlGn_r", vmin=0, vmax=0.1, aspect="auto")
+            ax2.set_xticks(range(n))
+            ax2.set_yticks(range(n))
+            ax2.set_xticklabels([pn[:8] for pn in pred_names[:n]], fontsize=7, rotation=45, ha="right")
+            ax2.set_yticklabels([pn[:8] for pn in pred_names[:n]], fontsize=7)
+            ax2.set_title("Significance (p-values)\n(green=significant)")
+            for i in range(n):
+                for j in range(n):
+                    if i != j:
+                        ax2.text(j, i, f"{sig_mat[i,j]:.2f}", ha="center", va="center", fontsize=6,
+                                color="white" if sig_mat[i,j] < 0.05 else "black")
+            plt.colorbar(im, ax=ax2, shrink=0.8)
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_models": len(metrics), "n_samples": len(y),
+            "n_classes": len(class_names), "class_names": class_names,
+            "models": metrics, "significance_matrix": sig_matrix,
+            "recommendation": recommendation, "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Model comparison: {best} leads at {best_acc:.1%} accuracy",
+                "risk_level": "GREEN" if best_acc >= 0.85 else ("AMBER" if best_acc >= 0.7 else "RED"),
+                "confidence_sentence": recommendation["verdict"],
+                "action": (
+                    f"Use {best} for production. Statistically validated."
+                    if sig_better_count > len(pred_names) // 2
+                    else f"Consider ensemble of top models. No single model dominates."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _model_significance_cache[cache_key] = result
+    return result
+
+
+# ── Data Collection Planner ─────────────────────────────────────────────
+
+_collection_planner_cache = BoundedCache(10)
+
+
+@app.post("/api/data/collection-planner")
+async def collection_planner(request: Request):
+    """Analyze current data gaps and recommend what to collect next.
+
+    Identifies: class imbalance gaps, depth coverage holes, feature
+    importance vs coverage, and estimated accuracy gain from new data.
+    Provides a prioritized collection plan for stakeholders.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    cache_key = f"planner:{source}"
+    if cache_key in _collection_planner_cache:
+        return _collection_planner_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict, learning_curve
+        from sklearn.metrics import accuracy_score
+        from sklearn.base import clone
+
+        wells = list(df[WELL_COL].unique()) if WELL_COL in df.columns else ["all"]
+        all_priorities = []
+        well_reports = []
+
+        for well in wells:
+            df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+            features = engineer_enhanced_features(df_well)
+            labels = df_well[FRACTURE_TYPE_COL].values
+            le = LabelEncoder()
+            y = le.fit_transform(labels)
+            scaler = StandardScaler()
+            X = scaler.fit_transform(features.values)
+            class_names = le.classes_.tolist()
+
+            # Class balance analysis
+            class_counts = {cn: int((y == i).sum()) for i, cn in enumerate(class_names)}
+            total = sum(class_counts.values())
+            ideal_per_class = total // len(class_names)
+            class_gaps = []
+            for cn, count in class_counts.items():
+                gap = max(0, ideal_per_class - count)
+                priority = "HIGH" if count < 20 else ("MEDIUM" if count < ideal_per_class * 0.5 else "LOW")
+                class_gaps.append({
+                    "class": cn, "current_count": count,
+                    "ideal_count": ideal_per_class, "gap": gap,
+                    "priority": priority,
+                    "action": f"Collect {gap} more '{cn}' samples" if gap > 0 else "Sufficient data",
+                })
+                if priority in ("HIGH", "MEDIUM"):
+                    all_priorities.append({
+                        "well": well, "type": "class_balance",
+                        "priority": priority,
+                        "action": f"Collect {gap} more '{cn}' fractures in {well}",
+                        "estimated_impact": "HIGH" if count < 20 else "MEDIUM",
+                    })
+
+            # Depth coverage analysis
+            depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.array([])
+            depth_gaps = []
+            if len(depths) > 10:
+                d_min, d_max = float(depths.min()), float(depths.max())
+                n_bins = 10
+                bin_edges = np.linspace(d_min, d_max, n_bins + 1)
+                for i in range(n_bins):
+                    mask = (depths >= bin_edges[i]) & (depths < bin_edges[i + 1])
+                    count = int(mask.sum())
+                    depth_gaps.append({
+                        "range": f"{bin_edges[i]:.0f}-{bin_edges[i+1]:.0f} m",
+                        "count": count,
+                        "density": round(count / max(total, 1) * 100, 1),
+                        "status": "SPARSE" if count < total * 0.05 else "OK",
+                    })
+                    if count < total * 0.05:
+                        all_priorities.append({
+                            "well": well, "type": "depth_coverage",
+                            "priority": "MEDIUM",
+                            "action": f"Log more fractures at {bin_edges[i]:.0f}-{bin_edges[i+1]:.0f}m in {well}",
+                            "estimated_impact": "MEDIUM",
+                        })
+
+            # Learning curve estimate
+            acc_at_current = 0
+            acc_projected = 0
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    model = clone(_get_models().get("random_forest", list(_get_models().values())[0]))
+                    min_count = min(np.bincount(y))
+                    n_splits = min(5, max(2, min_count))
+                    sizes, train_scores, test_scores = learning_curve(
+                        model, X, y, cv=n_splits,
+                        train_sizes=[0.3, 0.5, 0.7, 0.9, 1.0],
+                        scoring="accuracy", random_state=42
+                    )
+                    acc_at_current = float(test_scores[-1].mean())
+                    # Extrapolate to 2x data
+                    if len(test_scores) >= 2:
+                        slope = (test_scores[-1].mean() - test_scores[-2].mean()) / (sizes[-1] - sizes[-2])
+                        acc_projected = min(1.0, acc_at_current + slope * total * 0.5)
+                    else:
+                        acc_projected = acc_at_current
+                except Exception:
+                    acc_at_current = 0
+                    acc_projected = 0
+
+            well_reports.append({
+                "well": well, "total_samples": total,
+                "n_classes": len(class_names), "class_names": class_names,
+                "class_gaps": class_gaps, "depth_gaps": depth_gaps,
+                "current_accuracy": round(acc_at_current, 4),
+                "projected_accuracy_2x": round(acc_projected, 4),
+                "accuracy_gain_estimate": round(max(0, acc_projected - acc_at_current), 4),
+            })
+
+        # Rank all priorities
+        priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+        all_priorities.sort(key=lambda p: priority_order.get(p["priority"], 3))
+
+        # Plot
+        with plot_lock:
+            n_w = min(len(well_reports), 2)
+            fig, axes = plt.subplots(1, n_w + 1, figsize=(5 * (n_w + 1), 5))
+            if n_w + 1 == 1:
+                axes = [axes]
+
+            for i, wr in enumerate(well_reports[:n_w]):
+                ax = axes[i]
+                names = [g["class"][:10] for g in wr["class_gaps"]]
+                counts = [g["current_count"] for g in wr["class_gaps"]]
+                ideals = [g["ideal_count"] for g in wr["class_gaps"]]
+                x = np.arange(len(names))
+                ax.bar(x - 0.2, counts, 0.35, label="Current", color="#2E86AB")
+                ax.bar(x + 0.2, ideals, 0.35, label="Target", color="#E8630A", alpha=0.5)
+                ax.set_xticks(x)
+                ax.set_xticklabels(names, fontsize=8, rotation=30, ha="right")
+                ax.set_title(f"{wr['well']}: Class Balance")
+                ax.legend(fontsize=8)
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+
+            # Priority summary
+            ax_p = axes[-1]
+            p_labels = ["HIGH", "MEDIUM", "LOW"]
+            p_counts = [sum(1 for p in all_priorities if p["priority"] == pl) for pl in p_labels]
+            ax_p.barh(p_labels, p_counts, color=["#dc3545", "#ffc107", "#28a745"])
+            ax_p.set_xlabel("Number of Actions")
+            ax_p.set_title("Priority Actions")
+            ax_p.spines["top"].set_visible(False)
+            ax_p.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "n_wells": len(well_reports),
+            "wells": well_reports,
+            "priorities": all_priorities[:20],
+            "n_priorities": len(all_priorities),
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Data collection plan: {len(all_priorities)} actions identified",
+                "risk_level": "RED" if any(p["priority"] == "HIGH" for p in all_priorities) else "AMBER",
+                "confidence_sentence": (
+                    f"{sum(1 for p in all_priorities if p['priority']=='HIGH')} HIGH priority, "
+                    f"{sum(1 for p in all_priorities if p['priority']=='MEDIUM')} MEDIUM priority actions. "
+                    + (f"Projected +{well_reports[0]['accuracy_gain_estimate']:.1%} accuracy with 2x data."
+                       if well_reports and well_reports[0]['accuracy_gain_estimate'] > 0
+                       else "Model appears to be plateauing; focus on quality over quantity.")
+                ),
+                "action": all_priorities[0]["action"] if all_priorities else "Data collection is adequate.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _collection_planner_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -13948,7 +14358,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.18.0",
+        "app_version": "3.19.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

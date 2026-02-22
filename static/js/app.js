@@ -9363,3 +9363,105 @@ async function runDecisionDashboard() {
         hideLoading();
     }
 }
+
+// ── Model Significance Testing ─────────────────────────────────────
+async function runModelSignificance() {
+    var results = document.getElementById('msig-results');
+    results.classList.add('d-none');
+    showLoading('Running statistical significance tests on all models...');
+    try {
+        var r = await apiPost('/api/analysis/model-significance', {well: currentWell(), source: currentSource()});
+        results.classList.remove('d-none');
+        var rec = r.recommendation || {};
+        document.getElementById('msig-best').textContent = rec.best_model || '-';
+        document.getElementById('msig-acc').textContent = (rec.accuracy * 100).toFixed(1) + '%';
+        document.getElementById('msig-sig-count').textContent = rec.significantly_better_than + '/' + rec.total_compared;
+        document.getElementById('msig-n-models').textContent = r.n_models;
+        document.getElementById('msig-verdict').innerHTML = '<strong>Verdict:</strong> ' + rec.verdict;
+        // Model table
+        var tbody = document.getElementById('msig-table-body');
+        tbody.innerHTML = '';
+        if (r.models) {
+            for (var i = 0; i < r.models.length; i++) {
+                var m = r.models[i];
+                var isBest = m.model === rec.best_model;
+                tbody.innerHTML += '<tr' + (isBest ? ' class="table-success"' : '') + '><td>' + (i+1) + '</td><td>' + m.model + '</td><td>' + (m.accuracy * 100).toFixed(1) + '%</td><td>' + (m.f1 * 100).toFixed(1) + '%</td><td>' + (m.balanced_accuracy * 100).toFixed(1) + '%</td><td>' + m.time_s + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('msig-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Data Collection Planner ────────────────────────────────────────
+async function runCollectionPlanner() {
+    var results = document.getElementById('cp-results');
+    results.classList.add('d-none');
+    showLoading('Analyzing data gaps and planning collection...');
+    try {
+        var r = await apiPost('/api/data/collection-planner', {source: currentSource()});
+        results.classList.remove('d-none');
+        document.getElementById('cp-n-actions').textContent = r.n_priorities;
+        if (r.wells && r.wells.length > 0) {
+            document.getElementById('cp-current-acc').textContent = (r.wells[0].current_accuracy * 100).toFixed(1) + '%';
+            document.getElementById('cp-projected-acc').textContent = (r.wells[0].projected_accuracy_2x * 100).toFixed(1) + '%';
+        }
+        if (r.stakeholder_brief) {
+            var sc = r.stakeholder_brief.risk_level === 'GREEN' ? 'success' : r.stakeholder_brief.risk_level === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('cp-risk').innerHTML = '<span class="badge bg-' + sc + '">' + r.stakeholder_brief.risk_level + '</span>';
+            document.getElementById('cp-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence;
+        }
+        // Class gaps table
+        var classBody = document.getElementById('cp-class-body');
+        classBody.innerHTML = '';
+        if (r.wells) {
+            for (var i = 0; i < r.wells.length; i++) {
+                var w = r.wells[i];
+                if (w.class_gaps) {
+                    for (var j = 0; j < w.class_gaps.length; j++) {
+                        var g = w.class_gaps[j];
+                        var pc = g.priority === 'HIGH' ? 'danger' : g.priority === 'MEDIUM' ? 'warning' : 'success';
+                        classBody.innerHTML += '<tr><td>' + w.well + '</td><td>' + g['class'] + '</td><td>' + g.current_count + '</td><td>' + g.ideal_count + '</td><td>' + g.gap + '</td><td><span class="badge bg-' + pc + '">' + g.priority + '</span></td><td class="small">' + g.action + '</td></tr>';
+                    }
+                }
+            }
+        }
+        // Depth gaps table
+        var depthBody = document.getElementById('cp-depth-body');
+        depthBody.innerHTML = '';
+        if (r.wells) {
+            for (var i = 0; i < r.wells.length; i++) {
+                var w = r.wells[i];
+                if (w.depth_gaps) {
+                    for (var j = 0; j < w.depth_gaps.length; j++) {
+                        var d = w.depth_gaps[j];
+                        var dc = d.status === 'SPARSE' ? 'warning' : '';
+                        depthBody.innerHTML += '<tr class="' + dc + '"><td>' + w.well + '</td><td>' + d.range + '</td><td>' + d.count + '</td><td>' + d.density + '</td><td>' + d.status + '</td></tr>';
+                    }
+                }
+            }
+        }
+        // Priorities
+        var priDiv = document.getElementById('cp-priorities');
+        if (r.priorities && r.priorities.length > 0) {
+            priDiv.classList.remove('d-none');
+            var priList = document.getElementById('cp-priority-list');
+            priList.innerHTML = '';
+            for (var i = 0; i < Math.min(r.priorities.length, 10); i++) {
+                var p = r.priorities[i];
+                var pi = p.priority === 'HIGH' ? 'text-danger fw-bold' : p.priority === 'MEDIUM' ? 'text-warning' : '';
+                priList.innerHTML += '<li class="' + pi + '">[' + p.priority + '] ' + p.action + '</li>';
+            }
+        }
+        if (r.plot) document.getElementById('cp-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
