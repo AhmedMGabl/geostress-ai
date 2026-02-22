@@ -163,6 +163,22 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/feedback/resolve-failure` | Mark a failure case as resolved |
 | POST | `/api/feedback/retrain-with-failures` | Retrain with failure-aware sample weighting |
 | GET | `/api/system/health` | System health: caches, drift status, failure rate, model versions |
+| POST | `/api/rlhf/review-queue` | Prioritized samples for expert review (entropy×margin scoring) |
+| POST | `/api/rlhf/accept-reject` | Record expert accept/reject/correct verdict |
+| GET | `/api/rlhf/impact` | Measure RLHF impact: acceptance rate, review counts |
+| POST | `/api/batch/analyze-all` | Multi-well batch: stress + classify + quality per well |
+
+## Test Suites
+
+- `test_v340.py` — 44 tests: core API, inversion, classification, MLOps, RLHF, batch, stakeholder, UI
+- `test_v330.py` — 18 tests: v3.3.x endpoint coverage
+
+## Performance (v3.4.0)
+
+- `invert_stress`: ~1.1s (popsize=10, maxiter=200)
+- `auto_detect_regime`: ~3.3s (3 sequential inversions)
+- `classify_enhanced`: ~6.3s (fast mode when n_folds<=3)
+- Batch (2 wells): ~20s cold, ~2s cached
 
 ## Domain Concepts
 
