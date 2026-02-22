@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.8</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.9</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -477,6 +477,8 @@
                                     <div class="col"><div class="metric-card"><div class="metric-label">Data Quality <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Grade A-F based on sample size, completeness, value ranges, and consistency of the fracture measurement data."></i></div><div class="metric-value" id="ov-quality">--</div></div></div>
                                     <div class="col"><div class="metric-card"><div class="metric-label">Decision <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="GO: Proceed with operations. CONDITIONAL: Proceed with additional monitoring. NO-GO: Do not proceed without further data or analysis."></i></div><div class="metric-value" id="ov-gonogo">--</div></div></div>
                                 </div>
+                                <!-- Stakeholder Brief -->
+                                <div id="ov-brief" class="d-none mt-3"></div>
                                 <!-- Warnings & Disclaimers -->
                                 <div id="ov-warnings" class="mt-3"></div>
                             </div>
@@ -792,6 +794,8 @@
 
                     <!-- Results metrics -->
                     <div id="inversion-results" class="d-none">
+                        <!-- Stakeholder Brief — plain-English decision summary -->
+                        <div id="inv-brief" class="d-none mb-4"></div>
                         <div class="mb-2"><span id="inv-quality-badge" class="badge bg-secondary">Data: --</span> <span id="inv-ci-hint" class="badge bg-light text-muted border small">Point estimates &mdash; click <em>Bayesian Uncertainty</em> for &plusmn;error bars</span></div>
                         <div class="row g-3 mb-4">
                             <div class="col-md-2"><div class="metric-card"><div class="metric-label">&sigma;1 (MPa) <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Maximum principal stress. The largest compressive stress in the rock mass. Higher values indicate deeper or more compressed rock."></i></div><div class="metric-value" id="inv-sigma1">--</div></div></div>
@@ -929,6 +933,8 @@
                     <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>Model Comparison</strong> &mdash; Runs 7 different AI algorithms on the same data and ranks them by accuracy. The best model is recommended automatically. <em>Why multiple models?</em> Different algorithms capture different patterns &mdash; comparing ensures the most reliable one is chosen for your specific data.</div>
 
                     <div id="model-results" class="d-none">
+                        <!-- Stakeholder Brief -->
+                        <div id="mc-brief" class="d-none mb-4"></div>
                         <!-- Ranking criterion notice -->
                         <div id="mc-ranking-notice" class="d-none alert alert-info py-2 mb-3 small"></div>
                         <!-- Summary metrics -->
@@ -1378,6 +1384,8 @@
                     <div id="transfer-results" class="d-none mb-3"></div>
 
                     <div id="classify-results" class="d-none">
+                        <!-- Stakeholder Brief -->
+                        <div id="clf-brief" class="d-none mb-4"></div>
                         <div class="row g-3 mb-4">
                             <div class="col-md-3">
                                 <div class="metric-card">
@@ -1539,6 +1547,15 @@
                                     <button class="btn btn-primary btn-sm" onclick="submitFeedback()">
                                         <i class="bi bi-send"></i> Submit Feedback
                                     </button>
+                                    <!-- Feedback Receipt (visible confirmation) -->
+                                    <div id="feedback-receipt" class="d-none mt-3">
+                                        <div class="card border-success">
+                                            <div class="card-header bg-success text-white py-1">
+                                                <i class="bi bi-check-circle"></i> Feedback Recorded
+                                            </div>
+                                            <div class="card-body py-2" id="feedback-receipt-body"></div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

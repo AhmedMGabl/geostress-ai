@@ -118,6 +118,77 @@ function fmt(v, decimals) {
     return Number(v).toFixed(decimals == null ? 1 : decimals);
 }
 
+/**
+ * Render a stakeholder brief card — plain-English decision summary.
+ * @param {string} containerId - DOM element ID to render into
+ * @param {object} brief - stakeholder_brief from API response
+ * @param {string} collapseId - unique ID for the collapsible detail section
+ */
+function renderStakeholderBrief(containerId, brief, collapseId) {
+    var el = document.getElementById(containerId);
+    if (!el || !brief) return;
+    el.classList.remove("d-none");
+
+    // Determine border color from risk_level if present
+    var borderClass = "border-primary";
+    var iconClass = "bi-clipboard-check";
+    if (brief.risk_level === "RED") { borderClass = "border-danger"; iconClass = "bi-exclamation-triangle-fill"; }
+    else if (brief.risk_level === "AMBER") { borderClass = "border-warning"; iconClass = "bi-exclamation-circle"; }
+    else if (brief.risk_level === "GREEN") { borderClass = "border-success"; iconClass = "bi-check-circle-fill"; }
+
+    var html = '<div class="card ' + borderClass + ' shadow-sm">';
+    html += '<div class="card-body py-3">';
+    html += '<h6 class="card-title mb-1"><i class="bi ' + iconClass + '"></i> ' + (brief.headline || "Analysis Complete") + '</h6>';
+
+    if (brief.confidence_sentence) {
+        html += '<p class="text-muted small mb-2">' + brief.confidence_sentence + '</p>';
+    }
+    if (brief.verdict) {
+        html += '<p class="small mb-2"><strong>Verdict:</strong> ' + brief.verdict + '</p>';
+    }
+    if (brief.what_it_means) {
+        html += '<p class="small mb-2">' + brief.what_it_means + '</p>';
+    }
+    if (brief.limiting_class) {
+        html += '<p class="small mb-2 text-warning"><i class="bi bi-exclamation-triangle"></i> ' + brief.limiting_class + '</p>';
+    }
+    if (brief.tradeoff_explained) {
+        html += '<p class="small mb-2">' + brief.tradeoff_explained + '</p>';
+    }
+    if (brief.what_agreement_means) {
+        html += '<p class="small mb-2"><strong>Model Consensus:</strong> ' + brief.what_agreement_means + '</p>';
+    }
+
+    // Collapsible detail section
+    var hasDetail = brief.next_action || brief.suitable_for || brief.not_suitable_for ||
+                    brief.model_to_use || brief.recommended_use || brief.action ||
+                    brief.critically_stressed_plain || brief.feedback_note ||
+                    brief.why_these_samples;
+    if (hasDetail && collapseId) {
+        html += '<a class="small text-decoration-none" data-bs-toggle="collapse" href="#' + collapseId + '" role="button">';
+        html += '<i class="bi bi-chevron-down"></i> What does this mean for operations?</a>';
+        html += '<div class="collapse mt-2" id="' + collapseId + '">';
+        html += '<ul class="small mb-0">';
+        if (brief.critically_stressed_plain) html += '<li><strong>Fracture Risk:</strong> ' + brief.critically_stressed_plain + '</li>';
+        if (brief.next_action) html += '<li><strong>Next Action:</strong> ' + brief.next_action + '</li>';
+        if (brief.model_to_use) html += '<li><strong>Recommended Model:</strong> ' + brief.model_to_use + '</li>';
+        if (brief.recommended_use) html += '<li>' + brief.recommended_use + '</li>';
+        if (brief.action) html += '<li>' + brief.action + '</li>';
+        if (brief.suitable_for) html += '<li><strong>Suitable for:</strong> ' + brief.suitable_for.join(", ") + '</li>';
+        if (brief.not_suitable_for) html += '<li><strong>Not suitable for:</strong> ' + brief.not_suitable_for.join(", ") + '</li>';
+        if (brief.caution) html += '<li class="text-warning"><i class="bi bi-exclamation-circle"></i> ' + brief.caution + '</li>';
+        if (brief.why_these_samples) html += '<li>' + brief.why_these_samples + '</li>';
+        if (brief.what_to_look_for) html += '<li><strong>What to look for:</strong> ' + brief.what_to_look_for + '</li>';
+        if (brief.what_happens_next) html += '<li>' + brief.what_happens_next + '</li>';
+        if (brief.progress) html += '<li><strong>Progress:</strong> ' + brief.progress + '</li>';
+        if (brief.feedback_note) html += '<li class="text-info"><i class="bi bi-chat-dots"></i> ' + brief.feedback_note + '</li>';
+        html += '</ul></div>';
+    }
+
+    html += '</div></div>';
+    el.innerHTML = html;
+}
+
 function getPorePresure() {
     var ppEl = document.getElementById("pp-input");
     var ppVal = ppEl ? ppEl.value : "";
@@ -1339,6 +1410,10 @@ async function runInversion() {
         });
 
         document.getElementById("inversion-results").classList.remove("d-none");
+        // Render stakeholder brief (plain-English decision summary)
+        if (r.stakeholder_brief) {
+            renderStakeholderBrief("inv-brief", r.stakeholder_brief, "inv-brief-detail");
+        }
         val("inv-sigma1", r.sigma1.toFixed(1));
         val("inv-sigma2", r.sigma2.toFixed(1));
         val("inv-sigma3", r.sigma3.toFixed(1));
@@ -1939,6 +2014,11 @@ async function runModelComparison(fast) {
 
         document.getElementById("model-results").classList.remove("d-none");
 
+        // Render stakeholder brief
+        if (r.stakeholder_brief) {
+            renderStakeholderBrief("mc-brief", r.stakeholder_brief, "mc-brief-detail");
+        }
+
         // Ranking criterion notice
         if (r.ranking_criterion === "balanced_accuracy") {
             var notice = document.getElementById("mc-ranking-notice");
@@ -2205,6 +2285,10 @@ async function runClassification() {
         });
 
         document.getElementById("classify-results").classList.remove("d-none");
+        // Render stakeholder brief
+        if (r.stakeholder_brief) {
+            renderStakeholderBrief("clf-brief", r.stakeholder_brief, "clf-brief-detail");
+        }
         val("clf-accuracy", (r.cv_mean_accuracy * 100).toFixed(1) + "%");
         val("clf-std", "\u00b1" + (r.cv_std_accuracy * 100).toFixed(1) + "%");
         val("clf-f1", r.cv_f1_mean ? (r.cv_f1_mean * 100).toFixed(1) + "%" : "--");
@@ -2539,7 +2623,7 @@ async function submitFeedback() {
             expert_name: document.getElementById("fb-name").value || "anonymous"
         };
 
-        await api("/api/feedback/submit", {
+        var fbResult = await api("/api/feedback/submit", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body)
@@ -2547,6 +2631,18 @@ async function submitFeedback() {
 
         showToast("Feedback submitted. Thank you!");
         document.getElementById("fb-comment").value = "";
+
+        // Show feedback receipt (visible confirmation)
+        var receiptEl = document.getElementById("feedback-receipt");
+        var receiptBody = document.getElementById("feedback-receipt-body");
+        if (receiptEl && receiptBody && fbResult.feedback_receipt) {
+            var fr = fbResult.feedback_receipt;
+            receiptBody.innerHTML =
+                '<p class="small mb-1">' + fr.what_happens_next + '</p>' +
+                '<p class="small mb-0 text-muted">Overall ratings: ' +
+                fr.current_average_rating + '/5 avg across ' + fr.n_ratings_total + ' submission(s).</p>';
+            receiptEl.classList.remove("d-none");
+        }
 
         // Refresh summary
         loadFeedbackSummary();
@@ -3988,6 +4084,11 @@ async function runOverview() {
         var gonogoEl = document.getElementById("ov-gonogo");
         gonogoEl.textContent = risk.go_nogo || "N/A";
         gonogoEl.className = "metric-value " + (risk.go_nogo === "GO" ? "text-success" : risk.go_nogo === "CONDITIONAL" ? "text-warning" : "text-danger");
+
+        // Render stakeholder brief
+        if (r.stakeholder_brief) {
+            renderStakeholderBrief("ov-brief", r.stakeholder_brief, "ov-brief-detail");
+        }
 
         // Warnings and disclaimers
         var warnings = document.getElementById("ov-warnings");
@@ -7585,7 +7686,18 @@ async function loadRlhfQueue() {
             body: JSON.stringify({well, source: window._source || 'demo', n_samples: 15})
         });
         const d = await r.json();
-        let html = `<p class="text-muted small">${d.interpretation || ''}</p>`;
+        let html = '';
+        // Stakeholder brief for RLHF queue
+        if (d.stakeholder_brief) {
+            var sb = d.stakeholder_brief;
+            html += '<div class="card border-info shadow-sm mb-3"><div class="card-body py-2">';
+            html += '<h6 class="card-title mb-1"><i class="bi bi-people-fill"></i> Expert Review Guide</h6>';
+            if (sb.why_these_samples) html += '<p class="small mb-1">' + sb.why_these_samples + '</p>';
+            if (sb.what_to_look_for) html += '<p class="small mb-1 text-muted"><strong>Look for:</strong> ' + sb.what_to_look_for + '</p>';
+            if (sb.progress) html += '<p class="small mb-0"><strong>Progress:</strong> ' + sb.progress + '</p>';
+            html += '</div></div>';
+        }
+        html += `<p class="text-muted small">${d.interpretation || ''}</p>`;
         if (d.review_stats) {
             const rs = d.review_stats;
             html += `<div class="mb-2 small">Reviews: <span class="badge bg-success">${rs.accepted || 0} accepted</span> <span class="badge bg-danger">${rs.rejected || 0} rejected</span> <span class="badge bg-info">${rs.corrected || 0} corrected</span></div>`;

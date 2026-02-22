@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 / v3.6.0 / v3.7.0 / v3.8.0.
+"""Test suite for GeoStress AI v3.5.0 / v3.6.0 / v3.7.0 / v3.8.0 / v3.9.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -565,10 +565,144 @@ pp = api("POST", "/api/analysis/physics-predict", {
 })
 check("Physics prediction returns result", isinstance(pp, dict))
 
+# ══════════════════════════════════════════════════════
+# v3.9.0 — Stakeholder Intelligence
+# ══════════════════════════════════════════════════════
+
+# ── [28] Inversion Stakeholder Brief ─────────────────
+print("\n[28] Inversion Stakeholder Brief")
+inv = api("POST", "/api/analysis/inversion",
+    {"well": "3P", "regime": "auto", "depth_m": 3000})
+sb = inv.get("stakeholder_brief", {})
+check("Has stakeholder_brief", bool(sb))
+check("Has headline", "headline" in sb and len(sb["headline"]) > 10)
+check("Has risk_level", sb.get("risk_level") in ("GREEN", "AMBER", "RED"))
+check("Has confidence_sentence", "confidence_sentence" in sb and len(sb["confidence_sentence"]) > 10)
+check("Has next_action", "next_action" in sb and len(sb["next_action"]) > 5)
+check("Has suitable_for list", isinstance(sb.get("suitable_for"), list) and len(sb["suitable_for"]) > 0)
+check("Has not_suitable_for list", isinstance(sb.get("not_suitable_for"), list) and len(sb["not_suitable_for"]) > 0)
+check("Has critically_stressed_plain", "critically_stressed_plain" in sb)
+check("Has feedback_note", "feedback_note" in sb)
+check("Headline mentions well", "3P" in sb.get("headline", ""))
+
+# ── [29] Classification Stakeholder Brief ────────────
+print("\n[29] Classification Stakeholder Brief")
+clf = api("POST", "/api/analysis/classify",
+    {"classifier": "random_forest"})
+cb = clf.get("stakeholder_brief", {})
+check("Has stakeholder_brief", bool(cb))
+check("Has headline", "headline" in cb and len(cb["headline"]) > 5)
+check("Has verdict", "verdict" in cb)
+check("Has what_it_means", "what_it_means" in cb)
+check("Has confidence_sentence", "confidence_sentence" in cb)
+check("Has action recommendation", "action" in cb)
+check("Has limiting_class info", "limiting_class" in cb)
+
+# ── [30] Model Comparison Stakeholder Brief ──────────
+print("\n[30] Model Comparison Stakeholder Brief")
+mc = api("POST", "/api/analysis/compare-models",
+    {"fast": True}, timeout=120)
+mb = mc.get("stakeholder_brief", {})
+check("Has stakeholder_brief", bool(mb))
+check("Has headline", "headline" in mb and len(mb["headline"]) > 5)
+check("Has what_agreement_means", "what_agreement_means" in mb)
+check("Has model_to_use", "model_to_use" in mb)
+check("Has caution", "caution" in mb)
+
+# ── [31] Cost-Sensitive Stakeholder Brief ────────────
+print("\n[31] Cost-Sensitive Stakeholder Brief")
+cs = api("POST", "/api/analysis/cost-sensitive",
+    {"classifier": "xgboost"}, timeout=120)
+csb = cs.get("stakeholder_brief", {})
+check("Has stakeholder_brief", bool(csb))
+check("Has headline", "headline" in csb and len(csb["headline"]) > 5)
+check("Has tradeoff_explained", "tradeoff_explained" in csb)
+check("Has high_risk_classes", isinstance(csb.get("high_risk_classes"), list))
+check("Has recommended_use", "recommended_use" in csb)
+
+# ── [32] Overview Stakeholder Brief ──────────────────
+print("\n[32] Overview Stakeholder Brief")
+ov = api("POST", "/api/analysis/overview",
+    {"well": "3P", "regime": "auto"})
+ob = ov.get("stakeholder_brief", {})
+check("Has stakeholder_brief", bool(ob))
+check("Has headline", "headline" in ob and len(ob["headline"]) > 5)
+check("Has confidence_sentence", "confidence_sentence" in ob)
+check("Has feedback_note", "feedback_note" in ob)
+check("Headline mentions well", "3P" in ob.get("headline", ""))
+
+# ── [33] RLHF Stakeholder Brief ─────────────────────
+print("\n[33] RLHF Stakeholder Brief")
+rq = api("POST", "/api/rlhf/review-queue",
+    {"well": "3P", "n_samples": 5})
+rb = rq.get("stakeholder_brief", {})
+check("Has stakeholder_brief", bool(rb))
+check("Has why_these_samples", "why_these_samples" in rb)
+check("Has what_to_look_for", "what_to_look_for" in rb)
+check("Has what_happens_next", "what_happens_next" in rb)
+check("Has progress", "progress" in rb)
+
+# ── [34] Feedback Receipt ────────────────────────────
+print("\n[34] Feedback Receipt")
+fb = api("POST", "/api/feedback/submit", {
+    "well": "3P", "analysis_type": "inversion",
+    "rating": 4, "comment": "Test feedback from v3.9 tests"
+})
+check("Has feedback_receipt", "feedback_receipt" in fb)
+fr = fb.get("feedback_receipt", {})
+check("Has recorded_at", "recorded_at" in fr)
+check("Has what_happens_next", "what_happens_next" in fr)
+check("Has current_average_rating", "current_average_rating" in fr)
+check("Has n_ratings_total", "n_ratings_total" in fr)
+
+# ── [35] Correction Receipt ──────────────────────────
+print("\n[35] Correction Receipt")
+cr = api("POST", "/api/feedback/correct-label", {
+    "well": "3P", "fracture_idx": 0,
+    "original_type": "Continuous", "corrected_type": "Discontinuous"
+})
+check("Has correction_receipt", "correction_receipt" in cr)
+crr = cr.get("correction_receipt", {})
+check("Has recorded_at", "recorded_at" in crr)
+check("Has what_happens_next", "what_happens_next" in crr)
+check("Has corrections_pending", "corrections_pending" in crr)
+check("Has ready_to_retrain", "ready_to_retrain" in crr)
+check("Has expected_improvement", "expected_improvement" in crr)
+
+# ── [36] RLHF Accept Receipt ────────────────────────
+print("\n[36] RLHF Accept Receipt")
+ar = api("POST", "/api/rlhf/accept-reject", {
+    "well": "3P", "verdict": "accept",
+    "sample_index": 0, "predicted_type": "Continuous"
+})
+check("Has receipt", "receipt" in ar)
+rr = ar.get("receipt", {})
+check("Has verdict_recorded", rr.get("verdict_recorded") == "accept")
+check("Has impact", "impact" in rr)
+check("Has reviewed_this_session", "reviewed_this_session" in rr)
+
+# ── [37] Verdict Consistency ─────────────────────────
+print("\n[37] Verdict Consistency")
+# Overview risk should match inversion risk assessment
+check("Overview has risk level",
+      ov.get("risk", {}).get("level") in ("LOW", "MODERATE", "HIGH", "UNKNOWN"))
+# Inversion brief risk should match CS% assessment
+inv_cs_pct = inv.get("critically_stressed_pct", 0)
+inv_risk = sb.get("risk_level", "")
+if inv_cs_pct < 10:
+    check("CS<10% = GREEN risk", inv_risk == "GREEN",
+          f"cs={inv_cs_pct}% risk={inv_risk}")
+elif inv_cs_pct <= 30:
+    check("CS 10-30% = AMBER risk", inv_risk == "AMBER",
+          f"cs={inv_cs_pct}% risk={inv_risk}")
+else:
+    check("CS>30% = RED risk", inv_risk == "RED",
+          f"cs={inv_cs_pct}% risk={inv_risk}")
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.8.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.9.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:
