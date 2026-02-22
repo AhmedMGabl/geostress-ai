@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.10</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.11</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -79,6 +79,11 @@
                 <li class="nav-item">
                     <a class="nav-link" data-tab="risk" href="#">
                         <i class="bi bi-shield-exclamation"></i> Risk Matrix
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="near-miss" href="#">
+                        <i class="bi bi-exclamation-diamond"></i> Near-Miss Safety
                     </a>
                 </li>
                 <li class="nav-item">
@@ -1362,6 +1367,35 @@
                                 <div class="card-body" id="shap-sample-container"></div>
                             </div>
                         </div>
+
+                        <!-- SHAP Visualization Plots (Server-rendered) -->
+                        <div id="shap-plots-section" class="d-none mt-4">
+                            <h5 class="mb-3"><i class="bi bi-graph-up"></i> SHAP Visualization Plots</h5>
+                            <div class="row g-3 mb-3">
+                                <div class="col-12">
+                                    <div class="card">
+                                        <div class="card-header bg-dark text-white"><i class="bi bi-bar-chart-fill"></i> Global Feature Importance (SHAP)</div>
+                                        <div class="card-body text-center" id="shap-global-plot-img"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row g-3 mb-3">
+                                <div class="col-lg-6">
+                                    <div class="card">
+                                        <div class="card-header"><i class="bi bi-funnel"></i> Waterfall: Most Uncertain Prediction</div>
+                                        <div class="card-body text-center" id="shap-waterfall-plot-img"></div>
+                                    </div>
+                                </div>
+                                <div class="col-lg-6">
+                                    <div class="card">
+                                        <div class="card-header"><i class="bi bi-scatter-chart"></i> Feature Value vs SHAP Impact</div>
+                                        <div class="card-body text-center" id="shap-scatter-plot-img"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="shap-per-class-plots" class="row g-3 mb-3"></div>
+                            <div id="shap-plots-brief"></div>
+                        </div>
                     </div>
                 </div>
 
@@ -1700,6 +1734,32 @@
                                 <button class="btn btn-info btn-sm" onclick="runActiveLearning()">
                                     <i class="bi bi-bullseye"></i> Find Uncertain Fractures
                                 </button>
+                                <button class="btn btn-warning btn-sm" onclick="runQbcActiveLearning()">
+                                    <i class="bi bi-people-fill"></i> Query-by-Committee (All Models)
+                                </button>
+                            </div>
+
+                            <!-- QBC Results -->
+                            <div id="qbc-results" class="d-none mb-4">
+                                <div id="qbc-brief"></div>
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Committee Size</div><div class="metric-value" id="qbc-committee-size">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">High Disagreement</div><div class="metric-value" id="qbc-high-disagree">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Mean Vote Entropy</div><div class="metric-value" id="qbc-mean-ve">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Suggestions</div><div class="metric-value" id="qbc-n-suggestions">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-3" id="qbc-plot-img"></div>
+                                <div class="card">
+                                    <div class="card-header"><i class="bi bi-people-fill"></i> Committee Disagreement — Top Samples for Expert Review</div>
+                                    <div class="card-body p-0" style="max-height:400px;overflow-y:auto">
+                                        <table class="table table-hover table-sm mb-0">
+                                            <thead class="table-light sticky-top">
+                                                <tr><th>#</th><th>Depth</th><th>Well</th><th>Label</th><th>Committee Vote</th><th>Agreement</th><th>Score</th></tr>
+                                            </thead>
+                                            <tbody id="qbc-table-body"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </div>
 
                             <div id="al-results" class="d-none">
@@ -1998,6 +2058,95 @@
                     </div>
                 </div>
 
+                <!-- ═══════ Near-Miss Safety Tab ═══════ -->
+                <div id="tab-near-miss" class="tab-content">
+                    <div class="alert alert-warning border py-2 mb-3 small"><i class="bi bi-exclamation-triangle-fill text-warning"></i> <strong>Industrial Safety Analysis</strong> &mdash; Identifies predictions that were correct but nearly wrong (near-misses), model blind spots, and computes risk scores per API RP 580/581 standards. Near-misses are leading indicators of future failures.</div>
+                    <div class="d-flex gap-2 mb-3">
+                        <select id="nm-classifier-select" class="form-select form-select-sm" style="width:auto">
+                            <option value="random_forest" selected>Random Forest</option>
+                            <option value="gradient_boosting">Gradient Boosting</option>
+                            <option value="xgboost">XGBoost</option>
+                            <option value="lightgbm">LightGBM</option>
+                        </select>
+                        <button class="btn btn-warning btn-sm" onclick="runNearMissAnalysis()">
+                            <i class="bi bi-shield-exclamation"></i> Analyze Near-Misses & Blind Spots
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick="runFailureDashboard()">
+                            <i class="bi bi-speedometer"></i> Full Safety Dashboard (API RP 580)
+                        </button>
+                    </div>
+
+                    <div id="nm-results" class="d-none">
+                        <div id="nm-brief"></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><div class="metric-card"><div class="metric-label">Near-Misses</div><div class="metric-value" id="nm-count">--</div></div></div>
+                            <div class="col-md-3"><div class="metric-card"><div class="metric-label">Blind Spots</div><div class="metric-value" id="nm-blind-spots">--</div></div></div>
+                            <div class="col-md-3"><div class="metric-card"><div class="metric-label">RED Risk Items</div><div class="metric-value" id="nm-red-risk">--</div></div></div>
+                            <div class="col-md-3"><div class="metric-card"><div class="metric-label">Overall Accuracy</div><div class="metric-value" id="nm-accuracy">--</div></div></div>
+                        </div>
+
+                        <!-- Risk matrix plot -->
+                        <div class="row g-3 mb-3">
+                            <div class="col-12">
+                                <div class="card">
+                                    <div class="card-header bg-dark text-white"><i class="bi bi-graph-up-arrow"></i> API RP 580 Risk Matrix & Margin Distribution</div>
+                                    <div class="card-body text-center" id="nm-plot-img"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Near-miss table -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-exclamation-diamond"></i> Near-Miss Predictions (sorted by risk)</div>
+                            <div class="card-body p-0" style="max-height:400px;overflow-y:auto">
+                                <table class="table table-hover table-sm mb-0">
+                                    <thead class="table-light sticky-top">
+                                        <tr><th>#</th><th>Depth</th><th>Well</th><th>True</th><th>Predicted</th><th>Confidence</th><th>Margin</th><th>Runner-Up</th><th>Risk</th></tr>
+                                    </thead>
+                                    <tbody id="nm-table-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Blind spots table -->
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-eye-slash"></i> Model Blind Spots (high-error feature ranges)</div>
+                            <div class="card-body p-0" style="max-height:300px;overflow-y:auto">
+                                <table class="table table-hover table-sm mb-0">
+                                    <thead class="table-light sticky-top">
+                                        <tr><th>Feature</th><th>Range</th><th>Error Rate</th><th>Baseline</th><th>Samples</th><th>Severity</th></tr>
+                                    </thead>
+                                    <tbody id="nm-bs-table-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Full Safety Dashboard -->
+                    <div id="safety-dashboard" class="d-none mt-4">
+                        <h4 class="mb-3"><i class="bi bi-shield-fill-check"></i> Industrial Safety Dashboard</h4>
+                        <div id="safety-brief"></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-4"><div class="metric-card"><div class="metric-label">Safety Score</div><div class="metric-value fs-2" id="safety-score">--</div></div></div>
+                            <div class="col-md-4"><div class="metric-card"><div class="metric-label">Decision</div><div class="metric-value" id="safety-decision">--</div></div></div>
+                            <div class="col-md-4"><div class="metric-card"><div class="metric-label">Risk Factors</div><div class="metric-value" id="safety-factors">--</div></div></div>
+                        </div>
+                        <div class="card mb-3">
+                            <div class="card-header bg-dark text-white"><i class="bi bi-speedometer"></i> Safety Gauge & Risk Factor Breakdown</div>
+                            <div class="card-body text-center" id="safety-plot-img"></div>
+                        </div>
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-list-check"></i> Risk Factor Detail (API RP 580/581)</div>
+                            <div class="card-body p-0">
+                                <table class="table table-hover table-sm mb-0">
+                                    <thead class="table-light"><tr><th>Factor</th><th>Value</th><th>Threshold</th><th>Score</th><th>Status</th></tr></thead>
+                                    <tbody id="safety-factors-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ═══════ Uncertainty Budget Tab ═══════ -->
                 <div id="tab-uncertainty" class="tab-content">
                     <h5 class="mb-3">Uncertainty Budget</h5>
@@ -2010,6 +2159,33 @@
                         <button class="btn btn-outline-info btn-sm" onclick="runUncertaintyBudget(true)">
                             <i class="bi bi-distribute-vertical"></i> Include Bayesian (slower)
                         </button>
+                        <button class="btn btn-outline-warning btn-sm" onclick="runCalibrationReport()">
+                            <i class="bi bi-speedometer2"></i> Calibration Report + OOD
+                        </button>
+                    </div>
+
+                    <!-- Calibration Report -->
+                    <div id="cal-report" class="d-none mb-4">
+                        <div id="cal-brief"></div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3"><div class="metric-card"><div class="metric-label">ECE (Calibrated)</div><div class="metric-value" id="cal-ece">--</div></div></div>
+                            <div class="col-md-3"><div class="metric-card"><div class="metric-label">ECE Improvement</div><div class="metric-value" id="cal-improvement">--</div></div></div>
+                            <div class="col-md-3"><div class="metric-card"><div class="metric-label">Brier Score</div><div class="metric-value" id="cal-brier">--</div></div></div>
+                            <div class="col-md-3"><div class="metric-card"><div class="metric-label">Quality</div><div class="metric-value" id="cal-quality">--</div></div></div>
+                        </div>
+                        <div class="card mb-3">
+                            <div class="card-header bg-dark text-white"><i class="bi bi-speedometer2"></i> Reliability Diagram & Confidence Distribution</div>
+                            <div class="card-body text-center" id="cal-plot-img"></div>
+                        </div>
+                        <div class="card mb-3" id="cal-ood-section">
+                            <div class="card-header"><i class="bi bi-globe2"></i> Out-of-Distribution Detection per Well (Mahalanobis Distance)</div>
+                            <div class="card-body p-0">
+                                <table class="table table-hover table-sm mb-0">
+                                    <thead class="table-light"><tr><th>Well</th><th>Mean Mahal.</th><th>Max Mahal.</th><th>% OOD</th><th>Samples</th><th>Severity</th></tr></thead>
+                                    <tbody id="cal-ood-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Overall Uncertainty Banner -->

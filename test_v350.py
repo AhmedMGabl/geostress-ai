@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 through v3.10.0.
+"""Test suite for GeoStress AI v3.5.0 through v3.11.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -789,10 +789,86 @@ check("Per-class has status", pcp.get("status") in ("GOOD", "NEEDS_DATA", "CRITI
 check("Has action_plan", isinstance(dip.get("action_plan"), list))
 check("Has stakeholder brief", "headline" in dip.get("stakeholder_brief", {}))
 
+# ── [46] SHAP Visualization Plots ──────────────────────
+print("\n[46] SHAP Visualization Plots")
+sp = api("POST", "/api/shap/plots", {"source": "demo", "classifier": "random_forest"}, timeout=120)
+check("Has global_importance_plot", sp.get("global_importance_plot", "").startswith("data:image"))
+check("Has waterfall_plot", sp.get("waterfall_plot", "").startswith("data:image"))
+check("Has feature_scatter_plot", sp.get("feature_scatter_plot", "").startswith("data:image"))
+check("Has per_class_plots", isinstance(sp.get("per_class_plots"), dict) and len(sp["per_class_plots"]) > 0)
+check("Has SHAP flag", sp.get("has_shap") is True)
+check("Has waterfall_sample", "index" in sp.get("waterfall_sample", {}))
+check("Has classifier_used", sp.get("classifier_used") in ("random_forest", "xgboost", "lightgbm"))
+check("Has stakeholder_brief", "headline" in sp.get("stakeholder_brief", {}))
+
+# ── [47] Near-Miss Detection ──────────────────────────
+print("\n[47] Near-Miss Detection & Blind Spots")
+nm = api("POST", "/api/analysis/near-misses", {"source": "demo", "classifier": "random_forest"}, timeout=120)
+check("Has n_near_misses", isinstance(nm.get("n_near_misses"), int))
+check("Has near_misses list", isinstance(nm.get("near_misses"), list))
+check("Has blind_spots", isinstance(nm.get("blind_spots"), list))
+check("Has n_blind_spots", isinstance(nm.get("n_blind_spots"), int))
+check("Has risk_matrix", isinstance(nm.get("risk_matrix"), list))
+check("Has plot", nm.get("plot", "").startswith("data:image"))
+check("Has overall_accuracy", isinstance(nm.get("overall_accuracy"), (int, float)))
+check("Near-miss has margin", "margin" in nm.get("near_misses", [{}])[0] if nm.get("near_misses") else True)
+check("Blind spot has error_rate", "error_rate" in nm.get("blind_spots", [{}])[0] if nm.get("blind_spots") else True)
+check("Has stakeholder_brief", "headline" in nm.get("stakeholder_brief", {}))
+check("Brief has standards_reference", "API RP 580" in nm.get("stakeholder_brief", {}).get("standards_reference", ""))
+
+# ── [48] Query-by-Committee Active Learning ───────────
+print("\n[48] Query-by-Committee Active Learning")
+qbc = api("POST", "/api/analysis/active-learning-qbc", {"source": "demo", "n_suggest": 5}, timeout=180)
+check("Has committee_size", isinstance(qbc.get("committee_size"), int) and qbc["committee_size"] >= 2)
+check("Has committee_members", isinstance(qbc.get("committee_members"), list))
+check("Has suggestions", isinstance(qbc.get("suggestions"), list) and len(qbc["suggestions"]) > 0)
+check("Has committee_accuracies", isinstance(qbc.get("committee_accuracies"), dict))
+check("Has plot", qbc.get("plot", "").startswith("data:image"))
+check("Has stats", "mean_vote_entropy" in qbc.get("stats", {}))
+sg = qbc.get("suggestions", [{}])[0]
+check("Suggestion has model_predictions", isinstance(sg.get("model_predictions"), dict))
+check("Suggestion has qbc_score", isinstance(sg.get("qbc_score"), (int, float)))
+check("Suggestion has agreement", "/" in str(sg.get("agreement", "")))
+check("Has stakeholder_brief", "headline" in qbc.get("stakeholder_brief", {}))
+
+# ── [49] Calibration Report + OOD ─────────────────────
+print("\n[49] Calibration Report + OOD Detection")
+cal = api("POST", "/api/analysis/calibration-report", {"source": "demo", "classifier": "random_forest"}, timeout=180)
+check("Has ece_uncalibrated", isinstance(cal.get("ece_uncalibrated"), (int, float)))
+check("Has ece_calibrated", isinstance(cal.get("ece_calibrated"), (int, float)))
+check("Has brier_uncalibrated", isinstance(cal.get("brier_uncalibrated"), (int, float)))
+check("Has brier_calibrated", isinstance(cal.get("brier_calibrated"), (int, float)))
+check("Has calibration_quality", cal.get("calibration_quality") in ("GOOD", "FAIR", "POOR"))
+check("Has calibration_curves", isinstance(cal.get("calibration_curves"), dict))
+check("Has ood_per_well", isinstance(cal.get("ood_per_well"), dict))
+check("Has plot", cal.get("plot", "").startswith("data:image"))
+if cal.get("ood_per_well"):
+    well_ood = list(cal["ood_per_well"].values())[0]
+    check("OOD has mean_mahalanobis", isinstance(well_ood.get("mean_mahalanobis"), (int, float)))
+    check("OOD has ood_severity", well_ood.get("ood_severity") in ("LOW", "MEDIUM", "HIGH"))
+check("Has stakeholder_brief", "headline" in cal.get("stakeholder_brief", {}))
+
+# ── [50] Failure Dashboard (API RP 580) ───────────────
+print("\n[50] Failure Dashboard (API RP 580)")
+fd = api("POST", "/api/analysis/failure-dashboard", {"source": "demo", "classifier": "random_forest"}, timeout=180)
+check("Has safety_score", isinstance(fd.get("safety_score"), (int, float)) and 0 <= fd["safety_score"] <= 100)
+check("Has decision", fd.get("decision") in ("GO", "CONDITIONAL GO", "REVIEW REQUIRED", "NO-GO"))
+check("Has decision_detail", len(fd.get("decision_detail", "")) > 10)
+check("Has risk_factors", isinstance(fd.get("risk_factors"), list) and len(fd["risk_factors"]) == 5)
+check("Has n_fail", isinstance(fd.get("n_fail"), int))
+check("Has n_warn", isinstance(fd.get("n_warn"), int))
+check("Has plot", fd.get("plot", "").startswith("data:image"))
+rf0 = fd.get("risk_factors", [{}])[0]
+check("Risk factor has factor name", len(rf0.get("factor", "")) > 0)
+check("Risk factor has status", rf0.get("status") in ("PASS", "WARN", "FAIL"))
+check("Risk factor has threshold", len(rf0.get("threshold", "")) > 0)
+check("Has stakeholder_brief", "headline" in fd.get("stakeholder_brief", {}))
+check("Brief references API RP 580", "API RP 580" in fd.get("stakeholder_brief", {}).get("standards_reference", ""))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.10.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.11.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

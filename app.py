@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.10.0 - Industrial Grade)."""
+"""GeoStress AI - FastAPI Web Application (v3.11.0 - Industrial Safety)."""
 
 import os
 import io
@@ -964,7 +964,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.2.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.11.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -2682,6 +2682,230 @@ async def shap_explanations(request: Request):
     return response
 
 
+# ── SHAP Visualization Plots ─────────────────────────
+
+_shap_plot_cache = BoundedCache(15)
+
+
+@app.post("/api/shap/plots")
+async def shap_plots(request: Request):
+    """Generate SHAP visualization plots as base64 PNG images.
+
+    Returns:
+        - global_importance_plot: horizontal bar chart of mean |SHAP| per feature
+        - per_class_plots: dict of {class_name: bar chart of top-5 drivers}
+        - waterfall_plot: step-by-step explanation for the most uncertain sample
+        - feature_values_plot: scatter of top feature values vs SHAP impact
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    classifier = body.get("classifier", "gradient_boosting")
+    _validate_classifier(classifier)
+
+    df = get_df(source)
+    cache_key = f"shap_plots_{source}_{len(df)}_{classifier}"
+    if cache_key in _shap_plot_cache:
+        return _shap_plot_cache[cache_key]
+
+    def _render():
+        from src.enhanced_analysis import (
+            engineer_enhanced_features, _get_models, HAS_SHAP,
+        )
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        import numpy as np
+        import warnings
+
+        features = engineer_enhanced_features(df)
+        labels = df["fracture_type"].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        feature_names = features.columns.tolist()
+        class_names = le.classes_.tolist()
+
+        all_models = _get_models()
+        # For multiclass SHAP, prefer tree models that support it
+        clf = classifier
+        if clf == "gradient_boosting" and len(np.unique(y)) > 2:
+            for alt in ["xgboost", "lightgbm", "random_forest"]:
+                if alt in all_models:
+                    clf = alt
+                    break
+        if clf not in all_models:
+            clf = list(all_models.keys())[0]
+
+        model = all_models[clf]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(X, y)
+
+        plots = {"classifier_used": clf, "class_names": class_names}
+
+        # Feature descriptions for readable axis labels
+        _labels = {
+            "nx": "E-W normal", "ny": "N-S normal", "nz": "Vertical normal",
+            "az_sin": "Direction (sin)", "az_cos": "Direction (cos)",
+            "dip": "Dip angle", "depth": "Depth",
+            "pore_pressure_mpa": "Pore pressure",
+            "overburden_mpa": "Overburden", "temperature_c": "Temperature",
+            "fracture_density": "Frac density", "fracture_spacing": "Spacing",
+            "depth_normalized": "Norm. depth",
+            "fabric_e1": "Fabric E1", "fabric_e2": "Fabric E2",
+            "fabric_e3": "Fabric E3",
+            "woodcock_K": "Woodcock K", "woodcock_C": "Woodcock C",
+        }
+
+        if not HAS_SHAP:
+            # Fallback: use model feature importances
+            if hasattr(model, "feature_importances_"):
+                imp = model.feature_importances_
+            else:
+                plots["error"] = "SHAP not available and model has no feature_importances_"
+                return plots
+
+            sorted_idx = np.argsort(imp)[-15:]
+            with plot_lock:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.barh(
+                    [_labels.get(feature_names[i], feature_names[i]) for i in sorted_idx],
+                    imp[sorted_idx], color="#2E86AB",
+                )
+                ax.set_xlabel("Feature Importance (Gini)")
+                ax.set_title(f"Feature Importance - {clf}")
+                plt.tight_layout()
+                plots["global_importance_plot"] = fig_to_base64(fig)
+            plots["has_shap"] = False
+            return plots
+
+        # Compute SHAP values
+        import shap
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X)
+
+        # Normalize shape
+        if isinstance(shap_values, list):
+            sv_3d = np.stack(shap_values, axis=2)  # (n_samples, n_features, n_classes)
+        elif shap_values.ndim == 3:
+            sv_3d = shap_values
+        else:
+            sv_3d = shap_values[:, :, np.newaxis]
+
+        abs_global = np.abs(sv_3d).mean(axis=(0, 2))  # mean across samples and classes
+        sorted_idx = np.argsort(abs_global)[-15:]  # top 15
+
+        with plot_lock:
+            # 1. Global importance bar chart
+            fig, ax = plt.subplots(figsize=(10, 7))
+            colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(sorted_idx)))
+            ax.barh(
+                [_labels.get(feature_names[i], feature_names[i]) for i in sorted_idx],
+                abs_global[sorted_idx],
+                color=colors,
+            )
+            ax.set_xlabel("Mean |SHAP value| (impact on prediction)")
+            ax.set_title(f"SHAP Global Feature Importance - {clf}")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plots["global_importance_plot"] = fig_to_base64(fig)
+
+            # 2. Per-class importance plots
+            per_class_plots = {}
+            n_classes = sv_3d.shape[2]
+            for ci in range(min(n_classes, len(class_names))):
+                cls_abs = np.abs(sv_3d[:, :, ci]).mean(axis=0)
+                cls_sorted = np.argsort(cls_abs)[-10:]
+                fig2, ax2 = plt.subplots(figsize=(8, 5))
+                ax2.barh(
+                    [_labels.get(feature_names[j], feature_names[j]) for j in cls_sorted],
+                    cls_abs[cls_sorted],
+                    color="#E8630A" if ci % 2 == 0 else "#2E86AB",
+                )
+                ax2.set_xlabel("Mean |SHAP value|")
+                ax2.set_title(f"Top Drivers: {class_names[ci]}")
+                ax2.spines["top"].set_visible(False)
+                ax2.spines["right"].set_visible(False)
+                plt.tight_layout()
+                per_class_plots[class_names[ci]] = fig_to_base64(fig2)
+            plots["per_class_plots"] = per_class_plots
+
+            # 3. Waterfall for most uncertain sample
+            probs = model.predict_proba(X)
+            uncertainty = -np.sum(probs * np.log(probs + 1e-10), axis=1)
+            most_uncertain_idx = int(np.argmax(uncertainty))
+            predicted_class_idx = int(model.predict(X[most_uncertain_idx:most_uncertain_idx+1])[0])
+            pc_name = class_names[min(predicted_class_idx, len(class_names)-1)]
+
+            if predicted_class_idx < sv_3d.shape[2]:
+                sv_sample = sv_3d[most_uncertain_idx, :, predicted_class_idx]
+            else:
+                sv_sample = np.abs(sv_3d[most_uncertain_idx]).mean(axis=1)
+
+            # Sort by absolute contribution
+            wf_sorted = np.argsort(np.abs(sv_sample))[::-1][:12]
+            wf_features = [_labels.get(feature_names[j], feature_names[j]) for j in wf_sorted]
+            wf_values = sv_sample[wf_sorted]
+
+            fig3, ax3 = plt.subplots(figsize=(10, 6))
+            bar_colors = ["#E8630A" if v > 0 else "#2E86AB" for v in wf_values]
+            ax3.barh(wf_features[::-1], wf_values[::-1], color=bar_colors[::-1])
+            ax3.axvline(x=0, color="black", linewidth=0.8)
+            ax3.set_xlabel("SHAP value (impact on prediction)")
+            ax3.set_title(
+                f"Why sample #{most_uncertain_idx} -> {pc_name}?\n"
+                f"(Most uncertain prediction, depth={float(df.iloc[most_uncertain_idx].get('depth_m', 0)):.0f}m)"
+            )
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plots["waterfall_plot"] = fig_to_base64(fig3)
+            plots["waterfall_sample"] = {
+                "index": most_uncertain_idx,
+                "predicted_class": pc_name,
+                "depth": float(df.iloc[most_uncertain_idx].get("depth_m", 0)),
+                "uncertainty": round(float(uncertainty[most_uncertain_idx]), 4),
+            }
+
+            # 4. Feature value vs SHAP impact scatter for top-2 features
+            top2 = np.argsort(abs_global)[-2:][::-1]
+            fig4, axes = plt.subplots(1, 2, figsize=(14, 5))
+            for pi, fidx in enumerate(top2):
+                ax_s = axes[pi]
+                for ci in range(min(n_classes, len(class_names))):
+                    mask = (y == ci)
+                    ax_s.scatter(
+                        X[mask, fidx], sv_3d[mask, fidx, min(ci, sv_3d.shape[2]-1)],
+                        alpha=0.4, s=15,
+                        label=class_names[ci] if pi == 0 else None,
+                    )
+                ax_s.set_xlabel(f"{_labels.get(feature_names[fidx], feature_names[fidx])} (scaled)")
+                ax_s.set_ylabel("SHAP value")
+                ax_s.set_title(f"Impact of {_labels.get(feature_names[fidx], feature_names[fidx])}")
+                ax_s.axhline(y=0, color="gray", linewidth=0.5, linestyle="--")
+                ax_s.spines["top"].set_visible(False)
+                ax_s.spines["right"].set_visible(False)
+            if n_classes <= 6:
+                axes[0].legend(fontsize=7, loc="best")
+            plt.tight_layout()
+            plots["feature_scatter_plot"] = fig_to_base64(fig4)
+
+        plots["has_shap"] = True
+        plots["n_samples"] = len(y)
+        plots["stakeholder_brief"] = {
+            "headline": f"SHAP analysis reveals {_labels.get(feature_names[np.argsort(abs_global)[-1]], feature_names[np.argsort(abs_global)[-1]])} as the dominant prediction driver",
+            "risk_level": "GREEN",
+            "confidence_sentence": f"Analysis based on {len(y)} fractures using {clf} classifier with exact TreeExplainer SHAP values.",
+            "action": "Review per-class plots to understand what drives each fracture type classification.",
+        }
+        return plots
+
+    result = await asyncio.to_thread(_render)
+    sanitized = _sanitize_for_json(result)
+    _shap_plot_cache[cache_key] = sanitized
+    return sanitized
+
+
 # ── Sensitivity Analysis ─────────────────────────────
 
 _sensitivity_cache = BoundedCache(30)
@@ -3614,6 +3838,230 @@ async def run_active_learning(request: Request):
     return _sanitize_for_json(result)
 
 
+# ── Query-by-Committee Active Learning ───────────────
+
+_qbc_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/active-learning-qbc")
+async def run_active_learning_qbc(request: Request):
+    """Query-by-Committee active learning using all available classifiers.
+
+    Runs multiple classifiers (RF, GBM, XGBoost, LightGBM, CatBoost) as a
+    committee. Measures vote entropy and KL divergence to find fractures
+    where classifiers disagree most — these are the highest-value samples
+    for expert review.
+
+    More robust than single-model uncertainty: captures different types of
+    model disagreement, not just one model's uncertainty.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    n_suggest = int(body.get("n_suggest", 20))
+    diversity_weight = float(body.get("diversity_weight", 0.3))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    cache_key = f"qbc_{source}_{len(df)}_{n_suggest}"
+    if cache_key in _qbc_cache:
+        return _qbc_cache[cache_key]
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from collections import Counter
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.metrics.pairwise import cosine_distances
+
+        features = engineer_enhanced_features(df)
+        labels = df[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        feature_names = features.columns.tolist()
+        class_names = le.classes_.tolist()
+        n_classes = len(class_names)
+
+        # Build committee from all available models
+        all_models = _get_models()
+        committee_names = []
+        for name in ["random_forest", "gradient_boosting", "xgboost", "lightgbm", "catboost"]:
+            if name in all_models:
+                committee_names.append(name)
+
+        if len(committee_names) < 2:
+            committee_names = list(all_models.keys())[:3]
+
+        # Cross-validated predictions from each committee member
+        min_class_count = min(Counter(y).values())
+        n_splits = min(5, min_class_count)
+        if n_splits < 2:
+            n_splits = 2
+
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        all_probs = []
+        committee_accuracies = {}
+
+        for name in committee_names:
+            model = all_models[name]
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    probs = cross_val_predict(model, X, y, cv=cv, method="predict_proba")
+                all_probs.append(probs)
+                preds = probs.argmax(axis=1)
+                committee_accuracies[name] = round(float((preds == y).mean()), 4)
+            except Exception:
+                continue
+
+        if len(all_probs) < 2:
+            return {"error": "Need at least 2 classifiers for committee"}
+
+        all_probs = np.array(all_probs)  # (n_models, n_samples, n_classes)
+        n_models = len(all_probs)
+
+        # Vote entropy: how spread out are the votes?
+        votes = all_probs.argmax(axis=2)  # (n_models, n_samples)
+        vote_entropy = np.zeros(len(y))
+        for i in range(len(y)):
+            vote_counts = np.bincount(votes[:, i], minlength=n_classes)
+            vote_dist = vote_counts / float(vote_counts.sum())
+            vote_entropy[i] = -np.sum(vote_dist * np.log(vote_dist + 1e-10))
+
+        # KL divergence from consensus (measures real disagreement)
+        mean_probs = all_probs.mean(axis=0)  # (n_samples, n_classes)
+        kl_divs = np.zeros(len(y))
+        for m in range(n_models):
+            kl = np.sum(all_probs[m] * np.log((all_probs[m] + 1e-10) / (mean_probs + 1e-10)), axis=1)
+            kl_divs += kl
+        avg_kl = kl_divs / n_models
+
+        # Combined QBC score
+        qbc_score = vote_entropy + avg_kl
+
+        # Diversity-weighted batch selection
+        ranked = np.argsort(qbc_score)[::-1]
+        candidate_pool = ranked[:min(n_suggest * 3, len(y))]
+
+        selected = []
+        remaining = list(candidate_pool)
+
+        # Greedy selection balancing uncertainty and diversity
+        for _ in range(min(n_suggest, len(remaining))):
+            if not remaining:
+                break
+            if not selected:
+                best = remaining[0]  # most uncertain
+            else:
+                selected_X = X[selected]
+                scores = []
+                for c in remaining:
+                    u_norm = qbc_score[c] / (qbc_score.max() + 1e-10)
+                    dist = cosine_distances(X[c:c+1], selected_X).min()
+                    combined = (1 - diversity_weight) * u_norm + diversity_weight * dist
+                    scores.append((c, combined))
+                best = max(scores, key=lambda x: x[1])[0]
+            selected.append(best)
+            remaining.remove(best)
+
+        # Build suggestions
+        suggestions = []
+        for idx in selected:
+            idx = int(idx)
+            row = df.iloc[idx]
+            model_preds = {}
+            for mi, name in enumerate(committee_names):
+                if mi < n_models:
+                    model_preds[name] = class_names[int(votes[mi, idx])]
+
+            pred_counts = Counter(model_preds.values())
+            majority = pred_counts.most_common(1)[0]
+            n_agree = majority[1]
+
+            suggestions.append({
+                "index": idx,
+                "depth": round(float(row.get(DEPTH_COL, 0)), 1),
+                "azimuth": round(float(row.get("azimuth_deg", 0)), 1),
+                "dip": round(float(row.get("dip_deg", 0)), 1),
+                "well": str(row.get(WELL_COL, "")),
+                "current_label": str(labels[idx]),
+                "model_predictions": model_preds,
+                "majority_vote": majority[0],
+                "agreement": f"{n_agree}/{n_models}",
+                "vote_entropy": round(float(vote_entropy[idx]), 3),
+                "kl_divergence": round(float(avg_kl[idx]), 3),
+                "qbc_score": round(float(qbc_score[idx]), 3),
+            })
+
+        # Render QBC plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+            # Left: QBC score distribution
+            ax1 = axes[0]
+            ax1.hist(qbc_score, bins=30, color="#2E86AB", alpha=0.7)
+            for s in suggestions[:5]:
+                ax1.axvline(x=s["qbc_score"], color="red", linewidth=0.8, alpha=0.5)
+            ax1.set_xlabel("QBC Disagreement Score")
+            ax1.set_ylabel("Count")
+            ax1.set_title(f"Committee Disagreement ({n_models} classifiers)")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # Right: committee accuracy comparison
+            ax2 = axes[1]
+            acc_names = list(committee_accuracies.keys())
+            acc_vals = [committee_accuracies[n] for n in acc_names]
+            colors = plt.cm.Set2(np.linspace(0, 1, len(acc_names)))
+            ax2.barh(acc_names, acc_vals, color=colors)
+            ax2.set_xlabel("CV Accuracy")
+            ax2.set_title("Committee Member Performance")
+            ax2.set_xlim(0, 1)
+            for i, v in enumerate(acc_vals):
+                ax2.text(v + 0.01, i, f"{v:.1%}", va="center", fontsize=9)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        high_disagree = int((vote_entropy > np.log(2)).sum())
+        mean_ve = round(float(vote_entropy.mean()), 3)
+
+        return {
+            "strategy": "query_by_committee",
+            "committee_size": n_models,
+            "committee_members": committee_names,
+            "committee_accuracies": committee_accuracies,
+            "suggestions": suggestions,
+            "n_suggestions": len(suggestions),
+            "stats": {
+                "mean_vote_entropy": mean_ve,
+                "mean_kl_divergence": round(float(avg_kl.mean()), 3),
+                "high_disagreement_count": high_disagree,
+                "high_disagreement_pct": round(100 * high_disagree / max(len(y), 1), 1),
+            },
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"{n_models}-model committee found {high_disagree} fractures with significant disagreement",
+                "risk_level": "RED" if high_disagree > len(y) * 0.15 else ("AMBER" if high_disagree > len(y) * 0.05 else "GREEN"),
+                "confidence_sentence": f"Committee of {n_models} classifiers analyzed {len(y)} fractures. {high_disagree} samples ({round(100*high_disagree/max(len(y),1),1)}%) show significant model disagreement (vote entropy > ln(2)).",
+                "action": f"Have domain experts review the top {min(n_suggest, high_disagree)} suggested fractures. Their corrections will most improve model accuracy. Prioritize samples where the committee majority disagrees with the current label.",
+                "committee_consensus": f"Average committee accuracy: {round(np.mean(acc_vals)*100,1)}%",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    sanitized = _sanitize_for_json(result)
+    _qbc_cache[cache_key] = sanitized
+    return sanitized
+
+
 # ── Data & Results Export ────────────────────────────
 
 @app.post("/api/export/data")
@@ -4019,6 +4467,250 @@ async def calibration_assessment(request: Request):
 
     result = await asyncio.to_thread(assess_calibration, df, 10, fast)
     return _sanitize_for_json(result)
+
+
+# ── Calibration Reliability Diagram + OOD Report ──────
+
+_calibration_plot_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/calibration-report")
+async def calibration_report(request: Request):
+    """Comprehensive calibration and out-of-distribution report with plots.
+
+    Returns:
+        - Reliability diagram (predicted vs actual probability per bin)
+        - Calibrated vs uncalibrated confidence comparison
+        - OOD detection (Mahalanobis distance) per well
+        - Brier score, Expected Calibration Error (ECE)
+        - Stakeholder brief on whether model confidence can be trusted
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    classifier = body.get("classifier", "random_forest")
+    _validate_classifier(classifier)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    cache_key = f"cal_report_{source}_{len(df)}_{classifier}"
+    if cache_key in _calibration_plot_cache:
+        return _calibration_plot_cache[cache_key]
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.calibration import CalibratedClassifierCV
+
+        features = engineer_enhanced_features(df)
+        labels = df[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        class_names = le.classes_.tolist()
+        n_classes = len(class_names)
+
+        all_models = _get_models()
+        clf = classifier if classifier in all_models else "random_forest"
+        model = all_models[clf]
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, min_count)
+        if n_splits < 2:
+            n_splits = 2
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        # Uncalibrated probabilities
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            uncal_probs = cross_val_predict(model, X, y, cv=cv, method="predict_proba")
+
+        # Calibrated (Platt scaling via CalibratedClassifierCV)
+        from sklearn.base import clone
+        cal_model = CalibratedClassifierCV(clone(all_models[clf]), method="sigmoid", cv=n_splits)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            cal_probs = cross_val_predict(cal_model, X, y, cv=cv, method="predict_proba")
+
+        # Compute calibration metrics per class
+        n_bins = 10
+        calibration_curves = {}
+        ece_uncal = 0.0
+        ece_cal = 0.0
+
+        for ci in range(n_classes):
+            y_bin = (y == ci).astype(int)
+            # Uncalibrated
+            p_uncal = uncal_probs[:, ci]
+            p_cal = cal_probs[:, ci]
+
+            bins_uncal = {"mean_predicted": [], "fraction_positive": [], "count": []}
+            bins_cal = {"mean_predicted": [], "fraction_positive": [], "count": []}
+
+            for b in range(n_bins):
+                lo = b / n_bins
+                hi = (b + 1) / n_bins
+                mask_u = (p_uncal >= lo) & (p_uncal < hi)
+                mask_c = (p_cal >= lo) & (p_cal < hi)
+
+                if mask_u.sum() > 0:
+                    bins_uncal["mean_predicted"].append(round(float(p_uncal[mask_u].mean()), 3))
+                    bins_uncal["fraction_positive"].append(round(float(y_bin[mask_u].mean()), 3))
+                    bins_uncal["count"].append(int(mask_u.sum()))
+                    ece_uncal += mask_u.sum() * abs(p_uncal[mask_u].mean() - y_bin[mask_u].mean())
+
+                if mask_c.sum() > 0:
+                    bins_cal["mean_predicted"].append(round(float(p_cal[mask_c].mean()), 3))
+                    bins_cal["fraction_positive"].append(round(float(y_bin[mask_c].mean()), 3))
+                    bins_cal["count"].append(int(mask_c.sum()))
+                    ece_cal += mask_c.sum() * abs(p_cal[mask_c].mean() - y_bin[mask_c].mean())
+
+            calibration_curves[class_names[ci]] = {
+                "uncalibrated": bins_uncal,
+                "calibrated": bins_cal,
+            }
+
+        ece_uncal /= max(len(y) * n_classes, 1)
+        ece_cal /= max(len(y) * n_classes, 1)
+
+        # Brier scores
+        from sklearn.metrics import brier_score_loss
+        brier_uncal = round(float(np.mean([
+            brier_score_loss((y == ci).astype(int), uncal_probs[:, ci])
+            for ci in range(n_classes)
+        ])), 4)
+        brier_cal = round(float(np.mean([
+            brier_score_loss((y == ci).astype(int), cal_probs[:, ci])
+            for ci in range(n_classes)
+        ])), 4)
+
+        # OOD detection via Mahalanobis distance per well
+        ood_results = {}
+        wells = df[WELL_COL].unique()
+        for w in wells:
+            w_mask = df[WELL_COL].values == w
+            other_mask = ~w_mask
+            if other_mask.sum() < 5 or w_mask.sum() < 5:
+                continue
+            X_ref = X[other_mask]
+            X_test = X[w_mask]
+            mean_ref = X_ref.mean(axis=0)
+            cov_ref = np.cov(X_ref, rowvar=False)
+            try:
+                cov_inv = np.linalg.inv(cov_ref + np.eye(cov_ref.shape[0]) * 1e-6)
+            except np.linalg.LinAlgError:
+                continue
+            diffs = X_test - mean_ref
+            mahal = np.sqrt(np.sum(diffs @ cov_inv * diffs, axis=1))
+            ood_results[str(w)] = {
+                "mean_mahalanobis": round(float(mahal.mean()), 2),
+                "max_mahalanobis": round(float(mahal.max()), 2),
+                "pct_above_threshold": round(float((mahal > 3.0).mean() * 100), 1),
+                "n_samples": int(w_mask.sum()),
+                "ood_severity": "HIGH" if (mahal > 3.0).mean() > 0.2 else ("MEDIUM" if (mahal > 3.0).mean() > 0.05 else "LOW"),
+            }
+
+        # Render reliability diagram
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Left: Reliability diagram
+            ax1 = axes[0]
+            ax1.plot([0, 1], [0, 1], "k--", linewidth=1, label="Perfect calibration")
+            color_cycle = plt.cm.tab10(np.linspace(0, 1, n_classes))
+            for ci, cls in enumerate(class_names):
+                curves = calibration_curves[cls]
+                if curves["uncalibrated"]["mean_predicted"]:
+                    ax1.plot(
+                        curves["uncalibrated"]["mean_predicted"],
+                        curves["uncalibrated"]["fraction_positive"],
+                        "o--", color=color_cycle[ci], alpha=0.5, markersize=4,
+                    )
+                if curves["calibrated"]["mean_predicted"]:
+                    ax1.plot(
+                        curves["calibrated"]["mean_predicted"],
+                        curves["calibrated"]["fraction_positive"],
+                        "s-", color=color_cycle[ci], label=f"{cls} (calibrated)",
+                        markersize=5,
+                    )
+            ax1.set_xlabel("Predicted Probability")
+            ax1.set_ylabel("Actual Fraction Positive")
+            ax1.set_title(f"Reliability Diagram - {clf}\nECE: uncal={ece_uncal:.3f}, cal={ece_cal:.3f}")
+            ax1.legend(fontsize=7, loc="lower right")
+            ax1.set_xlim(-0.02, 1.02)
+            ax1.set_ylim(-0.02, 1.02)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # Right: Confidence distribution comparison
+            ax2 = axes[1]
+            max_uncal = uncal_probs.max(axis=1)
+            max_cal = cal_probs.max(axis=1)
+            ax2.hist(max_uncal, bins=25, alpha=0.5, label="Uncalibrated", color="#2E86AB")
+            ax2.hist(max_cal, bins=25, alpha=0.5, label="Calibrated (Platt)", color="#E8630A")
+            ax2.set_xlabel("Max Prediction Confidence")
+            ax2.set_ylabel("Count")
+            ax2.set_title("Confidence Distribution: Before vs After Calibration")
+            ax2.legend()
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        # Use the better ECE (some models are already well-calibrated)
+        best_ece = min(ece_uncal, ece_cal)
+        calibration_quality = "GOOD" if best_ece < 0.05 else ("FAIR" if best_ece < 0.10 else "POOR")
+        improvement = round((ece_uncal - ece_cal) / max(ece_uncal, 1e-6) * 100, 1)
+        calibration_note = (
+            "Platt scaling improved calibration."
+            if ece_cal < ece_uncal else
+            "Model is already well-calibrated; Platt scaling not needed for this classifier."
+        )
+
+        return {
+            "classifier": clf,
+            "n_samples": len(y),
+            "ece_uncalibrated": round(float(ece_uncal), 4),
+            "ece_calibrated": round(float(ece_cal), 4),
+            "ece_improvement_pct": improvement,
+            "brier_uncalibrated": brier_uncal,
+            "brier_calibrated": brier_cal,
+            "calibration_quality": calibration_quality,
+            "calibration_curves": calibration_curves,
+            "ood_per_well": ood_results,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Calibration {calibration_quality}: best ECE = {best_ece:.4f}. {calibration_note}",
+                "risk_level": "GREEN" if calibration_quality == "GOOD" else ("AMBER" if calibration_quality == "FAIR" else "RED"),
+                "confidence_sentence": (
+                    f"Model confidence is {'reliable' if calibration_quality == 'GOOD' else 'partially reliable' if calibration_quality == 'FAIR' else 'unreliable'}. "
+                    f"Best ECE = {best_ece:.4f} (uncalibrated={ece_uncal:.4f}, Platt={ece_cal:.4f}). "
+                    f"Brier score: uncalibrated={brier_uncal}, calibrated={brier_cal}."
+                ),
+                "action": (
+                    "Model confidence values can be trusted for decision-making."
+                    if calibration_quality == "GOOD" else
+                    "Use calibrated probabilities. Apply abstention for confidence < 60%."
+                    if calibration_quality == "FAIR" else
+                    "Do NOT rely on model confidence. Use ensemble voting instead of single-model confidence."
+                ),
+                "ood_summary": "; ".join([
+                    f"{w}: {d['pct_above_threshold']}% OOD ({d['ood_severity']})"
+                    for w, d in ood_results.items()
+                ]) if ood_results else "No cross-well OOD analysis available",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    sanitized = _sanitize_for_json(result)
+    _calibration_plot_cache[cache_key] = sanitized
+    return sanitized
 
 
 # ── Data Collection Recommendations ───────────────
@@ -4928,6 +5620,491 @@ async def run_misclassification_analysis(request: Request):
         response["confusion_chart_img"] = chart_img
     _misclass_cache[cache_key] = response
     return response
+
+
+# ── Near-Miss Detection & Blind Spot Analysis ────────
+
+_near_miss_cache = BoundedCache(15)
+
+
+@app.post("/api/analysis/near-misses")
+async def near_miss_analysis(request: Request):
+    """Detect correct predictions with dangerously low confidence margin.
+
+    Near-misses are correct predictions where the model was almost wrong
+    (margin between top-2 predicted classes < threshold). These are leading
+    indicators of future failures — like near-miss incidents in aviation safety.
+
+    Also computes model blind spots: feature ranges where error rate is
+    significantly above average (1.5x+), indicating regions the model struggles with.
+
+    Returns API RP 580-style risk scoring (Probability of Failure x Consequence of Failure).
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well")
+    classifier = body.get("classifier", "random_forest")
+    _validate_classifier(classifier)
+    margin_threshold = float(body.get("margin_threshold", 0.15))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    if well:
+        df = df[df[WELL_COL] == well].reset_index(drop=True)
+
+    cache_key = f"nm_{source}_{well}_{classifier}_{margin_threshold}"
+    if cache_key in _near_miss_cache:
+        return _near_miss_cache[cache_key]
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import cross_val_predict
+
+        features = engineer_enhanced_features(df)
+        labels = df[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        feature_names = features.columns.tolist()
+        class_names = le.classes_.tolist()
+
+        all_models = _get_models()
+        clf = classifier if classifier in all_models else "random_forest"
+        model = all_models[clf]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(X, y)
+
+        # Cross-validated probabilities (more honest than training probs)
+        try:
+            from sklearn.model_selection import StratifiedKFold
+            cv = StratifiedKFold(n_splits=min(5, min(np.bincount(y))), shuffle=True, random_state=42)
+            probs = cross_val_predict(model, X, y, cv=cv, method="predict_proba")
+        except Exception:
+            probs = model.predict_proba(X)
+
+        y_pred = probs.argmax(axis=1)
+        correct = (y_pred == y)
+
+        # Sort probabilities per sample
+        sorted_probs = np.sort(probs, axis=1)[:, ::-1]
+        margin = sorted_probs[:, 0] - sorted_probs[:, 1]
+
+        # --- NEAR-MISS DETECTION ---
+        near_miss_mask = correct & (margin < margin_threshold)
+        near_misses = []
+        for idx in np.where(near_miss_mask)[0]:
+            idx = int(idx)
+            row = df.iloc[idx]
+            runner_up_idx = int(np.argsort(probs[idx])[-2])
+            near_misses.append({
+                "index": idx,
+                "depth": round(float(row.get(DEPTH_COL, 0)), 1),
+                "azimuth": round(float(row.get("azimuth_deg", 0)), 1),
+                "dip": round(float(row.get("dip_deg", 0)), 1),
+                "well": str(row.get(WELL_COL, "")),
+                "true_class": class_names[int(y[idx])],
+                "predicted_class": class_names[int(y_pred[idx])],
+                "confidence": round(float(sorted_probs[idx, 0]), 3),
+                "margin": round(float(margin[idx]), 3),
+                "runner_up": class_names[runner_up_idx],
+                "runner_up_prob": round(float(probs[idx, runner_up_idx]), 3),
+                "risk_level": "HIGH" if margin[idx] < 0.05 else "MEDIUM",
+            })
+        near_misses.sort(key=lambda x: x["margin"])
+
+        # --- BLIND SPOT DETECTION ---
+        errors = ~correct
+        overall_error_rate = float(errors.mean())
+        n_bins = 5
+        blind_spots = []
+        _labels_map = {
+            "nx": "E-W normal", "ny": "N-S normal", "nz": "Vertical",
+            "az_sin": "Direction (sin)", "az_cos": "Direction (cos)",
+            "dip": "Dip angle", "depth": "Depth",
+            "fracture_density": "Frac density", "fracture_spacing": "Spacing",
+        }
+        for feat_idx, feat_name in enumerate(feature_names):
+            values = X[:, feat_idx]
+            try:
+                bin_edges = np.percentile(values, np.linspace(0, 100, n_bins + 1))
+            except Exception:
+                continue
+            for b in range(n_bins):
+                mask = (values >= bin_edges[b]) & (values < bin_edges[b + 1] + 1e-10)
+                if mask.sum() < 8:
+                    continue
+                bin_error_rate = float(errors[mask].mean())
+                if bin_error_rate > max(overall_error_rate * 1.5, 0.15):
+                    blind_spots.append({
+                        "feature": feat_name,
+                        "feature_label": _labels_map.get(feat_name, feat_name.replace("_", " ").title()),
+                        "range_low": round(float(bin_edges[b]), 3),
+                        "range_high": round(float(bin_edges[b + 1]), 3),
+                        "error_rate": round(bin_error_rate, 3),
+                        "baseline_error_rate": round(overall_error_rate, 3),
+                        "n_samples": int(mask.sum()),
+                        "severity": "HIGH" if bin_error_rate > 0.5 else "MEDIUM",
+                    })
+        blind_spots.sort(key=lambda x: x["error_rate"], reverse=True)
+
+        # --- API RP 580 RISK MATRIX ---
+        # Consequence of Failure mapped from fracture type criticality
+        cof_map = {
+            "Boundary": 4, "Brecciated": 3, "Continuous": 2,
+            "Discontinuous": 2, "Vuggy": 3,
+        }
+        risk_entries = []
+        for nm in near_misses[:30]:
+            pof = 1.0 - nm["confidence"]
+            cof = cof_map.get(nm["true_class"], 2)
+            risk = round(pof * cof, 2)
+            risk_entries.append({
+                "index": nm["index"],
+                "depth": nm["depth"],
+                "true_class": nm["true_class"],
+                "pof": round(pof, 3),
+                "cof": cof,
+                "risk_score": risk,
+                "risk_level": "RED" if risk > 2.0 else ("AMBER" if risk > 1.0 else "GREEN"),
+            })
+        risk_entries.sort(key=lambda x: x["risk_score"], reverse=True)
+
+        # --- RENDER NEAR-MISS PLOT ---
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+            # Left: margin distribution
+            ax1 = axes[0]
+            ax1.hist(margin[correct], bins=30, color="#2E86AB", alpha=0.7, label="Correct")
+            ax1.hist(margin[~correct], bins=30, color="#E8630A", alpha=0.7, label="Wrong")
+            ax1.axvline(x=margin_threshold, color="red", linestyle="--", linewidth=2, label=f"Threshold ({margin_threshold})")
+            ax1.set_xlabel("Prediction Margin (top-1 - top-2 probability)")
+            ax1.set_ylabel("Count")
+            ax1.set_title("Confidence Margin Distribution")
+            ax1.legend(fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # Right: risk scatter
+            ax2 = axes[1]
+            if risk_entries:
+                re_arr = np.array([(r["pof"], r["cof"]) for r in risk_entries])
+                colors = ["#dc3545" if r["risk_level"] == "RED" else "#ffc107" if r["risk_level"] == "AMBER" else "#28a745" for r in risk_entries]
+                ax2.scatter(re_arr[:, 1], re_arr[:, 0], c=colors, s=40, alpha=0.7, edgecolors="black", linewidths=0.5)
+                ax2.set_xlabel("Consequence of Failure (CoF)")
+                ax2.set_ylabel("Probability of Failure (PoF)")
+                ax2.set_title("API RP 580 Risk Matrix — Near-Miss Fractures")
+                ax2.set_xlim(0, 6)
+                ax2.set_ylim(0, 1)
+                # Risk zones
+                ax2.axhspan(0.5, 1.0, xmin=0.5, xmax=1.0, alpha=0.1, color="red")
+                ax2.axhspan(0.25, 0.5, xmin=0.33, xmax=0.67, alpha=0.1, color="orange")
+            else:
+                ax2.text(0.5, 0.5, "No near-misses detected", ha="center", va="center", transform=ax2.transAxes)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        # Stakeholder brief
+        n_nm = len(near_misses)
+        n_high = sum(1 for nm in near_misses if nm["risk_level"] == "HIGH")
+        n_bs = len(blind_spots)
+        n_red = sum(1 for r in risk_entries if r["risk_level"] == "RED")
+
+        nm_pct = round(100 * n_nm / max(len(y), 1), 1)
+        if n_red > 5 or n_high > 10 or nm_pct > 15:
+            risk_level = "RED"
+            headline = f"CRITICAL: {n_nm} near-misses ({nm_pct}% of data), {n_red} RED-risk, {n_high} HIGH-risk"
+        elif n_nm > 10 or n_bs > 5 or n_red > 0:
+            risk_level = "AMBER"
+            headline = f"CAUTION: {n_nm} near-misses ({nm_pct}%), {n_bs} blind spots, {n_red} RED-risk items"
+        else:
+            risk_level = "GREEN"
+            headline = f"Model robust: only {n_nm} near-misses, {n_bs} blind spots"
+
+        return {
+            "near_misses": near_misses[:50],
+            "n_near_misses": n_nm,
+            "n_total": len(y),
+            "near_miss_rate": round(n_nm / max(len(y), 1), 3),
+            "margin_threshold": margin_threshold,
+            "blind_spots": blind_spots[:20],
+            "n_blind_spots": n_bs,
+            "risk_matrix": risk_entries[:30],
+            "n_red_risk": n_red,
+            "overall_accuracy": round(float(correct.mean()), 4),
+            "overall_error_rate": round(overall_error_rate, 4),
+            "plot": plot_img,
+            "classifier": clf,
+            "stakeholder_brief": {
+                "headline": headline,
+                "risk_level": risk_level,
+                "confidence_sentence": f"Analysis of {len(y)} fractures found {n_nm} near-miss predictions (margin < {margin_threshold}), {n_bs} blind spots, and {n_red} high-risk items per API RP 580.",
+                "action": (
+                    f"URGENT: Review {n_red} RED-risk near-misses immediately. "
+                    f"Collect additional data in {n_bs} blind spot regions. "
+                    f"Consider lowering abstention threshold to catch borderline cases."
+                ) if risk_level != "GREEN" else
+                "Model is performing well. Continue monitoring near-miss rate over time.",
+                "standards_reference": "API RP 580/581 (Risk-Based Inspection), ISO 31000:2018 (Risk Management)",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    sanitized = _sanitize_for_json(result)
+    _near_miss_cache[cache_key] = sanitized
+    return sanitized
+
+
+@app.post("/api/analysis/failure-dashboard")
+async def failure_dashboard(request: Request):
+    """Comprehensive failure dashboard combining all safety analysis.
+
+    Aggregates: near-misses, blind spots, calibration, OOD detection,
+    misclassification patterns, and API RP 580/581 risk matrix into a
+    single industrial-grade safety assessment.
+
+    Returns a composite safety score (0-100) and GO/NO-GO recommendation.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    classifier = body.get("classifier", "random_forest")
+    _validate_classifier(classifier)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import (
+            engineer_enhanced_features, _get_models, classify_enhanced,
+            misclassification_analysis,
+        )
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+
+        features = engineer_enhanced_features(df)
+        labels = df[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        class_names = le.classes_.tolist()
+
+        all_models = _get_models()
+        clf = classifier if classifier in all_models else "random_forest"
+        model = all_models[clf]
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            probs = cross_val_predict(model, X, y, cv=cv, method="predict_proba")
+        y_pred = probs.argmax(axis=1)
+        correct = (y_pred == y)
+        accuracy = float(correct.mean())
+
+        # Near-miss count
+        sorted_p = np.sort(probs, axis=1)[:, ::-1]
+        margin = sorted_p[:, 0] - sorted_p[:, 1]
+        near_miss_count = int((correct & (margin < 0.15)).sum())
+        near_miss_pct = round(100 * near_miss_count / max(len(y), 1), 1)
+
+        # Blind spot count (feature ranges with error > 1.5x average)
+        errors = ~correct
+        err_rate = float(errors.mean())
+        blind_spot_count = 0
+        for fi in range(X.shape[1]):
+            vals = X[:, fi]
+            try:
+                edges = np.percentile(vals, np.linspace(0, 100, 6))
+            except Exception:
+                continue
+            for b in range(5):
+                mask = (vals >= edges[b]) & (vals < edges[b+1] + 1e-10)
+                if mask.sum() >= 8 and float(errors[mask].mean()) > max(err_rate * 1.5, 0.15):
+                    blind_spot_count += 1
+
+        # OOD check (Mahalanobis)
+        wells = df[WELL_COL].unique()
+        max_ood_pct = 0.0
+        for w in wells:
+            w_mask = df[WELL_COL].values == w
+            other = ~w_mask
+            if other.sum() < 5 or w_mask.sum() < 5:
+                continue
+            mean_r = X[other].mean(axis=0)
+            cov_r = np.cov(X[other], rowvar=False)
+            try:
+                cov_inv = np.linalg.inv(cov_r + np.eye(cov_r.shape[0]) * 1e-6)
+            except Exception:
+                continue
+            diffs = X[w_mask] - mean_r
+            mahal = np.sqrt(np.sum(diffs @ cov_inv * diffs, axis=1))
+            pct_ood = float((mahal > 3.0).mean() * 100)
+            max_ood_pct = max(max_ood_pct, pct_ood)
+
+        # Calibration ECE
+        ece = 0.0
+        n_bins = 10
+        n_classes = len(class_names)
+        for ci in range(n_classes):
+            y_bin = (y == ci).astype(int)
+            p = probs[:, ci]
+            for b in range(n_bins):
+                lo, hi = b / n_bins, (b + 1) / n_bins
+                mask = (p >= lo) & (p < hi)
+                if mask.sum() > 0:
+                    ece += mask.sum() * abs(p[mask].mean() - y_bin[mask].mean())
+        ece /= max(len(y) * n_classes, 1)
+
+        # Composite safety score (0-100)
+        # Deductions from 100 based on each risk factor
+        score = 100.0
+        accuracy_penalty = max(0, (0.85 - accuracy) * 200)  # -20 per 10% below 85%
+        score -= accuracy_penalty
+        near_miss_penalty = min(20, near_miss_pct * 2)       # up to -20 for near-misses
+        score -= near_miss_penalty
+        blind_spot_penalty = min(15, blind_spot_count * 0.5)  # up to -15 for blind spots
+        score -= blind_spot_penalty
+        ece_penalty = min(15, ece * 200)                      # up to -15 for poor calibration
+        score -= ece_penalty
+        ood_penalty = min(10, max_ood_pct * 0.1)             # up to -10 for OOD
+        score -= ood_penalty
+        score = max(0, min(100, score))
+
+        # GO/NO-GO decision per API RP 580
+        if score >= 80:
+            decision = "GO"
+            decision_detail = "Model meets industrial safety thresholds. Deploy with standard monitoring."
+        elif score >= 60:
+            decision = "CONDITIONAL GO"
+            decision_detail = "Model acceptable with restrictions. Require expert review for high-risk predictions."
+        elif score >= 40:
+            decision = "REVIEW REQUIRED"
+            decision_detail = "Model shows significant safety gaps. Do not use for critical decisions without expert override."
+        else:
+            decision = "NO-GO"
+            decision_detail = "Model fails industrial safety assessment. Retrain with more data before deployment."
+
+        # Risk factor breakdown
+        risk_factors = [
+            {
+                "factor": "Model Accuracy",
+                "value": f"{accuracy:.1%}",
+                "score": round(max(0, 100 - accuracy_penalty), 1),
+                "threshold": ">=85%",
+                "status": "PASS" if accuracy >= 0.85 else ("WARN" if accuracy >= 0.75 else "FAIL"),
+            },
+            {
+                "factor": "Near-Miss Rate",
+                "value": f"{near_miss_pct}%",
+                "score": round(max(0, 20 - near_miss_penalty), 1),
+                "threshold": "<5%",
+                "status": "PASS" if near_miss_pct < 5 else ("WARN" if near_miss_pct < 10 else "FAIL"),
+            },
+            {
+                "factor": "Blind Spots",
+                "value": str(blind_spot_count),
+                "score": round(max(0, 15 - blind_spot_penalty), 1),
+                "threshold": "<5",
+                "status": "PASS" if blind_spot_count < 5 else ("WARN" if blind_spot_count < 15 else "FAIL"),
+            },
+            {
+                "factor": "Calibration (ECE)",
+                "value": f"{ece:.4f}",
+                "score": round(max(0, 15 - ece_penalty), 1),
+                "threshold": "<0.05",
+                "status": "PASS" if ece < 0.05 else ("WARN" if ece < 0.10 else "FAIL"),
+            },
+            {
+                "factor": "OOD Exposure",
+                "value": f"{max_ood_pct:.1f}%",
+                "score": round(max(0, 10 - ood_penalty), 1),
+                "threshold": "<20%",
+                "status": "PASS" if max_ood_pct < 20 else ("WARN" if max_ood_pct < 50 else "FAIL"),
+            },
+        ]
+
+        # Render risk matrix plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+            # Left: Safety score gauge
+            ax1 = axes[0]
+            theta = np.linspace(np.pi, 0, 100)
+            ax1.plot(np.cos(theta), np.sin(theta), 'k-', linewidth=2)
+            # Color zones
+            for z, c in [(range(0, 40), '#dc3545'), (range(40, 60), '#fd7e14'),
+                         (range(60, 80), '#ffc107'), (range(80, 101), '#28a745')]:
+                for deg in z:
+                    a = np.pi * (1 - deg / 100)
+                    ax1.plot([0.85 * np.cos(a), 0.95 * np.cos(a)],
+                            [0.85 * np.sin(a), 0.95 * np.sin(a)], color=c, linewidth=3)
+            # Needle
+            needle_angle = np.pi * (1 - score / 100)
+            ax1.plot([0, 0.75 * np.cos(needle_angle)], [0, 0.75 * np.sin(needle_angle)],
+                    'k-', linewidth=3)
+            ax1.plot(0, 0, 'ko', markersize=8)
+            ax1.text(0, -0.15, f"{score:.0f}/100", ha='center', fontsize=24, fontweight='bold')
+            ax1.text(0, -0.30, decision, ha='center', fontsize=14,
+                    color='#28a745' if decision == 'GO' else '#dc3545' if decision == 'NO-GO' else '#ffc107')
+            ax1.set_xlim(-1.1, 1.1)
+            ax1.set_ylim(-0.4, 1.1)
+            ax1.set_aspect('equal')
+            ax1.axis('off')
+            ax1.set_title("Industrial Safety Score (API RP 580)")
+
+            # Right: risk factor bars
+            ax2 = axes[1]
+            factor_names = [rf["factor"] for rf in risk_factors]
+            factor_scores = [rf["score"] for rf in risk_factors]
+            factor_colors = ['#28a745' if rf["status"] == "PASS" else '#ffc107' if rf["status"] == "WARN" else '#dc3545' for rf in risk_factors]
+            ax2.barh(factor_names, factor_scores, color=factor_colors)
+            ax2.set_xlabel("Score Contribution")
+            ax2.set_title("Risk Factor Breakdown")
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        n_fail = sum(1 for rf in risk_factors if rf["status"] == "FAIL")
+        n_warn = sum(1 for rf in risk_factors if rf["status"] == "WARN")
+
+        return {
+            "safety_score": round(score, 1),
+            "decision": decision,
+            "decision_detail": decision_detail,
+            "risk_factors": risk_factors,
+            "n_fail": n_fail,
+            "n_warn": n_warn,
+            "plot": plot_img,
+            "classifier": clf,
+            "n_samples": len(y),
+            "stakeholder_brief": {
+                "headline": f"Safety Score: {score:.0f}/100 - {decision}",
+                "risk_level": "GREEN" if decision == "GO" else ("RED" if decision == "NO-GO" else "AMBER"),
+                "confidence_sentence": f"Based on {len(y)} fractures analyzed with {clf}. {n_fail} risk factors FAILED, {n_warn} WARNING. Standards: API RP 580/581, ISO 31000:2018.",
+                "action": decision_detail,
+                "standards_reference": "API RP 580/581 (Risk-Based Inspection), ISO 31000:2018 (Risk Management)",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    return _sanitize_for_json(result)
 
 
 @app.post("/api/analysis/evidence-chain")

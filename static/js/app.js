@@ -3091,8 +3091,201 @@ async function runShapExplanation() {
         }
 
         showToast("SHAP explanations computed for " + r.n_samples + " samples using " + classifier.replace("_", " "));
+
+        // Fetch SHAP visualization plots (server-rendered images)
+        fetchShapPlots(classifier);
     } catch (err) {
         showToast("SHAP error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+async function fetchShapPlots(classifier) {
+    try {
+        var plotSection = document.getElementById("shap-plots-section");
+        if (!plotSection) return;
+        plotSection.classList.add("d-none");
+
+        var r = await api("/api/shap/plots", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: currentSource, classifier: classifier })
+        });
+
+        plotSection.classList.remove("d-none");
+
+        // Global importance plot
+        var globalImg = document.getElementById("shap-global-plot-img");
+        if (globalImg && r.global_importance_plot) {
+            globalImg.innerHTML = '<img src="' + r.global_importance_plot + '" class="img-fluid rounded" alt="SHAP Global Importance" style="max-height:500px">';
+        }
+
+        // Waterfall plot
+        var wfImg = document.getElementById("shap-waterfall-plot-img");
+        if (wfImg && r.waterfall_plot) {
+            var caption = '';
+            if (r.waterfall_sample) {
+                caption = '<p class="small text-muted mt-2 mb-0">Sample #' + r.waterfall_sample.index +
+                    ' at depth ' + r.waterfall_sample.depth.toFixed(0) + 'm, predicted as <strong>' +
+                    r.waterfall_sample.predicted_class + '</strong> (uncertainty: ' +
+                    r.waterfall_sample.uncertainty.toFixed(3) + ')</p>';
+            }
+            wfImg.innerHTML = '<img src="' + r.waterfall_plot + '" class="img-fluid rounded" alt="SHAP Waterfall" style="max-height:400px">' + caption;
+        }
+
+        // Feature scatter plot
+        var scatterImg = document.getElementById("shap-scatter-plot-img");
+        if (scatterImg && r.feature_scatter_plot) {
+            scatterImg.innerHTML = '<img src="' + r.feature_scatter_plot + '" class="img-fluid rounded" alt="Feature vs SHAP" style="max-height:400px">';
+        }
+
+        // Per-class plots
+        var perClassDiv = document.getElementById("shap-per-class-plots");
+        if (perClassDiv && r.per_class_plots) {
+            perClassDiv.innerHTML = '';
+            Object.keys(r.per_class_plots).forEach(function(cls) {
+                var col = document.createElement("div");
+                col.className = "col-lg-6 col-xl-4";
+                col.innerHTML = '<div class="card"><div class="card-header small">' +
+                    '<i class="bi bi-diagram-3"></i> ' + cls + '</div>' +
+                    '<div class="card-body text-center p-2"><img src="' + r.per_class_plots[cls] +
+                    '" class="img-fluid rounded" alt="SHAP ' + cls + '" style="max-height:300px"></div></div>';
+                perClassDiv.appendChild(col);
+            });
+        }
+
+        // Stakeholder brief
+        if (r.stakeholder_brief) {
+            renderStakeholderBrief('shap-plots-brief', r.stakeholder_brief, 'shap-explain-detail');
+        }
+    } catch (err) {
+        console.warn("SHAP plots error:", err.message);
+    }
+}
+
+// ── Near-Miss Safety Analysis ─────────────────────
+
+async function runNearMissAnalysis() {
+    showLoading("Analyzing near-misses and blind spots (API RP 580)...");
+    try {
+        var classifier = document.getElementById("nm-classifier-select").value;
+        var r = await api("/api/analysis/near-misses", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: currentSource, classifier: classifier })
+        });
+
+        document.getElementById("nm-results").classList.remove("d-none");
+        val("nm-count", r.n_near_misses);
+        val("nm-blind-spots", r.n_blind_spots);
+        val("nm-red-risk", r.n_red_risk);
+        val("nm-accuracy", (r.overall_accuracy * 100).toFixed(1) + "%");
+
+        // Stakeholder brief
+        if (r.stakeholder_brief) {
+            renderStakeholderBrief('nm-brief', r.stakeholder_brief, 'nm-detail');
+        }
+
+        // Plot
+        var plotImg = document.getElementById("nm-plot-img");
+        if (plotImg && r.plot) {
+            plotImg.innerHTML = '<img src="' + r.plot + '" class="img-fluid rounded" alt="Near-Miss Risk Matrix" style="max-height:450px">';
+        }
+
+        // Near-miss table
+        var tbody = document.getElementById("nm-table-body");
+        tbody.innerHTML = '';
+        (r.near_misses || []).slice(0, 30).forEach(function(nm) {
+            var riskBadge = nm.risk_level === 'HIGH'
+                ? '<span class="badge bg-danger">HIGH</span>'
+                : '<span class="badge bg-warning text-dark">MED</span>';
+            var row = document.createElement("tr");
+            row.innerHTML = '<td>' + nm.index + '</td><td>' + nm.depth + 'm</td><td>' + nm.well + '</td>' +
+                '<td>' + nm.true_class + '</td><td>' + nm.predicted_class + '</td>' +
+                '<td>' + (nm.confidence * 100).toFixed(1) + '%</td>' +
+                '<td><strong>' + (nm.margin * 100).toFixed(1) + '%</strong></td>' +
+                '<td>' + nm.runner_up + ' (' + (nm.runner_up_prob * 100).toFixed(1) + '%)</td>' +
+                '<td>' + riskBadge + '</td>';
+            tbody.appendChild(row);
+        });
+
+        // Blind spots table
+        var bsTbody = document.getElementById("nm-bs-table-body");
+        bsTbody.innerHTML = '';
+        (r.blind_spots || []).slice(0, 15).forEach(function(bs) {
+            var sevBadge = bs.severity === 'HIGH'
+                ? '<span class="badge bg-danger">HIGH</span>'
+                : '<span class="badge bg-warning text-dark">MED</span>';
+            var row = document.createElement("tr");
+            row.innerHTML = '<td>' + bs.feature_label + '</td>' +
+                '<td>[' + bs.range_low.toFixed(2) + ', ' + bs.range_high.toFixed(2) + ')</td>' +
+                '<td><strong>' + (bs.error_rate * 100).toFixed(1) + '%</strong></td>' +
+                '<td>' + (bs.baseline_error_rate * 100).toFixed(1) + '%</td>' +
+                '<td>' + bs.n_samples + '</td>' +
+                '<td>' + sevBadge + '</td>';
+            bsTbody.appendChild(row);
+        });
+
+        showToast("Near-miss analysis: " + r.n_near_misses + " near-misses, " + r.n_blind_spots + " blind spots");
+    } catch (err) {
+        showToast("Near-miss error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Failure Dashboard (API RP 580) ───────────────────
+
+async function runFailureDashboard() {
+    showLoading("Computing industrial safety assessment (API RP 580/581)...");
+    try {
+        var classifier = document.getElementById("nm-classifier-select").value;
+        var r = await api("/api/analysis/failure-dashboard", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: currentSource, classifier: classifier })
+        });
+
+        document.getElementById("safety-dashboard").classList.remove("d-none");
+
+        var scoreEl = document.getElementById("safety-score");
+        scoreEl.textContent = r.safety_score + "/100";
+        scoreEl.className = "metric-value fs-2 " + (r.safety_score >= 80 ? "text-success" : r.safety_score >= 60 ? "text-warning" : "text-danger");
+
+        var decEl = document.getElementById("safety-decision");
+        decEl.textContent = r.decision;
+        decEl.className = "metric-value " + (r.decision === "GO" ? "text-success" : r.decision === "NO-GO" ? "text-danger" : "text-warning");
+
+        val("safety-factors", r.n_fail + " FAIL, " + r.n_warn + " WARN");
+
+        if (r.stakeholder_brief) {
+            renderStakeholderBrief('safety-brief', r.stakeholder_brief, 'safety-detail');
+        }
+
+        var plotImg = document.getElementById("safety-plot-img");
+        if (plotImg && r.plot) {
+            plotImg.innerHTML = '<img src="' + r.plot + '" class="img-fluid rounded" alt="Safety Dashboard" style="max-height:400px">';
+        }
+
+        var tbody = document.getElementById("safety-factors-body");
+        tbody.innerHTML = '';
+        (r.risk_factors || []).forEach(function(rf) {
+            var statusBadge = rf.status === 'PASS' ? '<span class="badge bg-success">PASS</span>'
+                : rf.status === 'WARN' ? '<span class="badge bg-warning text-dark">WARN</span>'
+                : '<span class="badge bg-danger">FAIL</span>';
+            var row = document.createElement("tr");
+            row.innerHTML = '<td><strong>' + rf.factor + '</strong></td>' +
+                '<td>' + rf.value + '</td>' +
+                '<td>' + rf.threshold + '</td>' +
+                '<td>' + rf.score + '</td>' +
+                '<td>' + statusBadge + '</td>';
+            tbody.appendChild(row);
+        });
+
+        showToast("Safety Score: " + r.safety_score + "/100 - " + r.decision);
+    } catch (err) {
+        showToast("Safety dashboard error: " + err.message, "Error");
     } finally {
         hideLoading();
     }
@@ -3183,6 +3376,59 @@ async function runFeedbackEffectiveness() {
         showToast("Effectiveness: " + counts.corrections + " corrections, baseline " + baseAcc + "%");
     } catch (err) {
         showToast("Effectiveness error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Query-by-Committee Active Learning ──────────────
+
+async function runQbcActiveLearning() {
+    showLoading("Running Query-by-Committee with all classifiers...");
+    try {
+        var r = await api("/api/analysis/active-learning-qbc", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: currentSource, n_suggest: 20 })
+        });
+
+        document.getElementById("qbc-results").classList.remove("d-none");
+        val("qbc-committee-size", r.committee_size);
+        val("qbc-high-disagree", r.stats ? r.stats.high_disagreement_count : "--");
+        val("qbc-mean-ve", r.stats ? r.stats.mean_vote_entropy : "--");
+        val("qbc-n-suggestions", r.n_suggestions);
+
+        if (r.stakeholder_brief) {
+            renderStakeholderBrief('qbc-brief', r.stakeholder_brief, 'qbc-detail');
+        }
+
+        var plotImg = document.getElementById("qbc-plot-img");
+        if (plotImg && r.plot) {
+            plotImg.innerHTML = '<img src="' + r.plot + '" class="img-fluid rounded" alt="QBC Analysis" style="max-height:400px">';
+        }
+
+        var tbody = document.getElementById("qbc-table-body");
+        tbody.innerHTML = '';
+        (r.suggestions || []).forEach(function(s) {
+            var preds = s.model_predictions || {};
+            var predBadges = Object.entries(preds).map(function(kv) {
+                var isMatch = kv[1] === s.current_label;
+                var cls = isMatch ? 'bg-success' : 'bg-danger';
+                return '<span class="badge ' + cls + ' me-1" title="' + kv[0] + '">' + kv[1] + '</span>';
+            }).join('');
+
+            var row = document.createElement("tr");
+            row.innerHTML = '<td>' + s.index + '</td><td>' + s.depth + 'm</td><td>' + s.well + '</td>' +
+                '<td><strong>' + s.current_label + '</strong></td>' +
+                '<td>' + predBadges + '</td>' +
+                '<td>' + s.agreement + '</td>' +
+                '<td>' + s.qbc_score.toFixed(3) + '</td>';
+            tbody.appendChild(row);
+        });
+
+        showToast("QBC: " + r.committee_size + " classifiers, " + r.n_suggestions + " suggestions");
+    } catch (err) {
+        showToast("QBC error: " + err.message, "Error");
     } finally {
         hideLoading();
     }
@@ -3853,6 +4099,62 @@ async function generateReport() {
 
 
 // ── Uncertainty Budget ────────────────────────────
+
+async function runCalibrationReport() {
+    showLoading("Computing calibration report + OOD detection (Platt scaling)...");
+    try {
+        var r = await api("/api/analysis/calibration-report", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: currentSource, classifier: "random_forest" })
+        });
+
+        document.getElementById("cal-report").classList.remove("d-none");
+        val("cal-ece", r.ece_calibrated ? r.ece_calibrated.toFixed(4) : "--");
+        val("cal-improvement", r.ece_improvement_pct ? r.ece_improvement_pct.toFixed(1) + "%" : "--");
+        val("cal-brier", r.brier_calibrated ? r.brier_calibrated.toFixed(4) : "--");
+
+        var qBadge = r.calibration_quality;
+        var qColor = qBadge === 'GOOD' ? 'text-success' : (qBadge === 'FAIR' ? 'text-warning' : 'text-danger');
+        document.getElementById("cal-quality").className = "metric-value " + qColor;
+        val("cal-quality", qBadge);
+
+        if (r.stakeholder_brief) {
+            renderStakeholderBrief('cal-brief', r.stakeholder_brief, 'cal-detail');
+        }
+
+        var plotImg = document.getElementById("cal-plot-img");
+        if (plotImg && r.plot) {
+            plotImg.innerHTML = '<img src="' + r.plot + '" class="img-fluid rounded" alt="Calibration Diagram" style="max-height:450px">';
+        }
+
+        // OOD per well
+        var oodBody = document.getElementById("cal-ood-body");
+        oodBody.innerHTML = '';
+        if (r.ood_per_well) {
+            Object.entries(r.ood_per_well).forEach(function(kv) {
+                var w = kv[0], d = kv[1];
+                var sevBadge = d.ood_severity === 'HIGH' ? '<span class="badge bg-danger">HIGH</span>'
+                    : d.ood_severity === 'MEDIUM' ? '<span class="badge bg-warning text-dark">MED</span>'
+                    : '<span class="badge bg-success">LOW</span>';
+                var row = document.createElement("tr");
+                row.innerHTML = '<td><strong>' + w + '</strong></td>' +
+                    '<td>' + d.mean_mahalanobis + '</td>' +
+                    '<td>' + d.max_mahalanobis + '</td>' +
+                    '<td>' + d.pct_above_threshold + '%</td>' +
+                    '<td>' + d.n_samples + '</td>' +
+                    '<td>' + sevBadge + '</td>';
+                oodBody.appendChild(row);
+            });
+        }
+
+        showToast("Calibration: " + r.calibration_quality + ", ECE=" + (r.ece_calibrated || 0).toFixed(4));
+    } catch (err) {
+        showToast("Calibration error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
 
 async function runUncertaintyBudget(includeBayesian) {
     showLoading(includeBayesian ? "Computing uncertainty budget with Bayesian MCMC..." : "Computing uncertainty budget...");
