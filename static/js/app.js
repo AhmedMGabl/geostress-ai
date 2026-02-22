@@ -2558,6 +2558,148 @@ async function runTransferLearning() {
     }
 }
 
+// ── Domain-Adapted Transfer ──────────────────────────
+async function runTransferAdapted() {
+    showLoading("Comparing 5 domain adaptation methods (MMD, pseudo-labeling, etc.)...");
+    try {
+        var srcWell = document.getElementById("ta-source-well").value;
+        var tgtWell = document.getElementById("ta-target-well").value;
+        var classifier = document.getElementById("classifier-select").value;
+
+        var r = await api("/api/analysis/transfer-adapted", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_well: srcWell,
+                target_well: tgtWell,
+                classifier: classifier,
+                source: currentSource
+            })
+        }, 120);
+
+        var el = document.getElementById("ta-results");
+        if (!el) return;
+
+        if (r.error) {
+            el.innerHTML = '<div class="alert alert-warning">' + r.error + '</div>';
+            el.classList.remove("d-none");
+            return;
+        }
+
+        // Brief
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("ta-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        // Metrics
+        document.getElementById("ta-best-method").textContent = (r.best_method || "").replace(/_/g, " ");
+        document.getElementById("ta-best-acc").textContent = (r.best_accuracy * 100).toFixed(1) + "%";
+        document.getElementById("ta-n-shifts").textContent = r.n_shifts;
+        document.getElementById("ta-ft-size").textContent = r.n_finetune;
+
+        // Plot
+        if (r.plot) {
+            document.getElementById("ta-plot-img").innerHTML = '<img src="data:image/png;base64,' + r.plot + '" class="img-fluid" style="max-height:400px">';
+        }
+
+        // Method table
+        var tbody = document.getElementById("ta-table-body");
+        tbody.innerHTML = "";
+        var methods = r.results || {};
+        Object.keys(methods).forEach(function(m) {
+            var v = methods[m];
+            var acc = v.accuracy || 0;
+            var cls = acc >= 0.7 ? "success" : acc >= 0.4 ? "warning" : "danger";
+            var details = "";
+            if (v.rounds !== undefined) details = v.rounds + " rounds, " + (v.n_pseudo || 0) + " pseudo-labels";
+            if (m === r.best_method) details += (details ? " — " : "") + "★ BEST";
+            tbody.innerHTML += '<tr' + (m === r.best_method ? ' class="table-success"' : '') + '>' +
+                '<td>' + m.replace(/_/g, " ") + '</td>' +
+                '<td><span class="badge bg-' + cls + '">' + (acc * 100).toFixed(1) + '%</span></td>' +
+                '<td>' + (v.f1 || 0).toFixed(3) + '</td>' +
+                '<td class="text-muted small">' + details + '</td></tr>';
+        });
+
+        // Feature shifts
+        var shifts = r.feature_shifts || [];
+        if (shifts.length > 0) {
+            var shiftBody = document.getElementById("ta-shifts-body");
+            shiftBody.innerHTML = "";
+            shifts.forEach(function(s) {
+                var sc = s.severity === "HIGH" ? "danger" : "warning";
+                shiftBody.innerHTML += '<tr><td>' + s.feature + '</td><td>' + s.cohens_d + '</td>' +
+                    '<td><span class="badge bg-' + sc + '">' + s.severity + '</span></td></tr>';
+            });
+            document.getElementById("ta-shifts-section").classList.remove("d-none");
+        }
+
+        el.classList.remove("d-none");
+        showToast("Transfer adapted: best=" + r.best_method + " (" + (r.best_accuracy * 100).toFixed(1) + "%)");
+    } catch (err) {
+        showToast("Transfer adapted error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Error Budget / Learning Curve ────────────────────
+async function runErrorBudget() {
+    showLoading("Computing learning curve and error budget...");
+    try {
+        var classifier = document.getElementById("classifier-select").value;
+
+        var r = await api("/api/analysis/error-budget", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                classifier: classifier,
+                source: currentSource
+            })
+        }, 120);
+
+        var el = document.getElementById("eb-results");
+        if (!el) return;
+
+        // Brief
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("eb-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '<br><em>' + sb.action + '</em></div>';
+
+        // Metrics
+        document.getElementById("eb-accuracy").textContent = (r.current_accuracy * 100).toFixed(1) + "%";
+        document.getElementById("eb-gap").textContent = (r.train_test_gap * 100).toFixed(1) + "%";
+        var diagColor = r.diagnosis === "IMPROVING" ? "text-success" : r.diagnosis === "PLATEAU" ? "text-warning" : "text-danger";
+        document.getElementById("eb-diagnosis").className = "metric-value " + diagColor;
+        document.getElementById("eb-diagnosis").textContent = r.diagnosis;
+        document.getElementById("eb-samples-needed").textContent =
+            r.samples_for_1pct_improvement > 0 ? "~" + r.samples_for_1pct_improvement : "N/A (plateau)";
+
+        // Plot
+        if (r.plot) {
+            document.getElementById("eb-plot-img").innerHTML = '<img src="data:image/png;base64,' + r.plot + '" class="img-fluid" style="max-height:400px">';
+        }
+
+        // Curve table
+        var tbody = document.getElementById("eb-table-body");
+        tbody.innerHTML = "";
+        (r.learning_curve || []).forEach(function(p) {
+            tbody.innerHTML += '<tr><td>' + p.n_samples + '</td>' +
+                '<td>' + (p.train_accuracy * 100).toFixed(1) + '%</td>' +
+                '<td>' + (p.test_accuracy * 100).toFixed(1) + '%</td>' +
+                '<td>±' + (p.test_std * 100).toFixed(1) + '%</td></tr>';
+        });
+
+        el.classList.remove("d-none");
+        showToast("Error budget: " + r.diagnosis + " at " + (r.current_accuracy * 100).toFixed(1) + "%");
+    } catch (err) {
+        showToast("Error budget error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 // ── Clustering ────────────────────────────────────
 
 async function runClustering() {

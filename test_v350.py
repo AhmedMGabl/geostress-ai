@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 through v3.11.0.
+"""Test suite for GeoStress AI v3.5.0 through v3.12.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -865,10 +865,58 @@ check("Risk factor has threshold", len(rf0.get("threshold", "")) > 0)
 check("Has stakeholder_brief", "headline" in fd.get("stakeholder_brief", {}))
 check("Brief references API RP 580", "API RP 580" in fd.get("stakeholder_brief", {}).get("standards_reference", ""))
 
+# ── [51] Domain-Adapted Transfer Learning ─────────────
+print("\n[51] Domain-Adapted Transfer Learning")
+ta = api("POST", "/api/analysis/transfer-adapted", {
+    "source_well": "3P", "target_well": "6P", "classifier": "random_forest", "source": "demo"
+}, timeout=180)
+check("Has results dict", isinstance(ta.get("results"), dict))
+check("Has zero_shot method", "zero_shot" in ta.get("results", {}))
+check("Has fine_tuned method", "fine_tuned" in ta.get("results", {}))
+check("Has mmd_adapted method", "mmd_adapted" in ta.get("results", {}))
+check("Has pseudo_labeled method", "pseudo_labeled" in ta.get("results", {}))
+check("Has target_only method", "target_only" in ta.get("results", {}))
+check("Has best_method", isinstance(ta.get("best_method"), str) and len(ta["best_method"]) > 0)
+check("Has best_accuracy", isinstance(ta.get("best_accuracy"), (int, float)) and 0 <= ta["best_accuracy"] <= 1)
+check("Has feature_shifts list", isinstance(ta.get("feature_shifts"), list))
+check("Has n_shifts count", isinstance(ta.get("n_shifts"), int))
+check("Has plot", isinstance(ta.get("plot"), str) and ta["plot"].startswith("data:image"))
+check("Has n_source and n_target", ta.get("n_source", 0) > 0 and ta.get("n_target", 0) > 0)
+ta_zs = ta.get("results", {}).get("zero_shot", {})
+check("Zero-shot has accuracy", isinstance(ta_zs.get("accuracy"), (int, float)))
+check("Zero-shot has f1", isinstance(ta_zs.get("f1"), (int, float)))
+check("Has stakeholder_brief", "headline" in ta.get("stakeholder_brief", {}))
+if ta.get("feature_shifts"):
+    fs0 = ta["feature_shifts"][0]
+    check("Shift has feature name", len(fs0.get("feature", "")) > 0)
+    check("Shift has cohens_d", isinstance(fs0.get("cohens_d"), (int, float)))
+    check("Shift has severity", fs0.get("severity") in ("MEDIUM", "HIGH"))
+
+# ── [52] Error Budget / Learning Curve ────────────────
+print("\n[52] Error Budget / Learning Curve")
+eb = api("POST", "/api/analysis/error-budget", {"classifier": "random_forest", "source": "demo"}, timeout=180)
+check("Has classifier", eb.get("classifier") == "random_forest")
+check("Has n_samples", isinstance(eb.get("n_samples"), int) and eb["n_samples"] > 0)
+check("Has current_accuracy", isinstance(eb.get("current_accuracy"), (int, float)) and 0 < eb["current_accuracy"] <= 1)
+check("Has train_test_gap", isinstance(eb.get("train_test_gap"), (int, float)) and eb["train_test_gap"] >= 0)
+check("Has diagnosis", eb.get("diagnosis") in ("OVERFITTING", "UNDERFITTING", "PLATEAU", "IMPROVING"))
+check("Has learning_curve list", isinstance(eb.get("learning_curve"), list) and len(eb["learning_curve"]) >= 3)
+check("Has samples_for_1pct", isinstance(eb.get("samples_for_1pct_improvement"), int))
+check("Has plot", isinstance(eb.get("plot"), str) and eb["plot"].startswith("data:image"))
+lc0 = eb.get("learning_curve", [{}])[0]
+check("Curve point has n_samples", isinstance(lc0.get("n_samples"), int))
+check("Curve point has train_accuracy", isinstance(lc0.get("train_accuracy"), (int, float)))
+check("Curve point has test_accuracy", isinstance(lc0.get("test_accuracy"), (int, float)))
+check("Curve point has test_std", isinstance(lc0.get("test_std"), (int, float)))
+check("Has stakeholder_brief", "headline" in eb.get("stakeholder_brief", {}))
+sb = eb.get("stakeholder_brief", {})
+check("Brief has risk_level", sb.get("risk_level") in ("GREEN", "AMBER", "RED"))
+check("Brief has action", len(sb.get("action", "")) > 10)
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.11.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.12.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

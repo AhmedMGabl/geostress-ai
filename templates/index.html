@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.11</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.12</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -1430,6 +1430,62 @@
                     <!-- Transfer Learning Results -->
                     <div id="transfer-results" class="d-none mb-3"></div>
 
+                    <!-- Domain-Adapted Transfer Learning -->
+                    <div class="card border-info mb-3">
+                        <div class="card-header bg-info bg-opacity-10 py-2">
+                            <i class="bi bi-diagram-3"></i> <strong>Domain-Adapted Transfer</strong>
+                            <small class="text-muted ms-2">MMD reweighting + pseudo-labeling</small>
+                        </div>
+                        <div class="card-body py-2">
+                            <p class="text-muted small mb-2">
+                                Compares 5 domain adaptation strategies: zero-shot, fine-tuned, MMD kernel reweighting,
+                                progressive pseudo-labeling, and target-only. Also reports feature distribution shifts (Cohen's d).
+                            </p>
+                            <div class="d-flex gap-2 mb-2 align-items-center">
+                                <select id="ta-source-well" class="form-select form-select-sm" style="width:auto">
+                                    <option value="3P">Source: 3P</option>
+                                    <option value="6P">Source: 6P</option>
+                                </select>
+                                <i class="bi bi-arrow-right"></i>
+                                <select id="ta-target-well" class="form-select form-select-sm" style="width:auto">
+                                    <option value="6P">Target: 6P</option>
+                                    <option value="3P">Target: 3P</option>
+                                </select>
+                                <button class="btn btn-info btn-sm" onclick="runTransferAdapted()">
+                                    <i class="bi bi-arrow-left-right"></i> Compare Methods
+                                </button>
+                            </div>
+                            <div id="ta-results" class="d-none">
+                                <div id="ta-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-2">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Method</div><div class="metric-value" id="ta-best-method">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Accuracy</div><div class="metric-value" id="ta-best-acc">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Feature Shifts</div><div class="metric-value" id="ta-n-shifts">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Fine-tune Size</div><div class="metric-value" id="ta-ft-size">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-2" id="ta-plot-img"></div>
+                                <div class="card">
+                                    <div class="card-header py-1"><i class="bi bi-table"></i> Method Comparison</div>
+                                    <div class="card-body p-0">
+                                        <table class="table table-sm table-hover mb-0">
+                                            <thead class="table-light"><tr><th>Method</th><th>Accuracy</th><th>F1</th><th>Details</th></tr></thead>
+                                            <tbody id="ta-table-body"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                                <div id="ta-shifts-section" class="d-none mt-2">
+                                    <h6 class="small fw-bold"><i class="bi bi-exclamation-triangle text-warning"></i> Significant Feature Shifts</h6>
+                                    <div class="table-responsive" style="max-height:200px;overflow-y:auto">
+                                        <table class="table table-sm table-bordered mb-0">
+                                            <thead class="table-light"><tr><th>Feature</th><th>Cohen's d</th><th>Severity</th></tr></thead>
+                                            <tbody id="ta-shifts-body"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div id="classify-results" class="d-none">
                         <!-- Stakeholder Brief -->
                         <div id="clf-brief" class="d-none mb-4"></div>
@@ -1892,6 +1948,42 @@
                                     </div>
                                 </div>
                                 <div id="aug-interpretation" class="alert alert-light small"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Error Budget / Learning Curve -->
+                    <div class="card mb-4 border-primary mt-4">
+                        <div class="card-header bg-primary bg-opacity-10">
+                            <i class="bi bi-graph-up"></i> Error Budget &amp; Learning Curve
+                            <small class="text-muted ms-2">How much more data do you need?</small>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-2">
+                                Shows how model accuracy changes with training set size. Diagnoses whether
+                                you need more data, better features, or a different model — and estimates
+                                the cost (in labeled samples) of each +1% accuracy improvement.
+                            </p>
+                            <button class="btn btn-sm btn-outline-primary mb-3" onclick="runErrorBudget()">
+                                <i class="bi bi-calculator"></i> Compute Error Budget
+                            </button>
+                            <div id="eb-results" class="d-none">
+                                <div id="eb-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Current Accuracy</div><div class="metric-value" id="eb-accuracy">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Train-Test Gap</div><div class="metric-value" id="eb-gap">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Diagnosis</div><div class="metric-value" id="eb-diagnosis">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Samples for +1%</div><div class="metric-value" id="eb-samples-needed">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-3" id="eb-plot-img"></div>
+                                <div class="card">
+                                    <div class="card-header py-1"><i class="bi bi-table"></i> Learning Curve Data</div>
+                                    <div class="card-body p-0">
+                                        <table class="table table-sm table-hover mb-0">
+                                            <thead class="table-light"><tr><th>Samples</th><th>Train Acc</th><th>Val Acc</th><th>Std</th></tr></thead>
+                                            <tbody id="eb-table-body"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

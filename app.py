@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.11.0 - Industrial Safety)."""
+"""GeoStress AI - FastAPI Web Application (v3.12.0 - Domain Adaptation & Error Budget)."""
 
 import os
 import io
@@ -964,7 +964,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.11.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.12.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -2181,6 +2181,231 @@ async def run_transfer_learning(request: Request):
         fine_tune_fraction=fine_tune_fraction, classifier=classifier,
     )
     return _sanitize_for_json(result)
+
+
+_transfer_adapted_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/transfer-adapted")
+async def transfer_adapted(request: Request):
+    """Domain-adapted transfer learning with MMD reweighting and pseudo-labeling.
+
+    Goes beyond basic fine-tuning by:
+    1. MMD kernel reweighting: adjusts source sample weights to match target
+    2. Progressive pseudo-labeling: iteratively labels high-confidence target samples
+    3. Feature distribution alignment check: Cohen's d for each feature
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    source_well = body.get("source_well", "3P")
+    target_well = body.get("target_well", "6P")
+    classifier = body.get("classifier", "random_forest")
+    _validate_classifier(classifier)
+    fine_tune_fraction = _validate_float(
+        body.get("fine_tune_fraction", 0.2), "fine_tune_fraction", 0.01, 1.0
+    )
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    cache_key = f"ta_{source}_{source_well}_{target_well}_{classifier}_{fine_tune_fraction}"
+    if cache_key in _transfer_adapted_cache:
+        return _transfer_adapted_cache[cache_key]
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.base import clone
+        from sklearn.metrics import accuracy_score, f1_score
+        from sklearn.metrics.pairwise import rbf_kernel
+
+        df_src = df[df[WELL_COL] == source_well].reset_index(drop=True)
+        df_tgt = df[df[WELL_COL] == target_well].reset_index(drop=True)
+        if len(df_src) < 10 or len(df_tgt) < 10:
+            return {"error": f"Need >=10 samples. Source: {len(df_src)}, Target: {len(df_tgt)}"}
+
+        feat_src = engineer_enhanced_features(df_src)
+        feat_tgt = engineer_enhanced_features(df_tgt)
+        common_cols = sorted(set(feat_src.columns) & set(feat_tgt.columns))
+        feat_src = feat_src[common_cols]
+        feat_tgt = feat_tgt[common_cols]
+
+        le = LabelEncoder()
+        le.fit(np.concatenate([df_src[FRACTURE_TYPE_COL].values, df_tgt[FRACTURE_TYPE_COL].values]))
+        y_src = le.transform(df_src[FRACTURE_TYPE_COL].values)
+        y_tgt = le.transform(df_tgt[FRACTURE_TYPE_COL].values)
+        class_names = le.classes_.tolist()
+
+        scaler = StandardScaler()
+        scaler.fit(np.vstack([feat_src.values, feat_tgt.values]))
+        X_src = scaler.transform(feat_src.values)
+        X_tgt = scaler.transform(feat_tgt.values)
+
+        n_ft = max(2, int(len(X_tgt) * fine_tune_fraction))
+        rng = np.random.RandomState(42)
+        ft_idx = rng.choice(len(X_tgt), n_ft, replace=False)
+        eval_idx = np.setdiff1d(np.arange(len(X_tgt)), ft_idx)
+        X_tgt_ft, y_tgt_ft = X_tgt[ft_idx], y_tgt[ft_idx]
+        X_tgt_eval, y_tgt_eval = X_tgt[eval_idx], y_tgt[eval_idx]
+
+        all_models = _get_models()
+        clf = classifier if classifier in all_models else "random_forest"
+        results = {}
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            # 1. Zero-shot
+            m = clone(all_models[clf]).fit(X_src, y_src)
+            yp = m.predict(X_tgt_eval)
+            results["zero_shot"] = {
+                "accuracy": round(float(accuracy_score(y_tgt_eval, yp)), 4),
+                "f1": round(float(f1_score(y_tgt_eval, yp, average="weighted", zero_division=0)), 4),
+            }
+
+            # 2. Fine-tuned
+            m = clone(all_models[clf]).fit(np.vstack([X_src, X_tgt_ft]), np.concatenate([y_src, y_tgt_ft]))
+            yp = m.predict(X_tgt_eval)
+            results["fine_tuned"] = {
+                "accuracy": round(float(accuracy_score(y_tgt_eval, yp)), 4),
+                "f1": round(float(f1_score(y_tgt_eval, yp, average="weighted", zero_division=0)), 4),
+            }
+
+            # 3. MMD reweighted
+            gamma = 1.0 / (2 * max(X_src.shape[1], 1))
+            K_st = rbf_kernel(X_src, X_tgt, gamma=gamma)
+            K_ss = rbf_kernel(X_src, X_src, gamma=gamma)
+            mmd_w = K_st.mean(axis=1) / (K_ss.mean(axis=1) + 1e-8)
+            mmd_w = np.clip(mmd_w / mmd_w.sum() * len(mmd_w), 0.1, 10.0)
+            X_all = np.vstack([X_src, X_tgt_ft])
+            y_all = np.concatenate([y_src, y_tgt_ft])
+            w_all = np.concatenate([mmd_w, np.ones(len(y_tgt_ft)) * 3.0])
+            m = clone(all_models[clf])
+            try:
+                m.fit(X_all, y_all, sample_weight=w_all)
+            except TypeError:
+                m.fit(X_all, y_all)
+            yp = m.predict(X_tgt_eval)
+            results["mmd_adapted"] = {
+                "accuracy": round(float(accuracy_score(y_tgt_eval, yp)), 4),
+                "f1": round(float(f1_score(y_tgt_eval, yp, average="weighted", zero_division=0)), 4),
+            }
+
+            # 4. Progressive pseudo-labeling
+            X_train = np.vstack([X_src, X_tgt_ft])
+            y_train = np.concatenate([y_src, y_tgt_ft])
+            labeled = np.zeros(len(X_tgt), dtype=bool)
+            labeled[ft_idx] = True
+            pseudo_rounds = 0
+            for ri in range(5):
+                m = clone(all_models[clf]).fit(X_train, y_train)
+                unlabeled = ~labeled
+                if unlabeled.sum() == 0:
+                    break
+                probs = m.predict_proba(X_tgt[unlabeled])
+                thresh = 0.90 - ri * 0.05
+                confident = probs.max(axis=1) >= thresh
+                if confident.sum() == 0:
+                    break
+                new_idx = np.where(unlabeled)[0][confident]
+                X_train = np.vstack([X_train, X_tgt[new_idx]])
+                y_train = np.concatenate([y_train, probs[confident].argmax(axis=1)])
+                labeled[new_idx] = True
+                pseudo_rounds += 1
+            yp = m.predict(X_tgt_eval)
+            results["pseudo_labeled"] = {
+                "accuracy": round(float(accuracy_score(y_tgt_eval, yp)), 4),
+                "f1": round(float(f1_score(y_tgt_eval, yp, average="weighted", zero_division=0)), 4),
+                "rounds": pseudo_rounds,
+                "n_pseudo": int(labeled.sum() - n_ft),
+            }
+
+            # 5. Target-only
+            if len(np.unique(y_tgt_ft)) >= 2:
+                m = clone(all_models[clf]).fit(X_tgt_ft, y_tgt_ft)
+                yp = m.predict(X_tgt_eval)
+                results["target_only"] = {
+                    "accuracy": round(float(accuracy_score(y_tgt_eval, yp)), 4),
+                    "f1": round(float(f1_score(y_tgt_eval, yp, average="weighted", zero_division=0)), 4),
+                }
+            else:
+                results["target_only"] = {"accuracy": 0, "f1": 0}
+
+        # Feature shift analysis (Cohen's d)
+        shifts = []
+        for fi, col in enumerate(common_cols):
+            d_mean = abs(float(X_src[:, fi].mean() - X_tgt[:, fi].mean()))
+            d_std = float(np.sqrt((X_src[:, fi].std()**2 + X_tgt[:, fi].std()**2) / 2)) + 1e-8
+            cd = d_mean / d_std
+            if cd > 0.5:
+                shifts.append({"feature": col, "cohens_d": round(cd, 3),
+                               "severity": "HIGH" if cd > 1.0 else "MEDIUM"})
+        shifts.sort(key=lambda x: x["cohens_d"], reverse=True)
+
+        method_accs = {k: v["accuracy"] for k, v in results.items()}
+        best = max(method_accs, key=method_accs.get)
+        best_acc = method_accs[best]
+        imp = round((best_acc - results["zero_shot"]["accuracy"]) * 100, 1)
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+            ax1 = axes[0]
+            methods = list(results.keys())
+            accs = [results[m]["accuracy"] for m in methods]
+            colors = ["#dc3545" if a < 0.4 else "#ffc107" if a < 0.7 else "#28a745" for a in accs]
+            bars = ax1.bar(range(len(methods)), accs, color=colors)
+            ax1.set_xticks(range(len(methods)))
+            ax1.set_xticklabels([m.replace("_", "\n") for m in methods], fontsize=8)
+            ax1.set_ylabel("Accuracy")
+            ax1.set_title(f"Transfer: {source_well} -> {target_well}")
+            ax1.set_ylim(0, 1)
+            for bar, acc in zip(bars, accs):
+                ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                        f"{acc:.1%}", ha="center", fontsize=9)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            if shifts:
+                fs_names = [s["feature"][:15] for s in shifts[:10]]
+                fs_vals = [s["cohens_d"] for s in shifts[:10]]
+                ax2.barh(fs_names[::-1], fs_vals[::-1],
+                        color=["#dc3545" if s["severity"]=="HIGH" else "#ffc107" for s in shifts[:10]][::-1])
+                ax2.axvline(x=0.5, color="orange", linestyle="--", linewidth=1)
+                ax2.axvline(x=1.0, color="red", linestyle="--", linewidth=1)
+                ax2.set_xlabel("Cohen's d")
+                ax2.set_title("Feature Distribution Shifts")
+            else:
+                ax2.text(0.5, 0.5, "No significant shifts", ha="center", va="center", transform=ax2.transAxes)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "source_well": source_well, "target_well": target_well,
+            "n_source": len(df_src), "n_target": len(df_tgt),
+            "n_finetune": n_ft, "n_eval": len(X_tgt_eval),
+            "classifier": clf, "results": results,
+            "best_method": best, "best_accuracy": best_acc,
+            "feature_shifts": shifts[:15], "n_shifts": len(shifts),
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Best transfer: {best} ({best_acc:.1%}, +{imp}% vs zero-shot)",
+                "risk_level": "GREEN" if best_acc >= 0.7 else ("AMBER" if best_acc >= 0.4 else "RED"),
+                "confidence_sentence": f"Transfer {source_well}->{target_well}. Zero-shot: {results['zero_shot']['accuracy']:.1%}, best: {best_acc:.1%}. {len(shifts)} features shift significantly.",
+                "action": f"Use {best} for cross-well predictions." + (f" Collect more {target_well} data." if best_acc < 0.7 else ""),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    sanitized = _sanitize_for_json(result)
+    _transfer_adapted_cache[cache_key] = sanitized
+    return sanitized
 
 
 @app.post("/api/analysis/validity-prefilter")
@@ -10565,6 +10790,150 @@ async def failure_analysis(well: str = Query(None)):
         "recommendations": recommendations,
         "well": well,
     })
+
+
+@app.post("/api/analysis/error-budget")
+async def error_budget(request: Request):
+    """Compute error budget and learning curve for model improvement planning.
+
+    Returns:
+    - Learning curve: how accuracy improves with more training data
+    - Error budget: estimated reviews needed for +1% accuracy improvement
+    - Diminishing returns analysis: is more data still helping?
+    - Review ROI: cost-effectiveness of expert labeling
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    classifier = body.get("classifier", "random_forest")
+    _validate_classifier(classifier)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold, learning_curve
+
+        features = engineer_enhanced_features(df)
+        labels = df[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+
+        all_models = _get_models()
+        clf = classifier if classifier in all_models else "random_forest"
+        model = all_models[clf]
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+
+        # Learning curve: accuracy at different training set sizes
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            train_sizes_abs, train_scores, test_scores = learning_curve(
+                model, X, y,
+                train_sizes=np.linspace(0.1, 1.0, 8),
+                cv=StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42),
+                scoring="accuracy",
+                n_jobs=-1,
+                random_state=42,
+            )
+
+        train_mean = train_scores.mean(axis=1)
+        test_mean = test_scores.mean(axis=1)
+        test_std = test_scores.std(axis=1)
+
+        curve_data = [
+            {
+                "n_samples": int(n),
+                "train_accuracy": round(float(tr), 4),
+                "test_accuracy": round(float(te), 4),
+                "test_std": round(float(ts), 4),
+            }
+            for n, tr, te, ts in zip(train_sizes_abs, train_mean, test_mean, test_std)
+        ]
+
+        # Estimate marginal improvement
+        current_acc = float(test_mean[-1])
+        if len(test_mean) >= 3:
+            recent_gains = [test_mean[i] - test_mean[i-1] for i in range(len(test_mean)-2, len(test_mean))]
+            avg_gain_per_step = float(np.mean(recent_gains))
+            samples_per_step = int(train_sizes_abs[-1] - train_sizes_abs[-2])
+            if avg_gain_per_step > 0.001:
+                samples_for_1pct = int(0.01 / avg_gain_per_step * samples_per_step)
+            else:
+                samples_for_1pct = -1  # diminishing returns
+        else:
+            avg_gain_per_step = 0
+            samples_for_1pct = -1
+
+        # Gap analysis
+        train_test_gap = float(train_mean[-1] - test_mean[-1])
+        if train_test_gap > 0.1:
+            diagnosis = "OVERFITTING"
+            recommendation = "Model is memorizing training data. More diverse data needed, or reduce model complexity."
+        elif train_test_gap < 0.02 and current_acc < 0.85:
+            diagnosis = "UNDERFITTING"
+            recommendation = "Model cannot capture patterns. Try more complex features or larger model."
+        elif samples_for_1pct < 0:
+            diagnosis = "PLATEAU"
+            recommendation = "Accuracy has plateaued. More of the same data won't help. Try: new features, new model, or different well data."
+        else:
+            diagnosis = "IMPROVING"
+            recommendation = f"Model still improving. Estimate ~{samples_for_1pct} more labeled samples for +1% accuracy."
+
+        # Render learning curve plot
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.fill_between(train_sizes_abs, test_mean - test_std, test_mean + test_std,
+                           alpha=0.2, color="#2E86AB")
+            ax.plot(train_sizes_abs, train_mean, "o-", color="#E8630A", label="Training accuracy")
+            ax.plot(train_sizes_abs, test_mean, "s-", color="#2E86AB", label="Validation accuracy")
+            ax.axhline(y=current_acc, color="gray", linestyle=":", linewidth=1)
+            ax.set_xlabel("Training Set Size")
+            ax.set_ylabel("Accuracy")
+            ax.set_title(f"Learning Curve ({clf}) - {diagnosis}")
+            ax.legend(loc="lower right")
+            ax.set_ylim(0, 1.05)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            # Annotate current accuracy
+            ax.annotate(f"Current: {current_acc:.1%}", xy=(train_sizes_abs[-1], current_acc),
+                       xytext=(-80, 20), textcoords="offset points",
+                       arrowprops=dict(arrowstyle="->", color="gray"),
+                       fontsize=10, fontweight="bold")
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "classifier": clf,
+            "n_samples": len(y),
+            "current_accuracy": round(current_acc, 4),
+            "train_test_gap": round(train_test_gap, 4),
+            "diagnosis": diagnosis,
+            "learning_curve": curve_data,
+            "samples_for_1pct_improvement": samples_for_1pct,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Error Budget: {diagnosis} at {current_acc:.1%} accuracy",
+                "risk_level": "GREEN" if diagnosis == "IMPROVING" else ("AMBER" if diagnosis == "PLATEAU" else "RED"),
+                "confidence_sentence": (
+                    f"Model currently at {current_acc:.1%} accuracy with {len(y)} samples. "
+                    f"Train-test gap: {train_test_gap:.1%}. "
+                    + (f"Estimated {samples_for_1pct} more samples needed for +1% improvement." if samples_for_1pct > 0 else "Diminishing returns — more data alone won't improve accuracy.")
+                ),
+                "action": recommendation,
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    return _sanitize_for_json(result)
 
 
 @app.post("/api/feedback/resolve-failure")
