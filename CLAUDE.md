@@ -151,6 +151,18 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/decision-readiness` | GO/CAUTION/NO-GO with 6 independent signals |
 | GET | `/api/snapshot` | Pre-computed startup snapshot: instant well cards, alerts, regime, SHmax |
 | POST | `/api/analysis/ensemble-predict` | Calibrated 7-model ensemble: accuracy-weighted voting, agreement %, uncertain samples |
+| POST | `/api/analysis/drift-detection` | Data drift via PSI + KS-test per feature, creates/compares baseline |
+| POST | `/api/analysis/drift-reset` | Reset drift baseline for a well |
+| GET | `/api/models/registry` | Model version history with active/inactive status |
+| POST | `/api/models/register` | Register new model version (auto or manual) |
+| POST | `/api/models/compare-versions` | Compare latest vs previous model version |
+| POST | `/api/models/rollback` | Rollback to a previous model version |
+| POST | `/api/analysis/field-stress-model` | Multi-well field integration: weighted SHmax, domain boundary detection |
+| POST | `/api/feedback/failure-case` | Record a prediction failure for systematic learning |
+| GET | `/api/feedback/failure-analysis` | Analyze failure patterns, clusters, root causes |
+| POST | `/api/feedback/resolve-failure` | Mark a failure case as resolved |
+| POST | `/api/feedback/retrain-with-failures` | Retrain with failure-aware sample weighting |
+| GET | `/api/system/health` | System health: caches, drift status, failure rate, model versions |
 
 ## Domain Concepts
 
@@ -205,6 +217,21 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Ensemble extracts trained model/scaler/label_encoder from classify_enhanced, runs predict separately
 - Ensemble agreement: 95% for Well 3P, 10 uncertain samples identified (depth 2921.5m has 43% agreement)
 - `classify_enhanced()` returns trained sklearn objects in result dict (model, scaler, label_encoder) — use for per-sample prediction
+- v3.3.0: Production MLOps — drift detection, model versioning, field stress integration, failure learning
+- Data drift detection: PSI (Population Stability Index) per feature, 28 features monitored per well
+- PSI < 0.1 = stable, 0.1-0.25 = moderate drift, > 0.25 = critical drift
+- Drift baselines stored in SQLite; first call creates baseline, subsequent calls compare
+- Model version registry: auto-increment per model_type+well, deactivates previous versions on register
+- Rollback sets target version as active, deactivates all others
+- Field stress model: inverse-variance weighted circular mean of SHmax from all wells
+- Field SHmax 175.3° (S), R=0.967 HIGH consistency, Wells 3P/6P agree within 15°
+- Domain boundary detection: flags well pairs with >30° SHmax difference
+- Failure case pipeline: record → cluster by type → analyze depth/confidence patterns → retrain with failure-aware weights
+- Failure-aware retraining: Gaussian upweighting near failure depths (50m window), type-proportional weighting
+- System health: composite score (0-100) from failure rate, unresolved cases, active models, cache state
+- 3 new SQLite tables: model_versions (versioned registry), drift_baselines (per-feature stats), failure_cases (learning pipeline)
+- `auto_detect_regime` and `invert_stress` take `pore_pressure` (not `pp_mpa` or `friction`)
+- `fracture_plane_normal(azimuth_deg, dip_deg)` takes arrays, not DataFrames
 - Stacking ensemble (RF+XGBoost+LightGBM with LR meta-learner) is typically the best model
 - SHAP TreeExplainer for XGBoost/LightGBM/RF; GradientBoosting only supports binary in SHAP
 - Conformal prediction provides calibrated per-sample confidence scores
