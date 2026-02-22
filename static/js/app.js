@@ -7257,7 +7257,7 @@ async function refreshMlopsStatus() {
         var el = document.getElementById('mlops-health-score');
         if (el) el.textContent = score;
         el = document.getElementById('mlops-model-count');
-        if (el) el.textContent = (d.active_models || 0);
+        if (el) el.textContent = Array.isArray(d.active_models) ? d.active_models.length : (d.active_models || 0);
         el = document.getElementById('mlops-failure-count');
         if (el) el.textContent = (d.unresolved_failures || 0);
         el = document.getElementById('mlops-rlhf-count');
