@@ -1145,12 +1145,13 @@ async def run_classification(request: Request):
     source = body.get("source", "demo")
     use_enhanced = body.get("enhanced", True)
 
+    df = get_df(source)
+
     # Check cache
     cache_key = f"clf_{source}_{classifier}_{'enh' if use_enhanced else 'basic'}"
     if cache_key in _classify_cache:
         clf_result = _classify_cache[cache_key]
     else:
-        df = get_df(source)
         if use_enhanced:
             clf_result = await asyncio.to_thread(
                 classify_enhanced, df, classifier=classifier
