@@ -3017,6 +3017,160 @@ async function runPreferenceModel() {
     }
 }
 
+// ── Pore Pressure Coupling ─────────────────────────
+
+async function runPorePressureCoupling() {
+    showLoading("Running pore pressure coupling analysis...");
+    try {
+        var r = await api("/api/analysis/pore-pressure-coupling", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, source: currentSource })
+        }, 120);
+        var el = document.getElementById("pp-results");
+        if (!el) return;
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("pp-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        var cur = r.current_estimate || {};
+        document.getElementById("pp-current-cs").textContent = (cur.cs_pct || 0).toFixed(1) + "%";
+        var fGrade = cur.fif_grade || "?";
+        var fColor = fGrade === "STABLE" ? "text-success" : fGrade === "MARGINAL" ? "text-warning" : "text-danger";
+        document.getElementById("pp-fif-grade").className = "metric-value " + fColor;
+        document.getElementById("pp-fif-grade").textContent = fGrade;
+        document.getElementById("pp-sensitivity").textContent = (r.sensitivity_cs_per_mpa || 0).toFixed(1) + "%/MPa";
+        document.getElementById("pp-sv").textContent = r.sv_mpa;
+
+        var tbody = document.getElementById("pp-table-body");
+        tbody.innerHTML = "";
+        (r.pp_sweep || []).forEach(function(row) {
+            var gc = row.fif_grade === "STABLE" ? "success" : row.fif_grade === "MARGINAL" ? "warning" : "danger";
+            tbody.innerHTML += '<tr><td>' + row.pp_fraction_sv + '</td>' +
+                '<td>' + row.pp_mpa + '</td>' +
+                '<td>' + row.cs_pct + '%</td>' +
+                '<td>' + row.fif + '</td>' +
+                '<td><span class="badge bg-' + gc + '">' + row.fif_grade + '</span></td>' +
+                '<td>' + row.s1_eff_mpa + '</td>' +
+                '<td>' + row.s3_eff_mpa + '</td></tr>';
+        });
+
+        if (r.plot) {
+            document.getElementById("pp-plot-img").innerHTML = '<img src="' + r.plot + '" class="img-fluid">';
+        }
+
+        el.classList.remove("d-none");
+        showToast("Pp coupling: CS% = " + (cur.cs_pct || 0).toFixed(1) + "%, FIF = " + fGrade);
+    } catch (err) {
+        showToast("Pp coupling error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Heterogeneous Ensemble ────────────────────────
+
+async function runHeteroEnsemble() {
+    showLoading("Building heterogeneous ensemble (5 model families)...");
+    try {
+        var r = await api("/api/analysis/hetero-ensemble", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, source: currentSource })
+        }, 180);
+        var el = document.getElementById("he-results");
+        if (!el) return;
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("he-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        document.getElementById("he-acc").textContent = (r.ensemble_accuracy * 100).toFixed(1) + "%";
+        var impColor = r.ensemble_improvement >= 0 ? "text-success" : "text-danger";
+        document.getElementById("he-improvement").className = "metric-value " + impColor;
+        document.getElementById("he-improvement").textContent = (r.ensemble_improvement >= 0 ? "+" : "") + (r.ensemble_improvement * 100).toFixed(1) + "%";
+        document.getElementById("he-agreement").textContent = (r.mean_agreement * 100).toFixed(0) + "%";
+        document.getElementById("he-contested").textContent = r.contested_predictions;
+
+        var tbody = document.getElementById("he-models-body");
+        tbody.innerHTML = "";
+        var ba = r.base_accuracies || {};
+        var mc = r.meta_contributions || {};
+        Object.keys(ba).forEach(function(name) {
+            tbody.innerHTML += '<tr><td>' + name + '</td>' +
+                '<td>' + (ba[name] * 100).toFixed(1) + '%</td>' +
+                '<td>' + ((mc[name] || 0) * 100).toFixed(0) + '%</td></tr>';
+        });
+        // Add ensemble row
+        tbody.innerHTML += '<tr class="table-success fw-bold"><td>ENSEMBLE</td>' +
+            '<td>' + (r.ensemble_accuracy * 100).toFixed(1) + '%</td><td>-</td></tr>';
+
+        if (r.plot) {
+            document.getElementById("he-plot-img").innerHTML = '<img src="' + r.plot + '" class="img-fluid">';
+        }
+
+        el.classList.remove("d-none");
+        showToast("Hetero-ensemble: " + (r.ensemble_accuracy * 100).toFixed(1) + "% accuracy");
+    } catch (err) {
+        showToast("Hetero-ensemble error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── ML Anomaly Detection ──────────────────────────
+
+async function runMLAnomalyDetection() {
+    showLoading("Running ML-based anomaly detection...");
+    try {
+        var r = await api("/api/analysis/anomaly-detection", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, source: currentSource })
+        }, 120);
+        var el = document.getElementById("anomaly-results");
+        if (!el) return;
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("anom-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        document.getElementById("anom-count").textContent = r.n_anomalies;
+        document.getElementById("anom-rate").textContent = r.anomaly_rate_pct + "%";
+        document.getElementById("anom-total").textContent = r.n_samples;
+        document.getElementById("anom-threshold").textContent = r.maha_threshold;
+
+        var tbody = document.getElementById("anom-table-body");
+        tbody.innerHTML = "";
+        (r.anomalies || []).forEach(function(a) {
+            var uf = (a.unusual_features || []).map(function(f) { return f.feature + " (z=" + f.z_score + ")"; }).join(", ");
+            tbody.innerHTML += '<tr><td>' + a.index + '</td>' +
+                '<td>' + (a.depth ? a.depth.toFixed(1) : "-") + '</td>' +
+                '<td>' + (a.azimuth ? a.azimuth.toFixed(0) : "-") + '</td>' +
+                '<td>' + (a.dip ? a.dip.toFixed(0) : "-") + '</td>' +
+                '<td>' + (a.fracture_type || "-") + '</td>' +
+                '<td>' + a.iso_score + '</td>' +
+                '<td>' + a.mahalanobis + '</td>' +
+                '<td class="small">' + uf + '</td></tr>';
+        });
+
+        if (r.plot) {
+            document.getElementById("anom-plot-img").innerHTML = '<img src="' + r.plot + '" class="img-fluid">';
+        }
+
+        el.classList.remove("d-none");
+        showToast("Anomaly detection: " + r.n_anomalies + " flagged (" + r.anomaly_rate_pct + "%)");
+    } catch (err) {
+        showToast("Anomaly detection error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 // ── Balanced Classification (SMOTE) ───────────────
 
 async function runBalancedClassify() {

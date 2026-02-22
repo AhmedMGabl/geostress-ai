@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.16.0 - Speed + Feature Ablation + Hyperparameter Optimization)."""
+"""GeoStress AI - FastAPI Web Application (v3.17.0 - Pore Pressure + Hetero-Ensemble + Anomaly Detection)."""
 
 import os
 import io
@@ -968,7 +968,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.16.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.17.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -11925,6 +11925,575 @@ async def optimize_model(request: Request):
     return result
 
 
+# ── Pore Pressure Coupling & Formation Integrity ──────────────────────
+
+_pp_coupling_cache = BoundedCache(10)
+
+@app.post("/api/analysis/pore-pressure-coupling")
+async def pore_pressure_coupling(request: Request):
+    """Analyze how pore pressure variations affect stress predictions.
+
+    Sweeps pore pressure from 0.3-0.6 Sv and computes:
+    - Critically stressed fraction at each Pp
+    - Effective stress changes
+    - Formation Integrity Factor (FIF) per 2025-2026 research
+    - Sensitivity: dCS%/dPp (how fast CS% changes per unit Pp change)
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"{well}:{source}"
+    if cache_key in _pp_coupling_cache:
+        return _pp_coupling_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from src.enhanced_analysis import engineer_enhanced_features
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 10:
+            raise HTTPException(400, f"Insufficient data for {well}")
+
+        # Get depth range for pore pressure estimation
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.linspace(1000, 3000, len(df_well))
+        mean_depth = float(np.mean(depths))
+        depth_range = float(np.max(depths) - np.min(depths))
+
+        # Estimate vertical stress (Sv) from depth
+        rho_rock = 2500  # kg/m³ typical
+        g = 9.81
+        Sv = rho_rock * g * mean_depth / 1e6  # MPa
+
+        # Pore pressure sweep: 0.3 to 0.6 Sv
+        pp_fractions = np.linspace(0.3, 0.6, 13)
+        pp_values = pp_fractions * Sv
+
+        # Try to get inversion result for stress parameters
+        inv_key = f"{well}:demo"
+        if inv_key in _inversion_cache:
+            inv = _inversion_cache[inv_key]
+            S1 = inv.get("sigma1", Sv * 1.3)
+            S3 = inv.get("sigma3", Sv * 0.6)
+            mu = inv.get("friction", 0.6)
+        else:
+            S1, S3, mu = Sv * 1.3, Sv * 0.6, 0.6
+
+        # Compute CS% at each pore pressure
+        results = []
+        azimuths = df_well[AZIMUTH_COL].values if AZIMUTH_COL in df_well.columns else np.random.uniform(0, 360, len(df_well))
+        dips = df_well[DIP_COL].values if DIP_COL in df_well.columns else np.random.uniform(0, 90, len(df_well))
+
+        for pp_frac, pp in zip(pp_fractions, pp_values):
+            # Effective stresses
+            S1_eff = S1 - pp
+            S3_eff = S3 - pp
+
+            # Slip tendency for each fracture
+            cs_count = 0
+            slip_tendencies = []
+            for az, dip in zip(azimuths, dips):
+                az_rad = np.radians(az)
+                dip_rad = np.radians(dip)
+                # Normal on fracture plane
+                n = np.array([np.sin(dip_rad) * np.sin(az_rad),
+                              np.sin(dip_rad) * np.cos(az_rad),
+                              np.cos(dip_rad)])
+                # Simplified stress tensor (vertical = σ1 or σ3 depending on regime)
+                sigma_n = S1_eff * n[2]**2 + S3_eff * (n[0]**2 + n[1]**2)
+                tau = np.sqrt(max(0, (S1_eff - S3_eff)**2 * n[2]**2 * (1 - n[2]**2)))
+
+                if sigma_n > 0:
+                    st = tau / sigma_n
+                    slip_tendencies.append(st)
+                    if st > mu:
+                        cs_count += 1
+                else:
+                    slip_tendencies.append(0)
+
+            cs_pct = cs_count / len(df_well) * 100
+            mean_st = float(np.mean(slip_tendencies))
+
+            # Formation Integrity Factor (FIF) - 2025-2026 research
+            # FIF = (S3_eff - Pp) / (S1_eff - S3_eff) when positive, indicates stability margin
+            if S1_eff > S3_eff and S1_eff > 0:
+                fif = max(0, S3_eff) / (S1_eff - S3_eff + 1e-10)
+            else:
+                fif = 0
+
+            results.append({
+                "pp_fraction_sv": round(float(pp_frac), 3),
+                "pp_mpa": round(float(pp), 1),
+                "pp_ppg": round(float(pp / (0.00981 * mean_depth) * 1000) if mean_depth > 0 else 0, 1),
+                "s1_eff_mpa": round(float(S1_eff), 1),
+                "s3_eff_mpa": round(float(S3_eff), 1),
+                "cs_pct": round(cs_pct, 1),
+                "mean_slip_tendency": round(mean_st, 3),
+                "fif": round(float(fif), 3),
+                "fif_grade": "STABLE" if fif > 0.5 else ("MARGINAL" if fif > 0.2 else "CRITICAL"),
+            })
+
+        # Sensitivity: dCS%/dPp
+        if len(results) >= 2:
+            cs_vals = [r["cs_pct"] for r in results]
+            pp_vals_mpa = [r["pp_mpa"] for r in results]
+            sensitivity = (cs_vals[-1] - cs_vals[0]) / (pp_vals_mpa[-1] - pp_vals_mpa[0] + 1e-10)
+        else:
+            sensitivity = 0
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # CS% vs Pp
+            ax1 = axes[0]
+            cs_vals = [r["cs_pct"] for r in results]
+            pp_fracs = [r["pp_fraction_sv"] for r in results]
+            ax1.plot(pp_fracs, cs_vals, "o-", color="#dc3545", linewidth=2, markersize=4)
+            ax1.fill_between(pp_fracs, cs_vals, alpha=0.1, color="#dc3545")
+            ax1.set_xlabel("Pore Pressure (fraction of Sv)")
+            ax1.set_ylabel("Critically Stressed (%)")
+            ax1.set_title(f"CS% vs Pore Pressure ({well})")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # FIF vs Pp
+            ax2 = axes[1]
+            fif_vals = [r["fif"] for r in results]
+            colors = ["#28a745" if f > 0.5 else "#ffc107" if f > 0.2 else "#dc3545" for f in fif_vals]
+            ax2.bar(range(len(fif_vals)), fif_vals, color=colors)
+            ax2.axhline(y=0.5, color="#28a745", linestyle="--", alpha=0.5, label="Stable threshold")
+            ax2.axhline(y=0.2, color="#dc3545", linestyle="--", alpha=0.5, label="Critical threshold")
+            ax2.set_xticks(range(len(pp_fracs)))
+            ax2.set_xticklabels([f"{pf:.2f}" for pf in pp_fracs], fontsize=7, rotation=45)
+            ax2.set_xlabel("Pp/Sv")
+            ax2.set_ylabel("Formation Integrity Factor")
+            ax2.set_title("Formation Integrity")
+            ax2.legend(fontsize=7)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            # Effective stress vs Pp
+            ax3 = axes[2]
+            s1_effs = [r["s1_eff_mpa"] for r in results]
+            s3_effs = [r["s3_eff_mpa"] for r in results]
+            ax3.plot(pp_fracs, s1_effs, "s-", color="#2E86AB", label="σ1_eff", linewidth=2)
+            ax3.plot(pp_fracs, s3_effs, "^-", color="#E8630A", label="σ3_eff", linewidth=2)
+            ax3.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+            ax3.set_xlabel("Pp/Sv")
+            ax3.set_ylabel("Effective Stress (MPa)")
+            ax3.set_title("Effective Stresses")
+            ax3.legend()
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        current_pp = 0.44 * Sv  # Typical hydrostatic
+        current_idx = min(range(len(results)), key=lambda i: abs(results[i]["pp_mpa"] - current_pp))
+        current = results[current_idx]
+
+        return {
+            "well": well,
+            "mean_depth_m": round(mean_depth, 0),
+            "sv_mpa": round(float(Sv), 1),
+            "n_fractures": len(df_well),
+            "pp_sweep": results,
+            "sensitivity_cs_per_mpa": round(float(sensitivity), 2),
+            "current_estimate": current,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Pore pressure coupling: CS% ranges {results[0]['cs_pct']:.0f}% to {results[-1]['cs_pct']:.0f}% over Pp sweep",
+                "risk_level": "RED" if current["fif_grade"] == "CRITICAL" else ("AMBER" if current["fif_grade"] == "MARGINAL" else "GREEN"),
+                "confidence_sentence": (
+                    f"At estimated hydrostatic Pp ({current['pp_mpa']:.0f} MPa, {current['pp_fraction_sv']:.2f}×Sv): "
+                    f"CS%={current['cs_pct']:.1f}%, FIF={current['fif']:.2f} ({current['fif_grade']}). "
+                    f"Sensitivity: {abs(sensitivity):.1f}% CS per MPa Pp change."
+                ),
+                "action": (
+                    f"{'CRITICAL: Formation integrity is low. Consider mud weight increase.' if current['fif_grade'] == 'CRITICAL' else ''}"
+                    f"{'CAUTION: Formation integrity is marginal. Monitor closely.' if current['fif_grade'] == 'MARGINAL' else ''}"
+                    f"{'Formation integrity is adequate at current conditions.' if current['fif_grade'] == 'STABLE' else ''}"
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _pp_coupling_cache[cache_key] = result
+    return result
+
+
+# ── Heterogeneous Ensemble Stacking ────────────────────────────────────
+
+_hetero_ensemble_cache = BoundedCache(10)
+
+@app.post("/api/analysis/hetero-ensemble")
+async def hetero_ensemble(request: Request):
+    """Train diverse base models + meta-learner for robust predictions.
+
+    Base models: Random Forest, Gradient Boosting, SVM, Logistic Regression, MLP.
+    Meta-learner: Logistic Regression on stacked out-of-fold predictions.
+    Reports per-model contribution and disagreement-based confidence.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"{well}:{source}"
+    if cache_key in _hetero_ensemble_cache:
+        return _hetero_ensemble_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.metrics import accuracy_score, f1_score, balanced_accuracy_score
+        from sklearn.base import clone
+        from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.svm import SVC
+        from sklearn.neural_network import MLPClassifier
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        features = engineer_enhanced_features(df_well)
+        labels = df_well[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        class_names = le.classes_.tolist()
+        n_classes = len(class_names)
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        # Base models (diverse architectures)
+        base_models = {
+            "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=1),
+            "Gradient Boosting": GradientBoostingClassifier(n_estimators=100, random_state=42),
+            "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42, multi_class="multinomial"),
+            "SVM (RBF)": SVC(kernel="rbf", probability=True, random_state=42),
+            "Neural Network": MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=500, random_state=42),
+        }
+
+        # Generate out-of-fold predictions for stacking
+        oof_preds = {}
+        oof_probas = {}
+        base_accuracies = {}
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for name, model in base_models.items():
+                try:
+                    preds = cross_val_predict(clone(model), X, y, cv=cv)
+                    # Get probabilities for meta-learner
+                    probas = cross_val_predict(clone(model), X, y, cv=cv, method="predict_proba")
+                    oof_preds[name] = preds
+                    oof_probas[name] = probas
+                    base_accuracies[name] = round(float(accuracy_score(y, preds)), 4)
+                except Exception:
+                    pass
+
+        if len(oof_probas) < 2:
+            raise HTTPException(400, "Need at least 2 base models to stack")
+
+        # Stack: meta-features = concatenated OOF probabilities
+        meta_X = np.hstack([oof_probas[name] for name in oof_probas])
+        meta_model = LogisticRegression(max_iter=1000, random_state=42, multi_class="multinomial")
+        meta_preds = cross_val_predict(meta_model, meta_X, y, cv=cv)
+        stack_acc = float(accuracy_score(y, meta_preds))
+        stack_f1 = float(f1_score(y, meta_preds, average="weighted", zero_division=0))
+        stack_bal = float(balanced_accuracy_score(y, meta_preds))
+
+        # Fit meta-model for feature importances
+        meta_model.fit(meta_X, y)
+        # Meta-model coefficients indicate base model contributions
+        meta_coefs = np.abs(meta_model.coef_).mean(axis=0)  # avg across classes
+        model_names_ordered = list(oof_probas.keys())
+        contributions = {}
+        for i, name in enumerate(model_names_ordered):
+            start = i * n_classes
+            end = start + n_classes
+            contributions[name] = round(float(meta_coefs[start:end].mean()), 4)
+
+        # Normalize contributions
+        total_contrib = sum(contributions.values()) + 1e-10
+        contributions = {k: round(v / total_contrib, 3) for k, v in contributions.items()}
+
+        # Disagreement-based confidence per sample
+        all_preds_matrix = np.array([oof_preds[name] for name in oof_preds])
+        n_models = len(oof_preds)
+        from scipy.stats import mode
+        agreement_pcts = []
+        for i in range(len(y)):
+            col = all_preds_matrix[:, i]
+            mode_result = mode(col, keepdims=True)
+            agreement = float(mode_result.count[0]) / n_models
+            agreement_pcts.append(agreement)
+        mean_agreement = float(np.mean(agreement_pcts))
+        contested = sum(1 for a in agreement_pcts if a < 0.6)
+
+        # Best single model
+        best_single = max(base_accuracies, key=base_accuracies.get)
+        best_single_acc = base_accuracies[best_single]
+        ensemble_improvement = stack_acc - best_single_acc
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Base model accuracies + ensemble
+            ax1 = axes[0]
+            names = list(base_accuracies.keys()) + ["ENSEMBLE"]
+            accs = list(base_accuracies.values()) + [stack_acc]
+            colors = ["#6c757d"] * len(base_accuracies) + ["#28a745"]
+            bars = ax1.barh(range(len(names)), accs, color=colors)
+            ax1.set_yticks(range(len(names)))
+            ax1.set_yticklabels([n[:15] for n in names], fontsize=8)
+            ax1.set_xlabel("CV Accuracy")
+            ax1.set_title(f"Heterogeneous Ensemble ({well})")
+            for bar, val in zip(bars, accs):
+                ax1.text(val + 0.005, bar.get_y() + bar.get_height()/2, f"{val:.1%}", va="center", fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # Contributions pie chart
+            ax2 = axes[1]
+            c_names = list(contributions.keys())
+            c_vals = [contributions[n] for n in c_names]
+            pie_colors = ["#2E86AB", "#E8630A", "#28a745", "#dc3545", "#ffc107"]
+            ax2.pie(c_vals, labels=[n[:12] for n in c_names], autopct="%1.0f%%",
+                   colors=pie_colors[:len(c_names)], startangle=90)
+            ax2.set_title("Meta-Learner Contributions")
+
+            # Agreement distribution
+            ax3 = axes[2]
+            ax3.hist(agreement_pcts, bins=20, color="#2E86AB", alpha=0.7, edgecolor="white")
+            ax3.axvline(x=mean_agreement, color="#dc3545", linestyle="--", label=f"Mean: {mean_agreement:.0%}")
+            ax3.set_xlabel("Agreement Rate")
+            ax3.set_ylabel("Count")
+            ax3.set_title(f"Model Agreement (contested: {contested})")
+            ax3.legend()
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_samples": len(y),
+            "n_base_models": len(base_accuracies),
+            "base_accuracies": base_accuracies,
+            "best_single_model": best_single,
+            "best_single_accuracy": best_single_acc,
+            "ensemble_accuracy": round(stack_acc, 4),
+            "ensemble_f1": round(stack_f1, 4),
+            "ensemble_balanced_accuracy": round(stack_bal, 4),
+            "ensemble_improvement": round(ensemble_improvement, 4),
+            "meta_contributions": contributions,
+            "mean_agreement": round(mean_agreement, 3),
+            "contested_predictions": contested,
+            "class_names": class_names,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Hetero-ensemble: {stack_acc:.1%} accuracy ({'+' if ensemble_improvement >= 0 else ''}{ensemble_improvement:.1%} vs best single)",
+                "risk_level": "GREEN" if stack_acc >= 0.85 else ("AMBER" if stack_acc >= 0.7 else "RED"),
+                "confidence_sentence": (
+                    f"Stacked {len(base_accuracies)} diverse models (RF, GBM, LR, SVM, MLP). "
+                    f"Ensemble: {stack_acc:.1%} accuracy, {stack_f1:.1%} F1. "
+                    f"Best single: {best_single} ({best_single_acc:.1%}). "
+                    f"Model agreement: {mean_agreement:.0%} mean, {contested} contested predictions."
+                ),
+                "action": (f"Use ensemble for production — it outperforms the best single model by {ensemble_improvement:.1%}."
+                          if ensemble_improvement > 0.005 else
+                          f"Ensemble doesn't improve significantly over {best_single}. Use the simpler model."),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _hetero_ensemble_cache[cache_key] = result
+    return result
+
+
+# ── Anomaly Detection + Missing Data Analysis ─────────────────────────
+
+_anomaly_cache = BoundedCache(10)
+
+@app.post("/api/analysis/anomaly-detection")
+async def anomaly_detection(request: Request):
+    """Flag suspicious measurements using Isolation Forest + Mahalanobis distance.
+
+    Returns per-sample anomaly scores, identified outliers, and their
+    characteristics (what makes them unusual). Helps ensure data accuracy
+    before using measurements for critical decisions.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"{well}:{source}"
+    if cache_key in _anomaly_cache:
+        return _anomaly_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.ensemble import IsolationForest
+        from scipy.spatial.distance import mahalanobis
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        features = engineer_enhanced_features(df_well)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        feature_names = list(features.columns)
+
+        # Isolation Forest
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            iso = IsolationForest(contamination=0.05, random_state=42, n_jobs=1)
+            iso_labels = iso.fit_predict(X)
+            iso_scores = iso.decision_function(X)  # higher = more normal
+
+        # Mahalanobis distance
+        try:
+            mean = np.mean(X, axis=0)
+            cov = np.cov(X.T)
+            cov_inv = np.linalg.pinv(cov)
+            maha_dists = np.array([mahalanobis(x, mean, cov_inv) for x in X])
+        except Exception:
+            maha_dists = np.zeros(len(X))
+
+        # Combine: anomaly if Isolation Forest flags it OR extreme Mahalanobis
+        maha_threshold = np.percentile(maha_dists, 95)
+        combined_anomaly = (iso_labels == -1) | (maha_dists > maha_threshold)
+        n_anomalies = int(combined_anomaly.sum())
+
+        # Characterize anomalies
+        anomaly_details = []
+        for idx in np.where(combined_anomaly)[0]:
+            if len(anomaly_details) >= 50:
+                break
+            # Find which features are most unusual
+            z_scores = np.abs(X[idx])
+            top_features_idx = np.argsort(z_scores)[-3:][::-1]
+            unusual_features = [
+                {"feature": feature_names[fi], "z_score": round(float(z_scores[fi]), 2)}
+                for fi in top_features_idx
+            ]
+            row = df_well.iloc[idx]
+            anomaly_details.append({
+                "index": int(idx),
+                "depth": float(row.get(DEPTH_COL, 0)) if DEPTH_COL in df_well.columns else None,
+                "azimuth": float(row.get(AZIMUTH_COL, 0)) if AZIMUTH_COL in df_well.columns else None,
+                "dip": float(row.get(DIP_COL, 0)) if DIP_COL in df_well.columns else None,
+                "fracture_type": str(row.get(FRACTURE_TYPE_COL, "?")) if FRACTURE_TYPE_COL in df_well.columns else None,
+                "iso_score": round(float(iso_scores[idx]), 3),
+                "mahalanobis": round(float(maha_dists[idx]), 2),
+                "unusual_features": unusual_features,
+            })
+
+        # Summary stats
+        anomaly_rate = n_anomalies / len(X) * 100
+        normal_acc_mean = float(np.mean(iso_scores[~combined_anomaly])) if (~combined_anomaly).any() else 0
+        anomaly_acc_mean = float(np.mean(iso_scores[combined_anomaly])) if combined_anomaly.any() else 0
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Isolation Forest scores
+            ax1 = axes[0]
+            ax1.hist(iso_scores[~combined_anomaly], bins=30, alpha=0.7, color="#28a745", label="Normal", density=True)
+            if combined_anomaly.any():
+                ax1.hist(iso_scores[combined_anomaly], bins=15, alpha=0.7, color="#dc3545", label="Anomaly", density=True)
+            ax1.set_xlabel("Isolation Forest Score")
+            ax1.set_ylabel("Density")
+            ax1.set_title(f"Anomaly Scores ({well})")
+            ax1.legend()
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # Mahalanobis distances
+            ax2 = axes[1]
+            ax2.scatter(range(len(maha_dists)), maha_dists, c=["#dc3545" if a else "#2E86AB" for a in combined_anomaly],
+                       s=5, alpha=0.5)
+            ax2.axhline(y=maha_threshold, color="#ffc107", linestyle="--", label=f"95th pctile: {maha_threshold:.1f}")
+            ax2.set_xlabel("Sample Index")
+            ax2.set_ylabel("Mahalanobis Distance")
+            ax2.set_title("Mahalanobis Distance")
+            ax2.legend()
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            # Anomaly depth distribution (if depth available)
+            ax3 = axes[2]
+            if DEPTH_COL in df_well.columns:
+                all_depths = df_well[DEPTH_COL].values
+                anom_depths = all_depths[combined_anomaly]
+                ax3.hist(all_depths, bins=20, alpha=0.5, color="#2E86AB", label="All", density=True)
+                if len(anom_depths) > 0:
+                    ax3.hist(anom_depths, bins=10, alpha=0.7, color="#dc3545", label="Anomalies", density=True)
+                ax3.set_xlabel("Depth (m)")
+                ax3.set_ylabel("Density")
+                ax3.set_title("Anomaly Depth Distribution")
+                ax3.legend()
+            else:
+                ax3.text(0.5, 0.5, "No depth data", ha="center", va="center", transform=ax3.transAxes)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_samples": len(X),
+            "n_anomalies": n_anomalies,
+            "anomaly_rate_pct": round(anomaly_rate, 1),
+            "maha_threshold": round(float(maha_threshold), 2),
+            "anomalies": anomaly_details,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Anomaly detection: {n_anomalies} suspicious measurements ({anomaly_rate:.1f}%) in {well}",
+                "risk_level": "GREEN" if anomaly_rate < 5 else ("AMBER" if anomaly_rate < 10 else "RED"),
+                "confidence_sentence": (
+                    f"Scanned {len(X)} measurements using Isolation Forest + Mahalanobis distance. "
+                    f"Found {n_anomalies} anomalies ({anomaly_rate:.1f}%). "
+                    f"{'These should be reviewed before critical decisions.' if n_anomalies > 0 else 'Data quality looks clean.'}"
+                ),
+                "action": (f"Review the {min(n_anomalies, 50)} flagged measurements. "
+                          f"Focus on those with high Mahalanobis distance (>{maha_threshold:.0f})."
+                          if n_anomalies > 0 else "Data passes anomaly screening."),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _anomaly_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -13016,7 +13585,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.16.0",
+        "app_version": "3.17.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

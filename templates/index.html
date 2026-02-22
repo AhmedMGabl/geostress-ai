@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.16</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.17</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -464,8 +464,8 @@
 
                     <!-- Data Anomaly Detection -->
                     <div class="d-flex gap-2 mb-3">
-                        <button class="btn btn-outline-warning btn-sm" onclick="runAnomalyDetection()">
-                            <i class="bi bi-search"></i> Scan for Data Anomalies
+                        <button class="btn btn-outline-warning btn-sm" onclick="runMLAnomalyDetection()">
+                            <i class="bi bi-robot"></i> ML Anomaly Detection
                         </button>
                         <button class="btn btn-outline-primary btn-sm" onclick="runDataValidation()">
                             <i class="bi bi-clipboard-check"></i> Validate Data Quality
@@ -495,9 +495,27 @@
                     <div id="anomaly-results" class="d-none mb-4">
                         <div class="card border-warning">
                             <div class="card-header bg-warning text-dark">
-                                <i class="bi bi-exclamation-triangle"></i> Data Anomaly Detection
+                                <i class="bi bi-exclamation-triangle"></i> AI Anomaly Detection (Isolation Forest + Mahalanobis)
                             </div>
-                            <div class="card-body" id="anomaly-body"></div>
+                            <div class="card-body">
+                                <div id="anom-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-2">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Anomalies</div><div class="metric-value" id="anom-count">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Rate</div><div class="metric-value" id="anom-rate">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Samples</div><div class="metric-value" id="anom-total">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Maha Threshold</div><div class="metric-value" id="anom-threshold">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-2" id="anom-plot-img"></div>
+                                <div class="card">
+                                    <div class="card-header py-1"><i class="bi bi-bug"></i> Flagged Measurements (top 50)</div>
+                                    <div class="card-body p-0" style="max-height:300px;overflow-y:auto">
+                                        <table class="table table-sm table-hover mb-0">
+                                            <thead class="table-light sticky-top"><tr><th>#</th><th>Depth</th><th>Az</th><th>Dip</th><th>Type</th><th>ISO Score</th><th>Mahalanobis</th><th>Unusual Features</th></tr></thead>
+                                            <tbody id="anom-table-body"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -957,6 +975,43 @@
                                     </tr></thead>
                                     <tbody></tbody>
                                 </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                    <!-- Pore Pressure Coupling -->
+                    <div class="card border-danger mb-3">
+                        <div class="card-header bg-danger bg-opacity-10 py-2">
+                            <i class="bi bi-droplet-half"></i> <strong>Pore Pressure Coupling</strong>
+                            <small class="text-muted ms-2">Formation integrity at varying pressures</small>
+                        </div>
+                        <div class="card-body py-2">
+                            <p class="text-muted small mb-2">
+                                Sweeps pore pressure from 0.3&ndash;0.6 &times; Sv to show how CS% and formation integrity change.
+                                Critical for wellbore stability and mud weight decisions.
+                            </p>
+                            <button class="btn btn-danger btn-sm" onclick="runPorePressureCoupling()">
+                                <i class="bi bi-droplet-half"></i> Run Pp Coupling Analysis
+                            </button>
+                            <div id="pp-results" class="d-none mt-2">
+                                <div id="pp-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-2">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Current CS%</div><div class="metric-value" id="pp-current-cs">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">FIF Grade</div><div class="metric-value" id="pp-fif-grade">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Sensitivity</div><div class="metric-value" id="pp-sensitivity">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Sv (MPa)</div><div class="metric-value" id="pp-sv">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-2" id="pp-plot-img"></div>
+                                <div class="card">
+                                    <div class="card-header py-1"><i class="bi bi-table"></i> Pore Pressure Sweep</div>
+                                    <div class="card-body p-0" style="max-height:300px;overflow-y:auto">
+                                        <table class="table table-sm table-hover mb-0">
+                                            <thead class="table-light sticky-top"><tr><th>Pp/Sv</th><th>Pp (MPa)</th><th>CS%</th><th>FIF</th><th>Grade</th><th>&sigma;1_eff</th><th>&sigma;3_eff</th></tr></thead>
+                                            <tbody id="pp-table-body"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1551,6 +1606,43 @@
                                             <thead class="table-light"><tr><th>Class</th><th>Count</th><th>Baseline Recall</th><th>Best Recall</th><th>Improvement</th></tr></thead>
                                             <tbody id="bc-minority-body"></tbody>
                                         </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Heterogeneous Ensemble -->
+                    <div class="card border-dark mb-3">
+                        <div class="card-header bg-dark bg-opacity-75 text-white py-2">
+                            <i class="bi bi-stack"></i> <strong>Heterogeneous Ensemble</strong>
+                            <small class="opacity-75 ms-2">RF + GBM + SVM + LR + MLP meta-learner</small>
+                        </div>
+                        <div class="card-body py-2">
+                            <p class="text-muted small mb-2">
+                                Trains 5 diverse model families and combines them via a meta-learner.
+                                Reports ensemble accuracy, per-model contributions, and prediction confidence from model agreement.
+                            </p>
+                            <button class="btn btn-dark btn-sm" onclick="runHeteroEnsemble()">
+                                <i class="bi bi-stack"></i> Build Ensemble
+                            </button>
+                            <div id="he-results" class="d-none mt-2">
+                                <div id="he-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-2">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Ensemble Acc</div><div class="metric-value" id="he-acc">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">vs Best Single</div><div class="metric-value" id="he-improvement">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Agreement</div><div class="metric-value" id="he-agreement">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Contested</div><div class="metric-value" id="he-contested">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-2" id="he-plot-img"></div>
+                                <div class="row g-2">
+                                    <div class="col-md-6">
+                                        <div class="card"><div class="card-header py-1"><i class="bi bi-bar-chart"></i> Base Model Accuracies</div>
+                                            <div class="card-body p-0"><table class="table table-sm table-hover mb-0">
+                                                <thead class="table-light"><tr><th>Model</th><th>CV Accuracy</th><th>Contribution</th></tr></thead>
+                                                <tbody id="he-models-body"></tbody>
+                                            </table></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>

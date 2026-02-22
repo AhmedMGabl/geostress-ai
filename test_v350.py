@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 through v3.16.0.
+"""Test suite for GeoStress AI v3.5.0 through v3.17.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -1156,10 +1156,75 @@ check("Config has params", isinstance(tc.get("params"), dict))
 check("Has plot", isinstance(opt.get("plot"), str) and opt["plot"].startswith("data:image"))
 check("Has stakeholder_brief", "headline" in opt.get("stakeholder_brief", {}))
 
+# ── [65] Pore Pressure Coupling ──────────────────────
+print("\n[65] Pore Pressure Coupling")
+pp = api("POST", "/api/analysis/pore-pressure-coupling", {"well": "3P", "source": "demo"}, timeout=120)
+check("Has well", pp.get("well") == "3P")
+check("Has mean_depth_m", isinstance(pp.get("mean_depth_m"), (int, float)) and pp["mean_depth_m"] > 0)
+check("Has sv_mpa", isinstance(pp.get("sv_mpa"), (int, float)) and pp["sv_mpa"] > 0)
+check("Has n_fractures", isinstance(pp.get("n_fractures"), int) and pp["n_fractures"] > 10)
+check("Has pp_sweep", isinstance(pp.get("pp_sweep"), list) and len(pp["pp_sweep"]) >= 5)
+sweep = pp["pp_sweep"][0]
+check("Sweep has pp_fraction_sv", isinstance(sweep.get("pp_fraction_sv"), (int, float)))
+check("Sweep has pp_mpa", isinstance(sweep.get("pp_mpa"), (int, float)))
+check("Sweep has cs_pct", isinstance(sweep.get("cs_pct"), (int, float)))
+check("Sweep has fif", isinstance(sweep.get("fif"), (int, float)))
+check("Sweep has fif_grade", sweep.get("fif_grade") in ("STABLE", "MARGINAL", "CRITICAL"))
+check("Has sensitivity_cs_per_mpa", isinstance(pp.get("sensitivity_cs_per_mpa"), (int, float)))
+check("Has current_estimate", isinstance(pp.get("current_estimate"), dict))
+check("Current has fif_grade", pp["current_estimate"].get("fif_grade") in ("STABLE", "MARGINAL", "CRITICAL"))
+check("Has plot", isinstance(pp.get("plot"), str) and pp["plot"].startswith("data:image"))
+check("Has stakeholder_brief", "headline" in pp.get("stakeholder_brief", {}))
+# CS% should increase with pore pressure
+check("CS% increases with Pp", pp["pp_sweep"][-1]["cs_pct"] >= pp["pp_sweep"][0]["cs_pct"])
+
+# ── [66] Heterogeneous Ensemble ──────────────────────
+print("\n[66] Heterogeneous Ensemble")
+he = api("POST", "/api/analysis/hetero-ensemble", {"well": "3P", "source": "demo"}, timeout=180)
+check("Has well", he.get("well") == "3P")
+check("Has n_samples", isinstance(he.get("n_samples"), int))
+check("Has n_base_models", isinstance(he.get("n_base_models"), int) and he["n_base_models"] >= 3)
+check("Has base_accuracies", isinstance(he.get("base_accuracies"), dict))
+check("Has best_single_model", isinstance(he.get("best_single_model"), str))
+check("Has best_single_accuracy", isinstance(he.get("best_single_accuracy"), (int, float)))
+check("Has ensemble_accuracy", isinstance(he.get("ensemble_accuracy"), (int, float)) and 0 < he["ensemble_accuracy"] <= 1)
+check("Has ensemble_f1", isinstance(he.get("ensemble_f1"), (int, float)))
+check("Has ensemble_balanced_accuracy", isinstance(he.get("ensemble_balanced_accuracy"), (int, float)))
+check("Has ensemble_improvement", isinstance(he.get("ensemble_improvement"), (int, float)))
+check("Has meta_contributions", isinstance(he.get("meta_contributions"), dict))
+check("Contributions sum ~1", abs(sum(he.get("meta_contributions", {}).values()) - 1.0) < 0.05)
+check("Has mean_agreement", isinstance(he.get("mean_agreement"), (int, float)) and 0 < he["mean_agreement"] <= 1)
+check("Has contested_predictions", isinstance(he.get("contested_predictions"), int))
+check("Has class_names", isinstance(he.get("class_names"), list))
+check("Has plot", isinstance(he.get("plot"), str) and he["plot"].startswith("data:image"))
+check("Has stakeholder_brief", "headline" in he.get("stakeholder_brief", {}))
+
+# ── [67] ML Anomaly Detection ────────────────────────
+print("\n[67] ML Anomaly Detection")
+ad = api("POST", "/api/analysis/anomaly-detection", {"well": "3P", "source": "demo"}, timeout=120)
+check("Has well", ad.get("well") == "3P")
+check("Has n_samples", isinstance(ad.get("n_samples"), int) and ad["n_samples"] > 50)
+check("Has n_anomalies", isinstance(ad.get("n_anomalies"), int))
+check("Has anomaly_rate_pct", isinstance(ad.get("anomaly_rate_pct"), (int, float)))
+check("Rate < 100%", ad.get("anomaly_rate_pct", 100) < 100)
+check("Has maha_threshold", isinstance(ad.get("maha_threshold"), (int, float)) and ad["maha_threshold"] > 0)
+check("Has anomalies list", isinstance(ad.get("anomalies"), list))
+if len(ad.get("anomalies", [])) > 0:
+    a = ad["anomalies"][0]
+    check("Anomaly has index", isinstance(a.get("index"), int))
+    check("Anomaly has iso_score", isinstance(a.get("iso_score"), (int, float)))
+    check("Anomaly has mahalanobis", isinstance(a.get("mahalanobis"), (int, float)))
+    check("Anomaly has unusual_features", isinstance(a.get("unusual_features"), list))
+    if len(a.get("unusual_features", [])) > 0:
+        check("UF has feature", isinstance(a["unusual_features"][0].get("feature"), str))
+        check("UF has z_score", isinstance(a["unusual_features"][0].get("z_score"), (int, float)))
+check("Has plot", isinstance(ad.get("plot"), str) and ad["plot"].startswith("data:image"))
+check("Has stakeholder_brief", "headline" in ad.get("stakeholder_brief", {}))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.16.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.17.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:
