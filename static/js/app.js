@@ -7240,6 +7240,47 @@ async function runBatchAnalysis() {
 }
 
 
+// ── MLOps Auto-Refresh ────────────────────────────
+
+var _mlopsRefreshTimer = null;
+
+async function refreshMlopsStatus() {
+    try {
+        var r = await fetch('/api/system/health');
+        var d = await r.json();
+        var dot = document.getElementById('mlops-health-dot');
+        var score = d.health_score || 0;
+        if (dot) {
+            dot.textContent = d.status || '?';
+            dot.className = 'badge rounded-pill ' + (score >= 80 ? 'bg-success' : score >= 50 ? 'bg-warning' : 'bg-danger');
+        }
+        var el = document.getElementById('mlops-health-score');
+        if (el) el.textContent = score;
+        el = document.getElementById('mlops-model-count');
+        if (el) el.textContent = (d.active_models || 0);
+        el = document.getElementById('mlops-failure-count');
+        if (el) el.textContent = (d.unresolved_failures || 0);
+        el = document.getElementById('mlops-rlhf-count');
+        if (el) el.textContent = (d.total_reviews || d.rlhf_reviews || 0);
+        el = document.getElementById('mlops-last-refresh');
+        if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    } catch(e) {}
+}
+
+function startMlopsRefresh() {
+    refreshMlopsStatus();
+    if (!_mlopsRefreshTimer) {
+        _mlopsRefreshTimer = setInterval(refreshMlopsStatus, 30000);
+    }
+}
+
+function stopMlopsRefresh() {
+    if (_mlopsRefreshTimer) {
+        clearInterval(_mlopsRefreshTimer);
+        _mlopsRefreshTimer = null;
+    }
+}
+
 // ── Init ──────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", function() {
@@ -7252,4 +7293,16 @@ document.addEventListener("DOMContentLoaded", function() {
     initTooltips();
     // Watch for dynamically added content
     _tooltipObserver.observe(document.body, { childList: true, subtree: true });
+
+    // Auto-load MLOps status when tab is activated
+    document.querySelectorAll('[data-tab]').forEach(function(link) {
+        link.addEventListener('click', function() {
+            if (this.getAttribute('data-tab') === 'mlops') {
+                startMlopsRefresh();
+                loadSystemHealth();
+            } else {
+                stopMlopsRefresh();
+            }
+        });
+    });
 });

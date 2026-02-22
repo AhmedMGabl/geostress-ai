@@ -7915,6 +7915,10 @@ async def system_health():
     # Unresolved failures
     unresolved = count_failure_cases(resolved=False)
 
+    # RLHF review count
+    rlhf_counts = count_rlhf_reviews()
+    rlhf_total = rlhf_counts.get("total", 0)
+
     # Overall health score (0-100)
     health_score = 100
     if failure_rate > 0.1:
@@ -7956,7 +7960,8 @@ async def system_health():
         "failure_rate": round(failure_rate * 100, 1),
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
-        "app_version": "3.3.1",
+        "rlhf_reviews": rlhf_total,
+        "app_version": "3.4.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

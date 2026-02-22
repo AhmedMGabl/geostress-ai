@@ -2912,7 +2912,21 @@
                 <!-- MLOps Tab -->
                 <div id="tab-mlops" class="tab-content">
                     <h5 class="mb-3"><i class="bi bi-gear-wide-connected"></i> Production MLOps Dashboard</h5>
-                    <p class="text-muted">Monitor model health, detect data drift, track failures, and manage model versions for production deployment.</p>
+
+                    <!-- Live Status Bar (auto-refreshes) -->
+                    <div class="alert alert-light border d-flex align-items-center justify-content-between py-2 mb-3" id="mlops-status-bar">
+                        <div class="d-flex align-items-center gap-3">
+                            <span id="mlops-health-dot" class="badge rounded-pill bg-secondary">...</span>
+                            <small class="text-muted">Health: <strong id="mlops-health-score">--</strong>/100</small>
+                            <small class="text-muted">|</small>
+                            <small class="text-muted">Models: <strong id="mlops-model-count">--</strong></small>
+                            <small class="text-muted">|</small>
+                            <small class="text-muted">Failures: <strong id="mlops-failure-count">--</strong></small>
+                            <small class="text-muted">|</small>
+                            <small class="text-muted">RLHF Reviews: <strong id="mlops-rlhf-count">--</strong></small>
+                        </div>
+                        <small class="text-muted" id="mlops-last-refresh">--</small>
+                    </div>
 
                     <!-- System Health -->
                     <div class="card mb-3 border-primary">
@@ -2921,7 +2935,7 @@
                             <button class="btn btn-sm btn-outline-light" onclick="loadSystemHealth()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
                         </div>
                         <div class="card-body" id="system-health-result">
-                            <p class="text-muted">Click Refresh to check system health.</p>
+                            <p class="text-muted">Loading...</p>
                         </div>
                     </div>
 

@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
-app.py              - FastAPI backend (v3.2.2), 100+ API endpoints, serves templates
+app.py              - FastAPI backend (v3.4.0), 100+ API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
   geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC, auto regime detection
