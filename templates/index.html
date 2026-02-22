@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.5</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.6</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -298,6 +298,9 @@
                     <div id="exec-risk-banner" class="d-none mb-4">
                         <div id="exec-risk-alert" class="alert p-4"></div>
                     </div>
+
+                    <!-- GO/NO-GO Decision Matrix -->
+                    <div id="exec-decision-matrix" class="d-none mb-4"></div>
 
                     <!-- Field Calibration Status -->
                     <div id="exec-calibration" class="d-none mb-4">
@@ -798,6 +801,9 @@
                             <div class="col-md-2"><div class="metric-card"><div class="metric-label">SHmax (&deg;) <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Maximum horizontal stress direction (degrees from North). CRITICAL FOR DRILLING: Wells drilled parallel to SHmax are most stable. Hydraulic fractures propagate along SHmax."></i></div><div class="metric-value" id="inv-shmax">--</div></div></div>
                             <div class="col-md-2"><div class="metric-card"><div class="metric-label">Pore Pressure <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Fluid pressure in rock pores (MPa). Reduces effective normal stress on fractures, making them more likely to slip. Higher Pp = more critically stressed fractures."></i></div><div class="metric-value" id="inv-pp">--</div></div></div>
                         </div>
+
+                        <!-- Uncertainty Confidence Intervals -->
+                        <div id="inv-uncertainty" class="d-none mb-4"></div>
 
                         <!-- Risk Assessment Banner -->
                         <div id="risk-banner" class="alert mb-4 d-none">

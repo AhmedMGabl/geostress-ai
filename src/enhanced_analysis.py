@@ -161,23 +161,28 @@ def engineer_enhanced_features(df: pd.DataFrame,
         feat["temperature_c"] = compute_temperature(depth)
 
         # Fracture density: count of fractures within ±window_m
-        density = np.zeros(len(depth))
-        for i, d in enumerate(depth):
-            density[i] = np.sum(np.abs(depth - d) <= window_m) - 1
+        # Vectorized via searchsorted: O(n log n) instead of O(n²)
+        sorted_d = np.sort(depth)
+        lo = np.searchsorted(sorted_d, depth - window_m, side="left")
+        hi = np.searchsorted(sorted_d, depth + window_m, side="right")
+        density = (hi - lo).astype(float) - 1  # exclude self
         feat["fracture_density"] = density
 
-        # Fracture spacing: distance to nearest neighbor
-        sorted_depths = np.sort(depth)
-        spacing = np.zeros(len(depth))
-        for i, d in enumerate(depth):
-            idx = np.searchsorted(sorted_depths, d)
-            neighbors = []
-            if idx > 0:
-                neighbors.append(d - sorted_depths[idx - 1])
-            if idx < len(sorted_depths) - 1:
-                neighbors.append(sorted_depths[idx + 1] - d)
-            spacing[i] = min(neighbors) if neighbors else 0.0
-        # Avoid exact zeros from duplicate depths
+        # Fracture spacing: distance to nearest neighbor (vectorized)
+        sort_idx = np.argsort(depth)
+        sd = depth[sort_idx]
+        diffs = np.diff(sd)
+        # For each sorted position, nearest = min(left gap, right gap)
+        left_gap = np.empty(len(sd))
+        left_gap[0] = np.inf
+        left_gap[1:] = diffs
+        right_gap = np.empty(len(sd))
+        right_gap[:-1] = diffs
+        right_gap[-1] = np.inf
+        min_gap = np.minimum(left_gap, right_gap)
+        # Map back to original indices
+        spacing = np.empty(len(depth))
+        spacing[sort_idx] = min_gap
         spacing[spacing == 0] = 0.01
         feat["fracture_spacing"] = spacing
         feat["log_spacing"] = np.log1p(spacing)
@@ -191,38 +196,41 @@ def engineer_enhanced_features(df: pd.DataFrame,
 
         # ── 2025-2026 research features ──
 
-        # Fracture intensity per 10m (industry standard, per SPWLA 2025)
-        intensity_10m = np.zeros(len(depth))
-        for i, d in enumerate(depth):
-            intensity_10m[i] = np.sum(np.abs(depth - d) <= 5.0)  # ±5m = 10m window
-        feat["fracture_intensity_10m"] = intensity_10m
+        # Fracture intensity per 10m (vectorized searchsorted)
+        lo_10 = np.searchsorted(sorted_d, depth - 5.0, side="left")
+        hi_10 = np.searchsorted(sorted_d, depth + 5.0, side="right")
+        feat["fracture_intensity_10m"] = (hi_10 - lo_10).astype(float)
 
-        # Adjacent fracture spacing (up + down, not just nearest)
-        sort_idx = np.argsort(depth)
-        adj_spacing_up = np.full(len(depth), np.nan)
-        adj_spacing_down = np.full(len(depth), np.nan)
-        sorted_d = depth[sort_idx]
-        for j in range(len(sort_idx)):
-            orig_i = sort_idx[j]
-            if j > 0:
-                adj_spacing_up[orig_i] = sorted_d[j] - sorted_d[j - 1]
-            if j < len(sort_idx) - 1:
-                adj_spacing_down[orig_i] = sorted_d[j + 1] - sorted_d[j]
-        feat["adj_spacing_up"] = np.nan_to_num(adj_spacing_up, nan=0.0)
-        feat["adj_spacing_down"] = np.nan_to_num(adj_spacing_down, nan=0.0)
+        # Adjacent fracture spacing (vectorized with np.diff)
+        # sort_idx and sd already computed above
+        adj_up = np.zeros(len(depth))
+        adj_down = np.zeros(len(depth))
+        adj_up[sort_idx[1:]] = diffs      # diffs already computed above
+        adj_down[sort_idx[:-1]] = diffs
+        feat["adj_spacing_up"] = adj_up
+        feat["adj_spacing_down"] = adj_down
 
-        # Azimuth dispersion in 100m window (circular variance)
-        az_disp = np.zeros(len(depth))
-        az_sin = np.sin(az_rad).values
-        az_cos = np.cos(az_rad).values
-        for i, d in enumerate(depth):
-            mask = np.abs(depth - d) <= 50.0  # ±50m = 100m window
-            n_local = mask.sum()
-            if n_local > 1:
-                S = np.mean(az_sin[mask])
-                C = np.mean(az_cos[mask])
-                R = np.sqrt(S ** 2 + C ** 2)
-                az_disp[i] = 1.0 - R  # circular variance [0, 1]
+        # Azimuth dispersion in 100m window (vectorized via searchsorted + cumsum)
+        az_sin_vals = np.sin(az_rad).values
+        az_cos_vals = np.cos(az_rad).values
+        # Sort everything by depth for windowed cumsum
+        sin_sorted = az_sin_vals[sort_idx]
+        cos_sorted = az_cos_vals[sort_idx]
+        cum_sin = np.concatenate([[0.0], np.cumsum(sin_sorted)])
+        cum_cos = np.concatenate([[0.0], np.cumsum(cos_sorted)])
+        cum_n = np.arange(len(depth) + 1, dtype=float)
+        # For each fracture, find window bounds in sorted array
+        lo_az = np.searchsorted(sd, depth - 50.0, side="left")
+        hi_az = np.searchsorted(sd, depth + 50.0, side="right")
+        n_local = (hi_az - lo_az).astype(float)
+        sum_sin = cum_sin[hi_az] - cum_sin[lo_az]
+        sum_cos = cum_cos[hi_az] - cum_cos[lo_az]
+        # Circular variance: 1 - R (resultant length)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mean_sin = np.where(n_local > 1, sum_sin / n_local, 0.0)
+            mean_cos = np.where(n_local > 1, sum_cos / n_local, 0.0)
+        R = np.sqrt(mean_sin**2 + mean_cos**2)
+        az_disp = np.where(n_local > 1, 1.0 - R, 0.0)
         feat["azimuth_dispersion_100m"] = az_disp
 
     # ── Orientation tensor (fabric strength) ──
@@ -264,11 +272,10 @@ def engineer_enhanced_features(df: pd.DataFrame,
     if has_depth:
         d_range = d_max - d_min if d_max > d_min else 1.0
         feat["fracture_density_per_m"] = len(depth) / d_range
-        # Sliding 20m window density (finer than the 50m window above)
-        density_20m = np.zeros(len(depth))
-        for i, d in enumerate(depth):
-            density_20m[i] = np.sum(np.abs(depth - d) <= 10.0)  # ±10m = 20m
-        feat["fracture_density_20m"] = density_20m
+        # Sliding 20m window density (vectorized searchsorted)
+        lo_20 = np.searchsorted(sorted_d, depth - 10.0, side="left")
+        hi_20 = np.searchsorted(sorted_d, depth + 10.0, side="right")
+        feat["fracture_density_20m"] = (hi_20 - lo_20).astype(float)
 
     return feat
 
@@ -291,7 +298,9 @@ def _get_models(fast: bool = False) -> dict:
             random_state=42, class_weight="balanced", n_jobs=-1,
         ),
         "gradient_boosting": GradientBoostingClassifier(
-            n_estimators=n_est, max_depth=5, learning_rate=0.1 if fast else 0.05,
+            n_estimators=50 if fast else n_est,
+            max_depth=4 if fast else 5,
+            learning_rate=0.1 if fast else 0.05,
             subsample=0.8, random_state=42,
         ),
         "svm": SVC(
@@ -416,17 +425,17 @@ def _cv_with_smote(model, X, y, cv, smote_strategy="auto"):
 
 def compare_models(
     df: pd.DataFrame,
-    n_folds: int = 5,
+    n_folds: int = 3,
     models_to_run: list = None,
-    fast: bool = False,
+    fast: bool = True,
 ) -> dict:
     """Run all models and return comparative metrics.
 
-    Optimized: uses cross_validate for single-pass multi-metric scoring.
+    Optimized v3.6: single cross_val_predict pass per model (was 2 passes).
+    Default 3-fold CV with fast models for web API responsiveness.
+
     Also includes a stacking ensemble, conformal prediction, and SMOTE
     oversampling when severe class imbalance is detected.
-
-    fast=True: fewer estimators, 3-fold CV for ~3x speedup.
     """
     features = engineer_enhanced_features(df)
     labels = df[FRACTURE_TYPE_COL].values
@@ -436,8 +445,6 @@ def compare_models(
     scaler = StandardScaler()
     X = scaler.fit_transform(features.values)
 
-    if fast:
-        n_folds = min(n_folds, 3)
     cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
     all_models = _get_models(fast=fast)
 
@@ -473,25 +480,23 @@ def compare_models(
                     model, X, y, cv,
                 )
             else:
-                # Use sample_weight for models without native class_weight support
+                # Single pass: cross_val_predict only (no cross_validate)
                 needs_weight = name in ("gradient_boosting", "xgboost")
                 sw_params = {"sample_weight": sample_weights} if needs_weight else {}
 
-                # Single-pass cross_validate for both metrics at once
-                cv_result = cross_validate(
+                y_pred_cv = cross_val_predict(
                     model, X, y, cv=cv,
-                    scoring={"accuracy": "accuracy", "f1": "f1_weighted"},
-                    return_estimator=False,
                     params=sw_params if sw_params else None,
                 )
-                acc_scores = cv_result["test_accuracy"]
-                f1_scores = cv_result["test_f1"]
+                # Compute per-fold metrics from predictions
+                acc_list, f1_list = [], []
+                for train_idx, test_idx in cv.split(X, y):
+                    acc_list.append(accuracy_score(y[test_idx], y_pred_cv[test_idx]))
+                    f1_list.append(f1_score(y[test_idx], y_pred_cv[test_idx],
+                                            average="weighted", zero_division=0))
+                acc_scores = np.array(acc_list)
+                f1_scores = np.array(f1_list)
                 smote_info = {"applied": False}
-
-                # cross_val_predict for confusion matrix (separate, but only 1 extra CV)
-                y_pred_cv = cross_val_predict(
-                    model, X, y, cv=cv, params=sw_params if sw_params else None,
-                )
 
             # Fit on full data for feature importances + predictions
             # (SMOTE for full fit if applicable, else use sample weights)
@@ -1079,14 +1084,17 @@ def _abstention_recommendation(
 def classify_enhanced(
     df: pd.DataFrame,
     classifier: str = "xgboost",
-    n_folds: int = 5,
+    n_folds: int = 3,
 ) -> dict:
     """Enhanced single-model classification with richer output.
 
-    Optimized: single cross_validate pass for both accuracy and F1.
-    Uses fast models (100 estimators) when n_folds <= 3 for ~3x speedup.
+    Optimized pipeline (v3.6):
+    - 3-fold CV (was 5) — 40% fewer model fits
+    - Single cross_val_predict pass computes metrics + confusion matrix
+    - Fast models (100 estimators) by default for web API
+    - Total: 4 model fits (3 fold + 1 final) instead of 11
     """
-    fast = n_folds <= 3
+    fast = True  # Always use fast models for web API
     features = engineer_enhanced_features(df)
     labels = df[FRACTURE_TYPE_COL].values
     le = LabelEncoder()
@@ -1105,15 +1113,22 @@ def classify_enhanced(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
 
-        # Single-pass multi-metric CV
-        cv_result = cross_validate(
-            model, X, y, cv=cv,
-            scoring={"accuracy": "accuracy", "f1": "f1_weighted"},
-        )
-        scores = cv_result["test_accuracy"]
-        f1_scores = cv_result["test_f1"]
-
+        # Single pass: get out-of-fold predictions (3 fits)
         y_pred_cv = cross_val_predict(model, X, y, cv=cv)
+
+        # Compute metrics from predictions (no extra model fits)
+        acc_scores = []
+        f1_scores_arr = []
+        for train_idx, test_idx in cv.split(X, y):
+            fold_acc = accuracy_score(y[test_idx], y_pred_cv[test_idx])
+            fold_f1 = f1_score(y[test_idx], y_pred_cv[test_idx],
+                               average="weighted", zero_division=0)
+            acc_scores.append(fold_acc)
+            f1_scores_arr.append(fold_f1)
+        scores = np.array(acc_scores)
+        f1_scores = np.array(f1_scores_arr)
+
+        # Final fit on all data (1 fit)
         model.fit(X, y)
 
     feat_imp = {}
@@ -1124,6 +1139,27 @@ def classify_enhanced(
         feat_imp = dict(zip(features.columns, coef))
 
     conf_matrix = confusion_matrix(y, y_pred_cv)
+
+    # Per-class prediction confidence (mean probability per class)
+    class_confidence = {}
+    if hasattr(model, "predict_proba"):
+        try:
+            proba = model.predict_proba(X)
+            for ci, cname in enumerate(le.classes_):
+                mask = y == ci
+                if mask.sum() > 0:
+                    class_confidence[cname] = round(float(proba[mask, ci].mean()), 3)
+        except Exception:
+            pass
+
+    # Overall model confidence: mean max probability
+    mean_confidence = None
+    if hasattr(model, "predict_proba"):
+        try:
+            proba = model.predict_proba(X)
+            mean_confidence = round(float(proba.max(axis=1).mean()), 3)
+        except Exception:
+            pass
 
     return {
         "model": model,
@@ -1140,6 +1176,8 @@ def classify_enhanced(
             k: round(float(v), 4) for k, v in feat_imp.items()
         },
         "class_names": le.classes_.tolist(),
+        "class_confidence": class_confidence,
+        "mean_confidence": mean_confidence,
     }
 
 

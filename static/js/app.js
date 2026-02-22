@@ -246,7 +246,34 @@ async function runExecutiveSummary() {
             sectionsEl.appendChild(card);
         });
 
-        showToast("Executive summary: " + r.overall_risk);
+        // GO/NO-GO Decision Matrix
+        if (r.decision_matrix) {
+            var dm = r.decision_matrix;
+            var dmEl = document.getElementById("exec-decision-matrix");
+            if (dmEl) {
+                var verdictColors = {"GO": "success", "CONDITIONAL GO": "warning", "NO-GO": "danger"};
+                var vc = verdictColors[dm.verdict] || "secondary";
+                var dmhtml = '<div class="card border-' + vc + ' mb-3">' +
+                    '<div class="card-header bg-' + vc + ' bg-opacity-10 py-2">' +
+                    '<i class="bi bi-shield-check me-1"></i> <strong>Operational Decision: </strong>' +
+                    '<span class="badge bg-' + vc + ' fs-6">' + dm.verdict + '</span></div>' +
+                    '<div class="card-body py-2">' +
+                    '<p class="mb-2">' + dm.verdict_note + '</p>' +
+                    '<table class="table table-sm table-bordered mb-0"><thead class="table-light">' +
+                    '<tr><th>Factor</th><th>Status</th><th>Detail</th></tr></thead><tbody>';
+                dm.factors.forEach(function(f) {
+                    var fc = f.status === "GREEN" ? "success" : f.status === "AMBER" ? "warning" : "danger";
+                    dmhtml += '<tr><td><strong>' + f.factor + '</strong></td>' +
+                        '<td><span class="badge bg-' + fc + '">' + f.status + '</span></td>' +
+                        '<td class="small">' + f.detail + '</td></tr>';
+                });
+                dmhtml += '</tbody></table></div></div>';
+                dmEl.innerHTML = dmhtml;
+                dmEl.classList.remove("d-none");
+            }
+        }
+
+        showToast("Executive summary: " + r.overall_risk + " | Decision: " + (r.decision_matrix ? r.decision_matrix.verdict : "N/A"));
 
         // Also load calibration status
         loadCalibrationStatus();
@@ -1330,6 +1357,45 @@ async function runInversion() {
                 qBadge.title = dq.confidence_level + " confidence" +
                     (dq.issues.length > 0 ? " | Issues: " + dq.issues.join("; ") : "") +
                     (dq.warnings.length > 0 ? " | Warnings: " + dq.warnings.join("; ") : "");
+            }
+        }
+
+        // Uncertainty confidence intervals
+        if (r.uncertainty) {
+            var uncEl = document.getElementById("inv-uncertainty");
+            if (uncEl) {
+                var u = r.uncertainty;
+                var qColor = u.quality === "WELL_CONSTRAINED" ? "success" :
+                             u.quality === "MODERATELY_CONSTRAINED" ? "warning" : "danger";
+                var uhtml = '<div class="card border-' + qColor + ' mb-3">' +
+                    '<div class="card-header py-2 bg-' + qColor + ' bg-opacity-10">' +
+                    '<i class="bi bi-bar-chart me-1"></i> <strong>Uncertainty (90% CI)</strong> ' +
+                    '<span class="badge bg-' + qColor + '">' + (u.quality || "").replace(/_/g, " ") + '</span></div>' +
+                    '<div class="card-body py-2"><div class="row text-center">';
+                if (u.shmax_ci_90 && u.shmax_ci_90.length === 2) {
+                    uhtml += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">SHmax</div>' +
+                        '<div class="metric-value">' + r.shmax_azimuth_deg.toFixed(1) + '°</div>' +
+                        '<div class="small text-muted">' + u.shmax_ci_90[0].toFixed(1) + '° – ' + u.shmax_ci_90[1].toFixed(1) + '°</div></div></div>';
+                }
+                if (u.sigma1_ci_90 && u.sigma1_ci_90.length === 2) {
+                    uhtml += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">σ1</div>' +
+                        '<div class="metric-value">' + r.sigma1 + ' MPa</div>' +
+                        '<div class="small text-muted">' + u.sigma1_ci_90[0].toFixed(1) + ' – ' + u.sigma1_ci_90[1].toFixed(1) + '</div></div></div>';
+                }
+                if (u.mu_ci_90 && u.mu_ci_90.length === 2) {
+                    uhtml += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Friction (μ)</div>' +
+                        '<div class="metric-value">' + r.mu + '</div>' +
+                        '<div class="small text-muted">' + u.mu_ci_90[0].toFixed(3) + ' – ' + u.mu_ci_90[1].toFixed(3) + '</div></div></div>';
+                }
+                if (r.critically_stressed_range) {
+                    var cs = r.critically_stressed_range;
+                    uhtml += '<div class="col-md-3"><div class="metric-card"><div class="metric-label">CS%</div>' +
+                        '<div class="metric-value">' + cs.best_estimate + '%</div>' +
+                        '<div class="small text-muted">' + cs.high_friction + '% – ' + cs.low_friction + '%</div></div></div>';
+                }
+                uhtml += '</div></div></div>';
+                uncEl.innerHTML = uhtml;
+                uncEl.classList.remove("d-none");
             }
         }
 

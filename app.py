@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.5.0 - Industrial Validation)."""
+"""GeoStress AI - FastAPI Web Application (v3.6.0 - Industrial UQ & Performance)."""
 
 import os
 import io
@@ -1133,6 +1133,16 @@ async def run_inversion(request: Request):
         result, cs_result, quality, len(df_well), well
     )
 
+    # ── CS% sensitivity to friction uncertainty ──
+    mu_val = float(result["mu"])
+    sigma_n = result["sigma_n"]
+    tau = result["tau"]
+    cs_at_mu_lo = float(np.mean(tau > (cohesion + max(mu_val - 0.1, 0.3) * (sigma_n - pp))) * 100)
+    cs_at_mu_hi = float(np.mean(tau > (cohesion + min(mu_val + 0.1, 1.0) * (sigma_n - pp))) * 100)
+
+    # ── Uncertainty from Hessian ──
+    unc = result.get("uncertainty", {})
+
     response = {
         "sigma1": round(float(result["sigma1"]), 2),
         "sigma2": round(float(result["sigma2"]), 2),
@@ -1150,11 +1160,26 @@ async def run_inversion(request: Request):
         "critically_stressed_count": cs_result["count_critical"],
         "critically_stressed_total": cs_result["total"],
         "critically_stressed_pct": cs_result["pct_critical"],
+        "critically_stressed_range": {
+            "low_friction": round(cs_at_mu_lo, 1),
+            "best_estimate": cs_result["pct_critical"],
+            "high_friction": round(cs_at_mu_hi, 1),
+            "note": f"CS% range for friction {max(mu_val-0.1,0.3):.2f}-{min(mu_val+0.1,1.0):.2f}",
+        },
         "risk_level": cs_result.get("high_risk_count", 0),
         "risk_categories": {
             "high": cs_result["high_risk_count"],
             "moderate": cs_result["moderate_risk_count"],
             "low": cs_result["low_risk_count"],
+        },
+        "uncertainty": {
+            "shmax_ci_90": unc.get("shmax_azimuth_deg", {}).get("ci_90", []),
+            "shmax_std_deg": unc.get("shmax_uncertainty_deg", None),
+            "sigma1_ci_90": unc.get("sigma1", {}).get("ci_90", []),
+            "sigma3_ci_90": unc.get("sigma3", {}).get("ci_90", []),
+            "mu_ci_90": unc.get("mu", {}).get("ci_90", []),
+            "R_ci_90": unc.get("R", {}).get("ci_90", []),
+            "quality": unc.get("quality", "UNKNOWN"),
         },
         "interpretation": interpretation,
         "data_quality": {
@@ -1251,6 +1276,14 @@ async def run_classification(request: Request):
         "feature_importances": feat_imp,
         "confusion_matrix": cm,
         "class_names": class_names,
+        "confidence": {
+            "mean_prediction_confidence": clf_result.get("mean_confidence"),
+            "per_class_confidence": clf_result.get("class_confidence", {}),
+            "accuracy_range": [
+                round(float(clf_result["cv_mean_accuracy"] - 2 * clf_result["cv_std_accuracy"]), 4),
+                round(float(clf_result["cv_mean_accuracy"] + 2 * clf_result["cv_std_accuracy"]), 4),
+            ],
+        },
     })
 
 
@@ -3500,6 +3533,80 @@ async def run_executive_summary(request: Request):
         trust_score=trust_val,
         trust_level=trust_lvl,
     )
+
+    # ── GO/NO-GO Decision Matrix ──
+    # Evaluates 4 factors; overall GO requires no RED factors.
+    dm_factors = []
+
+    # 1. Data Sufficiency
+    n_frac = len(df_well)
+    if n_frac >= 200:
+        ds_status, ds_note = "GREEN", f"{n_frac} fractures — above industrial minimum"
+    elif n_frac >= 50:
+        ds_status, ds_note = "AMBER", f"{n_frac} fractures — marginal, results have higher uncertainty"
+    else:
+        ds_status, ds_note = "RED", f"Only {n_frac} fractures — insufficient for reliable stress estimates"
+    dm_factors.append({"factor": "Data Sufficiency", "status": ds_status, "detail": ds_note})
+
+    # 2. Model Reliability (from trust score and accuracy)
+    quality = validate_data_quality(df_well)
+    q_score = quality.get("score", 0)
+    if trust_val >= 70 and q_score >= 70:
+        mr_status, mr_note = "GREEN", f"Trust score {trust_val:.0f}/100, data quality {q_score}/100"
+    elif trust_val >= 50 and q_score >= 50:
+        mr_status, mr_note = "AMBER", f"Trust score {trust_val:.0f}/100, data quality {q_score}/100 — review recommended"
+    else:
+        mr_status, mr_note = "RED", f"Trust score {trust_val:.0f}/100, data quality {q_score}/100 — unreliable"
+    dm_factors.append({"factor": "Model Reliability", "status": mr_status, "detail": mr_note})
+
+    # 3. Stress Field Constraint (from inversion uncertainty)
+    inv_unc = inv_result.get("uncertainty", {})
+    shmax_std = inv_unc.get("shmax_uncertainty_deg", 999)
+    unc_quality = inv_unc.get("quality", "UNKNOWN")
+    regime_confidence = inv_result.get("confidence", "UNKNOWN")
+    if unc_quality == "WELL_CONSTRAINED" and regime_confidence in ("HIGH", "MODERATE"):
+        sf_status = "GREEN"
+        sf_note = f"SHmax ±{shmax_std}° ({unc_quality}), regime confidence {regime_confidence}"
+    elif unc_quality in ("WELL_CONSTRAINED", "MODERATELY_CONSTRAINED"):
+        sf_status = "AMBER"
+        sf_note = f"SHmax ±{shmax_std}° ({unc_quality}), regime confidence {regime_confidence}"
+    else:
+        sf_status = "RED"
+        sf_note = f"SHmax ±{shmax_std}° ({unc_quality}) — stress field is poorly constrained"
+    dm_factors.append({"factor": "Stress Constraint", "status": sf_status, "detail": sf_note})
+
+    # 4. Safety Margin (CS% and sensitivity)
+    cs_pct = float(result.get("stress", {}).get("critically_stressed_pct", 0) or 0)
+    if cs_pct <= 10:
+        sm_status, sm_note = "GREEN", f"{cs_pct:.0f}% critically stressed — low risk"
+    elif cs_pct <= 30:
+        sm_status, sm_note = "AMBER", f"{cs_pct:.0f}% critically stressed — moderate risk, plan contingencies"
+    else:
+        sm_status, sm_note = "RED", f"{cs_pct:.0f}% critically stressed — HIGH risk, expect fluid losses"
+    dm_factors.append({"factor": "Safety Margin", "status": sm_status, "detail": sm_note})
+
+    # Overall verdict
+    statuses = [f["status"] for f in dm_factors]
+    if "RED" in statuses:
+        overall = "NO-GO"
+        overall_note = "One or more critical factors are RED. Do NOT proceed without remediation."
+        red_factors = [f["factor"] for f in dm_factors if f["status"] == "RED"]
+        overall_note += " Issues: " + ", ".join(red_factors) + "."
+    elif all(s == "GREEN" for s in statuses):
+        overall = "GO"
+        overall_note = "All factors GREEN. Analysis is reliable for operational decisions."
+    else:
+        overall = "CONDITIONAL GO"
+        amber_factors = [f["factor"] for f in dm_factors if f["status"] == "AMBER"]
+        overall_note = "Proceed with caution. Review: " + ", ".join(amber_factors) + "."
+
+    result["decision_matrix"] = {
+        "verdict": overall,
+        "verdict_note": overall_note,
+        "factors": dm_factors,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
     return _sanitize_for_json(result)
 
 
@@ -8043,7 +8150,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.5.0",
+        "app_version": "3.6.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else
