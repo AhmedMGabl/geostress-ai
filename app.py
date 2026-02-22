@@ -74,6 +74,7 @@ from src.persistence import (
     save_drift_baseline, get_drift_baseline,
     insert_failure_case, get_failure_cases, resolve_failure_case,
     count_failure_cases,
+    insert_rlhf_review, get_rlhf_reviews, count_rlhf_reviews,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -362,7 +363,7 @@ def _audit_record(action: str, params: dict, result_summary: dict,
             parameters=_sanitize_for_json(params),
             result_hash=result_hash,
             result_summary=_sanitize_for_json(result_summary),
-            elapsed_s=elapsed_s, app_version="3.3.0",
+            elapsed_s=elapsed_s, app_version="3.3.1",
         )
 
 
@@ -537,7 +538,7 @@ def _build_startup_snapshot(wells):
                 "model_runs": stats.get("model_count", 0),
                 "expert_preferences": stats.get("preference_count", 0),
             },
-            "app_version": "3.3.0",
+            "app_version": "3.3.1",
         }
         print(f"  Startup snapshot built: {len(wells)} wells, {_startup_snapshot['total_fractures']} fractures")
     except Exception as e:
@@ -5720,7 +5721,7 @@ async def trustworthiness_report(request: Request):
         "n_samples": len(df_well),
         "n_checks": n_checks,
         "elapsed_s": elapsed,
-        "app_version": "3.3.0",
+        "app_version": "3.3.1",
     })
 
 
@@ -7369,11 +7370,11 @@ async def register_model(request: Request):
             f"{len(df_well)}_{df_well[AZIMUTH_COL].sum():.2f}_{df_well[DIP_COL].sum():.2f}".encode()
         ).hexdigest()[:16]
         version = insert_model_version(
-            model_type=cls.get("best_model", "Stacking"),
-            accuracy=cls.get("accuracy", 0),
-            f1=cls.get("f1_weighted", 0),
-            n_samples=cls.get("n_samples", len(df_well)),
-            n_features=cls.get("n_features", 0),
+            model_type=cls.get("best_model", "xgboost"),
+            accuracy=cls.get("cv_mean_accuracy", cls.get("accuracy", 0)),
+            f1=cls.get("cv_f1_mean", cls.get("f1_weighted", 0)),
+            n_samples=len(df_well),
+            n_features=len(cls.get("feature_names", [])),
             well=well,
             balanced_accuracy=cls.get("balanced_accuracy"),
             data_fingerprint=fingerprint,
@@ -7834,12 +7835,14 @@ async def retrain_with_failures(request: Request):
     fingerprint = hashlib.sha256(
         f"failure_aware_{len(failures)}_{len(df_well)}".encode()
     ).hexdigest()[:16]
+    acc = cls.get("cv_mean_accuracy", cls.get("accuracy", 0))
+    f1w = cls.get("cv_f1_mean", cls.get("f1_weighted", 0))
     version = insert_model_version(
-        model_type=cls.get("best_model", "Stacking"),
-        accuracy=cls.get("accuracy", 0),
-        f1=cls.get("f1_weighted", 0),
-        n_samples=cls.get("n_samples", len(df_well)),
-        n_features=cls.get("n_features", 0),
+        model_type=cls.get("best_model", "xgboost"),
+        accuracy=acc,
+        f1=f1w,
+        n_samples=len(df_well),
+        n_features=len(cls.get("feature_names", [])),
         well=well,
         balanced_accuracy=cls.get("balanced_accuracy"),
         data_fingerprint=fingerprint,
@@ -7849,13 +7852,13 @@ async def retrain_with_failures(request: Request):
     elapsed = round(time.time() - t0, 2)
     _audit_record("retrain_with_failures",
                   {"well": well, "n_failures": len(failures), "version": version},
-                  {"accuracy": cls.get("accuracy", 0), "version": version},
+                  {"accuracy": acc, "version": version},
                   source, well, elapsed)
 
     return _sanitize_for_json({
         "version": version,
-        "accuracy": cls.get("accuracy"),
-        "f1_weighted": cls.get("f1_weighted"),
+        "accuracy": acc,
+        "f1_weighted": f1w,
         "balanced_accuracy": cls.get("balanced_accuracy"),
         "n_failures_used": len(failures),
         "n_depths_weighted": len(failure_depths),
@@ -7952,7 +7955,7 @@ async def system_health():
         "failure_rate": round(failure_rate * 100, 1),
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
-        "app_version": "3.3.0",
+        "app_version": "3.3.1",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else
@@ -7963,4 +7966,373 @@ async def system_health():
                 "Caches empty — system just started. Performance will improve." if total_cached == 0 else None,
             ] if r]
         ),
+    })
+
+
+# ── v3.3.1: Comprehensive RLHF Pipeline ─────────────
+
+@app.post("/api/rlhf/review-queue")
+async def rlhf_review_queue(request: Request):
+    """Get prioritized samples for expert review (RLHF).
+
+    Combines model uncertainty, inter-model disagreement, failure history,
+    and active learning signals to prioritize which samples the expert
+    should review next. This is the core RLHF loop.
+    """
+    t0 = time.time()
+    body = await request.json()
+    well = body.get("well", "3P")
+    source = body.get("source", "demo")
+    n_samples = int(body.get("n_samples", 15))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well] if WELL_COL in df.columns else df
+    if len(df_well) < 5:
+        raise HTTPException(400, f"Well {well} has too few samples")
+
+    # Run classification to get predictions and confidence
+    cls = await asyncio.to_thread(classify_enhanced, df_well, n_folds=3)
+    model = cls.get("model")
+    scaler = cls.get("scaler")
+    le = cls.get("label_encoder")
+
+    if model is None or scaler is None:
+        raise HTTPException(500, "Classification model not available")
+
+    features = await asyncio.to_thread(engineer_enhanced_features, df_well)
+    X = scaler.transform(features.values)
+
+    # Get prediction probabilities
+    if hasattr(model, "predict_proba"):
+        proba = model.predict_proba(X)
+    else:
+        # Fallback for models without predict_proba
+        predictions = model.predict(X)
+        proba = np.eye(len(le.classes_))[np.asarray(predictions).ravel().astype(int)]
+
+    y_pred = model.predict(X)
+    predicted_labels = le.inverse_transform(np.asarray(y_pred).ravel().astype(int))
+
+    # Compute per-sample priority scores
+    max_proba = proba.max(axis=1)
+    entropy = -np.sum(proba * np.log(proba + 1e-10), axis=1)
+    margin = np.sort(proba, axis=1)[:, -1] - np.sort(proba, axis=1)[:, -2]
+
+    # Priority: high entropy (uncertain) + low margin (confused) + low confidence
+    priority = entropy * (1 - margin) * (1 - max_proba)
+
+    # Boost priority for samples near known failure depths
+    failures = get_failure_cases(well=well, limit=100)
+    failure_depths = [f.get("depth_m") for f in failures if f.get("depth_m") is not None]
+    if failure_depths and DEPTH_COL in df_well.columns:
+        for fd in failure_depths:
+            nearby = np.abs(df_well[DEPTH_COL].values - fd) < 100
+            priority[nearby] *= 1.5
+
+    # Already reviewed samples — lower their priority
+    reviews = get_rlhf_reviews(well=well, limit=500)
+    reviewed_indices = set(r.get("sample_index") for r in reviews if r.get("sample_index") is not None)
+    for idx in reviewed_indices:
+        if 0 <= idx < len(priority):
+            priority[idx] *= 0.1  # De-prioritize already reviewed
+
+    # Select top N
+    top_indices = np.argsort(-priority)[:n_samples]
+
+    queue = []
+    for idx in top_indices:
+        idx = int(idx)
+        sample = {
+            "index": idx,
+            "priority_score": round(float(priority[idx]), 4),
+            "predicted_type": str(predicted_labels[idx]),
+            "confidence": round(float(max_proba[idx]), 3),
+            "entropy": round(float(entropy[idx]), 3),
+            "margin": round(float(margin[idx]), 3),
+            "already_reviewed": idx in reviewed_indices,
+        }
+        if DEPTH_COL in df_well.columns:
+            sample["depth_m"] = round(float(df_well[DEPTH_COL].iloc[idx]), 1) if pd.notna(df_well[DEPTH_COL].iloc[idx]) else None
+        sample["azimuth"] = round(float(df_well[AZIMUTH_COL].iloc[idx]), 1)
+        sample["dip"] = round(float(df_well[DIP_COL].iloc[idx]), 1)
+        if FRACTURE_TYPE_COL in df_well.columns:
+            sample["true_type"] = str(df_well[FRACTURE_TYPE_COL].iloc[idx])
+        # Top-2 candidate types
+        top2 = np.argsort(-proba[idx])[:2]
+        sample["candidates"] = [
+            {"type": str(le.classes_[c]), "probability": round(float(proba[idx, c]), 3)}
+            for c in top2
+        ]
+        queue.append(sample)
+
+    elapsed = round(time.time() - t0, 2)
+    review_counts = count_rlhf_reviews(well)
+
+    _audit_record("rlhf_review_queue",
+                  {"well": well, "n_requested": n_samples},
+                  {"n_returned": len(queue), "avg_priority": round(float(np.mean(priority[top_indices])), 3)},
+                  source, well, elapsed)
+
+    return _sanitize_for_json({
+        "queue": queue,
+        "n_total_samples": len(df_well),
+        "n_already_reviewed": len(reviewed_indices),
+        "review_stats": review_counts,
+        "interpretation": (
+            f"Top {len(queue)} samples prioritized for review. "
+            f"Already reviewed: {len(reviewed_indices)}/{len(df_well)}. "
+            f"Average priority score: {float(np.mean(priority[top_indices])):.3f}. "
+            + ("All high-priority samples have been reviewed — model is well-calibrated."
+               if len(reviewed_indices) > len(df_well) * 0.5
+               else "Review these samples to improve model accuracy through expert feedback.")
+        ),
+        "well": well,
+        "elapsed_s": elapsed,
+    })
+
+
+@app.post("/api/rlhf/accept-reject")
+async def rlhf_accept_reject(request: Request):
+    """Record an expert's accept/reject/correct decision on a prediction.
+
+    verdicts: 'accept' (prediction is correct), 'reject' (prediction is wrong),
+    'correct' (prediction is wrong, expert provides correct label)
+    """
+    body = await request.json()
+    well = body.get("well")
+    verdict = body.get("verdict")  # accept, reject, correct
+
+    if verdict not in ("accept", "reject", "correct"):
+        raise HTTPException(400, "verdict must be 'accept', 'reject', or 'correct'")
+
+    review_id = insert_rlhf_review(
+        well=well,
+        expert_verdict=verdict,
+        sample_index=body.get("sample_index"),
+        depth_m=body.get("depth_m"),
+        azimuth=body.get("azimuth"),
+        dip=body.get("dip"),
+        predicted_type=body.get("predicted_type"),
+        true_type=body.get("true_type") or body.get("correct_type"),
+        confidence=body.get("confidence"),
+        notes=body.get("notes"),
+        model_version=body.get("model_version"),
+    )
+
+    # If correction, also record as failure case for learning
+    if verdict in ("reject", "correct"):
+        insert_failure_case(
+            failure_type="expert_rejected" if verdict == "reject" else "expert_corrected",
+            well=well,
+            depth_m=body.get("depth_m"),
+            azimuth=body.get("azimuth"),
+            dip=body.get("dip"),
+            predicted=body.get("predicted_type"),
+            actual=body.get("true_type") or body.get("correct_type"),
+            confidence=body.get("confidence"),
+            context={"rlhf_review_id": review_id, "notes": body.get("notes")},
+        )
+
+    _audit_record("rlhf_verdict",
+                  {"well": well, "verdict": verdict, "sample_index": body.get("sample_index")},
+                  {"review_id": review_id},
+                  body.get("source", "demo"), well, 0)
+
+    return {"review_id": review_id, "verdict": verdict, "message": f"Expert {verdict} recorded"}
+
+
+@app.get("/api/rlhf/impact")
+async def rlhf_impact(well: str = Query(None)):
+    """Measure the impact of RLHF reviews on model quality.
+
+    Shows: acceptance rate, correction patterns, model improvement trajectory,
+    and comparison between reviewed vs unreviewed prediction accuracy.
+    """
+    reviews = get_rlhf_reviews(well=well, limit=1000)
+    counts = count_rlhf_reviews(well)
+
+    if counts["total"] == 0:
+        return {
+            "message": "No RLHF reviews yet. Use the Review Queue to start reviewing samples.",
+            "total_reviews": 0,
+            "recommendations": ["Start reviewing prioritized samples from the Review Queue."],
+        }
+
+    # Acceptance rate
+    accept_rate = counts["accepted"] / max(counts["total"], 1)
+
+    # Correction patterns
+    corrections = {}
+    for r in reviews:
+        if r.get("expert_verdict") in ("reject", "correct") and r.get("predicted_type"):
+            key = f"{r['predicted_type']} → {r.get('true_type', '?')}"
+            corrections[key] = corrections.get(key, 0) + 1
+    top_corrections = sorted(corrections.items(), key=lambda x: -x[1])[:5]
+
+    # Confidence distribution for accepted vs rejected
+    accepted_conf = [r.get("confidence") for r in reviews if r.get("expert_verdict") == "accept" and r.get("confidence")]
+    rejected_conf = [r.get("confidence") for r in reviews if r.get("expert_verdict") in ("reject", "correct") and r.get("confidence")]
+
+    conf_analysis = None
+    if accepted_conf and rejected_conf:
+        avg_acc_conf = float(np.mean(accepted_conf))
+        avg_rej_conf = float(np.mean(rejected_conf))
+        conf_analysis = {
+            "avg_accepted_confidence": round(avg_acc_conf, 3),
+            "avg_rejected_confidence": round(avg_rej_conf, 3),
+            "calibration_gap": round(avg_acc_conf - avg_rej_conf, 3),
+            "interpretation": (
+                "Model is well-calibrated: higher confidence = more likely correct."
+                if avg_acc_conf > avg_rej_conf + 0.1
+                else "WARNING: Confidence doesn't reliably predict correctness. Model needs recalibration."
+            ),
+        }
+
+    # Model version progression
+    versions = get_model_versions(well=well, limit=10)
+    version_trajectory = []
+    for v in versions:
+        version_trajectory.append({
+            "version": v.get("version"),
+            "accuracy": v.get("accuracy"),
+            "timestamp": v.get("timestamp"),
+        })
+
+    # Recommendations
+    recommendations = []
+    if accept_rate < 0.7:
+        recommendations.append(f"Only {accept_rate:.0%} acceptance rate — model needs significant improvement. Consider retraining with failure-aware weights.")
+    elif accept_rate < 0.9:
+        recommendations.append(f"{accept_rate:.0%} acceptance rate — room for improvement. Focus on the most common correction patterns.")
+    else:
+        recommendations.append(f"Excellent {accept_rate:.0%} acceptance rate — model is performing well for this well.")
+
+    if top_corrections:
+        pair = top_corrections[0][0]
+        recommendations.append(f"Most common correction: '{pair}' — collect more training data for these types.")
+
+    if counts["total"] < 30:
+        recommendations.append(f"Only {counts['total']} reviews. More reviews improve model calibration. Target 50+.")
+
+    return _sanitize_for_json({
+        "total_reviews": counts["total"],
+        "accepted": counts["accepted"],
+        "rejected": counts["rejected"],
+        "corrected": counts["corrected"],
+        "acceptance_rate": round(accept_rate, 3),
+        "top_corrections": [{"pair": p, "count": c} for p, c in top_corrections],
+        "confidence_analysis": conf_analysis,
+        "version_trajectory": version_trajectory,
+        "recommendations": recommendations,
+        "well": well,
+    })
+
+
+# ── Batch Well Processing ────────────────────────────
+
+@app.post("/api/batch/analyze-all")
+async def batch_analyze_all(request: Request):
+    """Run full analysis pipeline across all wells simultaneously.
+
+    For each well: stress inversion + ML classification + risk assessment.
+    Returns unified field summary with per-well metrics.
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    depth_m = float(body.get("depth_m", 3000))
+    pp_mpa = float(body.get("pp_mpa", 30))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    wells = df[WELL_COL].unique().tolist() if WELL_COL in df.columns else ["all"]
+    results = []
+
+    for w in wells:
+        df_w = df[df[WELL_COL] == w] if WELL_COL in df.columns else df
+        if len(df_w) < 5:
+            results.append({"well": w, "status": "SKIPPED", "reason": "Too few samples"})
+            continue
+
+        well_result = {"well": w, "n_fractures": len(df_w), "status": "OK"}
+
+        # Stress inversion
+        try:
+            if DEPTH_COL in df_w.columns and df_w[DEPTH_COL].notna().any():
+                avg_depth = float(df_w[DEPTH_COL].dropna().mean())
+            else:
+                avg_depth = depth_m
+            if not np.isfinite(avg_depth) or avg_depth <= 0:
+                avg_depth = depth_m
+
+            normals = fracture_plane_normal(df_w[AZIMUTH_COL].values, df_w[DIP_COL].values)
+            regime_result = await asyncio.to_thread(auto_detect_regime, normals, depth_m=avg_depth, pore_pressure=pp_mpa)
+            best_regime = regime_result.get("best_regime", "Normal")
+            inv = await asyncio.to_thread(invert_stress, normals, regime=best_regime, depth_m=avg_depth, pore_pressure=pp_mpa)
+
+            well_result["regime"] = best_regime
+            well_result["shmax_deg"] = round(float(inv.get("shmax_azimuth_deg", 0)), 1)
+            well_result["sigma1"] = round(float(inv.get("sigma1", 0)), 1)
+            well_result["sigma3"] = round(float(inv.get("sigma3", 0)), 1)
+            well_result["misfit"] = round(float(inv.get("total_misfit", 0)), 3)
+
+            # Critically stressed count
+            tend = inv.get("tendencies", {})
+            slip_arr = tend.get("slip_tendency", [])
+            if hasattr(slip_arr, '__len__'):
+                n_cs = int(np.sum(np.array(slip_arr) > 0.6))
+                well_result["critically_stressed_pct"] = round(n_cs / max(len(slip_arr), 1) * 100, 1)
+        except Exception as e:
+            well_result["stress_error"] = str(e)[:100]
+
+        # ML Classification
+        try:
+            cls = await asyncio.to_thread(classify_enhanced, df_w, n_folds=3)
+            well_result["accuracy"] = round(cls.get("cv_mean_accuracy", 0), 3)
+            well_result["f1_weighted"] = round(cls.get("cv_f1_mean", 0), 3)
+            well_result["best_model"] = cls.get("best_model", "xgboost")
+            well_result["n_classes"] = len(cls.get("class_names", []))
+        except Exception as e:
+            well_result["classify_error"] = str(e)[:100]
+
+        # Data quality
+        try:
+            quality = validate_data_quality(df_w)
+            well_result["quality_score"] = quality.get("score", 0)
+            well_result["quality_grade"] = quality.get("grade", "?")
+        except Exception:
+            pass
+
+        results.append(well_result)
+
+    elapsed = round(time.time() - t0, 2)
+
+    # Field summary
+    valid_stress = [r for r in results if "shmax_deg" in r]
+    field_summary = {}
+    if valid_stress:
+        shmax_vals = [r["shmax_deg"] for r in valid_stress]
+        acc_vals = [r.get("accuracy", 0) for r in results if "accuracy" in r]
+        field_summary = {
+            "n_wells_analyzed": len(valid_stress),
+            "shmax_range": [round(min(shmax_vals), 1), round(max(shmax_vals), 1)],
+            "shmax_spread": round(max(shmax_vals) - min(shmax_vals), 1),
+            "avg_accuracy": round(float(np.mean(acc_vals)), 3) if acc_vals else None,
+            "all_regimes": list(set(r.get("regime", "?") for r in valid_stress)),
+        }
+
+    _audit_record("batch_analyze_all",
+                  {"n_wells": len(wells), "depth_m": depth_m},
+                  {"n_analyzed": len(valid_stress)},
+                  source, None, elapsed)
+
+    return _sanitize_for_json({
+        "wells": results,
+        "field_summary": field_summary,
+        "n_wells": len(wells),
+        "elapsed_s": elapsed,
     })

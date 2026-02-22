@@ -2979,6 +2979,31 @@
                         </div>
                     </div>
 
+                    <!-- RLHF Review Queue -->
+                    <div class="card mb-3 border-primary">
+                        <div class="card-header bg-primary bg-opacity-75 text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-person-check"></i> RLHF Expert Review Queue</span>
+                            <div>
+                                <button class="btn btn-sm btn-outline-light me-1" onclick="loadRlhfQueue()"><i class="bi bi-list-task"></i> Get Review Queue</button>
+                                <button class="btn btn-sm btn-outline-light" onclick="viewRlhfImpact()"><i class="bi bi-graph-up"></i> View Impact</button>
+                            </div>
+                        </div>
+                        <div class="card-body" id="rlhf-queue-result">
+                            <p class="text-muted">Get a prioritized queue of samples for expert review. The system identifies the most uncertain predictions that would benefit most from expert feedback. <strong>This is how AI learns from your expertise.</strong></p>
+                        </div>
+                    </div>
+
+                    <!-- Batch Analysis -->
+                    <div class="card mb-3 border-dark">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-collection"></i> Batch Analysis (All Wells)</span>
+                            <button class="btn btn-sm btn-outline-dark" onclick="runBatchAnalysis()"><i class="bi bi-play-fill"></i> Analyze All Wells</button>
+                        </div>
+                        <div class="card-body" id="batch-result">
+                            <p class="text-muted">Run stress inversion + ML classification + data quality across all wells simultaneously. Produces a field-wide summary.</p>
+                        </div>
+                    </div>
+
                     <!-- Report Failure Form -->
                     <div class="card mb-3 border-secondary">
                         <div class="card-header"><i class="bi bi-flag"></i> Report a Prediction Failure</div>

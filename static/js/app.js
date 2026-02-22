@@ -7132,6 +7132,112 @@ async function retrainWithFailures() {
 }
 
 
+// ── v3.3.1: RLHF + Batch Functions ─────────────────
+
+async function loadRlhfQueue() {
+    const el = document.getElementById('rlhf-queue-result');
+    const well = document.getElementById('well-select')?.value || '3P';
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Building expert review queue...</div>';
+    try {
+        const r = await fetch('/api/rlhf/review-queue', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({well, source: window._source || 'demo', n_samples: 15})
+        });
+        const d = await r.json();
+        let html = `<p class="text-muted small">${d.interpretation || ''}</p>`;
+        if (d.review_stats) {
+            const rs = d.review_stats;
+            html += `<div class="mb-2 small">Reviews: <span class="badge bg-success">${rs.accepted || 0} accepted</span> <span class="badge bg-danger">${rs.rejected || 0} rejected</span> <span class="badge bg-info">${rs.corrected || 0} corrected</span></div>`;
+        }
+        if (d.queue && d.queue.length) {
+            html += '<table class="table table-sm table-hover"><thead><tr><th>#</th><th>Depth</th><th>Az/Dip</th><th>Predicted</th><th>True</th><th>Conf</th><th>Priority</th><th>Actions</th></tr></thead><tbody>';
+            d.queue.forEach(s => {
+                html += `<tr class="${s.already_reviewed ? 'table-light' : ''}">
+                    <td>${s.index}</td><td>${s.depth_m || '-'}</td><td>${s.azimuth}\u00B0/${s.dip}\u00B0</td>
+                    <td><strong>${s.predicted_type}</strong></td><td>${s.true_type || '?'}</td>
+                    <td>${(s.confidence * 100).toFixed(0)}%</td><td>${s.priority_score.toFixed(3)}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-success py-0 px-1" onclick="rlhfVerdict('${well}',${s.index},'accept','${s.predicted_type}','${s.true_type||''}',${s.depth_m||'null'},${s.azimuth},${s.dip},${s.confidence})">&#10003;</button>
+                        <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="rlhfVerdict('${well}',${s.index},'reject','${s.predicted_type}','${s.true_type||''}',${s.depth_m||'null'},${s.azimuth},${s.dip},${s.confidence})">&#10007;</button>
+                    </td></tr>`;
+            });
+            html += '</tbody></table>';
+        }
+        el.innerHTML = html;
+    } catch(e) { el.innerHTML = `<div class="text-danger">Error: ${e.message}</div>`; }
+}
+
+async function rlhfVerdict(well, index, verdict, predicted, trueType, depth, az, dip, conf) {
+    let correctType = null;
+    if (verdict === 'reject') {
+        correctType = prompt('What is the correct fracture type? (leave blank to just reject)');
+        if (correctType) verdict = 'correct';
+    }
+    try {
+        await fetch('/api/rlhf/accept-reject', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({well, sample_index: index, verdict, predicted_type: predicted, true_type: correctType || trueType, depth_m: depth, azimuth: az, dip: dip, confidence: conf})
+        });
+        showToast('RLHF', 'Expert ' + verdict + ' recorded for sample #' + index, verdict === 'accept' ? 'success' : 'warning');
+        setTimeout(loadRlhfQueue, 300);
+    } catch(e) { showToast('Error', e.message, 'danger'); }
+}
+
+async function viewRlhfImpact() {
+    const el = document.getElementById('rlhf-queue-result');
+    const well = document.getElementById('well-select')?.value || '';
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Analyzing RLHF impact...</div>';
+    try {
+        const r = await fetch('/api/rlhf/impact?well=' + well);
+        const d = await r.json();
+        if (d.total_reviews === 0) { el.innerHTML = '<div class="alert alert-info">' + d.message + '</div>'; return; }
+        const rc = d.acceptance_rate > 0.8 ? 'success' : d.acceptance_rate > 0.6 ? 'warning' : 'danger';
+        let html = '<div class="row g-2 mb-3">' +
+            '<div class="col-md-3"><div class="card border-' + rc + '"><div class="card-body text-center"><h4>' + (d.acceptance_rate*100).toFixed(0) + '%</h4><small>Accept Rate</small></div></div></div>' +
+            '<div class="col-md-3"><div class="card"><div class="card-body text-center"><h4>' + d.total_reviews + '</h4><small>Total Reviews</small></div></div></div>' +
+            '<div class="col-md-3"><div class="card border-success"><div class="card-body text-center"><h4>' + d.accepted + '</h4><small>Accepted</small></div></div></div>' +
+            '<div class="col-md-3"><div class="card border-danger"><div class="card-body text-center"><h4>' + (d.rejected+d.corrected) + '</h4><small>Rejected</small></div></div></div></div>';
+        if (d.confidence_analysis) html += '<div class="alert alert-' + (d.confidence_analysis.calibration_gap > 0.1 ? 'success' : 'warning') + ' small">' + d.confidence_analysis.interpretation + '</div>';
+        if (d.top_corrections && d.top_corrections.length) {
+            html += '<h6>Top Corrections</h6><ul class="small">';
+            d.top_corrections.forEach(function(c) { html += '<li><code>' + c.pair + '</code>: ' + c.count + '</li>'; });
+            html += '</ul>';
+        }
+        if (d.recommendations) { html += '<div class="alert alert-info small"><ul class="mb-0">'; d.recommendations.forEach(function(r) { html += '<li>' + r + '</li>'; }); html += '</ul></div>'; }
+        el.innerHTML = html;
+    } catch(e) { el.innerHTML = '<div class="text-danger">Error: ' + e.message + '</div>'; }
+}
+
+async function runBatchAnalysis() {
+    const el = document.getElementById('batch-result');
+    const depth = document.getElementById('depth-input')?.value || 3000;
+    const pp = document.getElementById('pp-input')?.value || 30;
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running full pipeline on all wells... (30-60s)</div>';
+    try {
+        const r = await fetch('/api/batch/analyze-all', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: window._source || 'demo', depth_m: +depth, pp_mpa: +pp})
+        });
+        const d = await r.json();
+        let html = '';
+        if (d.field_summary) {
+            const fs = d.field_summary;
+            html += '<div class="alert alert-info"><strong>Field:</strong> ' + fs.n_wells_analyzed + ' wells, SHmax ' + (fs.shmax_range||[])[0] + '\u00B0\u2013' + (fs.shmax_range||[])[1] + '\u00B0, Avg acc: ' + (fs.avg_accuracy ? (fs.avg_accuracy*100).toFixed(1)+'%' : '-') + '</div>';
+        }
+        if (d.wells && d.wells.length) {
+            html += '<table class="table table-sm"><thead><tr><th>Well</th><th>N</th><th>Regime</th><th>SHmax</th><th>Accuracy</th><th>Quality</th><th>CS%</th></tr></thead><tbody>';
+            d.wells.forEach(function(w) {
+                html += '<tr><td><strong>' + w.well + '</strong></td><td>' + w.n_fractures + '</td><td>' + (w.regime||'-') + '</td><td>' + (w.shmax_deg||'-') + '\u00B0</td><td>' + (w.accuracy?(w.accuracy*100).toFixed(1)+'%':'-') + '</td><td>' + (w.quality_grade||'-') + '</td><td>' + (w.critically_stressed_pct!=null?w.critically_stressed_pct+'%':'-') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        html += '<div class="text-muted small">' + d.elapsed_s + 's</div>';
+        el.innerHTML = html;
+    } catch(e) { el.innerHTML = '<div class="text-danger">Error: ' + e.message + '</div>'; }
+}
+
+
 // ── Init ──────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", function() {

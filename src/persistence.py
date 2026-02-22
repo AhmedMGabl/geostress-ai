@@ -140,6 +140,24 @@ def init_db(db_path: str = None):
             resolved INTEGER DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS rlhf_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            well TEXT,
+            sample_index INTEGER,
+            depth_m REAL,
+            azimuth REAL,
+            dip REAL,
+            predicted_type TEXT,
+            true_type TEXT,
+            expert_verdict TEXT NOT NULL,
+            confidence REAL,
+            notes TEXT,
+            model_version INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rlhf_well ON rlhf_reviews(well);
+        CREATE INDEX IF NOT EXISTS idx_rlhf_verdict ON rlhf_reviews(expert_verdict);
         CREATE INDEX IF NOT EXISTS idx_model_ver_active ON model_versions(is_active);
         CREATE INDEX IF NOT EXISTS idx_model_ver_well ON model_versions(well);
         CREATE INDEX IF NOT EXISTS idx_drift_well ON drift_baselines(well);
@@ -357,6 +375,7 @@ def export_all() -> dict:
         "expert_preferences": get_preferences(limit=10000),
         "model_versions": get_model_versions(limit=10000),
         "failure_cases": get_failure_cases(limit=10000),
+        "rlhf_reviews": get_rlhf_reviews(limit=10000),
     }
 
 
@@ -678,6 +697,61 @@ def resolve_failure_case(case_id: int, root_cause: str = None) -> bool:
         )
     conn.commit()
     return cur.rowcount > 0
+
+
+def insert_rlhf_review(well: str, expert_verdict: str,
+                       sample_index: int = None, depth_m: float = None,
+                       azimuth: float = None, dip: float = None,
+                       predicted_type: str = None, true_type: str = None,
+                       confidence: float = None, notes: str = None,
+                       model_version: int = None) -> int:
+    """Record an expert accept/reject decision on a prediction."""
+    conn = _get_conn()
+    cur = conn.execute(
+        """INSERT INTO rlhf_reviews
+           (timestamp, well, sample_index, depth_m, azimuth, dip,
+            predicted_type, true_type, expert_verdict, confidence, notes, model_version)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            datetime.now(timezone.utc).isoformat(),
+            well, sample_index, depth_m, azimuth, dip,
+            predicted_type, true_type, expert_verdict, confidence, notes, model_version,
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_rlhf_reviews(well: str = None, verdict: str = None, limit: int = 500) -> list[dict]:
+    """Retrieve RLHF review records."""
+    conn = _get_conn()
+    query = "SELECT * FROM rlhf_reviews WHERE 1=1"
+    params = []
+    if well:
+        query += " AND well = ?"
+        params.append(well)
+    if verdict:
+        query += " AND expert_verdict = ?"
+        params.append(verdict)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_rlhf_reviews(well: str = None) -> dict:
+    """Count RLHF reviews by verdict type."""
+    conn = _get_conn()
+    base = "FROM rlhf_reviews WHERE 1=1"
+    params = []
+    if well:
+        base += " AND well = ?"
+        params.append(well)
+    total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
+    accepted = conn.execute(f"SELECT COUNT(*) {base} AND expert_verdict = 'accept'", params).fetchone()[0]
+    rejected = conn.execute(f"SELECT COUNT(*) {base} AND expert_verdict = 'reject'", params).fetchone()[0]
+    corrected = conn.execute(f"SELECT COUNT(*) {base} AND expert_verdict = 'correct'", params).fetchone()[0]
+    return {"total": total, "accepted": accepted, "rejected": rejected, "corrected": corrected}
 
 
 def count_failure_cases(well: str = None, resolved: bool = None) -> int:
