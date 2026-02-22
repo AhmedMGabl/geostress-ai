@@ -122,6 +122,8 @@ _misclass_cache = BoundedCache(30)
 _physics_predict_cache = BoundedCache(30)
 _wizard_cache = BoundedCache(20)
 _comprehensive_cache = BoundedCache(10)
+_overview_cache = BoundedCache(20)
+_inversion_response_cache = BoundedCache(30)
 
 # Pre-computed startup snapshot for instant page load
 _startup_snapshot = {}
@@ -775,15 +777,35 @@ def _prewarm_caches():
         elapsed = _time.perf_counter() - start
         print(f"Cache pre-warm complete: {len(wells)} wells in {elapsed:.1f}s")
 
-        # Phase 3: Classifier warm-up (deferred, non-blocking)
+        # Phase 3: Classifier + comparison warm-up (deferred, non-blocking)
         # Runs after server is already responsive
         if demo_df is not None:
+            # Pre-warm gradient boosting classifier
             clf_key = "clf_demo_gradient_boosting_enh"
             if clf_key not in _classify_cache:
                 try:
                     clf_result = classify_enhanced(demo_df, classifier="gradient_boosting")
                     _classify_cache[clf_key] = clf_result
                     print(f"  Deferred classify warm: done ({_time.perf_counter()-start:.1f}s)")
+                except Exception:
+                    pass
+            # Pre-warm random forest classifier (most common choice)
+            clf_key_rf = "clf_demo_random_forest_enh"
+            if clf_key_rf not in _classify_cache:
+                try:
+                    clf_result_rf = classify_enhanced(demo_df, classifier="random_forest")
+                    _classify_cache[clf_key_rf] = clf_result_rf
+                    print(f"  Deferred RF classify warm: done ({_time.perf_counter()-start:.1f}s)")
+                except Exception:
+                    pass
+            # Pre-warm model comparison (fast mode)
+            mc_key = f"demo_{len(demo_df)}_fast"
+            if mc_key not in _model_comparison_cache:
+                try:
+                    mc_result = compare_models(demo_df, fast=True)
+                    mc_result["stakeholder_brief"] = _compare_models_stakeholder_brief(mc_result)
+                    _model_comparison_cache[mc_key] = _sanitize_for_json(mc_result)
+                    print(f"  Deferred model comparison warm: done ({_time.perf_counter()-start:.1f}s)")
                 except Exception:
                     pass
     except Exception as e:
@@ -979,6 +1001,8 @@ async def cache_status():
         "sensitivity": len(_sensitivity_cache),
         "wizard": len(_wizard_cache),
         "comprehensive": len(_comprehensive_cache),
+        "overview": len(_overview_cache),
+        "inversion_response": len(_inversion_response_cache),
     }
 
 
@@ -1320,6 +1344,8 @@ async def upload_file(file: UploadFile = File(...)):
         _misclass_cache.clear()
         _physics_predict_cache.clear()
         _wizard_cache.clear()
+        _overview_cache.clear()
+        _inversion_response_cache.clear()
 
         result = {
             "filename": file.filename,
@@ -1584,6 +1610,12 @@ async def run_inversion(request: Request):
     # Normalize depth for consistent cache keys (round to int)
     depth_key = round(avg_depth)
 
+    # Full response cache (includes rendered plots — saves ~2-4s per call)
+    pp_for_key = round(pore_pressure, 1) if pore_pressure is not None else "auto"
+    inv_resp_key = f"invr_{source}_{well}_{regime}_{depth_key}_{pp_for_key}_{cohesion}"
+    if inv_resp_key in _inversion_response_cache:
+        return _inversion_response_cache[inv_resp_key]
+
     # Auto-detect regime or use specified one
     auto_detection = None
     if regime == "auto":
@@ -1841,7 +1873,9 @@ async def run_inversion(request: Request):
                    "critically_stressed_pct": response["critically_stressed_pct"]},
                   source=source, well=well)
 
-    return _sanitize_for_json(response)
+    sanitized_inv = _sanitize_for_json(response)
+    _inversion_response_cache[inv_resp_key] = sanitized_inv
+    return sanitized_inv
 
 
 @app.post("/api/analysis/classify")
@@ -3064,6 +3098,16 @@ async def run_overview(request: Request):
         well_name = "All Wells"
         df_well = df
 
+    # Use actual average depth for cache key consistency with pre-warm
+    if "depth" in body:
+        _ov_depth = float(body["depth"])
+    else:
+        _ov_avg = df_well[DEPTH_COL].mean()
+        _ov_depth = float(round(_ov_avg)) if np.isfinite(_ov_avg) else 3000.0
+    ov_cache_key = f"ov_{source}_{well_name}_{regime}_{int(_ov_depth)}"
+    if ov_cache_key in _overview_cache:
+        return _overview_cache[ov_cache_key]
+
     # Use actual average depth (matches pre-warm cache key) unless user specified
     if "depth" in body:
         depth_m = float(body["depth"])
@@ -3245,7 +3289,9 @@ async def run_overview(request: Request):
                   {"risk": overview.get("risk", {}), "shmax": overview.get("stress", {}).get("shmax")},
                   source=source, well=well_name, elapsed_s=total_elapsed)
 
-    return _sanitize_for_json(overview)
+    sanitized = _sanitize_for_json(overview)
+    _overview_cache[ov_cache_key] = sanitized
+    return sanitized
 
 
 # ── Batch Field Analysis ──────────────────────────────
@@ -8966,6 +9012,8 @@ async def system_health():
         "classify_cache": len(_classify_cache),
         "comprehensive_cache": len(_comprehensive_cache),
         "wizard_cache": len(_wizard_cache),
+        "overview_cache": len(_overview_cache),
+        "inversion_response_cache": len(_inversion_response_cache),
     }
     total_cached = sum(cache_info.values())
 
@@ -9406,10 +9454,12 @@ async def rlhf_retrain(request: Request):
         notes=f"RLHF retrained with {len(reviews)} reviews, {corrections_applied} corrections",
     )
 
-    # Clear cached classification for this well
+    # Clear cached classification, overview, and inversion for this well
     for key in list(_classify_cache.keys()):
         if well in str(key):
             del _classify_cache[key]
+    _overview_cache.clear()
+    _inversion_response_cache.clear()
 
     elapsed = round(time.time() - t0, 2)
 
