@@ -2696,7 +2696,6 @@ async def run_overview(request: Request):
     source = body.get("source", "demo")
     well = body.get("well", None)
     regime = body.get("regime", "strike_slip")
-    depth_m = float(body.get("depth", 3000))
 
     df = get_df(source)
     if well:
@@ -2705,6 +2704,13 @@ async def run_overview(request: Request):
     else:
         well_name = "All Wells"
         df_well = df
+
+    # Use actual average depth (matches pre-warm cache key) unless user specified
+    if "depth" in body:
+        depth_m = float(body["depth"])
+    else:
+        avg_d = df_well[DEPTH_COL].mean()
+        depth_m = float(round(avg_d)) if np.isfinite(avg_d) else 3000.0
 
     overview = {
         "well": well_name,
@@ -2750,7 +2756,7 @@ async def run_overview(request: Request):
         try:
             nonlocal regime
             if regime == "auto" or regime == "strike_slip":
-                auto_cache_key = f"auto_{source}_{well_name}_{depth_m}"
+                auto_cache_key = f"auto_{source}_{well_name}_{int(depth_m)}"
                 if auto_cache_key in _auto_regime_cache:
                     auto_res = _auto_regime_cache[auto_cache_key]
                 else:
