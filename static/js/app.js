@@ -7209,6 +7209,35 @@ async function viewRlhfImpact() {
     } catch(e) { el.innerHTML = '<div class="text-danger">Error: ' + e.message + '</div>'; }
 }
 
+async function rlhfRetrain() {
+    const el = document.getElementById('rlhf-queue-result');
+    const well = document.getElementById('well-select')?.value || '3P';
+    showLoading("Retraining model with RLHF feedback...");
+    try {
+        const r = await fetch('/api/rlhf/retrain', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({well: well, source: window._source || 'demo'})
+        });
+        const d = await r.json();
+        hideLoading();
+        if (d.error) { el.innerHTML = '<div class="alert alert-warning">' + d.error + '</div>'; return; }
+        const impColor = d.improvement > 0 ? 'success' : d.improvement < 0 ? 'danger' : 'secondary';
+        let html = '<div class="alert alert-' + impColor + '">' +
+            '<h5><i class="bi bi-lightning"></i> RLHF Retrain Complete</h5>' +
+            '<div class="row g-2">' +
+            '<div class="col-md-3"><strong>Before:</strong> ' + (d.accuracy_before*100).toFixed(1) + '%</div>' +
+            '<div class="col-md-3"><strong>After:</strong> ' + (d.accuracy_after*100).toFixed(1) + '%</div>' +
+            '<div class="col-md-3"><strong>Improvement:</strong> ' + (d.improvement>0?'+':'') + (d.improvement*100).toFixed(1) + '%</div>' +
+            '<div class="col-md-3"><strong>Reviews:</strong> ' + d.reviews_used + ' (' + d.corrections_applied + ' corrections)</div>' +
+            '</div>' +
+            '<p class="mt-2 mb-0">' + d.message + '</p>' +
+            '</div>';
+        el.innerHTML = html;
+        showToast(d.message);
+        refreshMlopsStatus();
+    } catch(e) { hideLoading(); el.innerHTML = '<div class="text-danger">Error: ' + e.message + '</div>'; }
+}
+
 async function runBatchAnalysis() {
     const el = document.getElementById('batch-result');
     const depth = document.getElementById('depth-input')?.value || 3000;
