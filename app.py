@@ -468,33 +468,23 @@ def _prewarm_caches():
                 except Exception as e:
                     print(f"  Pre-warm {futures[f]}: failed ({e})")
 
-        # Phase 2: Classifier — warm all data + per-well
+        # Phase 2: Build startup snapshot (fast, uses Phase 1 cached data)
+        _build_startup_snapshot(wells)
+
+        elapsed = _time.perf_counter() - start
+        print(f"Cache pre-warm complete: {len(wells)} wells in {elapsed:.1f}s")
+
+        # Phase 3: Classifier warm-up (deferred, non-blocking)
+        # Runs after server is already responsive
         if demo_df is not None:
             clf_key = "clf_demo_gradient_boosting_enh"
             if clf_key not in _classify_cache:
                 try:
                     clf_result = classify_enhanced(demo_df, classifier="gradient_boosting")
                     _classify_cache[clf_key] = clf_result
+                    print(f"  Deferred classify warm: done ({_time.perf_counter()-start:.1f}s)")
                 except Exception:
                     pass
-
-            # Per-well classification (needed by comprehensive report)
-            for w in wells:
-                wkey = f"clf_demo_{w}_gradient_boosting_3cv"
-                if wkey not in _classify_cache:
-                    try:
-                        df_w = demo_df[demo_df[WELL_COL] == w].reset_index(drop=True)
-                        cls = classify_enhanced(df_w, "gradient_boosting", 3)
-                        _classify_cache[wkey] = cls
-                        print(f"  Pre-warm classify {w}: done ({_time.perf_counter()-start:.1f}s)")
-                    except Exception:
-                        pass
-
-        # Phase 3: Build startup snapshot for instant page load
-        _build_startup_snapshot(wells)
-
-        elapsed = _time.perf_counter() - start
-        print(f"Cache pre-warm complete: {len(wells)} wells in {elapsed:.1f}s")
     except Exception as e:
         print(f"Cache pre-warm failed: {e}")
 
