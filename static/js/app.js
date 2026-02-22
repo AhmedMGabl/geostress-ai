@@ -3148,6 +3148,105 @@ async function runReadinessScorecard() {
     }
 }
 
+// ── Feature Ablation Study ─────────────────────────
+
+async function runFeatureAblation() {
+    showLoading("Running feature ablation study...");
+    try {
+        var clf = document.getElementById("classifier-select").value;
+        var r = await api("/api/analysis/feature-ablation", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, source: currentSource, classifier: clf })
+        }, 120);
+        var el = document.getElementById("fa-results");
+        if (!el) return;
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("fa-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        document.getElementById("fa-most-important").textContent = r.most_important_group || "--";
+        document.getElementById("fa-baseline").textContent = (r.baseline_accuracy * 100).toFixed(1) + "%";
+        document.getElementById("fa-n-groups").textContent = r.n_groups;
+        document.getElementById("fa-n-features").textContent = r.n_features_total;
+
+        var tbody = document.getElementById("fa-table-body");
+        tbody.innerHTML = "";
+        (r.ablation_results || []).forEach(function(ar) {
+            var dropColor = ar.accuracy_drop > 0.05 ? "text-danger fw-bold" : ar.accuracy_drop > 0.01 ? "text-warning" : "text-success";
+            tbody.innerHTML += '<tr><td>' + ar.importance_rank + '</td>' +
+                '<td>' + ar.group + '</td>' +
+                '<td>' + ar.n_features_removed + '</td>' +
+                '<td>' + (ar.accuracy_without * 100).toFixed(1) + '%</td>' +
+                '<td class="' + dropColor + '">' + (ar.accuracy_drop > 0 ? "-" : "") + (ar.accuracy_drop * 100).toFixed(1) + '%</td></tr>';
+        });
+
+        if (r.plot) {
+            document.getElementById("fa-plot-img").innerHTML = '<img src="' + r.plot + '" class="img-fluid">';
+        }
+
+        el.classList.remove("d-none");
+        showToast("Feature ablation: most important = " + r.most_important_group);
+    } catch (err) {
+        showToast("Feature ablation error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Hyperparameter Optimization ───────────────────
+
+async function runOptimizeModel() {
+    var nIter = parseInt(document.getElementById("opt-n-iter").value) || 20;
+    showLoading("Optimizing hyperparameters (" + nIter + " iterations)...");
+    try {
+        var clf = document.getElementById("classifier-select").value;
+        var r = await api("/api/analysis/optimize-model", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, source: currentSource, classifier: clf, n_iter: nIter })
+        }, 300);
+        var el = document.getElementById("opt-results");
+        if (!el) return;
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("opt-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        document.getElementById("opt-default").textContent = (r.default_accuracy * 100).toFixed(1) + "%";
+        document.getElementById("opt-best").textContent = (r.best_accuracy * 100).toFixed(1) + "%";
+        var impColor = r.improvement >= 0 ? "text-success" : "text-danger";
+        document.getElementById("opt-improvement").className = "metric-value " + impColor;
+        document.getElementById("opt-improvement").textContent = (r.improvement >= 0 ? "+" : "") + (r.improvement * 100).toFixed(1) + "%";
+        document.getElementById("opt-n-iter-val").textContent = r.n_iterations;
+
+        document.getElementById("opt-best-params").textContent = JSON.stringify(r.best_params, null, 2);
+
+        var tbody = document.getElementById("opt-table-body");
+        tbody.innerHTML = "";
+        (r.top_configurations || []).forEach(function(cfg) {
+            tbody.innerHTML += '<tr><td>' + cfg.rank + '</td>' +
+                '<td>' + (cfg.mean_score * 100).toFixed(1) + '%</td>' +
+                '<td>±' + (cfg.std_score * 100).toFixed(1) + '%</td>' +
+                '<td class="small">' + JSON.stringify(cfg.params) + '</td></tr>';
+        });
+
+        if (r.plot) {
+            document.getElementById("opt-plot-img").innerHTML = '<img src="' + r.plot + '" class="img-fluid">';
+        }
+
+        el.classList.remove("d-none");
+        showToast("Optimization: " + (r.improvement >= 0 ? "+" : "") + (r.improvement * 100).toFixed(1) + "% improvement");
+    } catch (err) {
+        showToast("Optimization error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 // ── Clustering ────────────────────────────────────
 
 async function runClustering() {

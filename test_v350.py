@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 through v3.15.0.
+"""Test suite for GeoStress AI v3.5.0 through v3.16.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -1094,10 +1094,72 @@ if rs.get("overall_score", 0) >= 80:
 elif rs.get("overall_score", 0) >= 60:
     check("Score>=60 means at least DEVELOPMENT", rs.get("readiness") in ("PRODUCTION", "PILOT", "DEVELOPMENT"))
 
+# ── [62] Quick Classify (No Plots) ───────────────────
+print("\n[62] Quick Classify (No Plots)")
+qc = api("POST", "/api/analysis/quick-classify", {"well": "3P", "source": "demo"}, timeout=60)
+check("Has well", qc.get("well") == "3P")
+check("Has classifier", isinstance(qc.get("classifier"), str))
+check("Has accuracy", isinstance(qc.get("accuracy"), (int, float)) and 0 <= qc["accuracy"] <= 1)
+check("Has f1", isinstance(qc.get("f1"), (int, float)))
+check("Has balanced_accuracy", isinstance(qc.get("balanced_accuracy"), (int, float)))
+check("Has per_class", isinstance(qc.get("per_class"), dict))
+check("Has confusion_matrix", isinstance(qc.get("confusion_matrix"), list))
+check("Has class_names", isinstance(qc.get("class_names"), list))
+check("Has cached flag", isinstance(qc.get("cached"), bool))
+check("Has stakeholder_brief", "headline" in qc.get("stakeholder_brief", {}))
+# Second call should be cached
+qc2 = api("POST", "/api/analysis/quick-classify", {"well": "3P", "source": "demo"}, timeout=10)
+check("Second call is cached", qc2.get("cached") == True)
+check("No plot in quick-classify", "plot" not in qc)
+
+# ── [63] Feature Ablation Study ──────────────────────
+print("\n[63] Feature Ablation Study")
+fa = api("POST", "/api/analysis/feature-ablation", {"well": "3P", "source": "demo"}, timeout=120)
+check("Has well", fa.get("well") == "3P")
+check("Has classifier", isinstance(fa.get("classifier"), str))
+check("Has n_samples", isinstance(fa.get("n_samples"), int) and fa["n_samples"] > 50)
+check("Has n_features_total", isinstance(fa.get("n_features_total"), int) and fa["n_features_total"] >= 3)
+check("Has n_groups", isinstance(fa.get("n_groups"), int) and fa["n_groups"] >= 2)
+check("Has baseline_accuracy", isinstance(fa.get("baseline_accuracy"), (int, float)) and 0 < fa["baseline_accuracy"] <= 1)
+check("Has baseline_balanced_accuracy", isinstance(fa.get("baseline_balanced_accuracy"), (int, float)))
+check("Has feature_groups dict", isinstance(fa.get("feature_groups"), dict))
+check("Has ablation_results list", isinstance(fa.get("ablation_results"), list) and len(fa["ablation_results"]) >= 2)
+ar = fa["ablation_results"][0]
+check("Result has group", isinstance(ar.get("group"), str))
+check("Result has n_features_removed", isinstance(ar.get("n_features_removed"), int))
+check("Result has accuracy_without", isinstance(ar.get("accuracy_without"), (int, float)))
+check("Result has accuracy_drop", isinstance(ar.get("accuracy_drop"), (int, float)))
+check("Result has importance_rank", ar.get("importance_rank") == 1)
+check("Has most_important_group", isinstance(fa.get("most_important_group"), str))
+check("Has plot", isinstance(fa.get("plot"), str) and fa["plot"].startswith("data:image"))
+check("Has stakeholder_brief", "headline" in fa.get("stakeholder_brief", {}))
+
+# ── [64] Hyperparameter Optimization ─────────────────
+print("\n[64] Hyperparameter Optimization")
+opt = api("POST", "/api/analysis/optimize-model", {"well": "3P", "source": "demo", "classifier": "random_forest", "n_iter": 10}, timeout=180)
+check("Has well", opt.get("well") == "3P")
+check("Has classifier", isinstance(opt.get("classifier"), str))
+check("Has n_samples", isinstance(opt.get("n_samples"), int))
+check("Has n_iterations", opt.get("n_iterations") == 10)
+check("Has default_accuracy", isinstance(opt.get("default_accuracy"), (int, float)) and 0 < opt["default_accuracy"] <= 1)
+check("Has default_std", isinstance(opt.get("default_std"), (int, float)))
+check("Has best_accuracy", isinstance(opt.get("best_accuracy"), (int, float)) and 0 < opt["best_accuracy"] <= 1)
+check("Has improvement", isinstance(opt.get("improvement"), (int, float)))
+check("Best >= default", opt.get("best_accuracy", 0) >= opt.get("default_accuracy", 1) - 0.05)
+check("Has best_params", isinstance(opt.get("best_params"), dict) and len(opt["best_params"]) >= 1)
+check("Has top_configurations", isinstance(opt.get("top_configurations"), list) and len(opt["top_configurations"]) >= 1)
+tc = opt["top_configurations"][0]
+check("Config has rank", isinstance(tc.get("rank"), int))
+check("Config has mean_score", isinstance(tc.get("mean_score"), (int, float)))
+check("Config has std_score", isinstance(tc.get("std_score"), (int, float)))
+check("Config has params", isinstance(tc.get("params"), dict))
+check("Has plot", isinstance(opt.get("plot"), str) and opt["plot"].startswith("data:image"))
+check("Has stakeholder_brief", "headline" in opt.get("stakeholder_brief", {}))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.15.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.16.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

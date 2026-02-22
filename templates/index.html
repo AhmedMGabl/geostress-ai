@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.15</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.16</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -1550,6 +1550,90 @@
                                         <table class="table table-sm table-hover mb-0">
                                             <thead class="table-light"><tr><th>Class</th><th>Count</th><th>Baseline Recall</th><th>Best Recall</th><th>Improvement</th></tr></thead>
                                             <tbody id="bc-minority-body"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Feature Ablation Study -->
+                    <div class="card border-warning mb-3">
+                        <div class="card-header bg-warning bg-opacity-10 py-2">
+                            <i class="bi bi-scissors"></i> <strong>Feature Ablation Study</strong>
+                            <small class="text-muted ms-2">Which features matter most?</small>
+                        </div>
+                        <div class="card-body py-2">
+                            <p class="text-muted small mb-2">
+                                Systematically removes feature groups to measure accuracy impact.
+                                Groups with large drops are critical; groups with minimal impact may be removed for simplicity.
+                            </p>
+                            <button class="btn btn-warning btn-sm" onclick="runFeatureAblation()">
+                                <i class="bi bi-scissors"></i> Run Ablation
+                            </button>
+                            <div id="fa-results" class="d-none mt-2">
+                                <div id="fa-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-2">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Most Critical</div><div class="metric-value" id="fa-most-important">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Baseline Acc</div><div class="metric-value" id="fa-baseline">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Feature Groups</div><div class="metric-value" id="fa-n-groups">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Total Features</div><div class="metric-value" id="fa-n-features">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-2" id="fa-plot-img"></div>
+                                <div class="card">
+                                    <div class="card-header py-1"><i class="bi bi-table"></i> Ablation Results (sorted by impact)</div>
+                                    <div class="card-body p-0">
+                                        <table class="table table-sm table-hover mb-0">
+                                            <thead class="table-light"><tr><th>Rank</th><th>Group</th><th># Features</th><th>Acc Without</th><th>Acc Drop</th></tr></thead>
+                                            <tbody id="fa-table-body"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Hyperparameter Optimization -->
+                    <div class="card border-primary mb-3">
+                        <div class="card-header bg-primary bg-opacity-10 py-2">
+                            <i class="bi bi-sliders2"></i> <strong>Hyperparameter Optimization</strong>
+                            <small class="text-muted ms-2">Find optimal model configuration</small>
+                        </div>
+                        <div class="card-body py-2">
+                            <p class="text-muted small mb-2">
+                                Tests multiple hyperparameter configurations via randomized search.
+                                Returns the best params and whether they improve over defaults.
+                            </p>
+                            <div class="d-flex gap-2 mb-2 align-items-center">
+                                <label class="form-label small mb-0">Iterations:</label>
+                                <select id="opt-n-iter" class="form-select form-select-sm" style="width:auto">
+                                    <option value="10">10 (fast)</option>
+                                    <option value="20" selected>20 (standard)</option>
+                                    <option value="50">50 (thorough)</option>
+                                </select>
+                                <button class="btn btn-primary btn-sm" onclick="runOptimizeModel()">
+                                    <i class="bi bi-sliders2"></i> Optimize
+                                </button>
+                            </div>
+                            <div id="opt-results" class="d-none mt-2">
+                                <div id="opt-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-2">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Default Acc</div><div class="metric-value" id="opt-default">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Acc</div><div class="metric-value" id="opt-best">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Improvement</div><div class="metric-value" id="opt-improvement">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Configs Tested</div><div class="metric-value" id="opt-n-iter-val">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-2" id="opt-plot-img"></div>
+                                <div class="card mb-2">
+                                    <div class="card-header py-1"><i class="bi bi-gear"></i> Best Parameters</div>
+                                    <div class="card-body py-2"><pre id="opt-best-params" class="mb-0 small"></pre></div>
+                                </div>
+                                <div class="card">
+                                    <div class="card-header py-1"><i class="bi bi-trophy"></i> Top 5 Configurations</div>
+                                    <div class="card-body p-0">
+                                        <table class="table table-sm table-hover mb-0">
+                                            <thead class="table-light"><tr><th>Rank</th><th>Score</th><th>Std</th><th>Parameters</th></tr></thead>
+                                            <tbody id="opt-table-body"></tbody>
                                         </table>
                                     </div>
                                 </div>

@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.15.0 - Balanced Classification + Readiness Scorecard)."""
+"""GeoStress AI - FastAPI Web Application (v3.16.0 - Speed + Feature Ablation + Hyperparameter Optimization)."""
 
 import os
 import io
@@ -124,6 +124,10 @@ _wizard_cache = BoundedCache(20)
 _comprehensive_cache = BoundedCache(10)
 _overview_cache = BoundedCache(20)
 _inversion_response_cache = BoundedCache(30)
+_balanced_classify_cache = BoundedCache(10)
+_readiness_cache = BoundedCache(10)
+_feature_ablation_cache = BoundedCache(10)
+_optimize_cache = BoundedCache(10)
 
 # Pre-computed startup snapshot for instant page load
 _startup_snapshot = {}
@@ -964,7 +968,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.15.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.16.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -11169,8 +11173,13 @@ async def balanced_classify(request: Request):
             },
         }
 
+    cache_key = f"{well}:{classifier}:{source}"
+    if cache_key in _balanced_classify_cache:
+        return _balanced_classify_cache[cache_key]
     result = await asyncio.to_thread(_compute)
-    return _sanitize_for_json(result)
+    result = _sanitize_for_json(result)
+    _balanced_classify_cache[cache_key] = result
+    return result
 
 
 # ── Industrial Readiness Scorecard ──────────────────────────────────────
@@ -11442,8 +11451,478 @@ async def readiness_scorecard(request: Request):
             },
         }
 
+    cache_key = f"readiness:{source}"
+    if cache_key in _readiness_cache:
+        return _readiness_cache[cache_key]
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _readiness_cache[cache_key] = result
+    return result
+
+
+# ── Quick Classify (No Plots, Cached) ──────────────────────────────────
+
+@app.post("/api/analysis/quick-classify")
+async def quick_classify(request: Request):
+    """Ultra-fast classification returning only metrics (no plots).
+
+    Uses pre-computed features when available. Returns accuracy, F1,
+    per-class metrics, and confusion matrix — suitable for polling
+    or dashboards that need rapid updates without image generation.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    classifier = body.get("classifier", "random_forest")
+    _validate_classifier(classifier)
+
+    cache_key = f"{well}:{classifier}:{source}"
+    if cache_key in _classify_cache:
+        clf_result = _classify_cache[cache_key]
+        return _sanitize_for_json({
+            "well": well,
+            "classifier": classifier,
+            "accuracy": clf_result.get("accuracy"),
+            "f1": clf_result.get("f1"),
+            "balanced_accuracy": clf_result.get("balanced_accuracy"),
+            "per_class": clf_result.get("per_class"),
+            "confusion_matrix": clf_result.get("confusion_matrix"),
+            "class_names": clf_result.get("class_names"),
+            "cached": True,
+            "stakeholder_brief": clf_result.get("stakeholder_brief"),
+        })
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.metrics import accuracy_score, f1_score, balanced_accuracy_score, confusion_matrix
+        from sklearn.base import clone
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        features = engineer_enhanced_features(df_well)
+        labels = df_well[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        class_names = le.classes_.tolist()
+
+        all_models = _get_models()
+        clf_name = classifier if classifier in all_models else "random_forest"
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        model = clone(all_models[clf_name])
+        preds = cross_val_predict(model, X, y, cv=cv)
+        acc = float(accuracy_score(y, preds))
+        f1 = float(f1_score(y, preds, average="weighted", zero_division=0))
+        bal_acc = float(balanced_accuracy_score(y, preds))
+        cm = confusion_matrix(y, preds).tolist()
+
+        from sklearn.metrics import classification_report
+        report = classification_report(y, preds, target_names=class_names, output_dict=True, zero_division=0)
+        per_class = {cn: round(report.get(cn, {}).get("recall", 0), 3) for cn in class_names}
+
+        result = {
+            "well": well,
+            "classifier": clf_name,
+            "accuracy": round(acc, 4),
+            "f1": round(f1, 4),
+            "balanced_accuracy": round(bal_acc, 4),
+            "per_class": per_class,
+            "confusion_matrix": cm,
+            "class_names": class_names,
+            "n_samples": len(y),
+            "cached": False,
+            "stakeholder_brief": {
+                "headline": f"Quick classify: {clf_name} {acc:.1%} accuracy on {well}",
+                "risk_level": "GREEN" if acc >= 0.85 else ("AMBER" if acc >= 0.7 else "RED"),
+                "confidence_sentence": f"CV accuracy {acc:.1%}, balanced {bal_acc:.1%}, F1 {f1:.1%} on {len(y)} samples.",
+            },
+        }
+        _classify_cache[cache_key] = result
+        return result
+
     result = await asyncio.to_thread(_compute)
     return _sanitize_for_json(result)
+
+
+# ── Feature Ablation Study ─────────────────────────────────────────────
+
+@app.post("/api/analysis/feature-ablation")
+async def feature_ablation(request: Request):
+    """Ablation study: systematically remove feature groups to measure impact.
+
+    Tests which feature groups matter most for classification accuracy.
+    Feature groups: orientation (sin/cos azimuth/dip), depth, stress-derived
+    (pore pressure, overburden, temperature), density-based, interaction terms.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    classifier = body.get("classifier", "random_forest")
+    _validate_classifier(classifier)
+
+    cache_key = f"{well}:{classifier}:{source}"
+    if cache_key in _feature_ablation_cache:
+        return _feature_ablation_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+        from sklearn.base import clone
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        features = engineer_enhanced_features(df_well)
+        labels = df_well[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        feature_names = list(features.columns)
+
+        # Group features by type
+        groups = {}
+        for fn in feature_names:
+            fl = fn.lower()
+            if any(x in fl for x in ("sin_az", "cos_az", "azimuth")):
+                groups.setdefault("azimuth", []).append(fn)
+            elif any(x in fl for x in ("sin_dip", "cos_dip", "dip")):
+                groups.setdefault("dip", []).append(fn)
+            elif "depth" in fl:
+                groups.setdefault("depth", []).append(fn)
+            elif any(x in fl for x in ("pore", "pp_", "overburden", "sv_", "temp", "geotherm")):
+                groups.setdefault("stress_derived", []).append(fn)
+            elif any(x in fl for x in ("density", "count", "fracture_density")):
+                groups.setdefault("density", []).append(fn)
+            elif any(x in fl for x in ("fabric", "strength", "interaction", "x_")):
+                groups.setdefault("interaction", []).append(fn)
+            else:
+                groups.setdefault("other", []).append(fn)
+
+        all_models = _get_models()
+        clf_name = classifier if classifier in all_models else "random_forest"
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        # Baseline: all features
+        scaler = StandardScaler()
+        X_all = scaler.fit_transform(features.values)
+        model = clone(all_models[clf_name])
+        preds_all = cross_val_predict(model, X_all, y, cv=cv)
+        baseline_acc = float(accuracy_score(y, preds_all))
+        baseline_bal = float(balanced_accuracy_score(y, preds_all))
+
+        # Ablation: remove each group one at a time
+        ablation_results = []
+        for group_name, group_features in sorted(groups.items()):
+            remaining = [fn for fn in feature_names if fn not in group_features]
+            if len(remaining) == 0:
+                continue
+            X_abl = scaler.fit_transform(features[remaining].values)
+            model_abl = clone(all_models[clf_name])
+            preds_abl = cross_val_predict(model_abl, X_abl, y, cv=cv)
+            abl_acc = float(accuracy_score(y, preds_abl))
+            abl_bal = float(balanced_accuracy_score(y, preds_abl))
+            impact = baseline_acc - abl_acc
+            ablation_results.append({
+                "group": group_name,
+                "features_removed": group_features,
+                "n_features_removed": len(group_features),
+                "accuracy_without": round(abl_acc, 4),
+                "balanced_accuracy_without": round(abl_bal, 4),
+                "accuracy_drop": round(impact, 4),
+                "importance_rank": 0,
+            })
+
+        # Rank by impact
+        ablation_results.sort(key=lambda x: x["accuracy_drop"], reverse=True)
+        for i, r in enumerate(ablation_results):
+            r["importance_rank"] = i + 1
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Impact bar chart
+            ax1 = axes[0]
+            gnames = [r["group"] for r in ablation_results]
+            drops = [r["accuracy_drop"] for r in ablation_results]
+            colors = ["#dc3545" if d > 0.05 else "#ffc107" if d > 0.01 else "#28a745" for d in drops]
+            bars = ax1.barh(range(len(gnames)), drops, color=colors)
+            ax1.set_yticks(range(len(gnames)))
+            ax1.set_yticklabels(gnames, fontsize=9)
+            ax1.set_xlabel("Accuracy Drop When Removed")
+            ax1.set_title(f"Feature Group Importance ({well})")
+            ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+            for bar, val in zip(bars, drops):
+                ax1.text(val + 0.002, bar.get_y() + bar.get_height()/2, f"{val:+.1%}", va="center", fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # Accuracy with/without each group
+            ax2 = axes[1]
+            accs_without = [r["accuracy_without"] for r in ablation_results]
+            x = np.arange(len(gnames))
+            ax2.bar(x - 0.2, [baseline_acc]*len(gnames), 0.35, label="All features", color="#2E86AB", alpha=0.7)
+            ax2.bar(x + 0.2, accs_without, 0.35, label="Without group", color="#dc3545", alpha=0.7)
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(gnames, fontsize=8, rotation=45, ha="right")
+            ax2.set_ylabel("Accuracy")
+            ax2.set_title("Accuracy: All vs Without Each Group")
+            ax2.legend(fontsize=8)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        most_important = ablation_results[0]["group"] if ablation_results else "N/A"
+        most_drop = ablation_results[0]["accuracy_drop"] if ablation_results else 0
+
+        return {
+            "well": well,
+            "classifier": clf_name,
+            "n_samples": len(y),
+            "n_features_total": len(feature_names),
+            "n_groups": len(groups),
+            "baseline_accuracy": round(baseline_acc, 4),
+            "baseline_balanced_accuracy": round(baseline_bal, 4),
+            "feature_groups": {gn: gf for gn, gf in sorted(groups.items())},
+            "ablation_results": ablation_results,
+            "most_important_group": most_important,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Feature ablation: '{most_important}' is most critical (−{most_drop:.1%} accuracy when removed)",
+                "risk_level": "GREEN" if most_drop < 0.05 else ("AMBER" if most_drop < 0.15 else "RED"),
+                "confidence_sentence": (
+                    f"Tested {len(groups)} feature groups on {well} ({len(y)} samples). "
+                    f"Baseline accuracy: {baseline_acc:.1%}. "
+                    f"Most impactful group: '{most_important}' (accuracy drops {most_drop:.1%} without it)."
+                ),
+                "action": f"Ensure '{most_important}' features are always available. "
+                          f"Groups with <1% impact may be candidates for removal to simplify the model.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _feature_ablation_cache[cache_key] = result
+    return result
+
+
+# ── Hyperparameter Optimization ────────────────────────────────────────
+
+@app.post("/api/analysis/optimize-model")
+async def optimize_model(request: Request):
+    """Find optimal hyperparameters using randomized search.
+
+    Tests multiple hyperparameter configurations for the given classifier
+    and returns the best-performing configuration with CV scores.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    classifier = body.get("classifier", "random_forest")
+    n_iter = min(body.get("n_iter", 20), 50)  # cap at 50 iterations
+    _validate_classifier(classifier)
+
+    cache_key = f"{well}:{classifier}:{source}:{n_iter}"
+    if cache_key in _optimize_cache:
+        return _optimize_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
+        from sklearn.metrics import accuracy_score, f1_score, balanced_accuracy_score
+        from sklearn.base import clone
+        from scipy.stats import randint, uniform
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        features = engineer_enhanced_features(df_well)
+        labels = df_well[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+
+        all_models = _get_models()
+        clf_name = classifier if classifier in all_models else "random_forest"
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        # Define parameter spaces per classifier
+        param_spaces = {
+            "random_forest": {
+                "n_estimators": randint(50, 500),
+                "max_depth": [None, 5, 10, 15, 20, 30],
+                "min_samples_split": randint(2, 20),
+                "min_samples_leaf": randint(1, 10),
+                "max_features": ["sqrt", "log2", None],
+                "class_weight": [None, "balanced"],
+            },
+            "gradient_boosting": {
+                "n_estimators": randint(50, 300),
+                "max_depth": randint(2, 10),
+                "learning_rate": uniform(0.01, 0.3),
+                "subsample": uniform(0.6, 0.4),
+                "min_samples_split": randint(2, 15),
+            },
+            "xgboost": {
+                "n_estimators": randint(50, 300),
+                "max_depth": randint(2, 10),
+                "learning_rate": uniform(0.01, 0.3),
+                "subsample": uniform(0.6, 0.4),
+                "colsample_bytree": uniform(0.5, 0.5),
+                "reg_alpha": uniform(0, 1),
+                "reg_lambda": uniform(0.5, 2),
+            },
+            "lightgbm": {
+                "n_estimators": randint(50, 300),
+                "max_depth": [3, 5, 7, 10, -1],
+                "learning_rate": uniform(0.01, 0.3),
+                "num_leaves": randint(10, 60),
+                "subsample": uniform(0.6, 0.4),
+            },
+            "catboost": {
+                "iterations": randint(50, 300),
+                "depth": randint(3, 10),
+                "learning_rate": uniform(0.01, 0.3),
+            },
+            "svm": {
+                "C": uniform(0.1, 10),
+                "kernel": ["rbf", "poly"],
+                "gamma": ["scale", "auto"],
+            },
+            "mlp": {
+                "hidden_layer_sizes": [(64,), (128,), (64, 32), (128, 64), (256,)],
+                "alpha": uniform(0.0001, 0.01),
+                "learning_rate_init": uniform(0.001, 0.01),
+            },
+        }
+
+        # Default baseline
+        base_model = clone(all_models[clf_name])
+        from sklearn.model_selection import cross_val_score
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            base_scores = cross_val_score(base_model, X, y, cv=cv, scoring="accuracy")
+        base_acc = float(np.mean(base_scores))
+        base_std = float(np.std(base_scores))
+
+        # Randomized search
+        param_space = param_spaces.get(clf_name, {"n_estimators": randint(50, 300)})
+        search_model = clone(all_models[clf_name])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            search = RandomizedSearchCV(
+                search_model, param_space, n_iter=n_iter, cv=cv,
+                scoring="accuracy", random_state=42, n_jobs=1, refit=True,
+            )
+            search.fit(X, y)
+
+        best_params = {k: (int(v) if isinstance(v, (np.integer,)) else float(v) if isinstance(v, (np.floating,)) else v)
+                       for k, v in search.best_params_.items()}
+        best_acc = float(search.best_score_)
+        improvement = best_acc - base_acc
+
+        # Top 5 configurations
+        results_df_items = []
+        cv_results = search.cv_results_
+        indices = np.argsort(cv_results["mean_test_score"])[::-1][:5]
+        for idx in indices:
+            params = {k: (int(v) if isinstance(v, (np.integer,)) else float(v) if isinstance(v, (np.floating,)) else v)
+                      for k, v in cv_results["params"][idx].items()}
+            results_df_items.append({
+                "rank": int(cv_results["rank_test_score"][idx]),
+                "mean_score": round(float(cv_results["mean_test_score"][idx]), 4),
+                "std_score": round(float(cv_results["std_test_score"][idx]), 4),
+                "params": params,
+            })
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Score distribution
+            ax1 = axes[0]
+            all_scores = cv_results["mean_test_score"]
+            ax1.hist(all_scores, bins=min(20, n_iter), color="#2E86AB", alpha=0.7, edgecolor="white")
+            ax1.axvline(base_acc, color="#dc3545", linestyle="--", linewidth=2, label=f"Default ({base_acc:.1%})")
+            ax1.axvline(best_acc, color="#28a745", linestyle="--", linewidth=2, label=f"Best ({best_acc:.1%})")
+            ax1.set_xlabel("CV Accuracy")
+            ax1.set_ylabel("Count")
+            ax1.set_title(f"Hyperparameter Search ({n_iter} configs)")
+            ax1.legend()
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # Improvement comparison
+            ax2 = axes[1]
+            bars = ax2.bar(["Default", "Optimized"], [base_acc, best_acc],
+                          color=["#6c757d", "#28a745" if improvement > 0 else "#dc3545"])
+            ax2.set_ylabel("CV Accuracy")
+            ax2.set_title(f"Default vs Optimized ({clf_name})")
+            ax2.set_ylim(0, 1)
+            for bar, val in zip(bars, [base_acc, best_acc]):
+                ax2.text(bar.get_x() + bar.get_width()/2, val + 0.02, f"{val:.1%}", ha="center", fontsize=11)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "classifier": clf_name,
+            "n_samples": len(y),
+            "n_iterations": n_iter,
+            "default_accuracy": round(base_acc, 4),
+            "default_std": round(base_std, 4),
+            "best_accuracy": round(best_acc, 4),
+            "improvement": round(improvement, 4),
+            "best_params": best_params,
+            "top_configurations": results_df_items,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Hyperparameter optimization: {best_acc:.1%} ({'+' if improvement >= 0 else ''}{improvement:.1%} vs default)",
+                "risk_level": "GREEN" if best_acc >= 0.85 else ("AMBER" if best_acc >= 0.7 else "RED"),
+                "confidence_sentence": (
+                    f"Tested {n_iter} hyperparameter configurations for {clf_name} on {well}. "
+                    f"Default: {base_acc:.1%} ± {base_std:.1%}. Best: {best_acc:.1%}. "
+                    + (f"Improvement: +{improvement:.1%}." if improvement > 0 else "No improvement found — default params are near-optimal.")
+                ),
+                "action": (f"Apply optimized params for +{improvement:.1%} accuracy: {best_params}"
+                          if improvement > 0.005 else
+                          "Keep default parameters — optimization shows minimal gain."),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _optimize_cache[cache_key] = result
+    return result
 
 
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
@@ -12461,6 +12940,10 @@ async def system_health():
         "wizard_cache": len(_wizard_cache),
         "overview_cache": len(_overview_cache),
         "inversion_response_cache": len(_inversion_response_cache),
+        "balanced_classify_cache": len(_balanced_classify_cache),
+        "readiness_cache": len(_readiness_cache),
+        "feature_ablation_cache": len(_feature_ablation_cache),
+        "optimize_cache": len(_optimize_cache),
     }
     total_cached = sum(cache_info.values())
 
@@ -12533,7 +13016,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.15.0",
+        "app_version": "3.16.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else
