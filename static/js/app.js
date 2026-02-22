@@ -247,12 +247,79 @@ async function runExecutiveSummary() {
         });
 
         showToast("Executive summary: " + r.overall_risk);
+
+        // Also load calibration status
+        loadCalibrationStatus();
     } catch (err) {
         showToast("Executive summary error: " + err.message, "Error");
     } finally {
         hideLoading();
     }
 }
+
+
+async function loadCalibrationStatus() {
+    try {
+        var r = await api("/api/calibration/measurements?well=" + (currentWell || "3P"));
+        var measurements = r.measurements || [];
+        var calDiv = document.getElementById("exec-calibration");
+        var calBody = document.getElementById("exec-cal-body");
+        var calCard = document.getElementById("exec-cal-card");
+
+        if (measurements.length === 0) {
+            calDiv.classList.remove("d-none");
+            calCard.className = "card border-warning";
+            calBody.innerHTML =
+                '<div class="d-flex align-items-center">' +
+                '<i class="bi bi-exclamation-triangle text-warning fs-4 me-3"></i>' +
+                '<div>' +
+                '<strong>Not Calibrated</strong> — No field measurements recorded for well ' + (currentWell || "3P") + '.' +
+                '<br><small class="text-muted">Add LOT, XLOT, or minifrac test results in the Calibration tab to validate model predictions against ground truth.</small>' +
+                '</div>' +
+                '<button class="btn btn-outline-warning btn-sm ms-auto" onclick="switchTab(\'calibration\')">Go to Calibration</button>' +
+                '</div>';
+            return;
+        }
+
+        // Run validation
+        var v = await api("/api/calibration/validate", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                well: currentWell || "3P",
+                source: currentSource,
+                depth_m: parseFloat(document.getElementById("depth-input").value) || 3000,
+                pp_mpa: 30
+            })
+        });
+
+        calDiv.classList.remove("d-none");
+        var scoreColor = v.calibration_score >= 80 ? "success" :
+                        v.calibration_score >= 60 ? "info" :
+                        v.calibration_score >= 40 ? "warning" : "danger";
+        calCard.className = "card border-" + scoreColor;
+
+        calBody.innerHTML =
+            '<div class="d-flex align-items-center">' +
+            '<div class="me-4 text-center">' +
+            '<div class="fs-2 fw-bold text-' + scoreColor + '">' + v.calibration_score + '</div>' +
+            '<small class="text-muted">out of 100</small>' +
+            '</div>' +
+            '<div class="flex-grow-1">' +
+            '<strong class="text-' + scoreColor + '">' + v.overall_rating + '</strong>' +
+            ' — ' + v.n_measurements + ' field measurement(s), ' +
+            'avg stress error: ' + v.avg_stress_error_pct + '%' +
+            (v.avg_azimuth_error_deg ? ', azimuth error: ' + v.avg_azimuth_error_deg + '\u00B0' : '') +
+            '<br><small class="text-muted">' + (v.recommendations[0] || '') + '</small>' +
+            '</div>' +
+            '<button class="btn btn-outline-' + scoreColor + ' btn-sm" onclick="switchTab(\'calibration\')">Details</button>' +
+            '</div>';
+
+    } catch (err) {
+        // Silently ignore — calibration status is informational
+    }
+}
+
 
 async function runSufficiencyCheck() {
     showLoading("Checking data sufficiency...");
