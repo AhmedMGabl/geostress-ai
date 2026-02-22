@@ -723,6 +723,88 @@
                         </div>
                     </div>
 
+                    <!-- Depth-Stratified Cross-Validation -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-layers"></i> Depth-Stratified Validation</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runDepthStratCV()">
+                                <i class="bi bi-play-fill"></i> Validate
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Tests model on unseen depth zones (leave-one-zone-out). The most realistic evaluation for oil industry deployment — random splits overestimate performance.</p>
+                            <div id="dscv-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Overall Accuracy</div><div class="metric-value" id="dscv-acc">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">vs Random Baseline</div><div class="metric-value" id="dscv-baseline">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Deployment Risk</div><div class="metric-value" id="dscv-risk">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Worst Zone</div><div class="metric-value" id="dscv-worst">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="dscv-brief"></div>
+                                <h6>Performance by Depth Zone</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Zone</th><th>Depth Range</th><th>Accuracy</th><th>F1</th><th>Random</th><th>Gap</th><th>Grade</th></tr></thead><tbody id="dscv-zone-body"></tbody></table>
+                                </div>
+                                <div class="text-center"><img id="dscv-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Probability Calibration -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-thermometer-half"></i> Probability Calibration</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runCalibProb()">
+                                <i class="bi bi-play-fill"></i> Calibrate
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Temperature scaling ensures "80% confident" actually means correct 80% of the time. Reports ECE (Expected Calibration Error) before and after calibration.</p>
+                            <div id="tcal-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Temperature</div><div class="metric-value" id="tcal-temp">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">ECE Before</div><div class="metric-value" id="tcal-before">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">ECE After</div><div class="metric-value" id="tcal-after">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Grade</div><div class="metric-value" id="tcal-grade">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="tcal-brief"></div>
+                                <h6>Per-Class Calibration</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Class</th><th>Before Conf</th><th>After Conf</th><th>Actual Freq</th><th>Before Gap</th><th>After Gap</th></tr></thead><tbody id="tcal-class-body"></tbody></table>
+                                </div>
+                                <div class="text-center"><img id="tcal-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Feature Interactions -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-diagram-3"></i> Feature Interaction Discovery</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runFeatInteract()">
+                                <i class="bi bi-play-fill"></i> Discover
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Beyond single-feature importance: discovers which feature PAIRS synergize or are redundant. In geostress, Dip x Azimuth interactions are physically meaningful.</p>
+                            <div id="fi-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Synergistic</div><div class="metric-value" id="fi-syn">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Redundant</div><div class="metric-value" id="fi-red">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Independent</div><div class="metric-value" id="fi-ind">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Strongest</div><div class="metric-value" id="fi-strong">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="fi-brief"></div>
+                                <h6>Top Feature Pair Interactions</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Feature A</th><th>Feature B</th><th>Strength</th><th>Type</th><th>Joint Drop</th></tr></thead><tbody id="fi-table-body"></tbody></table>
+                                </div>
+                                <div id="fi-notes" class="small text-muted mb-2"></div>
+                                <div class="text-center"><img id="fi-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

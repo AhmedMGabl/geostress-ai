@@ -9634,3 +9634,110 @@ async function runDomainAdapt() {
         hideLoading();
     }
 }
+
+// ── Depth-Stratified Cross-Validation ─────────────────────────────────
+async function runDepthStratCV() {
+    showLoading('Running depth-stratified validation...');
+    var results = document.getElementById('dscv-results');
+    try {
+        var r = await apiPost('/api/analysis/depth-stratified-cv', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">' + r.error + '</div>'; return; }
+        document.getElementById('dscv-acc').textContent = (r.overall_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('dscv-baseline').textContent = (r.random_baseline_avg * 100).toFixed(1) + '%';
+        var riskBadge = r.deployment_risk === 'LOW' ? 'success' : (r.deployment_risk === 'MEDIUM' ? 'warning' : 'danger');
+        document.getElementById('dscv-risk').innerHTML = '<span class="badge bg-' + riskBadge + '">' + r.deployment_risk + '</span>';
+        document.getElementById('dscv-worst').textContent = 'Z' + r.worst_zone.zone_id + ' (' + (r.worst_zone.accuracy * 100).toFixed(0) + '%)';
+        if (r.stakeholder_brief) {
+            document.getElementById('dscv-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var body = document.getElementById('dscv-zone-body');
+        body.innerHTML = '';
+        if (r.zones) {
+            for (var i = 0; i < r.zones.length; i++) {
+                var z = r.zones[i];
+                var gc = z.grade === 'A' ? 'success' : (z.grade === 'B' ? 'info' : (z.grade === 'C' ? 'warning' : 'danger'));
+                body.innerHTML += '<tr><td>Z' + z.zone_id + '</td><td>' + z.depth_range_m[0].toFixed(0) + '-' + z.depth_range_m[1].toFixed(0) + 'm</td><td>' + (z.accuracy * 100).toFixed(1) + '%</td><td>' + (z.f1_weighted * 100).toFixed(1) + '%</td><td>' + (z.random_baseline * 100).toFixed(1) + '%</td><td>' + (z.degradation_vs_random * 100).toFixed(1) + '%</td><td><span class="badge bg-' + gc + '">' + z.grade + '</span></td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('dscv-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Probability Calibration ───────────────────────────────────────────
+async function runCalibProb() {
+    showLoading('Running probability calibration...');
+    var results = document.getElementById('tcal-results');
+    try {
+        var r = await apiPost('/api/analysis/calibrate-probabilities', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('tcal-temp').textContent = 'T=' + r.temperature.toFixed(2);
+        document.getElementById('tcal-before').textContent = r.ece_before.toFixed(4);
+        document.getElementById('tcal-after').textContent = r.ece_after.toFixed(4);
+        var gc = (r.grade === 'A' || r.grade === 'B') ? 'success' : (r.grade === 'C' ? 'warning' : 'danger');
+        document.getElementById('tcal-grade').innerHTML = '<span class="badge bg-' + gc + '">' + r.grade + '</span>';
+        if (r.stakeholder_brief) {
+            document.getElementById('tcal-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var body = document.getElementById('tcal-class-body');
+        body.innerHTML = '';
+        if (r.per_class) {
+            for (var i = 0; i < r.per_class.length; i++) {
+                var c = r.per_class[i];
+                body.innerHTML += '<tr><td>' + c['class'] + '</td><td>' + c.before_avg_confidence.toFixed(3) + '</td><td>' + c.after_avg_confidence.toFixed(3) + '</td><td>' + c.actual_frequency.toFixed(3) + '</td><td>' + c.before_gap.toFixed(3) + '</td><td>' + c.after_gap.toFixed(3) + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('tcal-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Feature Interaction Discovery ─────────────────────────────────────
+async function runFeatInteract() {
+    showLoading('Discovering feature interactions...');
+    var results = document.getElementById('fi-results');
+    try {
+        var r = await apiPost('/api/analysis/feature-interactions', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('fi-syn').textContent = r.n_synergistic;
+        document.getElementById('fi-red').textContent = r.n_redundant;
+        document.getElementById('fi-ind').textContent = r.n_independent;
+        if (r.strongest_interaction) {
+            document.getElementById('fi-strong').textContent = r.strongest_interaction.feature_a.substring(0,8) + ' x ' + r.strongest_interaction.feature_b.substring(0,8);
+        }
+        if (r.stakeholder_brief) {
+            document.getElementById('fi-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence;
+        }
+        var body = document.getElementById('fi-table-body');
+        body.innerHTML = '';
+        if (r.interactions) {
+            for (var i = 0; i < r.interactions.length; i++) {
+                var inter = r.interactions[i];
+                var tc = inter.type === 'synergistic' ? 'success' : (inter.type === 'redundant' ? 'danger' : 'secondary');
+                body.innerHTML += '<tr><td>' + inter.feature_a + '</td><td>' + inter.feature_b + '</td><td>' + inter.interaction_strength.toFixed(4) + '</td><td><span class="badge bg-' + tc + '">' + inter.type + '</span></td><td>' + inter.joint_drop.toFixed(4) + '</td></tr>';
+            }
+        }
+        var notesDiv = document.getElementById('fi-notes');
+        notesDiv.innerHTML = '';
+        if (r.physical_notes) {
+            for (var i = 0; i < r.physical_notes.length; i++) {
+                notesDiv.innerHTML += '<div><i class="bi bi-lightbulb"></i> ' + r.physical_notes[i] + '</div>';
+            }
+        }
+        if (r.plot) document.getElementById('fi-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

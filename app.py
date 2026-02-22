@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.21.0 - Pore Pressure + Hetero-Ensemble + Anomaly Detection)."""
+"""GeoStress AI - FastAPI Web Application (v3.22.0 - Depth Validation + Probability Calibration + Feature Interactions)."""
 
 import os
 import io
@@ -1001,7 +1001,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.21.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.22.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -13998,6 +13998,726 @@ async def domain_adapt_wells(request: Request):
     return result
 
 
+# ── Depth-Stratified Cross-Validation ──────────────────────────────────
+
+_depth_strat_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/depth-stratified-cv")
+async def depth_stratified_cv(request: Request):
+    """Evaluate model generalization to unseen depth zones.
+
+    Instead of random train/test splits, partitions data by depth intervals.
+    Trains on some depth zones, tests on others — simulating real deployment
+    where the model encounters new borehole intervals it hasn't seen.
+    This is the MOST REALISTIC evaluation for oil-industry deployment.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_zones = int(body.get("n_zones", 5))
+
+    if n_zones < 2 or n_zones > 20:
+        raise HTTPException(400, "n_zones must be between 2 and 20")
+
+    cache_key = f"depth_strat:{well}:{source}:{n_zones}"
+    if cache_key in _depth_strat_cache:
+        return _depth_strat_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.base import clone
+        from sklearn.metrics import accuracy_score, f1_score, balanced_accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+
+        if n < 20:
+            return {"error": "Not enough data for depth-stratified CV", "n_samples": n}
+
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.arange(n, dtype=float)
+        depth_min, depth_max = float(depths.min()), float(depths.max())
+
+        # Create depth zones using quantiles for equal-sized bins
+        zone_edges = np.quantile(depths, np.linspace(0, 1, n_zones + 1))
+        zone_labels = np.digitize(depths, zone_edges[1:-1])  # 0..n_zones-1
+
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+
+        # Leave-one-zone-out CV
+        zone_results = []
+        all_true = []
+        all_pred = []
+        random_acc_all = []
+
+        for zone_id in range(n_zones):
+            test_mask = zone_labels == zone_id
+            train_mask = ~test_mask
+            n_train = int(train_mask.sum())
+            n_test = int(test_mask.sum())
+            if n_test < 2 or n_train < 5:
+                continue
+
+            X_tr, y_tr = X[train_mask], y[train_mask]
+            X_te, y_te = X[test_mask], y[test_mask]
+
+            zone_min = float(depths[test_mask].min())
+            zone_max = float(depths[test_mask].max())
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m = clone(model)
+                m.fit(X_tr, y_tr)
+                preds = m.predict(X_te)
+                proba = m.predict_proba(X_te) if hasattr(m, "predict_proba") else None
+
+            acc = float(accuracy_score(y_te, preds))
+            f1 = float(f1_score(y_te, preds, average="weighted", zero_division=0))
+            bal_acc = float(balanced_accuracy_score(y_te, preds))
+
+            # Random split baseline accuracy for this zone (same sizes)
+            random_accs = []
+            for seed in range(5):
+                rng = np.random.RandomState(seed + zone_id * 10)
+                rand_idx = rng.permutation(n)
+                r_tr, r_te = rand_idx[:n_train], rand_idx[n_train:n_train + n_test]
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    rm = clone(model)
+                    rm.fit(X[r_tr], y[r_tr])
+                    random_accs.append(float(accuracy_score(y[r_te], rm.predict(X[r_te]))))
+            random_baseline = float(np.mean(random_accs))
+            random_acc_all.append(random_baseline)
+
+            # Max confidence for test predictions
+            max_conf = float(np.max(proba, axis=1).mean()) if proba is not None else None
+
+            degradation = random_baseline - acc if random_baseline > 0 else 0
+
+            all_true.extend(y_te.tolist())
+            all_pred.extend(preds.tolist())
+
+            zone_results.append({
+                "zone_id": zone_id,
+                "depth_range_m": [round(zone_min, 1), round(zone_max, 1)],
+                "n_train": n_train, "n_test": n_test,
+                "accuracy": round(acc, 4),
+                "f1_weighted": round(f1, 4),
+                "balanced_accuracy": round(bal_acc, 4),
+                "random_baseline": round(random_baseline, 4),
+                "degradation_vs_random": round(degradation, 4),
+                "avg_confidence": round(max_conf, 3) if max_conf else None,
+                "grade": "A" if acc >= 0.8 else ("B" if acc >= 0.6 else ("C" if acc >= 0.4 else ("D" if acc >= 0.2 else "F"))),
+            })
+
+        if not zone_results:
+            return {"error": "Insufficient data in depth zones", "n_samples": n}
+
+        overall_acc = float(accuracy_score(all_true, all_pred))
+        overall_f1 = float(f1_score(all_true, all_pred, average="weighted", zero_division=0))
+        avg_random = float(np.mean(random_acc_all)) if random_acc_all else 0
+        overall_degradation = avg_random - overall_acc
+
+        n_good = sum(1 for z in zone_results if z["grade"] in ("A", "B"))
+        n_bad = sum(1 for z in zone_results if z["grade"] in ("D", "F"))
+        worst_zone = min(zone_results, key=lambda z: z["accuracy"])
+        best_zone = max(zone_results, key=lambda z: z["accuracy"])
+        consistency = float(np.std([z["accuracy"] for z in zone_results]))
+
+        if overall_degradation > 0.15:
+            deployment_risk = "HIGH"
+        elif overall_degradation > 0.05:
+            deployment_risk = "MEDIUM"
+        else:
+            deployment_risk = "LOW"
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # 1. Accuracy by depth zone
+            ax1 = axes[0]
+            zone_ids = [z["zone_id"] for z in zone_results]
+            accs = [z["accuracy"] for z in zone_results]
+            baselines = [z["random_baseline"] for z in zone_results]
+            x = np.arange(len(zone_ids))
+            ax1.bar(x - 0.15, accs, 0.3, label="Depth-stratified", color="#4a90d9")
+            ax1.bar(x + 0.15, baselines, 0.3, label="Random split", color="#aaa")
+            ax1.set_xlabel("Depth Zone")
+            ax1.set_ylabel("Accuracy")
+            ax1.set_title("Accuracy by Depth Zone (Leave-One-Out)")
+            ax1.set_xticks(x)
+            ax1.set_xticklabels([f"Z{i}" for i in zone_ids])
+            ax1.legend(fontsize=8)
+            ax1.axhline(y=0.5, color="red", linestyle="--", alpha=0.3)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # 2. Accuracy vs depth scatter
+            ax2 = axes[1]
+            zone_depths = [(z["depth_range_m"][0] + z["depth_range_m"][1]) / 2 for z in zone_results]
+            grade_colors = {"A": "#28a745", "B": "#17a2b8", "C": "#ffc107", "D": "#fd7e14", "F": "#dc3545"}
+            colors = [grade_colors.get(z["grade"], "#999") for z in zone_results]
+            ax2.scatter(zone_depths, accs, c=colors, s=100, edgecolors="black", zorder=3)
+            ax2.set_xlabel("Depth (m)")
+            ax2.set_ylabel("Accuracy")
+            ax2.set_title("Performance vs Depth")
+            ax2.axhline(y=overall_acc, color="gray", linestyle="--", alpha=0.5, label=f"Overall: {overall_acc:.1%}")
+            ax2.legend(fontsize=8)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            # 3. Degradation comparison
+            ax3 = axes[2]
+            degs = [z["degradation_vs_random"] for z in zone_results]
+            deg_colors = ["#28a745" if d <= 0.05 else "#ffc107" if d <= 0.15 else "#dc3545" for d in degs]
+            ax3.barh([f"Z{z['zone_id']}" for z in zone_results], degs, color=deg_colors)
+            ax3.set_xlabel("Accuracy Drop vs Random Split")
+            ax3.set_title("Depth Generalization Gap")
+            ax3.axvline(x=0.05, color="orange", linestyle="--", alpha=0.5)
+            ax3.axvline(x=0.15, color="red", linestyle="--", alpha=0.5)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "n_zones": n_zones,
+            "depth_range_m": [round(depth_min, 1), round(depth_max, 1)],
+            "overall_accuracy": round(overall_acc, 4),
+            "overall_f1": round(overall_f1, 4),
+            "random_baseline_avg": round(avg_random, 4),
+            "degradation": round(overall_degradation, 4),
+            "deployment_risk": deployment_risk,
+            "consistency_std": round(consistency, 4),
+            "n_good_zones": n_good,
+            "n_bad_zones": n_bad,
+            "worst_zone": {
+                "zone_id": worst_zone["zone_id"],
+                "depth_range_m": worst_zone["depth_range_m"],
+                "accuracy": worst_zone["accuracy"],
+            },
+            "best_zone": {
+                "zone_id": best_zone["zone_id"],
+                "depth_range_m": best_zone["depth_range_m"],
+                "accuracy": best_zone["accuracy"],
+            },
+            "zones": zone_results,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Depth generalization: {overall_acc:.1%} accuracy across unseen zones (risk: {deployment_risk})",
+                "risk_level": "GREEN" if deployment_risk == "LOW" else ("AMBER" if deployment_risk == "MEDIUM" else "RED"),
+                "confidence_sentence": (
+                    f"Model tested on {len(zone_results)} depth zones using leave-one-zone-out CV. "
+                    f"Overall accuracy {overall_acc:.1%} vs {avg_random:.1%} random baseline "
+                    f"({overall_degradation:.1%} gap). "
+                    f"Worst zone: Z{worst_zone['zone_id']} at {worst_zone['accuracy']:.1%}. "
+                    f"Performance consistency: std={consistency:.3f}."
+                ),
+                "action": (
+                    "Model generalizes well across depth zones. Safe for deployment to new intervals."
+                    if deployment_risk == "LOW" else
+                    (
+                        "Some depth zones show significant performance drops. "
+                        "Collect more training data from poorly performing intervals before deployment."
+                        if deployment_risk == "MEDIUM" else
+                        "CRITICAL: Model fails to generalize across depth zones. "
+                        "Do NOT deploy without depth-specific recalibration. "
+                        "Random splits overestimate real-world performance."
+                    )
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _depth_strat_cache[cache_key] = result
+    return result
+
+
+# ── Probability Calibration with Temperature Scaling ───────────────────
+
+_temp_cal_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/calibrate-probabilities")
+async def calibrate_probabilities(request: Request):
+    """Apply temperature scaling to produce well-calibrated confidence scores.
+
+    In safety-critical decisions, '80% confident' MUST mean correct 80%
+    of the time. Temperature scaling is the gold standard post-hoc
+    calibration method (Guo et al. 2017, widely adopted 2024-2026).
+    Reports ECE (Expected Calibration Error) before and after calibration.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_bins = int(body.get("n_bins", 10))
+
+    cache_key = f"tempcal:{well}:{source}:{n_bins}"
+    if cache_key in _temp_cal_cache:
+        return _temp_cal_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.base import clone
+        from scipy.optimize import minimize_scalar
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+
+        # Collect probabilities via CV
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        all_proba = np.zeros((n, n_classes))
+        all_pred = np.zeros(n, dtype=int)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for train_idx, val_idx in cv.split(X, y):
+                m = clone(model)
+                m.fit(X[train_idx], y[train_idx])
+                all_proba[val_idx] = m.predict_proba(X[val_idx])
+                all_pred[val_idx] = m.predict(X[val_idx])
+
+        # ECE calculation helper
+        def compute_ece(proba, labels, n_bins_ece):
+            confidences = np.max(proba, axis=1)
+            predictions = np.argmax(proba, axis=1)
+            accuracies = predictions == labels
+            bin_edges = np.linspace(0, 1, n_bins_ece + 1)
+            ece_val = 0.0
+            bin_data = []
+            for b in range(n_bins_ece):
+                mask = (confidences > bin_edges[b]) & (confidences <= bin_edges[b + 1])
+                if mask.sum() == 0:
+                    bin_data.append({
+                        "bin_lower": round(float(bin_edges[b]), 2),
+                        "bin_upper": round(float(bin_edges[b + 1]), 2),
+                        "count": 0, "avg_confidence": 0, "accuracy": 0, "gap": 0,
+                    })
+                    continue
+                avg_conf = float(confidences[mask].mean())
+                avg_acc = float(accuracies[mask].mean())
+                gap = abs(avg_conf - avg_acc)
+                ece_val += mask.sum() / n * gap
+                bin_data.append({
+                    "bin_lower": round(float(bin_edges[b]), 2),
+                    "bin_upper": round(float(bin_edges[b + 1]), 2),
+                    "count": int(mask.sum()),
+                    "avg_confidence": round(avg_conf, 4),
+                    "accuracy": round(avg_acc, 4),
+                    "gap": round(gap, 4),
+                })
+            return float(ece_val), bin_data
+
+        ece_before, bins_before = compute_ece(all_proba, y, n_bins)
+
+        # Temperature scaling: find T that minimizes NLL on validation data
+        log_proba = np.log(np.clip(all_proba, 1e-10, 1.0))
+
+        def nll_loss(T):
+            scaled = log_proba / T
+            scaled -= scaled.max(axis=1, keepdims=True)  # numerical stability
+            exp_scaled = np.exp(scaled)
+            softmax = exp_scaled / exp_scaled.sum(axis=1, keepdims=True)
+            return -np.mean(np.log(np.clip(softmax[np.arange(n), y], 1e-10, 1.0)))
+
+        opt = minimize_scalar(nll_loss, bounds=(0.1, 10.0), method="bounded")
+        temperature = float(opt.x)
+
+        # Apply temperature scaling
+        scaled_logits = log_proba / temperature
+        scaled_logits -= scaled_logits.max(axis=1, keepdims=True)
+        exp_scaled = np.exp(scaled_logits)
+        calibrated_proba = exp_scaled / exp_scaled.sum(axis=1, keepdims=True)
+
+        ece_after, bins_after = compute_ece(calibrated_proba, y, n_bins)
+
+        ece_improvement = ece_before - ece_after
+        ece_pct_improvement = (ece_improvement / max(ece_before, 1e-6)) * 100
+
+        # Per-class calibration
+        class_cal = []
+        for j, cn in enumerate(class_names):
+            mask = y == j
+            if mask.sum() < 3:
+                continue
+            before_conf = float(all_proba[mask, j].mean())
+            after_conf = float(calibrated_proba[mask, j].mean())
+            actual_acc = float(mask.sum() / n)
+            class_cal.append({
+                "class": cn, "count": int(mask.sum()),
+                "before_avg_confidence": round(before_conf, 4),
+                "after_avg_confidence": round(after_conf, 4),
+                "actual_frequency": round(actual_acc, 4),
+                "before_gap": round(abs(before_conf - actual_acc), 4),
+                "after_gap": round(abs(after_conf - actual_acc), 4),
+            })
+
+        # Reliability grade
+        if ece_after < 0.05:
+            grade = "A"
+            verdict = "Excellent calibration - confidence scores are reliable for decision-making"
+        elif ece_after < 0.10:
+            grade = "B"
+            verdict = "Good calibration - minor gaps between confidence and accuracy"
+        elif ece_after < 0.15:
+            grade = "C"
+            verdict = "Fair calibration - confidence scores should be interpreted cautiously"
+        elif ece_after < 0.25:
+            grade = "D"
+            verdict = "Poor calibration - confidence scores are unreliable"
+        else:
+            grade = "F"
+            verdict = "CRITICAL: Confidence scores bear no relation to actual accuracy"
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # 1. Reliability diagram before
+            ax1 = axes[0]
+            b_confs = [b["avg_confidence"] for b in bins_before if b["count"] > 0]
+            b_accs = [b["accuracy"] for b in bins_before if b["count"] > 0]
+            ax1.plot([0, 1], [0, 1], "k--", alpha=0.3, label="Perfect calibration")
+            ax1.bar(b_confs, b_accs, width=1.0 / n_bins * 0.8, alpha=0.7, color="#dc3545", label=f"Before (ECE={ece_before:.3f})")
+            ax1.set_xlabel("Confidence")
+            ax1.set_ylabel("Accuracy")
+            ax1.set_title("Before Calibration")
+            ax1.legend(fontsize=8)
+            ax1.set_xlim(0, 1)
+            ax1.set_ylim(0, 1)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # 2. Reliability diagram after
+            ax2 = axes[1]
+            a_confs = [b["avg_confidence"] for b in bins_after if b["count"] > 0]
+            a_accs = [b["accuracy"] for b in bins_after if b["count"] > 0]
+            ax2.plot([0, 1], [0, 1], "k--", alpha=0.3, label="Perfect calibration")
+            ax2.bar(a_confs, a_accs, width=1.0 / n_bins * 0.8, alpha=0.7, color="#28a745", label=f"After (ECE={ece_after:.3f})")
+            ax2.set_xlabel("Confidence")
+            ax2.set_ylabel("Accuracy")
+            ax2.set_title(f"After Calibration (T={temperature:.2f})")
+            ax2.legend(fontsize=8)
+            ax2.set_xlim(0, 1)
+            ax2.set_ylim(0, 1)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            # 3. Confidence distribution shift
+            ax3 = axes[2]
+            orig_confs = np.max(all_proba, axis=1)
+            cal_confs = np.max(calibrated_proba, axis=1)
+            ax3.hist(orig_confs, bins=30, alpha=0.5, color="#dc3545", label="Before", density=True)
+            ax3.hist(cal_confs, bins=30, alpha=0.5, color="#28a745", label="After", density=True)
+            ax3.set_xlabel("Max Class Probability")
+            ax3.set_ylabel("Density")
+            ax3.set_title("Confidence Distribution Shift")
+            ax3.legend(fontsize=8)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "n_classes": n_classes,
+            "temperature": round(temperature, 4),
+            "ece_before": round(ece_before, 4),
+            "ece_after": round(ece_after, 4),
+            "ece_improvement": round(ece_improvement, 4),
+            "ece_pct_improvement": round(ece_pct_improvement, 1),
+            "grade": grade, "verdict": verdict,
+            "bins_before": bins_before,
+            "bins_after": bins_after,
+            "per_class": class_cal,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Probability calibration: ECE improved {ece_pct_improvement:.0f}% (Grade {grade})",
+                "risk_level": "GREEN" if grade in ("A", "B") else ("AMBER" if grade == "C" else "RED"),
+                "confidence_sentence": (
+                    f"Temperature scaling (T={temperature:.2f}) reduces ECE from "
+                    f"{ece_before:.3f} to {ece_after:.3f} ({ece_pct_improvement:.0f}% improvement). "
+                    f"Grade {grade}: {verdict}."
+                ),
+                "action": (
+                    "Calibrated probabilities are reliable for risk-based decision making."
+                    if grade in ("A", "B") else
+                    "Confidence scores need further calibration before use in safety decisions."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _temp_cal_cache[cache_key] = result
+    return result
+
+
+# ── Feature Interaction Discovery ──────────────────────────────────────
+
+_feat_interact_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/feature-interactions")
+async def feature_interactions(request: Request):
+    """Discover synergistic and antagonistic feature COMBINATIONS.
+
+    Goes beyond single-feature importance (SHAP) to find which feature
+    PAIRS interact. In geostress analysis, Dip x Azimuth interactions
+    are physically meaningful (fracture orientation determines stress).
+    Uses H-statistic and conditional importance analysis.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    top_k = int(body.get("top_k", 10))
+
+    cache_key = f"feat_interact:{well}:{source}:{top_k}"
+    if cache_key in _feat_interact_cache:
+        return _feat_interact_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_score
+        from sklearn.base import clone
+        from sklearn.inspection import permutation_importance
+        from itertools import combinations
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n, p = X.shape
+        feat_names = list(features.columns)
+
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+
+        # Train full model
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(X, y)
+
+        # 1. Single feature importance via permutation
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            perm = permutation_importance(model, X, y, n_repeats=10, random_state=42, n_jobs=1)
+
+        single_importance = []
+        for i, fn in enumerate(feat_names):
+            single_importance.append({
+                "feature": fn,
+                "importance": round(float(perm.importances_mean[i]), 4),
+                "std": round(float(perm.importances_std[i]), 4),
+            })
+        single_importance.sort(key=lambda x: x["importance"], reverse=True)
+
+        # Get top features for interaction analysis (limit to top 8 for speed)
+        top_feat_idx = np.argsort(perm.importances_mean)[-min(8, p):][::-1]
+
+        # 2. Pairwise interaction: permute pairs jointly vs individually
+        interactions = []
+        for i_idx, j_idx in combinations(top_feat_idx, 2):
+            # Joint permutation
+            rng = np.random.RandomState(42)
+            X_joint = X.copy()
+            perm_order = rng.permutation(n)
+            X_joint[:, i_idx] = X_joint[perm_order, i_idx]
+            X_joint[:, j_idx] = X_joint[perm_order, j_idx]
+            joint_score = float(model.score(X_joint, y))
+
+            # Individual permutations
+            X_i = X.copy()
+            X_i[:, i_idx] = X_i[perm_order, i_idx]
+            ind_i_score = float(model.score(X_i, y))
+
+            X_j = X.copy()
+            X_j[:, j_idx] = X_j[perm_order, j_idx]
+            ind_j_score = float(model.score(X_j, y))
+
+            base_score = float(model.score(X, y))
+
+            # H-statistic approximation:
+            # If joint drop > sum of individual drops, features interact
+            drop_joint = base_score - joint_score
+            drop_i = base_score - ind_i_score
+            drop_j = base_score - ind_j_score
+            interaction_strength = drop_joint - (drop_i + drop_j)
+
+            # Positive = synergistic (pair matters more than sum of parts)
+            # Negative = redundant (pair matters less than sum)
+            interactions.append({
+                "feature_a": feat_names[i_idx],
+                "feature_b": feat_names[j_idx],
+                "interaction_strength": round(interaction_strength, 4),
+                "joint_drop": round(drop_joint, 4),
+                "individual_drop_a": round(drop_i, 4),
+                "individual_drop_b": round(drop_j, 4),
+                "type": "synergistic" if interaction_strength > 0.005 else (
+                    "redundant" if interaction_strength < -0.005 else "independent"
+                ),
+            })
+
+        interactions.sort(key=lambda x: abs(x["interaction_strength"]), reverse=True)
+        top_interactions = interactions[:top_k]
+
+        n_synergistic = sum(1 for x in interactions if x["type"] == "synergistic")
+        n_redundant = sum(1 for x in interactions if x["type"] == "redundant")
+        n_independent = sum(1 for x in interactions if x["type"] == "independent")
+
+        strongest = top_interactions[0] if top_interactions else None
+
+        # Physical interpretation helper
+        physical_notes = []
+        for inter in top_interactions[:5]:
+            a, b = inter["feature_a"].lower(), inter["feature_b"].lower()
+            if ("sin" in a or "cos" in a) and ("sin" in b or "cos" in b):
+                physical_notes.append(
+                    f"{inter['feature_a']} x {inter['feature_b']}: "
+                    f"Angular decomposition interaction - physically meaningful, "
+                    f"captures fracture orientation geometry."
+                )
+            elif "depth" in a or "depth" in b:
+                physical_notes.append(
+                    f"{inter['feature_a']} x {inter['feature_b']}: "
+                    f"Depth dependency - fracture properties change with burial depth "
+                    f"due to increasing overburden stress."
+                )
+            elif "dip" in a or "dip" in b:
+                physical_notes.append(
+                    f"{inter['feature_a']} x {inter['feature_b']}: "
+                    f"Dip interaction - steep vs shallow fractures have different "
+                    f"mechanical origins and stress implications."
+                )
+            else:
+                physical_notes.append(
+                    f"{inter['feature_a']} x {inter['feature_b']}: "
+                    f"{inter['type']} interaction (strength: {inter['interaction_strength']:.4f})."
+                )
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # 1. Top single features
+            ax1 = axes[0]
+            top_single = single_importance[:10]
+            sns = [s["feature"][:12] for s in top_single]
+            vals = [s["importance"] for s in top_single]
+            ax1.barh(sns[::-1], vals[::-1], color="#4a90d9")
+            ax1.set_xlabel("Permutation Importance")
+            ax1.set_title("Top Single Features")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # 2. Interaction heatmap
+            ax2 = axes[1]
+            top_feats = [feat_names[i] for i in top_feat_idx[:6]]
+            heatmap_data = np.zeros((len(top_feats), len(top_feats)))
+            for inter in interactions:
+                a, b = inter["feature_a"], inter["feature_b"]
+                if a in top_feats and b in top_feats:
+                    i, j = top_feats.index(a), top_feats.index(b)
+                    heatmap_data[i, j] = inter["interaction_strength"]
+                    heatmap_data[j, i] = inter["interaction_strength"]
+
+            im = ax2.imshow(heatmap_data, cmap="RdBu_r", aspect="auto",
+                           vmin=-max(abs(heatmap_data.min()), abs(heatmap_data.max())) or 0.01,
+                           vmax=max(abs(heatmap_data.min()), abs(heatmap_data.max())) or 0.01)
+            ax2.set_xticks(range(len(top_feats)))
+            ax2.set_yticks(range(len(top_feats)))
+            short_names = [f[:8] for f in top_feats]
+            ax2.set_xticklabels(short_names, rotation=45, ha="right", fontsize=7)
+            ax2.set_yticklabels(short_names, fontsize=7)
+            ax2.set_title("Interaction Heatmap")
+            plt.colorbar(im, ax=ax2, shrink=0.8)
+
+            # 3. Top interactions bar
+            ax3 = axes[2]
+            top5 = top_interactions[:8]
+            pair_labels = [f"{x['feature_a'][:6]}x{x['feature_b'][:6]}" for x in top5]
+            strengths = [x["interaction_strength"] for x in top5]
+            int_colors = ["#28a745" if s > 0 else "#dc3545" for s in strengths]
+            ax3.barh(pair_labels[::-1], strengths[::-1], color=int_colors[::-1])
+            ax3.set_xlabel("Interaction Strength")
+            ax3.set_title("Top Feature Pairs")
+            ax3.axvline(x=0, color="black", linewidth=0.5)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "n_features": p,
+            "single_importance": single_importance[:15],
+            "interactions": top_interactions,
+            "n_synergistic": n_synergistic,
+            "n_redundant": n_redundant,
+            "n_independent": n_independent,
+            "strongest_interaction": strongest,
+            "physical_notes": physical_notes,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": (
+                    f"Feature interactions: {n_synergistic} synergistic, "
+                    f"{n_redundant} redundant pairs found"
+                ),
+                "risk_level": "GREEN" if n_synergistic > 0 else "AMBER",
+                "confidence_sentence": (
+                    f"Analyzed {len(interactions)} feature pairs. "
+                    f"Found {n_synergistic} synergistic (pair matters more than sum), "
+                    f"{n_redundant} redundant, {n_independent} independent. "
+                    + (f"Strongest: {strongest['feature_a']} x {strongest['feature_b']} "
+                       f"(strength: {strongest['interaction_strength']:.4f})."
+                       if strongest else "No strong interactions detected.")
+                ),
+                "action": (
+                    "Synergistic interactions confirm model captures physically meaningful patterns."
+                    if n_synergistic > 0 else
+                    "Limited feature interactions - model may benefit from engineered interaction terms."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _feat_interact_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -15089,7 +15809,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.21.0",
+        "app_version": "3.22.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else
