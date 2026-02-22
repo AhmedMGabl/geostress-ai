@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.2</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.3</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -139,6 +139,14 @@
                 <li class="nav-item">
                     <a class="nav-link" data-tab="glossary" href="#">
                         <i class="bi bi-book"></i> Glossary
+                    </a>
+                </li>
+                <li class="nav-item mt-2">
+                    <small class="text-muted-light px-3">MLOps</small>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-tab="mlops" href="#">
+                        <i class="bi bi-gear-wide-connected"></i> Production MLOps
                     </a>
                 </li>
             </ul>
@@ -2897,6 +2905,113 @@
                                 <li class="mb-2"><strong>Review the Risk Matrix.</strong> If HIGH risk, escalate to senior geomechanics engineer before proceeding.</li>
                                 <li class="mb-2"><strong>Check the Uncertainty Budget.</strong> Pore pressure is consistently the #1 source of uncertainty. If you have measured Pp data, input it to dramatically improve reliability.</li>
                             </ol>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- MLOps Tab -->
+                <div id="tab-mlops" class="tab-content">
+                    <h5 class="mb-3"><i class="bi bi-gear-wide-connected"></i> Production MLOps Dashboard</h5>
+                    <p class="text-muted">Monitor model health, detect data drift, track failures, and manage model versions for production deployment.</p>
+
+                    <!-- System Health -->
+                    <div class="card mb-3 border-primary">
+                        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-heart-pulse"></i> System Health</span>
+                            <button class="btn btn-sm btn-outline-light" onclick="loadSystemHealth()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                        </div>
+                        <div class="card-body" id="system-health-result">
+                            <p class="text-muted">Click Refresh to check system health.</p>
+                        </div>
+                    </div>
+
+                    <!-- Data Drift Detection -->
+                    <div class="card mb-3">
+                        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-down-arrow"></i> Data Drift Detection</span>
+                            <div>
+                                <button class="btn btn-sm btn-outline-dark me-1" onclick="runDriftDetection()"><i class="bi bi-search"></i> Check Drift</button>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="resetDriftBaseline()"><i class="bi bi-arrow-counterclockwise"></i> Reset Baseline</button>
+                            </div>
+                        </div>
+                        <div class="card-body" id="drift-result">
+                            <p class="text-muted">Run drift detection to compare current data against the baseline distribution. Catches silent model degradation.</p>
+                        </div>
+                    </div>
+
+                    <!-- Model Version Registry -->
+                    <div class="card mb-3">
+                        <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-tags"></i> Model Version Registry</span>
+                            <div>
+                                <button class="btn btn-sm btn-outline-light me-1" onclick="loadModelRegistry()"><i class="bi bi-list-ul"></i> List Versions</button>
+                                <button class="btn btn-sm btn-outline-light me-1" onclick="registerModel()"><i class="bi bi-plus-circle"></i> Register</button>
+                                <button class="btn btn-sm btn-outline-light" onclick="compareModelVersions()"><i class="bi bi-arrow-left-right"></i> Compare</button>
+                            </div>
+                        </div>
+                        <div class="card-body" id="model-registry-result">
+                            <p class="text-muted">Track model versions, compare performance, and rollback if needed.</p>
+                        </div>
+                    </div>
+
+                    <!-- Field Stress Integration -->
+                    <div class="card mb-3">
+                        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-globe-americas"></i> Multi-Well Field Stress Model</span>
+                            <button class="btn btn-sm btn-outline-light" onclick="runFieldStressModel()"><i class="bi bi-play-circle"></i> Integrate Wells</button>
+                        </div>
+                        <div class="card-body" id="field-stress-result">
+                            <p class="text-muted">Combine stress estimates from all wells into a unified field model. Detects structural domain boundaries.</p>
+                        </div>
+                    </div>
+
+                    <!-- Failure Case Learning -->
+                    <div class="card mb-3">
+                        <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-triangle"></i> Failure Case Learning</span>
+                            <div>
+                                <button class="btn btn-sm btn-outline-light me-1" onclick="viewFailureAnalysis()"><i class="bi bi-bar-chart"></i> Analyze Patterns</button>
+                                <button class="btn btn-sm btn-outline-light" onclick="retrainWithFailures()"><i class="bi bi-lightning"></i> Retrain</button>
+                            </div>
+                        </div>
+                        <div class="card-body" id="failure-analysis-result">
+                            <p class="text-muted">Systematically learn from prediction failures. Record wrong predictions, analyze patterns, and retrain with failure-aware weighting.</p>
+                        </div>
+                    </div>
+
+                    <!-- Report Failure Form -->
+                    <div class="card mb-3 border-secondary">
+                        <div class="card-header"><i class="bi bi-flag"></i> Report a Prediction Failure</div>
+                        <div class="card-body">
+                            <div class="row g-2">
+                                <div class="col-md-3">
+                                    <label class="form-label form-label-sm">Failure Type</label>
+                                    <select id="failure-type" class="form-select form-select-sm">
+                                        <option value="wrong_prediction">Wrong Prediction</option>
+                                        <option value="rejected_result">Rejected Result</option>
+                                        <option value="suspicious_output">Suspicious Output</option>
+                                        <option value="overconfident">Overconfident Wrong</option>
+                                        <option value="data_issue">Data Issue</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label form-label-sm">Predicted</label>
+                                    <input type="text" id="failure-predicted" class="form-control form-control-sm" placeholder="e.g. Vuggy">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label form-label-sm">Actual</label>
+                                    <input type="text" id="failure-actual" class="form-control form-control-sm" placeholder="e.g. Continuous">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label form-label-sm">Depth (m)</label>
+                                    <input type="number" id="failure-depth" class="form-control form-control-sm" placeholder="e.g. 2950">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label form-label-sm">Description</label>
+                                    <input type="text" id="failure-description" class="form-control form-control-sm" placeholder="What went wrong?">
+                                </div>
+                            </div>
+                            <button class="btn btn-sm btn-danger mt-2" onclick="reportFailure()"><i class="bi bi-flag-fill"></i> Submit Failure Report</button>
                         </div>
                     </div>
                 </div>

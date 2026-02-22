@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
-app.py              - FastAPI backend (v3.2.1), 95+ API endpoints, serves templates
+app.py              - FastAPI backend (v3.2.2), 100+ API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
   geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC, auto regime detection
@@ -149,6 +149,8 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 | POST | `/api/analysis/augmented-classify` | Adversarial robustness test: noise + boundary + edge case augmentation |
 | GET | `/api/help/glossary` | 9-term plain-language glossary for non-technical stakeholders |
 | POST | `/api/analysis/decision-readiness` | GO/CAUTION/NO-GO with 6 independent signals |
+| GET | `/api/snapshot` | Pre-computed startup snapshot: instant well cards, alerts, regime, SHmax |
+| POST | `/api/analysis/ensemble-predict` | Calibrated 7-model ensemble: accuracy-weighted voting, agreement %, uncertain samples |
 
 ## Domain Concepts
 
@@ -197,6 +199,12 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Augmented classify improved Well 3P from 66.1% → 78.0% (+12% accuracy with 446 synthetic samples)
 - Contextual glossary: 9 terms with plain language, technical detail, "why it matters" for each
 - Floating help button (bottom-right) opens searchable glossary modal
+- v3.2.2: Startup snapshot pre-computed during Phase 3 of prewarm — instant page load (<55ms) with well cards, alerts, regime, SHmax
+- Snapshot retries every 5s during cache warm-up if caches not ready yet
+- Calibrated 7-model ensemble: RF, GBM, XGB, LGB, CatBoost, LR, SVM with accuracy-weighted soft voting
+- Ensemble extracts trained model/scaler/label_encoder from classify_enhanced, runs predict separately
+- Ensemble agreement: 95% for Well 3P, 10 uncertain samples identified (depth 2921.5m has 43% agreement)
+- `classify_enhanced()` returns trained sklearn objects in result dict (model, scaler, label_encoder) — use for per-sample prediction
 - Stacking ensemble (RF+XGBoost+LightGBM with LR meta-learner) is typically the best model
 - SHAP TreeExplainer for XGBoost/LightGBM/RF; GradientBoosting only supports binary in SHAP
 - Conformal prediction provides calibrated per-sample confidence scores

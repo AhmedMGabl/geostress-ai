@@ -163,7 +163,8 @@ var tabNames = {
     research: "Research & Methods",
     audit: "Audit Trail",
     calibration: "Model Calibration",
-    glossary: "Glossary & Guide"
+    glossary: "Glossary & Guide",
+    mlops: "Production MLOps"
 };
 
 document.querySelectorAll("[data-tab]").forEach(function(link) {
@@ -6710,6 +6711,423 @@ async function loadStartupSnapshot() {
         container.innerHTML = html;
     } catch (e) {
         console.warn('Startup snapshot unavailable:', e);
+    }
+}
+
+
+// ── v3.3.0: Production MLOps Functions ─────────────
+
+async function loadSystemHealth() {
+    const el = document.getElementById('system-health-result');
+    if (!el) return;
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Checking system health...</div>';
+    try {
+        const r = await fetch('/api/system/health');
+        const d = await r.json();
+        const statusColor = d.status === 'HEALTHY' ? 'success' : d.status === 'DEGRADED' ? 'warning' : 'danger';
+        let html = `
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <div class="card border-${statusColor} h-100">
+                        <div class="card-body text-center">
+                            <h3 class="text-${statusColor}">${d.health_score}</h3>
+                            <span class="badge bg-${statusColor}">${d.status}</span>
+                            <div class="small text-muted mt-1">Health Score</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card h-100">
+                        <div class="card-body text-center">
+                            <h3>${d.total_cached_items || 0}</h3>
+                            <div class="small text-muted">Cached Items</div>
+                            <div class="small">${d.snapshot_ready ? '<span class="text-success">Snapshot Ready</span>' : '<span class="text-warning">Warming Up</span>'}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card h-100">
+                        <div class="card-body text-center">
+                            <h3>${d.failure_rate || 0}%</h3>
+                            <div class="small text-muted">Failure Rate</div>
+                            <div class="small">${d.unresolved_failures || 0} unresolved</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card h-100">
+                        <div class="card-body text-center">
+                            <h3>${(d.active_models || []).length}</h3>
+                            <div class="small text-muted">Active Models</div>
+                            <div class="small">v${d.app_version || '?'}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+
+        // Drift status
+        if (d.drift_status) {
+            html += '<div class="mt-3"><strong>Drift Status:</strong> ';
+            for (const [w, s] of Object.entries(d.drift_status)) {
+                const dColor = s === 'NO_BASELINE' ? 'secondary' : 'success';
+                html += `<span class="badge bg-${dColor} me-2">${w}: ${s}</span>`;
+            }
+            html += '</div>';
+        }
+
+        // Database stats
+        if (d.database) {
+            html += `<div class="mt-2 small text-muted">DB: ${d.database.audit_records} audit, ${d.database.model_versions} versions, ${d.database.failure_cases} failures (${d.database.db_size_kb}KB)</div>`;
+        }
+
+        // Recommendations
+        if (d.recommendations && d.recommendations.length) {
+            html += '<div class="alert alert-info mt-3 mb-0 small"><strong>Recommendations:</strong><ul class="mb-0">';
+            d.recommendations.forEach(r => { html += `<li>${r}</li>`; });
+            html += '</ul></div>';
+        }
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = `<div class="text-danger">Error: ${e.message}</div>`;
+    }
+}
+
+async function runDriftDetection() {
+    const el = document.getElementById('drift-result');
+    const well = document.getElementById('well-select')?.value || '3P';
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Analyzing feature distributions...</div>';
+    try {
+        const r = await fetch('/api/analysis/drift-detection', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({well, source: window._source || 'demo'})
+        });
+        const d = await r.json();
+        if (d.status === 'BASELINE_SET') {
+            el.innerHTML = `<div class="alert alert-success"><i class="bi bi-check-circle"></i> ${d.message}</div>`;
+            return;
+        }
+        const statusColor = d.status === 'OK' ? 'success' : d.status === 'WARNING' ? 'warning' : 'danger';
+        let html = `
+            <div class="alert alert-${statusColor}">
+                <strong>${d.status}</strong>: ${d.recommendation}
+            </div>
+            <div class="row g-2 mb-3">
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h4>${d.avg_psi}</h4><small>Avg PSI</small></div></div></div>
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h4>${d.pct_drifted}%</h4><small>Features Drifted</small></div></div></div>
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h4>${d.n_features_checked}</h4><small>Features Checked</small></div></div></div>
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h4>${d.current_samples}</h4><small>Current Samples</small></div></div></div>
+            </div>`;
+        if (d.features && d.features.length) {
+            html += '<table class="table table-sm table-hover"><thead><tr><th>Feature</th><th>PSI</th><th>KS p-value</th><th>Mean Shift (σ)</th><th>Severity</th></tr></thead><tbody>';
+            d.features.forEach(f => {
+                const sc = f.severity === 'OK' ? 'success' : f.severity === 'WARNING' ? 'warning' : 'danger';
+                html += `<tr><td><code>${f.feature}</code></td><td>${f.psi}</td><td>${f.ks_pvalue}</td><td>${f.mean_shift_sigma}</td><td><span class="badge bg-${sc}">${f.severity}</span></td></tr>`;
+            });
+            html += '</tbody></table>';
+        }
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = `<div class="text-danger">Error: ${e.message}</div>`;
+    }
+}
+
+async function resetDriftBaseline() {
+    if (!confirm('Reset drift baseline for this well? This cannot be undone.')) return;
+    const well = document.getElementById('well-select')?.value || '3P';
+    try {
+        const r = await fetch('/api/analysis/drift-reset', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({well, source: window._source || 'demo'})
+        });
+        const d = await r.json();
+        document.getElementById('drift-result').innerHTML = `<div class="alert alert-success"><i class="bi bi-check-circle"></i> ${d.message}</div>`;
+    } catch(e) {
+        document.getElementById('drift-result').innerHTML = `<div class="text-danger">Error: ${e.message}</div>`;
+    }
+}
+
+async function loadModelRegistry() {
+    const el = document.getElementById('model-registry-result');
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Loading model versions...</div>';
+    try {
+        const r = await fetch('/api/models/registry');
+        const d = await r.json();
+        if (!d.versions || d.versions.length === 0) {
+            el.innerHTML = '<div class="alert alert-info">No model versions registered yet. Click "Register" to register the current model.</div>';
+            return;
+        }
+        let html = '<table class="table table-sm table-hover"><thead><tr><th>Ver</th><th>Model</th><th>Well</th><th>Accuracy</th><th>F1</th><th>Samples</th><th>Active</th><th>Date</th><th>Action</th></tr></thead><tbody>';
+        d.versions.forEach(v => {
+            html += `<tr class="${v.is_active ? 'table-success' : ''}">
+                <td><strong>v${v.version}</strong></td>
+                <td>${v.model_type}</td>
+                <td>${v.well || 'All'}</td>
+                <td>${v.accuracy ? (v.accuracy * 100).toFixed(1) + '%' : '-'}</td>
+                <td>${v.f1 ? (v.f1 * 100).toFixed(1) + '%' : '-'}</td>
+                <td>${v.n_samples || '-'}</td>
+                <td>${v.is_active ? '<span class="badge bg-success">ACTIVE</span>' : '<span class="badge bg-secondary">old</span>'}</td>
+                <td><small>${v.timestamp ? v.timestamp.substring(0, 10) : '-'}</small></td>
+                <td>${!v.is_active ? `<button class="btn btn-sm btn-outline-warning py-0" onclick="rollbackModel('${v.model_type}', ${v.version}, '${v.well || ''}')">Rollback</button>` : '<span class="text-success">current</span>'}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = `<div class="text-danger">Error: ${e.message}</div>`;
+    }
+}
+
+async function registerModel() {
+    const el = document.getElementById('model-registry-result');
+    const well = document.getElementById('well-select')?.value || '3P';
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Registering model version...</div>';
+    try {
+        const r = await fetch('/api/models/register', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({well, source: window._source || 'demo'})
+        });
+        const d = await r.json();
+        el.innerHTML = `<div class="alert alert-success"><i class="bi bi-check-circle"></i> ${d.message}</div>`;
+        setTimeout(() => loadModelRegistry(), 500);
+    } catch(e) {
+        el.innerHTML = `<div class="text-danger">Error: ${e.message}</div>`;
+    }
+}
+
+async function compareModelVersions() {
+    const el = document.getElementById('model-registry-result');
+    const well = document.getElementById('well-select')?.value || '3P';
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Comparing versions...</div>';
+    try {
+        const r = await fetch('/api/models/compare-versions', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({well})
+        });
+        const d = await r.json();
+        if (d.message && !d.verdict) {
+            el.innerHTML = `<div class="alert alert-info">${d.message}</div>`;
+            return;
+        }
+        const vc = d.verdict === 'IMPROVED' ? 'success' : d.verdict === 'DEGRADED' ? 'danger' : 'info';
+        let html = `
+            <div class="alert alert-${vc}"><strong>${d.verdict}</strong>: ${d.recommendation}</div>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <div class="card border-success"><div class="card-header bg-success text-white">Latest (v${d.latest?.version})</div>
+                    <div class="card-body">
+                        <div>Accuracy: <strong>${d.latest?.accuracy ? (d.latest.accuracy * 100).toFixed(1) + '%' : '-'}</strong></div>
+                        <div>F1: <strong>${d.latest?.f1 ? (d.latest.f1 * 100).toFixed(1) + '%' : '-'}</strong></div>
+                        <div>Samples: ${d.latest?.n_samples || '-'}</div>
+                    </div></div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card border-secondary"><div class="card-header">Previous (v${d.previous?.version})</div>
+                    <div class="card-body">
+                        <div>Accuracy: <strong>${d.previous?.accuracy ? (d.previous.accuracy * 100).toFixed(1) + '%' : '-'}</strong></div>
+                        <div>F1: <strong>${d.previous?.f1 ? (d.previous.f1 * 100).toFixed(1) + '%' : '-'}</strong></div>
+                        <div>Samples: ${d.previous?.n_samples || '-'}</div>
+                    </div></div>
+                </div>
+            </div>
+            <div class="mt-2 small text-muted">Accuracy delta: ${d.deltas?.accuracy > 0 ? '+' : ''}${d.deltas?.accuracy ? (d.deltas.accuracy * 100).toFixed(1) : 0}%</div>`;
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = `<div class="text-danger">Error: ${e.message}</div>`;
+    }
+}
+
+async function rollbackModel(modelType, version, well) {
+    if (!confirm(`Rollback ${modelType} to version ${version}?`)) return;
+    try {
+        const r = await fetch('/api/models/rollback', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({model_type: modelType, target_version: version, well: well || null})
+        });
+        const d = await r.json();
+        alert(d.message || 'Rollback complete');
+        loadModelRegistry();
+    } catch(e) {
+        alert('Rollback failed: ' + e.message);
+    }
+}
+
+async function runFieldStressModel() {
+    const el = document.getElementById('field-stress-result');
+    const depth = document.getElementById('depth-input')?.value || 3000;
+    const friction = document.getElementById('friction-input')?.value || 0.6;
+    const pp = document.getElementById('pp-input')?.value || 30;
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Integrating multi-well stress field... (may take 10-30s)</div>';
+    try {
+        const r = await fetch('/api/analysis/field-stress-model', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: window._source || 'demo', depth_m: +depth, friction: +friction, pp_mpa: +pp})
+        });
+        const d = await r.json();
+        if (d.status === 'INSUFFICIENT') {
+            el.innerHTML = `<div class="alert alert-warning">${d.message}</div>`;
+            return;
+        }
+        const consColor = d.consistency === 'HIGH' ? 'success' : d.consistency === 'MODERATE' ? 'warning' : 'danger';
+        let html = `
+            <div class="alert alert-${consColor}">
+                <strong>Field SHmax: ${d.field_shmax_deg}° (${d.field_shmax_direction})</strong> — ${d.consistency} consistency (R=${d.resultant_length})
+            </div>
+            <p>${d.interpretation}</p>
+            <div class="row g-2 mb-3">
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h4>${d.field_shmax_deg}°</h4><small>Field SHmax</small></div></div></div>
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h4>${d.dominant_regime}</h4><small>Dominant Regime</small></div></div></div>
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h4>${d.regime_agreement}%</h4><small>Regime Agreement</small></div></div></div>
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h4>${d.n_wells}</h4><small>Wells Integrated</small></div></div></div>
+            </div>`;
+
+        // Per-well results table
+        if (d.well_results && d.well_results.length) {
+            html += '<table class="table table-sm"><thead><tr><th>Well</th><th>SHmax (°)</th><th>Regime</th><th>Misfit</th><th>σ1</th><th>σ3</th><th>R</th><th>Fractures</th></tr></thead><tbody>';
+            d.well_results.forEach(w => {
+                html += `<tr><td><strong>${w.well}</strong></td><td>${w.shmax_deg || '-'}</td><td>${w.regime || w.error || '-'}</td><td>${w.misfit || '-'}</td><td>${w.sigma1 || '-'}</td><td>${w.sigma3 || '-'}</td><td>${w.r_ratio || '-'}</td><td>${w.n_fractures}</td></tr>`;
+            });
+            html += '</tbody></table>';
+        }
+
+        // Domain boundary warning
+        if (d.domain_boundary) {
+            html += `<div class="alert alert-warning"><strong>Domain Boundary Detected:</strong> ${d.domain_boundary.interpretation} (${d.domain_boundary.well_a} vs ${d.domain_boundary.well_b}: ${d.domain_boundary.shmax_difference_deg}° difference)</div>`;
+        }
+
+        // Recommendations
+        if (d.recommendations) {
+            html += '<div class="card border-info"><div class="card-header"><i class="bi bi-lightbulb"></i> Recommendations</div><div class="card-body"><ul class="mb-0">';
+            d.recommendations.forEach(r => { html += `<li>${r}</li>`; });
+            html += '</ul></div></div>';
+        }
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = `<div class="text-danger">Error: ${e.message}</div>`;
+    }
+}
+
+async function viewFailureAnalysis() {
+    const el = document.getElementById('failure-analysis-result');
+    const well = document.getElementById('well-select')?.value || '';
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Analyzing failure patterns...</div>';
+    try {
+        const r = await fetch(`/api/feedback/failure-analysis?well=${well}`);
+        const d = await r.json();
+        if (d.n_cases === 0) {
+            el.innerHTML = `<div class="alert alert-info">${d.message}</div>`;
+            return;
+        }
+        let html = `
+            <div class="row g-2 mb-3">
+                <div class="col-md-3"><div class="card border-danger"><div class="card-body text-center"><h4>${d.n_cases}</h4><small>Total Failures</small></div></div></div>
+                <div class="col-md-3"><div class="card border-success"><div class="card-body text-center"><h4>${d.n_resolved}</h4><small>Resolved</small></div></div></div>
+                <div class="col-md-3"><div class="card border-warning"><div class="card-body text-center"><h4>${d.n_unresolved}</h4><small>Unresolved</small></div></div></div>
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h4>${d.confidence_analysis ? d.confidence_analysis.avg_confidence.toFixed(2) : '-'}</h4><small>Avg Confidence</small></div></div></div>
+            </div>`;
+
+        // Confidence analysis
+        if (d.confidence_analysis) {
+            const ca = d.confidence_analysis;
+            const caColor = ca.high_confidence_failures > 3 ? 'danger' : 'info';
+            html += `<div class="alert alert-${caColor} small">${ca.interpretation}</div>`;
+        }
+
+        // Failure patterns
+        if (d.patterns && d.patterns.length) {
+            html += '<h6>Failure Patterns</h6><table class="table table-sm"><thead><tr><th>Type</th><th>Count</th><th>Resolved</th></tr></thead><tbody>';
+            d.patterns.forEach(p => {
+                html += `<tr><td><code>${p.type}</code></td><td>${p.count}</td><td>${p.resolved}/${p.count}</td></tr>`;
+            });
+            html += '</tbody></table>';
+        }
+
+        // Top confusions
+        if (d.top_confusions && d.top_confusions.length) {
+            html += '<h6>Top Confusion Pairs</h6><ul>';
+            d.top_confusions.forEach(c => { html += `<li><code>${c.pair}</code>: ${c.count} cases</li>`; });
+            html += '</ul>';
+        }
+
+        // Depth pattern
+        if (d.depth_pattern) {
+            html += `<div class="small text-muted">${d.depth_pattern.interpretation}</div>`;
+        }
+
+        // Recommendations
+        if (d.recommendations) {
+            html += '<div class="alert alert-info mt-2 small"><strong>Actions:</strong><ul class="mb-0">';
+            d.recommendations.forEach(r => { html += `<li>${r}</li>`; });
+            html += '</ul></div>';
+        }
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = `<div class="text-danger">Error: ${e.message}</div>`;
+    }
+}
+
+async function reportFailure() {
+    const well = document.getElementById('well-select')?.value || '3P';
+    const body = {
+        failure_type: document.getElementById('failure-type')?.value || 'wrong_prediction',
+        well: well,
+        predicted: document.getElementById('failure-predicted')?.value || null,
+        actual: document.getElementById('failure-actual')?.value || null,
+        depth_m: document.getElementById('failure-depth')?.value ? +document.getElementById('failure-depth').value : null,
+        description: document.getElementById('failure-description')?.value || null,
+        source: window._source || 'demo',
+    };
+    try {
+        const r = await fetch('/api/feedback/failure-case', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        });
+        const d = await r.json();
+        showToast('Failure Recorded', `Case #${d.case_id} recorded. Use "Analyze Patterns" to see trends.`, 'warning');
+        // Clear form
+        ['failure-predicted', 'failure-actual', 'failure-depth', 'failure-description'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+    } catch(e) {
+        showToast('Error', e.message, 'danger');
+    }
+}
+
+async function retrainWithFailures() {
+    const el = document.getElementById('failure-analysis-result');
+    const well = document.getElementById('well-select')?.value || '3P';
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Retraining with failure-aware weights... (may take 10-20s)</div>';
+    try {
+        const r = await fetch('/api/feedback/retrain-with-failures', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({well, source: window._source || 'demo'})
+        });
+        const d = await r.json();
+        if (d.message && !d.version) {
+            el.innerHTML = `<div class="alert alert-info">${d.message}</div>`;
+            return;
+        }
+        el.innerHTML = `
+            <div class="alert alert-success">
+                <strong>Retrained: Version ${d.version}</strong><br>
+                ${d.message}
+            </div>
+            <div class="row g-2">
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h5>${d.accuracy ? (d.accuracy * 100).toFixed(1) + '%' : '-'}</h5><small>Accuracy</small></div></div></div>
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h5>${d.n_failures_used}</h5><small>Failures Used</small></div></div></div>
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h5>${d.n_depths_weighted}</h5><small>Depth-Weighted</small></div></div></div>
+                <div class="col-md-3"><div class="card"><div class="card-body text-center"><h5>v${d.version}</h5><small>New Version</small></div></div></div>
+            </div>`;
+    } catch(e) {
+        el.innerHTML = `<div class="text-danger">Error: ${e.message}</div>`;
     }
 }
 

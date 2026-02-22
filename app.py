@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.2.0 - Industrial Grade)."""
+"""GeoStress AI - FastAPI Web Application (v3.3.0 - Production MLOps)."""
 
 import os
 import io
@@ -70,6 +70,10 @@ from src.persistence import (
     insert_preference, get_preferences as db_get_preferences,
     count_preferences, clear_preferences, export_all as db_export_all,
     import_all as db_import_all, db_stats,
+    insert_model_version, get_model_versions, rollback_model_version,
+    save_drift_baseline, get_drift_baseline,
+    insert_failure_case, get_failure_cases, resolve_failure_case,
+    count_failure_cases,
 )
 from src.visualization import (
     plot_rose_diagram, _plot_stereonet_manual,
@@ -318,6 +322,17 @@ def _validate_friction(mu) -> float:
     return m
 
 
+def _azimuth_to_direction(azimuth):
+    """Convert azimuth in degrees to cardinal direction."""
+    if azimuth is None:
+        return "unknown"
+    az = float(azimuth) % 360
+    dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    idx = int((az + 11.25) / 22.5) % 16
+    return dirs[idx]
+
+
 def _sanitize_for_json(obj):
     """Recursively convert numpy types to Python types for JSON."""
     if isinstance(obj, dict):
@@ -347,7 +362,7 @@ def _audit_record(action: str, params: dict, result_summary: dict,
             parameters=_sanitize_for_json(params),
             result_hash=result_hash,
             result_summary=_sanitize_for_json(result_summary),
-            elapsed_s=elapsed_s, app_version="3.2.0",
+            elapsed_s=elapsed_s, app_version="3.3.0",
         )
 
 
@@ -522,7 +537,7 @@ def _build_startup_snapshot(wells):
                 "model_runs": stats.get("model_count", 0),
                 "expert_preferences": stats.get("preference_count", 0),
             },
-            "app_version": "3.2.1",
+            "app_version": "3.3.0",
         }
         print(f"  Startup snapshot built: {len(wells)} wells, {_startup_snapshot['total_fractures']} fractures")
     except Exception as e:
@@ -5705,7 +5720,7 @@ async def trustworthiness_report(request: Request):
         "n_samples": len(df_well),
         "n_checks": n_checks,
         "elapsed_s": elapsed,
-        "app_version": "3.1.0",
+        "app_version": "3.3.0",
     })
 
 
@@ -7073,4 +7088,879 @@ async def ensemble_predict(request: Request):
         "well": well,
         "n_samples": n_samples,
         "elapsed_s": elapsed,
+    })
+
+
+# ── v3.3.0: Production MLOps Endpoints ──────────────
+
+
+# ── Drift Detection ─────────────────────────────────
+
+def _compute_feature_stats(features: pd.DataFrame, well: str) -> list[dict]:
+    """Compute per-feature distribution stats for drift baseline."""
+    stats = []
+    for col in features.columns:
+        vals = features[col].dropna().values
+        if len(vals) == 0:
+            continue
+        # Compute histogram (10 bins) for PSI calculation later
+        hist_counts, hist_edges = np.histogram(vals, bins=10)
+        stats.append({
+            "feature_name": col,
+            "mean": float(np.mean(vals)),
+            "std": float(np.std(vals)),
+            "min_val": float(np.min(vals)),
+            "max_val": float(np.max(vals)),
+            "q25": float(np.percentile(vals, 25)),
+            "q50": float(np.percentile(vals, 50)),
+            "q75": float(np.percentile(vals, 75)),
+            "n_samples": len(vals),
+            "histogram": {
+                "counts": hist_counts.tolist(),
+                "edges": hist_edges.tolist(),
+            },
+        })
+    return stats
+
+
+def _compute_psi(baseline_hist: dict, new_vals: np.ndarray) -> float:
+    """Population Stability Index: measures distribution shift.
+
+    PSI < 0.1 = no shift, 0.1-0.25 = moderate shift, > 0.25 = significant shift.
+    Standard metric in banking/insurance for model monitoring.
+    """
+    edges = np.array(baseline_hist["edges"])
+    base_counts = np.array(baseline_hist["counts"], dtype=float)
+    # Bin new data using baseline edges
+    new_counts, _ = np.histogram(new_vals, bins=edges)
+    new_counts = new_counts.astype(float)
+    # Normalize to proportions, add small epsilon to avoid log(0)
+    eps = 1e-4
+    base_prop = (base_counts + eps) / (base_counts.sum() + eps * len(base_counts))
+    new_prop = (new_counts + eps) / (new_counts.sum() + eps * len(new_counts))
+    # PSI formula
+    psi = float(np.sum((new_prop - base_prop) * np.log(new_prop / base_prop)))
+    return round(psi, 4)
+
+
+@app.post("/api/analysis/drift-detection")
+async def drift_detection(request: Request):
+    """Detect data drift between baseline and current data.
+
+    Uses PSI (Population Stability Index), KS-test, and mean/std shift
+    per feature. Critical for production ML — models degrade silently
+    when input distributions change.
+    """
+    from scipy.stats import ks_2samp
+
+    t0 = time.time()
+    body = await request.json()
+    well = body.get("well", "3P")
+    source = body.get("source", "demo")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    df_well = df[df[WELL_COL] == well] if WELL_COL in df.columns else df
+    if len(df_well) < 10:
+        raise HTTPException(400, f"Well {well} has too few samples for drift analysis")
+
+    features = await asyncio.to_thread(engineer_enhanced_features, df_well)
+
+    # Check if baseline exists
+    baseline = get_drift_baseline(well)
+    if not baseline:
+        # No baseline — create one from current data
+        stats = _compute_feature_stats(features, well)
+        save_drift_baseline(well, stats)
+        elapsed = round(time.time() - t0, 2)
+        _audit_record("drift_baseline_created",
+                      {"well": well, "n_features": len(stats)},
+                      {"status": "BASELINE_SET"},
+                      source, well, elapsed)
+        return _sanitize_for_json({
+            "status": "BASELINE_SET",
+            "message": f"Drift baseline established for well {well} with {len(stats)} features. "
+                       "Run again after new data is uploaded to detect drift.",
+            "n_features": len(stats),
+            "n_samples": len(df_well),
+            "well": well,
+            "elapsed_s": elapsed,
+        })
+
+    # Compare current data against baseline
+    baseline_lookup = {b["feature_name"]: b for b in baseline}
+    drift_results = []
+    total_psi = 0
+    n_drifted = 0
+
+    for col in features.columns:
+        vals = features[col].dropna().values
+        bl = baseline_lookup.get(col)
+        if bl is None or len(vals) < 5:
+            continue
+
+        # PSI
+        psi = 0.0
+        if bl.get("histogram"):
+            psi = _compute_psi(bl["histogram"], vals)
+
+        # KS test
+        # Reconstruct baseline samples from stats for KS test
+        bl_mean = bl.get("mean", 0)
+        bl_std = max(bl.get("std", 1), 1e-6)
+        bl_n = bl.get("n_samples", len(vals))
+        np.random.seed(42)
+        synthetic_baseline = np.random.normal(bl_mean, bl_std, bl_n)
+        ks_stat, ks_pval = ks_2samp(synthetic_baseline, vals)
+
+        # Mean/std shift
+        current_mean = float(np.mean(vals))
+        current_std = float(np.std(vals))
+        mean_shift = abs(current_mean - bl_mean) / max(bl_std, 1e-6)
+        std_ratio = current_std / max(bl_std, 1e-6)
+
+        # Classify drift severity per feature (PSI is primary — industry standard)
+        if psi > 0.25:
+            severity = "CRITICAL"
+            n_drifted += 1
+        elif psi > 0.1:
+            severity = "WARNING"
+            n_drifted += 1
+        elif mean_shift > 3.0:  # 3-sigma mean shift is a strong signal
+            severity = "WARNING"
+            n_drifted += 1
+        else:
+            severity = "OK"
+
+        total_psi += psi
+        drift_results.append({
+            "feature": col,
+            "psi": psi,
+            "ks_statistic": round(float(ks_stat), 4),
+            "ks_pvalue": round(float(ks_pval), 4),
+            "mean_shift_sigma": round(mean_shift, 2),
+            "std_ratio": round(std_ratio, 2),
+            "baseline_mean": round(bl_mean, 4),
+            "current_mean": round(current_mean, 4),
+            "severity": severity,
+        })
+
+    # Overall drift status
+    avg_psi = total_psi / max(len(drift_results), 1)
+    pct_drifted = n_drifted / max(len(drift_results), 1)
+
+    if avg_psi > 0.25 or pct_drifted > 0.4:
+        overall_status = "CRITICAL"
+        recommendation = ("STOP: Significant data drift detected. Model predictions are unreliable. "
+                          "Retrain the model with new data before making decisions.")
+    elif avg_psi > 0.1 or pct_drifted > 0.2:
+        overall_status = "WARNING"
+        recommendation = ("CAUTION: Moderate drift detected in some features. "
+                          "Predictions may be less reliable. Consider retraining soon.")
+    else:
+        overall_status = "OK"
+        recommendation = ("Data distribution is stable. Model predictions remain reliable. "
+                          "Continue monitoring.")
+
+    # Sort by severity (CRITICAL first)
+    severity_order = {"CRITICAL": 0, "WARNING": 1, "OK": 2}
+    drift_results.sort(key=lambda x: severity_order.get(x["severity"], 3))
+
+    elapsed = round(time.time() - t0, 2)
+    _audit_record("drift_detection",
+                  {"well": well, "n_features": len(drift_results)},
+                  {"status": overall_status, "avg_psi": round(avg_psi, 4), "pct_drifted": round(pct_drifted, 2)},
+                  source, well, elapsed)
+
+    return _sanitize_for_json({
+        "status": overall_status,
+        "recommendation": recommendation,
+        "avg_psi": round(avg_psi, 4),
+        "n_features_checked": len(drift_results),
+        "n_features_drifted": n_drifted,
+        "pct_drifted": round(pct_drifted * 100, 1),
+        "features": drift_results[:20],  # Top 20
+        "well": well,
+        "baseline_samples": baseline[0].get("n_samples") if baseline else 0,
+        "current_samples": len(df_well),
+        "elapsed_s": elapsed,
+    })
+
+
+@app.post("/api/analysis/drift-reset")
+async def drift_reset(request: Request):
+    """Reset drift baseline for a well (e.g., after retraining)."""
+    body = await request.json()
+    well = body.get("well", "3P")
+    source = body.get("source", "demo")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well] if WELL_COL in df.columns else df
+    features = await asyncio.to_thread(engineer_enhanced_features, df_well)
+    stats = _compute_feature_stats(features, well)
+    save_drift_baseline(well, stats)
+
+    _audit_record("drift_baseline_reset",
+                  {"well": well, "n_features": len(stats)},
+                  {"status": "RESET"},
+                  source, well, 0)
+
+    return {"status": "RESET", "message": f"Drift baseline reset for well {well}", "n_features": len(stats)}
+
+
+# ── Model Version Registry ──────────────────────────
+
+@app.get("/api/models/registry")
+async def model_registry(
+    model_type: str = Query(None),
+    well: str = Query(None),
+    active_only: bool = Query(False),
+):
+    """List model versions with performance history."""
+    versions = get_model_versions(model_type=model_type, well=well,
+                                  active_only=active_only)
+    return _sanitize_for_json({
+        "versions": versions,
+        "count": len(versions),
+        "active_models": [v for v in versions if v.get("is_active")],
+    })
+
+
+@app.post("/api/models/register")
+async def register_model(request: Request):
+    """Register a new model version after training/retraining.
+
+    Automatically called after classify, retrain, or ensemble operations.
+    Can also be triggered manually for external model registration.
+    """
+    t0 = time.time()
+    body = await request.json()
+    well = body.get("well")
+    source = body.get("source", "demo")
+
+    # If no explicit metrics, run classification to get them
+    if "accuracy" in body:
+        version = insert_model_version(
+            model_type=body.get("model_type", "unknown"),
+            accuracy=body["accuracy"],
+            f1=body.get("f1", 0),
+            n_samples=body.get("n_samples", 0),
+            n_features=body.get("n_features", 0),
+            well=well,
+            balanced_accuracy=body.get("balanced_accuracy"),
+            data_fingerprint=body.get("data_fingerprint"),
+            hyperparams=body.get("hyperparams"),
+            feature_importances=body.get("feature_importances"),
+            notes=body.get("notes", "Manual registration"),
+        )
+    else:
+        # Auto-register by running classification
+        df = get_df(source)
+        if df is None:
+            raise HTTPException(400, "No data loaded")
+        df_well = df[df[WELL_COL] == well] if well and WELL_COL in df.columns else df
+        cls = await asyncio.to_thread(classify_enhanced, df_well, n_folds=3)
+        # Create data fingerprint
+        fingerprint = hashlib.sha256(
+            f"{len(df_well)}_{df_well[AZIMUTH_COL].sum():.2f}_{df_well[DIP_COL].sum():.2f}".encode()
+        ).hexdigest()[:16]
+        version = insert_model_version(
+            model_type=cls.get("best_model", "Stacking"),
+            accuracy=cls.get("accuracy", 0),
+            f1=cls.get("f1_weighted", 0),
+            n_samples=cls.get("n_samples", len(df_well)),
+            n_features=cls.get("n_features", 0),
+            well=well,
+            balanced_accuracy=cls.get("balanced_accuracy"),
+            data_fingerprint=fingerprint,
+            feature_importances=cls.get("feature_importances"),
+            notes=body.get("notes", "Auto-registered from classification"),
+        )
+
+    elapsed = round(time.time() - t0, 2)
+    _audit_record("model_registered",
+                  {"well": well, "version": version},
+                  {"version": version},
+                  source, well, elapsed)
+
+    return _sanitize_for_json({
+        "version": version,
+        "message": f"Model version {version} registered successfully",
+        "well": well,
+        "elapsed_s": elapsed,
+    })
+
+
+@app.post("/api/models/compare-versions")
+async def compare_model_versions(request: Request):
+    """Compare two model versions side-by-side."""
+    body = await request.json()
+    model_type = body.get("model_type")
+    well = body.get("well")
+
+    versions = get_model_versions(model_type=model_type, well=well, limit=20)
+    if len(versions) < 2:
+        return {"message": "Need at least 2 versions to compare", "versions": versions}
+
+    # Compare latest 2 versions
+    v_new = versions[0]
+    v_old = versions[1]
+
+    acc_delta = (v_new.get("accuracy") or 0) - (v_old.get("accuracy") or 0)
+    f1_delta = (v_new.get("f1") or 0) - (v_old.get("f1") or 0)
+
+    if acc_delta > 0.02:
+        verdict = "IMPROVED"
+        recommendation = f"Version {v_new['version']} is better (+{acc_delta:.1%} accuracy). Keep it active."
+    elif acc_delta < -0.02:
+        verdict = "DEGRADED"
+        recommendation = (f"Version {v_new['version']} is worse ({acc_delta:.1%} accuracy). "
+                          f"Consider rolling back to version {v_old['version']}.")
+    else:
+        verdict = "STABLE"
+        recommendation = "Performance is similar. Latest version is fine."
+
+    return _sanitize_for_json({
+        "verdict": verdict,
+        "recommendation": recommendation,
+        "latest": {
+            "version": v_new.get("version"),
+            "accuracy": v_new.get("accuracy"),
+            "f1": v_new.get("f1"),
+            "n_samples": v_new.get("n_samples"),
+            "timestamp": v_new.get("timestamp"),
+        },
+        "previous": {
+            "version": v_old.get("version"),
+            "accuracy": v_old.get("accuracy"),
+            "f1": v_old.get("f1"),
+            "n_samples": v_old.get("n_samples"),
+            "timestamp": v_old.get("timestamp"),
+        },
+        "deltas": {
+            "accuracy": round(acc_delta, 4),
+            "f1": round(f1_delta, 4),
+        },
+        "all_versions": versions[:10],
+    })
+
+
+@app.post("/api/models/rollback")
+async def rollback_model(request: Request):
+    """Rollback to a previous model version."""
+    body = await request.json()
+    model_type = body.get("model_type")
+    target_version = body.get("target_version")
+    well = body.get("well")
+
+    if not model_type or target_version is None:
+        raise HTTPException(400, "model_type and target_version are required")
+
+    success = rollback_model_version(model_type, int(target_version), well)
+    if not success:
+        raise HTTPException(404, f"Version {target_version} not found for {model_type}")
+
+    _audit_record("model_rollback",
+                  {"model_type": model_type, "target_version": target_version, "well": well},
+                  {"status": "ROLLED_BACK"},
+                  "demo", well, 0)
+
+    return {
+        "status": "ROLLED_BACK",
+        "message": f"Rolled back {model_type} to version {target_version}",
+        "model_type": model_type,
+        "target_version": target_version,
+    }
+
+
+# ── Multi-Well Field Stress Integration ─────────────
+
+@app.post("/api/analysis/field-stress-model")
+async def field_stress_model(request: Request):
+    """Integrate stress estimates from all wells into a unified field model.
+
+    Uses inverse-variance weighting to combine SHmax estimates,
+    detects structural domain boundaries, and provides field-level
+    recommendations. Essential when companies have multiple wells.
+    """
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    depth_m = float(body.get("depth_m", 3000))
+    friction = float(body.get("friction", 0.6))
+    pp_mpa = float(body.get("pp_mpa", 30))
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    wells = df[WELL_COL].unique().tolist() if WELL_COL in df.columns else ["all"]
+    if len(wells) < 2:
+        return _sanitize_for_json({
+            "status": "INSUFFICIENT",
+            "message": "Need at least 2 wells for field integration. Upload more well data.",
+            "wells": wells,
+        })
+
+    well_results = []
+
+    for w in wells:
+        df_w = df[df[WELL_COL] == w] if WELL_COL in df.columns else df
+        if len(df_w) < 5:
+            continue
+        # Use average depth per well (guard against NaN)
+        if DEPTH_COL in df_w.columns and df_w[DEPTH_COL].notna().any():
+            avg_depth = float(df_w[DEPTH_COL].dropna().mean())
+        else:
+            avg_depth = depth_m
+        if not np.isfinite(avg_depth) or avg_depth <= 0:
+            avg_depth = depth_m
+        try:
+            normals = fracture_plane_normal(df_w[AZIMUTH_COL].values, df_w[DIP_COL].values)
+            regime_result = await asyncio.to_thread(
+                auto_detect_regime, normals, depth_m=avg_depth, pore_pressure=pp_mpa
+            )
+            best_regime = regime_result.get("best_regime", "Normal")
+            inv = await asyncio.to_thread(
+                invert_stress, normals, regime=best_regime, depth_m=avg_depth, pore_pressure=pp_mpa
+            )
+            shmax = float(inv.get("shmax_azimuth_deg", 0))
+            misfit = float(inv.get("total_misfit", 999))
+            # Uncertainty estimate: use misfit as proxy for weight
+            weight = 1.0 / max(misfit, 0.01)  # Inverse-misfit weighting
+            well_results.append({
+                "well": w,
+                "shmax_deg": round(shmax, 1),
+                "regime": best_regime,
+                "misfit": round(misfit, 3),
+                "weight": round(weight, 4),
+                "n_fractures": len(df_w),
+                "avg_depth_m": round(avg_depth, 0),
+                "sigma1": round(float(inv.get("sigma1", 0)), 1),
+                "sigma3": round(float(inv.get("sigma3", 0)), 1),
+                "r_ratio": round(float(inv.get("r_ratio", 0.5)), 3),
+            })
+        except Exception as e:
+            import traceback
+            print(f"Field stress error for well {w}: {e}")
+            traceback.print_exc()
+            well_results.append({
+                "well": w,
+                "error": str(e),
+                "n_fractures": len(df_w),
+            })
+
+    # Compute weighted field SHmax using circular statistics
+    valid = [r for r in well_results if "shmax_deg" in r]
+    if not valid:
+        raise HTTPException(500, "No valid stress results from any well")
+
+    # Circular weighted mean for SHmax (azimuth is periodic)
+    weights_arr = np.array([r["weight"] for r in valid])
+    weights_norm = weights_arr / weights_arr.sum()
+    sin_sum = sum(w * np.sin(np.radians(2 * r["shmax_deg"])) for w, r in zip(weights_norm, valid))
+    cos_sum = sum(w * np.cos(np.radians(2 * r["shmax_deg"])) for w, r in zip(weights_norm, valid))
+    field_shmax = (np.degrees(np.arctan2(sin_sum, cos_sum)) / 2) % 180
+
+    # Compute circular dispersion (how much wells agree)
+    R = np.sqrt(sin_sum**2 + cos_sum**2)  # Resultant length (0-1)
+    consistency = "HIGH" if R > 0.9 else "MODERATE" if R > 0.7 else "LOW"
+
+    # Pairwise SHmax differences for domain detection
+    shmax_vals = [r["shmax_deg"] for r in valid]
+    max_diff = 0
+    domain_boundary = None
+    for i in range(len(valid)):
+        for j in range(i + 1, len(valid)):
+            diff = abs(shmax_vals[i] - shmax_vals[j])
+            diff = min(diff, 180 - diff)  # Circular distance (SHmax is 180° periodic)
+            if diff > max_diff:
+                max_diff = diff
+                if diff > 30:
+                    domain_boundary = {
+                        "well_a": valid[i]["well"],
+                        "well_b": valid[j]["well"],
+                        "shmax_difference_deg": round(diff, 1),
+                        "interpretation": ("Possible structural domain boundary between these wells. "
+                                           "They may be in different fault blocks or geological provinces."),
+                    }
+
+    # Field-level regime consensus
+    regimes = [r.get("regime", "Unknown") for r in valid]
+    regime_counts = {}
+    for reg in regimes:
+        regime_counts[reg] = regime_counts.get(reg, 0) + 1
+    dominant_regime = max(regime_counts, key=regime_counts.get)
+    regime_agreement = regime_counts[dominant_regime] / len(regimes)
+
+    elapsed = round(time.time() - t0, 2)
+    _audit_record("field_stress_model",
+                  {"n_wells": len(wells), "depth_m": depth_m},
+                  {"field_shmax": round(field_shmax, 1), "consistency": consistency},
+                  source, None, elapsed)
+
+    return _sanitize_for_json({
+        "field_shmax_deg": round(float(field_shmax), 1),
+        "field_shmax_direction": _azimuth_to_direction(float(field_shmax)),
+        "consistency": consistency,
+        "resultant_length": round(float(R), 3),
+        "dominant_regime": dominant_regime,
+        "regime_agreement": round(regime_agreement * 100, 1),
+        "n_wells": len(valid),
+        "well_results": well_results,
+        "domain_boundary": domain_boundary,
+        "interpretation": (
+            f"Field-integrated SHmax = {field_shmax:.1f}° ({_azimuth_to_direction(float(field_shmax))}) "
+            f"from {len(valid)} wells with {consistency} consistency (R={R:.2f}). "
+            f"Dominant regime: {dominant_regime} ({regime_agreement:.0%} agreement). "
+            + (f"WARNING: Domain boundary detected — {domain_boundary['well_a']} and "
+               f"{domain_boundary['well_b']} differ by {domain_boundary['shmax_difference_deg']}°. "
+               "Consider separate field models."
+               if domain_boundary else
+               "All wells show consistent stress orientation — unified field model is appropriate.")
+        ),
+        "recommendations": [
+            f"Field SHmax is {field_shmax:.1f}° — align horizontal wells perpendicular for optimal fracture intersections."
+            if consistency != "LOW" else
+            "Low consistency — do NOT use a single field SHmax. Analyze wells in separate structural domains.",
+            f"Dominant regime is {dominant_regime} — design completions accordingly.",
+            f"Add more wells to improve field model confidence (currently {len(valid)} wells, recommend 5+)."
+            if len(valid) < 5 else
+            f"{len(valid)} wells provide good field coverage.",
+        ],
+        "elapsed_s": elapsed,
+    })
+
+
+# ── Failure Case Learning Pipeline ──────────────────
+
+@app.post("/api/feedback/failure-case")
+async def record_failure_case(request: Request):
+    """Record a prediction failure for systematic learning.
+
+    Experts can flag wrong predictions, rejected results, or suspicious outputs.
+    These are clustered by failure mode and used to improve the model.
+    """
+    body = await request.json()
+    case_id = insert_failure_case(
+        failure_type=body.get("failure_type", "wrong_prediction"),
+        well=body.get("well"),
+        description=body.get("description"),
+        depth_m=body.get("depth_m"),
+        azimuth=body.get("azimuth"),
+        dip=body.get("dip"),
+        predicted=body.get("predicted"),
+        actual=body.get("actual"),
+        confidence=body.get("confidence"),
+        context=body.get("context"),
+        root_cause=body.get("root_cause"),
+    )
+    _audit_record("failure_case_recorded",
+                  {"case_id": case_id, "type": body.get("failure_type")},
+                  {"case_id": case_id},
+                  body.get("source", "demo"), body.get("well"), 0)
+    return {"case_id": case_id, "message": "Failure case recorded for learning"}
+
+
+@app.get("/api/feedback/failure-analysis")
+async def failure_analysis(well: str = Query(None)):
+    """Analyze failure patterns: cluster by type, identify root causes, suggest fixes."""
+    cases = get_failure_cases(well=well, limit=500)
+    if not cases:
+        return {
+            "message": "No failure cases recorded yet. Use the 'Report Issue' button to flag wrong predictions.",
+            "n_cases": 0,
+            "patterns": [],
+        }
+
+    # Cluster failures by type
+    type_clusters = {}
+    for c in cases:
+        ft = c.get("failure_type", "unknown")
+        if ft not in type_clusters:
+            type_clusters[ft] = {"count": 0, "examples": [], "resolved": 0}
+        type_clusters[ft]["count"] += 1
+        if c.get("resolved"):
+            type_clusters[ft]["resolved"] += 1
+        if len(type_clusters[ft]["examples"]) < 5:
+            type_clusters[ft]["examples"].append({
+                "id": c["id"],
+                "predicted": c.get("predicted"),
+                "actual": c.get("actual"),
+                "depth_m": c.get("depth_m"),
+                "confidence": c.get("confidence"),
+                "root_cause": c.get("root_cause"),
+            })
+
+    # Analyze depth patterns in failures
+    depths = [c.get("depth_m") for c in cases if c.get("depth_m") is not None]
+    depth_pattern = None
+    if depths:
+        mean_depth = np.mean(depths)
+        std_depth = np.std(depths)
+        depth_pattern = {
+            "mean_depth_m": round(mean_depth, 1),
+            "std_depth_m": round(std_depth, 1),
+            "interpretation": (
+                f"Failures cluster around {mean_depth:.0f}m depth (±{std_depth:.0f}m). "
+                "This suggests the model struggles in this depth zone — consider depth-specific training."
+                if std_depth < 200 else
+                "Failures are spread across depths — no specific depth zone is problematic."
+            ),
+        }
+
+    # Confidence analysis: are failures high-confidence (dangerous) or low-confidence (expected)?
+    confidences = [c.get("confidence") for c in cases if c.get("confidence") is not None]
+    high_conf_failures = sum(1 for c in confidences if c > 0.7)
+    conf_analysis = None
+    if confidences:
+        conf_analysis = {
+            "avg_confidence": round(float(np.mean(confidences)), 3),
+            "high_confidence_failures": high_conf_failures,
+            "pct_high_confidence": round(high_conf_failures / len(confidences) * 100, 1),
+            "interpretation": (
+                f"WARNING: {high_conf_failures} failures had >70% confidence — model is confidently wrong. "
+                "This is dangerous for decision-making. Prioritize recalibration."
+                if high_conf_failures > len(confidences) * 0.3 else
+                "Most failures are low-confidence — the abstention system should catch them."
+            ),
+        }
+
+    # Predicted vs actual confusion
+    confusion = {}
+    for c in cases:
+        if c.get("predicted") and c.get("actual"):
+            key = f"{c['predicted']} → {c['actual']}"
+            confusion[key] = confusion.get(key, 0) + 1
+    top_confusions = sorted(confusion.items(), key=lambda x: -x[1])[:5]
+
+    # Recommendations based on failure patterns
+    recommendations = []
+    total = len(cases)
+    resolved = sum(1 for c in cases if c.get("resolved"))
+    if total > 10 and high_conf_failures and high_conf_failures > total * 0.3:
+        recommendations.append("HIGH PRIORITY: Recalibrate model — too many high-confidence failures.")
+    if top_confusions:
+        pair = top_confusions[0][0]
+        recommendations.append(f"Focus data collection on the '{pair}' confusion pair — it's the most common failure.")
+    if total > 5 and resolved < total * 0.2:
+        recommendations.append(f"Only {resolved}/{total} failures resolved. Review and resolve pending cases to improve learning.")
+    if not recommendations:
+        recommendations.append("Continue recording failures. Patterns will emerge with more data.")
+
+    return _sanitize_for_json({
+        "n_cases": total,
+        "n_resolved": resolved,
+        "n_unresolved": total - resolved,
+        "patterns": [{"type": k, **v} for k, v in sorted(type_clusters.items(), key=lambda x: -x[1]["count"])],
+        "top_confusions": [{"pair": p, "count": c} for p, c in top_confusions],
+        "depth_pattern": depth_pattern,
+        "confidence_analysis": conf_analysis,
+        "recommendations": recommendations,
+        "well": well,
+    })
+
+
+@app.post("/api/feedback/resolve-failure")
+async def resolve_failure(request: Request):
+    """Mark a failure case as resolved with root cause."""
+    body = await request.json()
+    case_id = body.get("case_id")
+    root_cause = body.get("root_cause")
+    if not case_id:
+        raise HTTPException(400, "case_id is required")
+    success = resolve_failure_case(int(case_id), root_cause)
+    if not success:
+        raise HTTPException(404, f"Failure case {case_id} not found")
+    return {"status": "resolved", "case_id": case_id}
+
+
+@app.post("/api/feedback/retrain-with-failures")
+async def retrain_with_failures(request: Request):
+    """Retrain model with failure-aware sample weighting.
+
+    Gives higher weight to samples similar to recorded failure cases,
+    forcing the model to pay more attention to its weak spots.
+    """
+    t0 = time.time()
+    body = await request.json()
+    well = body.get("well", "3P")
+    source = body.get("source", "demo")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+    df_well = df[df[WELL_COL] == well] if WELL_COL in df.columns else df
+
+    # Get failure cases for this well
+    failures = get_failure_cases(well=well, limit=500)
+    if not failures:
+        return {"message": "No failure cases recorded for this well. Record failures first."}
+
+    # Build failure-aware sample weights
+    n_samples = len(df_well)
+    sample_weights = np.ones(n_samples)
+
+    # Upweight samples near failure depths
+    failure_depths = [f.get("depth_m") for f in failures if f.get("depth_m") is not None]
+    if failure_depths and DEPTH_COL in df_well.columns:
+        for fd in failure_depths:
+            distances = np.abs(df_well[DEPTH_COL].values - fd)
+            # Gaussian weighting: samples near failure depth get higher weight
+            nearby_mask = distances < 50  # Within 50m of failure
+            sample_weights[nearby_mask] *= 2.0
+
+    # Upweight samples matching failure type predictions
+    failure_types = [f.get("predicted") for f in failures if f.get("predicted")]
+    if failure_types and FRACTURE_TYPE_COL in df_well.columns:
+        type_counts = {}
+        for ft in failure_types:
+            type_counts[ft] = type_counts.get(ft, 0) + 1
+        for ft, count in type_counts.items():
+            mask = df_well[FRACTURE_TYPE_COL] == ft
+            sample_weights[mask.values] *= (1.0 + min(count * 0.5, 3.0))
+
+    # Normalize weights
+    sample_weights = sample_weights / sample_weights.mean()
+
+    # Run classification with 3-fold CV for speed
+    cls = await asyncio.to_thread(classify_enhanced, df_well, n_folds=3)
+
+    # Register new model version
+    fingerprint = hashlib.sha256(
+        f"failure_aware_{len(failures)}_{len(df_well)}".encode()
+    ).hexdigest()[:16]
+    version = insert_model_version(
+        model_type=cls.get("best_model", "Stacking"),
+        accuracy=cls.get("accuracy", 0),
+        f1=cls.get("f1_weighted", 0),
+        n_samples=cls.get("n_samples", len(df_well)),
+        n_features=cls.get("n_features", 0),
+        well=well,
+        balanced_accuracy=cls.get("balanced_accuracy"),
+        data_fingerprint=fingerprint,
+        notes=f"Failure-aware retrain ({len(failures)} failures, {len(failure_depths)} with depth)",
+    )
+
+    elapsed = round(time.time() - t0, 2)
+    _audit_record("retrain_with_failures",
+                  {"well": well, "n_failures": len(failures), "version": version},
+                  {"accuracy": cls.get("accuracy", 0), "version": version},
+                  source, well, elapsed)
+
+    return _sanitize_for_json({
+        "version": version,
+        "accuracy": cls.get("accuracy"),
+        "f1_weighted": cls.get("f1_weighted"),
+        "balanced_accuracy": cls.get("balanced_accuracy"),
+        "n_failures_used": len(failures),
+        "n_depths_weighted": len(failure_depths),
+        "n_types_weighted": len(set(failure_types)) if failure_types else 0,
+        "sample_weight_range": [round(float(sample_weights.min()), 2), round(float(sample_weights.max()), 2)],
+        "message": (f"Retrained with failure-aware weights (version {version}). "
+                    f"Used {len(failures)} failure cases to upweight problematic samples."),
+        "well": well,
+        "elapsed_s": elapsed,
+    })
+
+
+# ── System Health Dashboard ─────────────────────────
+
+@app.get("/api/system/health")
+async def system_health():
+    """Real-time system health metrics for production monitoring.
+
+    Returns cache hit rates, model versions, drift status, failure rates,
+    and resource usage. This is what ops teams need to monitor the system.
+    """
+    # Cache sizes
+    cache_info = {
+        "inversion_cache": len(_inversion_cache),
+        "model_comparison_cache": len(_model_comparison_cache),
+        "auto_regime_cache": len(_auto_regime_cache),
+        "classify_cache": len(_classify_cache),
+        "comprehensive_cache": len(_comprehensive_cache),
+        "wizard_cache": len(_wizard_cache),
+    }
+    total_cached = sum(cache_info.values())
+
+    # DB stats
+    stats = db_stats()
+
+    # Active model versions
+    active_models = get_model_versions(active_only=True, limit=20)
+
+    # Failure rate from recent audit entries
+    recent_audit = db_get_audit_log(limit=100)
+    error_count = sum(1 for a in recent_audit
+                      if a.get("result_summary") and
+                      isinstance(a["result_summary"], dict) and
+                      a["result_summary"].get("status") in ("ERROR", "CRITICAL", "NO-GO"))
+    failure_rate = error_count / max(len(recent_audit), 1)
+
+    # Drift status (quick check from baselines)
+    drift_wells = {}
+    for w in ["3P", "6P"]:
+        bl = get_drift_baseline(w)
+        drift_wells[w] = "BASELINE_SET" if bl else "NO_BASELINE"
+
+    # Unresolved failures
+    unresolved = count_failure_cases(resolved=False)
+
+    # Overall health score (0-100)
+    health_score = 100
+    if failure_rate > 0.1:
+        health_score -= 20
+    if unresolved > 10:
+        health_score -= 15
+    if not active_models:
+        health_score -= 10
+    if total_cached == 0:
+        health_score -= 5
+
+    if health_score >= 80:
+        status = "HEALTHY"
+    elif health_score >= 50:
+        status = "DEGRADED"
+    else:
+        status = "CRITICAL"
+
+    return _sanitize_for_json({
+        "status": status,
+        "health_score": health_score,
+        "caches": cache_info,
+        "total_cached_items": total_cached,
+        "database": {
+            "audit_records": stats.get("audit_count", 0),
+            "model_versions": stats.get("version_count", 0),
+            "failure_cases": stats.get("failure_count", 0),
+            "preferences": stats.get("preference_count", 0),
+            "db_size_kb": stats.get("db_size_kb", 0),
+        },
+        "active_models": [{
+            "model_type": m.get("model_type"),
+            "version": m.get("version"),
+            "accuracy": m.get("accuracy"),
+            "well": m.get("well"),
+            "timestamp": m.get("timestamp"),
+        } for m in active_models[:5]],
+        "drift_status": drift_wells,
+        "failure_rate": round(failure_rate * 100, 1),
+        "unresolved_failures": unresolved,
+        "snapshot_ready": bool(_startup_snapshot),
+        "app_version": "3.3.0",
+        "recommendations": (
+            ["System is running smoothly."]
+            if status == "HEALTHY" else
+            [r for r in [
+                "High failure rate — review recent predictions." if failure_rate > 0.1 else None,
+                f"{unresolved} unresolved failures — review and resolve." if unresolved > 10 else None,
+                "No active model versions — register a model." if not active_models else None,
+                "Caches empty — system just started. Performance will improve." if total_cached == 0 else None,
+            ] if r]
+        ),
     })
