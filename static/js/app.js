@@ -3017,6 +3017,137 @@ async function runPreferenceModel() {
     }
 }
 
+// ── Balanced Classification (SMOTE) ───────────────
+
+async function runBalancedClassify() {
+    showLoading("Running balanced classification with SMOTE oversampling...");
+    try {
+        var r = await api("/api/analysis/balanced-classify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, source: currentSource })
+        }, 120);
+        var el = document.getElementById("bc-results");
+        if (!el) return;
+
+        // Brief
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("bc-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        // Metrics
+        var bestMethod = r.best_method || "smote";
+        var bestBal = r.methods[bestMethod] ? (r.methods[bestMethod].balanced_accuracy * 100).toFixed(1) + "%" : "--";
+        document.getElementById("bc-best-method").textContent = bestMethod.replace(/_/g, " ");
+        document.getElementById("bc-best-balacc").textContent = bestBal;
+        document.getElementById("bc-samples").textContent = r.n_samples;
+        document.getElementById("bc-has-smote").textContent = r.has_smote ? "Yes" : "No";
+
+        // Methods table
+        var tbody = document.getElementById("bc-methods-body");
+        tbody.innerHTML = "";
+        Object.keys(r.methods).forEach(function(m) {
+            var v = r.methods[m];
+            var isBest = m === bestMethod;
+            tbody.innerHTML += '<tr' + (isBest ? ' class="table-success"' : '') + '>' +
+                '<td>' + m.replace(/_/g, " ") + (isBest ? ' <i class="bi bi-star-fill text-warning"></i>' : '') + '</td>' +
+                '<td>' + (v.accuracy * 100).toFixed(1) + '%</td>' +
+                '<td>' + (v.balanced_accuracy * 100).toFixed(1) + '%</td>' +
+                '<td>' + (v.f1 * 100).toFixed(1) + '%</td></tr>';
+        });
+
+        // Minority improvements
+        var mtbody = document.getElementById("bc-minority-body");
+        mtbody.innerHTML = "";
+        (r.minority_class_improvements || []).forEach(function(mi) {
+            var impColor = mi.improvement > 0 ? "text-success" : "text-muted";
+            mtbody.innerHTML += '<tr><td>' + mi["class"] + '</td><td>' + mi.count + '</td>' +
+                '<td>' + (mi.baseline_recall * 100).toFixed(1) + '%</td>' +
+                '<td>' + (mi.best_recall * 100).toFixed(1) + '%</td>' +
+                '<td class="' + impColor + '">' + (mi.improvement > 0 ? "+" : "") + (mi.improvement * 100).toFixed(1) + '%</td></tr>';
+        });
+
+        // Plot
+        if (r.plot) {
+            document.getElementById("bc-plot-img").innerHTML = '<img src="' + r.plot + '" class="img-fluid">';
+        }
+
+        el.classList.remove("d-none");
+        showToast("Balanced classify: best method=" + bestMethod + ", bal.acc=" + bestBal);
+    } catch (err) {
+        showToast("Balanced classify error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Industrial Readiness Scorecard ────────────────
+
+async function runReadinessScorecard() {
+    showLoading("Generating industrial readiness scorecard...");
+    try {
+        var r = await api("/api/report/readiness-scorecard", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, source: currentSource })
+        }, 120);
+        var el = document.getElementById("rs-results");
+        if (!el) return;
+
+        // Brief
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("rs-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        // Metrics
+        var rColor = r.readiness === "PRODUCTION" ? "text-success" : r.readiness === "PILOT" ? "text-info" :
+                     r.readiness === "DEVELOPMENT" ? "text-warning" : "text-danger";
+        document.getElementById("rs-readiness").className = "metric-value fs-5 " + rColor;
+        document.getElementById("rs-readiness").textContent = r.readiness;
+        document.getElementById("rs-score").textContent = r.overall_score + "/100";
+        document.getElementById("rs-samples").textContent = r.n_samples;
+        document.getElementById("rs-wells").textContent = r.n_wells;
+
+        // Dimensions table
+        var tbody = document.getElementById("rs-dimensions-body");
+        tbody.innerHTML = "";
+        (r.dimensions || []).forEach(function(d) {
+            var gc = d.grade === "A" ? "success" : d.grade === "B" ? "info" : d.grade === "C" ? "warning" :
+                     d.grade === "D" ? "secondary" : "danger";
+            tbody.innerHTML += '<tr><td><strong>' + d.dimension + '</strong></td>' +
+                '<td><span class="badge bg-' + gc + '">' + d.grade + '</span></td>' +
+                '<td>' + (d.score * 100).toFixed(0) + '%</td>' +
+                '<td class="small">' + d.detail + '</td>' +
+                '<td class="small text-muted">' + d.action + '</td>' +
+                '<td>' + d.weight + '%</td></tr>';
+        });
+
+        // Priority actions
+        if (r.priority_actions && r.priority_actions.length > 0) {
+            var pList = document.getElementById("rs-priority-list");
+            pList.innerHTML = "";
+            r.priority_actions.forEach(function(a) {
+                pList.innerHTML += '<li class="text-danger">' + a + '</li>';
+            });
+            document.getElementById("rs-priority-section").classList.remove("d-none");
+        }
+
+        // Plot
+        if (r.plot) {
+            document.getElementById("rs-plot-img").innerHTML = '<img src="' + r.plot + '" class="img-fluid">';
+        }
+
+        el.classList.remove("d-none");
+        showToast("Readiness: " + r.readiness + " (" + r.overall_score + "/100)");
+    } catch (err) {
+        showToast("Readiness scorecard error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 // ── Clustering ────────────────────────────────────
 
 async function runClustering() {

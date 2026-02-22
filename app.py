@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.14.0 - RLHF Preference + Data Validation)."""
+"""GeoStress AI - FastAPI Web Application (v3.15.0 - Balanced Classification + Readiness Scorecard)."""
 
 import os
 import io
@@ -964,7 +964,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.14.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.15.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -10936,6 +10936,516 @@ async def error_budget(request: Request):
     return _sanitize_for_json(result)
 
 
+# ── Balanced Classification with SMOTE ──────────────────────────────────
+
+@app.post("/api/analysis/balanced-classify")
+async def balanced_classify(request: Request):
+    """Classify with SMOTE oversampling and class-weight balancing.
+
+    Compares: (1) unbalanced baseline, (2) class_weight=balanced,
+    (3) SMOTE oversampling, (4) SMOTE + balanced weights.
+    Reports per-class recall improvement for minority types.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    classifier = body.get("classifier", "random_forest")
+    _validate_classifier(classifier)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.metrics import accuracy_score, f1_score, classification_report, balanced_accuracy_score
+        from sklearn.base import clone
+        from sklearn.ensemble import RandomForestClassifier
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        features = engineer_enhanced_features(df_well)
+        labels = df_well[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        class_names = le.classes_.tolist()
+        class_counts = {cn: int((y == i).sum()) for i, cn in enumerate(class_names)}
+
+        all_models = _get_models()
+        clf_name = classifier if classifier in all_models else "random_forest"
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        methods = {}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            # 1. Unbalanced baseline (force no class_weight)
+            base_model = clone(all_models[clf_name])
+            try:
+                base_model.set_params(class_weight=None)
+            except (ValueError, TypeError):
+                pass
+            pred_base = cross_val_predict(base_model, X, y, cv=cv)
+            report_base = classification_report(y, pred_base, target_names=class_names, output_dict=True, zero_division=0)
+            methods["unbalanced"] = {
+                "accuracy": round(float(accuracy_score(y, pred_base)), 4),
+                "balanced_accuracy": round(float(balanced_accuracy_score(y, pred_base)), 4),
+                "f1": round(float(f1_score(y, pred_base, average="weighted", zero_division=0)), 4),
+                "per_class": {cn: round(report_base.get(cn, {}).get("recall", 0), 3) for cn in class_names},
+            }
+
+            # 2. Class-weight balanced
+            bal_model = clone(all_models[clf_name])
+            try:
+                bal_model.set_params(class_weight="balanced")
+            except (ValueError, TypeError):
+                pass
+            pred_bal = cross_val_predict(bal_model, X, y, cv=cv)
+            report_bal = classification_report(y, pred_bal, target_names=class_names, output_dict=True, zero_division=0)
+            methods["balanced_weights"] = {
+                "accuracy": round(float(accuracy_score(y, pred_bal)), 4),
+                "balanced_accuracy": round(float(balanced_accuracy_score(y, pred_bal)), 4),
+                "f1": round(float(f1_score(y, pred_bal, average="weighted", zero_division=0)), 4),
+                "per_class": {cn: round(report_bal.get(cn, {}).get("recall", 0), 3) for cn in class_names},
+            }
+
+            # 3. SMOTE oversampling
+            try:
+                from imblearn.over_sampling import SMOTE
+                has_smote = True
+            except ImportError:
+                has_smote = False
+
+            if has_smote and min_count >= 2:
+                smote_accs = []
+                smote_preds = np.zeros_like(y)
+                k_neighbors = min(5, min_count - 1) if min_count > 1 else 1
+                for train_idx, test_idx in cv.split(X, y):
+                    try:
+                        sm = SMOTE(k_neighbors=k_neighbors, random_state=42)
+                        X_res, y_res = sm.fit_resample(X[train_idx], y[train_idx])
+                        m = clone(all_models[clf_name])
+                        try:
+                            m.set_params(class_weight=None)
+                        except (ValueError, TypeError):
+                            pass
+                        m.fit(X_res, y_res)
+                        preds = m.predict(X[test_idx])
+                        smote_preds[test_idx] = preds
+                        smote_accs.append(float(accuracy_score(y[test_idx], preds)))
+                    except Exception:
+                        m = clone(all_models[clf_name])
+                        m.fit(X[train_idx], y[train_idx])
+                        preds = m.predict(X[test_idx])
+                        smote_preds[test_idx] = preds
+                        smote_accs.append(float(accuracy_score(y[test_idx], preds)))
+
+                report_smote = classification_report(y, smote_preds, target_names=class_names, output_dict=True, zero_division=0)
+                methods["smote"] = {
+                    "accuracy": round(float(np.mean(smote_accs)), 4),
+                    "balanced_accuracy": round(float(balanced_accuracy_score(y, smote_preds)), 4),
+                    "f1": round(float(f1_score(y, smote_preds, average="weighted", zero_division=0)), 4),
+                    "per_class": {cn: round(report_smote.get(cn, {}).get("recall", 0), 3) for cn in class_names},
+                }
+
+                # 4. SMOTE + balanced weights
+                smote_bal_accs = []
+                smote_bal_preds = np.zeros_like(y)
+                for train_idx, test_idx in cv.split(X, y):
+                    try:
+                        sm = SMOTE(k_neighbors=k_neighbors, random_state=42)
+                        X_res, y_res = sm.fit_resample(X[train_idx], y[train_idx])
+                        m = clone(all_models[clf_name])
+                        try:
+                            m.set_params(class_weight="balanced")
+                        except (ValueError, TypeError):
+                            pass
+                        m.fit(X_res, y_res)
+                        preds = m.predict(X[test_idx])
+                        smote_bal_preds[test_idx] = preds
+                        smote_bal_accs.append(float(accuracy_score(y[test_idx], preds)))
+                    except Exception:
+                        m = clone(all_models[clf_name])
+                        m.fit(X[train_idx], y[train_idx])
+                        preds = m.predict(X[test_idx])
+                        smote_bal_preds[test_idx] = preds
+                        smote_bal_accs.append(float(accuracy_score(y[test_idx], preds)))
+
+                report_sb = classification_report(y, smote_bal_preds, target_names=class_names, output_dict=True, zero_division=0)
+                methods["smote_balanced"] = {
+                    "accuracy": round(float(np.mean(smote_bal_accs)), 4),
+                    "balanced_accuracy": round(float(balanced_accuracy_score(y, smote_bal_preds)), 4),
+                    "f1": round(float(f1_score(y, smote_bal_preds, average="weighted", zero_division=0)), 4),
+                    "per_class": {cn: round(report_sb.get(cn, {}).get("recall", 0), 3) for cn in class_names},
+                }
+
+        # Find best method by balanced accuracy
+        best_method = max(methods.keys(), key=lambda m: methods[m]["balanced_accuracy"])
+        best_bal_acc = methods[best_method]["balanced_accuracy"]
+        base_bal_acc = methods["unbalanced"]["balanced_accuracy"]
+        improvement = best_bal_acc - base_bal_acc
+
+        # Per-class improvement analysis
+        minority_classes = sorted(class_counts.items(), key=lambda x: x[1])[:3]
+        class_improvements = []
+        for cn, cnt in minority_classes:
+            base_recall = methods["unbalanced"]["per_class"].get(cn, 0)
+            best_recall = methods[best_method]["per_class"].get(cn, 0)
+            class_improvements.append({
+                "class": cn, "count": cnt,
+                "baseline_recall": base_recall,
+                "best_recall": best_recall,
+                "improvement": round(best_recall - base_recall, 3),
+            })
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Method comparison bars
+            ax1 = axes[0]
+            m_names = list(methods.keys())
+            bal_accs = [methods[m]["balanced_accuracy"] for m in m_names]
+            colors = ["#28a745" if m == best_method else "#6c757d" for m in m_names]
+            bars = ax1.bar(range(len(m_names)), bal_accs, color=colors)
+            ax1.set_xticks(range(len(m_names)))
+            ax1.set_xticklabels([m.replace("_", "\n") for m in m_names], fontsize=8)
+            ax1.set_ylabel("Balanced Accuracy")
+            ax1.set_title(f"Balancing Methods ({well})")
+            ax1.set_ylim(0, 1)
+            for bar, val in zip(bars, bal_accs):
+                ax1.text(bar.get_x() + bar.get_width()/2, val + 0.02, f"{val:.1%}", ha="center", fontsize=9)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # Per-class recall comparison
+            ax2 = axes[1]
+            x = np.arange(len(class_names))
+            w = 0.8 / max(len(methods), 1)
+            colors_m = ["#dc3545", "#ffc107", "#2E86AB", "#28a745"]
+            for i, m in enumerate(m_names):
+                recalls = [methods[m]["per_class"].get(cn, 0) for cn in class_names]
+                ax2.bar(x + i * w - 0.4 + w/2, recalls, w, label=m.replace("_", " "), color=colors_m[i % 4], alpha=0.8)
+            ax2.set_xticks(x)
+            ax2.set_xticklabels([cn[:10] for cn in class_names], fontsize=7, rotation=45, ha="right")
+            ax2.set_ylabel("Recall")
+            ax2.set_title("Per-Class Recall by Method")
+            ax2.legend(fontsize=7)
+            ax2.set_ylim(0, 1.1)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "classifier": clf_name,
+            "n_samples": len(y),
+            "class_counts": class_counts,
+            "has_smote": has_smote,
+            "methods": methods,
+            "best_method": best_method,
+            "improvement_balanced_acc": round(improvement, 4),
+            "minority_class_improvements": class_improvements,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Balanced Classify: {best_method} wins ({best_bal_acc:.1%} balanced acc, +{improvement:.1%})",
+                "risk_level": "GREEN" if best_bal_acc >= 0.7 else ("AMBER" if best_bal_acc >= 0.5 else "RED"),
+                "confidence_sentence": (
+                    f"Tested {len(methods)} balancing methods on {well} ({len(y)} samples). "
+                    f"Best: {best_method} ({best_bal_acc:.1%} balanced accuracy vs {base_bal_acc:.1%} unbalanced). "
+                    + (f"Minority class '{class_improvements[0]['class']}' recall: {class_improvements[0]['baseline_recall']:.0%} → {class_improvements[0]['best_recall']:.0%}."
+                       if class_improvements else "")
+                ),
+                "action": f"Use {best_method.replace('_', ' ')} for production to reduce minority class misclassification.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    return _sanitize_for_json(result)
+
+
+# ── Industrial Readiness Scorecard ──────────────────────────────────────
+
+@app.post("/api/report/readiness-scorecard")
+async def readiness_scorecard(request: Request):
+    """Comprehensive industrial readiness assessment with grades and action items.
+
+    Aggregates ALL quality/safety signals into one scorecard:
+    - Model accuracy (per well, per class)
+    - Calibration quality (ECE)
+    - Data quality and coverage
+    - Feedback coverage
+    - Cross-well generalization
+    - Near-miss rate
+    Each gets a grade A-F with specific improvement actions.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.metrics import accuracy_score, f1_score, balanced_accuracy_score
+        from sklearn.base import clone
+
+        wells = list(df[WELL_COL].unique()) if WELL_COL in df.columns else ["all"]
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+
+        dimensions = []
+
+        # 1. Overall accuracy
+        features = engineer_enhanced_features(df)
+        labels = df[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            pred = cross_val_predict(clone(model), X, y, cv=cv)
+
+        acc = float(accuracy_score(y, pred))
+        bal_acc = float(balanced_accuracy_score(y, pred))
+        f1w = float(f1_score(y, pred, average="weighted", zero_division=0))
+
+        acc_grade = "A" if acc >= 0.9 else "B" if acc >= 0.8 else "C" if acc >= 0.7 else "D" if acc >= 0.6 else "F"
+        dimensions.append({
+            "dimension": "Model Accuracy",
+            "grade": acc_grade,
+            "score": round(acc, 3),
+            "detail": f"CV accuracy {acc:.1%}, balanced {bal_acc:.1%}, F1 {f1w:.3f}",
+            "action": "Acceptable." if acc >= 0.85 else "Improve with more data, feature engineering, or ensemble methods.",
+            "weight": 25,
+        })
+
+        # 2. Class balance
+        class_names = le.classes_.tolist()
+        class_counts = np.bincount(y)
+        imbalance_ratio = float(class_counts.max() / max(class_counts.min(), 1))
+        bal_grade = "A" if imbalance_ratio < 3 else "B" if imbalance_ratio < 5 else "C" if imbalance_ratio < 10 else "D" if imbalance_ratio < 20 else "F"
+        dimensions.append({
+            "dimension": "Class Balance",
+            "grade": bal_grade,
+            "score": round(1 / imbalance_ratio, 3),
+            "detail": f"Imbalance ratio {imbalance_ratio:.1f}:1. Min class: {class_names[class_counts.argmin()]} ({class_counts.min()})",
+            "action": "Good balance." if imbalance_ratio < 5 else f"Collect more '{class_names[class_counts.argmin()]}' samples or use SMOTE oversampling.",
+            "weight": 15,
+        })
+
+        # 3. Data volume
+        n = len(y)
+        vol_grade = "A" if n >= 5000 else "B" if n >= 2000 else "C" if n >= 1000 else "D" if n >= 500 else "F"
+        dimensions.append({
+            "dimension": "Data Volume",
+            "grade": vol_grade,
+            "score": min(1.0, n / 5000),
+            "detail": f"{n} samples across {len(wells)} wells",
+            "action": "Sufficient volume." if n >= 2000 else f"Collect more data. Currently at {n}/2000 recommended minimum.",
+            "weight": 15,
+        })
+
+        # 4. Feature coverage (depth range)
+        if DEPTH_COL in df.columns:
+            depths = df[DEPTH_COL].dropna().values
+            dr = float(np.max(depths) - np.min(depths)) if len(depths) > 0 else 0
+            cov_grade = "A" if dr >= 2000 else "B" if dr >= 1000 else "C" if dr >= 500 else "D" if dr >= 200 else "F"
+        else:
+            dr = 0
+            cov_grade = "F"
+        dimensions.append({
+            "dimension": "Depth Coverage",
+            "grade": cov_grade,
+            "score": min(1.0, dr / 2000),
+            "detail": f"Depth range: {dr:.0f}m",
+            "action": "Good coverage." if dr >= 1000 else "Expand depth range for better generalization.",
+            "weight": 10,
+        })
+
+        # 5. Feedback coverage
+        rlhf_counts = count_rlhf_reviews()
+        n_reviews = rlhf_counts.get("total", 0)
+        fb_grade = "A" if n_reviews >= 100 else "B" if n_reviews >= 50 else "C" if n_reviews >= 20 else "D" if n_reviews >= 5 else "F"
+        dimensions.append({
+            "dimension": "Expert Review Coverage",
+            "grade": fb_grade,
+            "score": min(1.0, n_reviews / 100),
+            "detail": f"{n_reviews} expert reviews ({rlhf_counts.get('accepted', 0)} accepted, {rlhf_counts.get('rejected', 0)} rejected)",
+            "action": "Strong review coverage." if n_reviews >= 50 else f"Need {max(0, 50 - n_reviews)} more expert reviews for reliable feedback signal.",
+            "weight": 10,
+        })
+
+        # 6. Cross-well generalization
+        if len(wells) >= 2:
+            w1, w2 = wells[0], wells[1]
+            df1 = df[df[WELL_COL] == w1].reset_index(drop=True)
+            df2 = df[df[WELL_COL] == w2].reset_index(drop=True)
+            feat1 = engineer_enhanced_features(df1)
+            feat2 = engineer_enhanced_features(df2)
+            common = sorted(set(feat1.columns) & set(feat2.columns))
+            le2 = LabelEncoder()
+            le2.fit(np.concatenate([df1[FRACTURE_TYPE_COL].values, df2[FRACTURE_TYPE_COL].values]))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                sc2 = StandardScaler()
+                X1 = sc2.fit_transform(feat1[common].values)
+                y1 = le2.transform(df1[FRACTURE_TYPE_COL].values)
+                X2 = sc2.transform(feat2[common].values)
+                y2 = le2.transform(df2[FRACTURE_TYPE_COL].values)
+                m = clone(model).fit(X1, y1)
+                cross_acc = float(accuracy_score(y2, m.predict(X2)))
+            xw_grade = "A" if cross_acc >= 0.7 else "B" if cross_acc >= 0.5 else "C" if cross_acc >= 0.3 else "D" if cross_acc >= 0.1 else "F"
+        else:
+            cross_acc = 0
+            xw_grade = "N/A"
+        dimensions.append({
+            "dimension": "Cross-Well Transfer",
+            "grade": xw_grade,
+            "score": round(cross_acc, 3),
+            "detail": f"Zero-shot {wells[0]}→{wells[1]}: {cross_acc:.1%}" if len(wells) >= 2 else "Single well — cannot assess",
+            "action": "Good generalization." if cross_acc >= 0.5 else "Wells have very different distributions. Use domain adaptation or well-specific models.",
+            "weight": 15,
+        })
+
+        # 7. Failure tracking
+        n_failures = len(get_failure_cases(limit=1000))
+        n_resolved = len([f for f in get_failure_cases(limit=1000) if f.get("resolved")])
+        fail_rate = n_failures / max(n, 1)
+        ft_grade = "A" if fail_rate < 0.01 else "B" if fail_rate < 0.03 else "C" if fail_rate < 0.05 else "D" if fail_rate < 0.1 else "F"
+        dimensions.append({
+            "dimension": "Failure Management",
+            "grade": ft_grade,
+            "score": round(1 - fail_rate, 3),
+            "detail": f"{n_failures} failures ({n_resolved} resolved), rate: {fail_rate:.1%}",
+            "action": "Low failure rate." if fail_rate < 0.03 else f"Resolve {n_failures - n_resolved} open failures and investigate patterns.",
+            "weight": 10,
+        })
+
+        # Overall score (weighted)
+        grade_to_pts = {"A": 100, "B": 80, "C": 60, "D": 40, "F": 20, "N/A": 50}
+        total_weight = sum(d["weight"] for d in dimensions if d["grade"] != "N/A")
+        overall_score = sum(
+            grade_to_pts.get(d["grade"], 50) * d["weight"]
+            for d in dimensions if d["grade"] != "N/A"
+        ) / max(total_weight, 1)
+        overall_score = round(overall_score, 1)
+
+        if overall_score >= 80:
+            readiness = "PRODUCTION"
+            readiness_text = "System is ready for production deployment with standard monitoring."
+        elif overall_score >= 65:
+            readiness = "PILOT"
+            readiness_text = "System suitable for pilot deployment with enhanced monitoring and expert oversight."
+        elif overall_score >= 50:
+            readiness = "DEVELOPMENT"
+            readiness_text = "System needs significant improvement before deployment. Suitable for research/development only."
+        else:
+            readiness = "NOT_READY"
+            readiness_text = "System is not ready. Address critical issues before any deployment."
+
+        # Count grades
+        grade_counts = {}
+        for d in dimensions:
+            g = d["grade"]
+            grade_counts[g] = grade_counts.get(g, 0) + 1
+
+        # Priority actions (worst grades first)
+        priority_actions = []
+        for d in sorted(dimensions, key=lambda x: grade_to_pts.get(x["grade"], 50)):
+            if d["grade"] in ("D", "F"):
+                priority_actions.append(f"[{d['grade']}] {d['dimension']}: {d['action']}")
+
+        # Render scorecard plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Dimension grades bar chart
+            ax1 = axes[0]
+            dim_names = [d["dimension"][:15] for d in dimensions]
+            dim_scores = [grade_to_pts.get(d["grade"], 50) for d in dimensions]
+            grade_colors = {"A": "#28a745", "B": "#17a2b8", "C": "#ffc107", "D": "#fd7e14", "F": "#dc3545", "N/A": "#6c757d"}
+            colors = [grade_colors.get(d["grade"], "#6c757d") for d in dimensions]
+            bars = ax1.barh(range(len(dim_names)), dim_scores, color=colors)
+            ax1.set_yticks(range(len(dim_names)))
+            ax1.set_yticklabels(dim_names, fontsize=8)
+            ax1.set_xlabel("Score")
+            ax1.set_xlim(0, 105)
+            for i, (bar, d) in enumerate(zip(bars, dimensions)):
+                ax1.text(bar.get_width() + 1, bar.get_y() + bar.get_height()/2,
+                        f"{d['grade']}", va="center", fontsize=10, fontweight="bold",
+                        color=grade_colors.get(d["grade"], "#6c757d"))
+            ax1.invert_yaxis()
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+            ax1.set_title("Readiness Dimensions")
+
+            # Overall gauge
+            ax2 = axes[1]
+            theta = np.linspace(np.pi, 0, 100)
+            ax2.plot(np.cos(theta), np.sin(theta), "k-", linewidth=2)
+            for lo, hi, c, label in [(0, 50, "#dc3545", "NOT READY"), (50, 65, "#ffc107", "DEVELOPMENT"),
+                                      (65, 80, "#17a2b8", "PILOT"), (80, 100, "#28a745", "PRODUCTION")]:
+                t = np.linspace(np.pi * (1 - lo/100), np.pi * (1 - hi/100), 50)
+                ax2.fill_between(np.cos(t), 0, np.sin(t), color=c, alpha=0.3)
+            needle_angle = np.pi * (1 - overall_score / 100)
+            ax2.plot([0, 0.8 * np.cos(needle_angle)], [0, 0.8 * np.sin(needle_angle)], "k-", linewidth=3)
+            ax2.plot(0, 0, "ko", markersize=8)
+            ax2.set_xlim(-1.2, 1.2)
+            ax2.set_ylim(-0.2, 1.2)
+            ax2.set_aspect("equal")
+            ax2.axis("off")
+            ax2.set_title(f"Readiness: {readiness}\nScore: {overall_score}/100", fontsize=14, fontweight="bold")
+
+            plt.suptitle("Industrial Readiness Scorecard", fontsize=14, fontweight="bold")
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "readiness": readiness,
+            "readiness_text": readiness_text,
+            "overall_score": overall_score,
+            "dimensions": dimensions,
+            "grade_counts": grade_counts,
+            "priority_actions": priority_actions,
+            "n_samples": len(y),
+            "n_wells": len(wells),
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Readiness: {readiness} ({overall_score}/100)",
+                "risk_level": "GREEN" if readiness == "PRODUCTION" else ("AMBER" if readiness == "PILOT" else "RED"),
+                "confidence_sentence": (
+                    f"{len(dimensions)} dimensions assessed. "
+                    f"Grades: {grade_counts.get('A', 0)}×A, {grade_counts.get('B', 0)}×B, "
+                    f"{grade_counts.get('C', 0)}×C, {grade_counts.get('D', 0)}×D, {grade_counts.get('F', 0)}×F."
+                ),
+                "action": readiness_text + (" Priority: " + priority_actions[0] if priority_actions else ""),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    return _sanitize_for_json(result)
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -12023,7 +12533,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.14.0",
+        "app_version": "3.15.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

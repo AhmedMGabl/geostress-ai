@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 through v3.14.0.
+"""Test suite for GeoStress AI v3.5.0 through v3.15.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -1036,10 +1036,68 @@ if pm.get("status") == "OK":
 else:
     check("Has message", isinstance(pm.get("message"), str))
 
+# ── [60] Balanced Classification (SMOTE) ─────────────
+print("\n[60] Balanced Classification (SMOTE)")
+bc = api("POST", "/api/analysis/balanced-classify", {"well": "3P", "source": "demo"}, timeout=120)
+check("Has well", bc.get("well") == "3P")
+check("Has n_samples", isinstance(bc.get("n_samples"), int) and bc["n_samples"] > 50)
+check("Has class_counts", isinstance(bc.get("class_counts"), dict) and len(bc["class_counts"]) >= 3)
+check("Has has_smote", isinstance(bc.get("has_smote"), bool))
+check("Has methods dict", isinstance(bc.get("methods"), dict))
+check("Has unbalanced method", "unbalanced" in bc.get("methods", {}))
+check("Has balanced_weights method", "balanced_weights" in bc.get("methods", {}))
+methods = bc.get("methods", {})
+for mname in ("unbalanced", "balanced_weights"):
+    m = methods.get(mname, {})
+    check(f"{mname} has accuracy", isinstance(m.get("accuracy"), (int, float)) and 0 <= m["accuracy"] <= 1)
+    check(f"{mname} has balanced_accuracy", isinstance(m.get("balanced_accuracy"), (int, float)))
+    check(f"{mname} has f1", isinstance(m.get("f1"), (int, float)))
+    check(f"{mname} has per_class", isinstance(m.get("per_class"), dict))
+if bc.get("has_smote"):
+    check("Has smote method", "smote" in methods)
+    check("Has smote_balanced method", "smote_balanced" in methods)
+check("Has best_method", isinstance(bc.get("best_method"), str))
+check("Has minority_class_improvements", isinstance(bc.get("minority_class_improvements"), list))
+mi_list = bc.get("minority_class_improvements", [])
+if len(mi_list) > 0:
+    check("MI has class field", "class" in mi_list[0])
+    check("MI has baseline_recall", isinstance(mi_list[0].get("baseline_recall"), (int, float)))
+    check("MI has best_recall", isinstance(mi_list[0].get("best_recall"), (int, float)))
+    check("MI has improvement", isinstance(mi_list[0].get("improvement"), (int, float)))
+check("Has plot", isinstance(bc.get("plot"), str) and bc["plot"].startswith("data:image"))
+check("Has stakeholder_brief", "headline" in bc.get("stakeholder_brief", {}))
+
+# ── [61] Industrial Readiness Scorecard ──────────────
+print("\n[61] Industrial Readiness Scorecard")
+rs = api("POST", "/api/report/readiness-scorecard", {"well": "3P", "source": "demo"}, timeout=120)
+check("Has readiness level", rs.get("readiness") in ("PRODUCTION", "PILOT", "DEVELOPMENT", "NOT_READY"))
+check("Has readiness_text", isinstance(rs.get("readiness_text"), str) and len(rs["readiness_text"]) > 10)
+check("Has overall_score 0-100", isinstance(rs.get("overall_score"), (int, float)) and 0 <= rs["overall_score"] <= 100)
+check("Has dimensions list", isinstance(rs.get("dimensions"), list) and len(rs["dimensions"]) >= 5)
+dims = rs.get("dimensions", [])
+for d in dims:
+    check(f"Dim '{d.get('dimension', '?')}' has grade", d.get("grade") in ("A", "B", "C", "D", "F"))
+    check(f"Dim '{d.get('dimension', '?')}' has score", isinstance(d.get("score"), (int, float)))
+    check(f"Dim '{d.get('dimension', '?')}' has detail", isinstance(d.get("detail"), str))
+    check(f"Dim '{d.get('dimension', '?')}' has action", isinstance(d.get("action"), str))
+    check(f"Dim '{d.get('dimension', '?')}' has weight", isinstance(d.get("weight"), (int, float)))
+check("Has grade_counts", isinstance(rs.get("grade_counts"), dict))
+check("Has priority_actions", isinstance(rs.get("priority_actions"), list))
+check("Has n_samples", isinstance(rs.get("n_samples"), int) and rs["n_samples"] > 0)
+check("Has n_wells", isinstance(rs.get("n_wells"), int) and rs["n_wells"] >= 1)
+check("Has plot", isinstance(rs.get("plot"), str) and rs["plot"].startswith("data:image"))
+check("Has stakeholder_brief", "headline" in rs.get("stakeholder_brief", {}))
+
+# Sanity check: score matches readiness level
+if rs.get("overall_score", 0) >= 80:
+    check("Score>=80 means PRODUCTION or PILOT", rs.get("readiness") in ("PRODUCTION", "PILOT"))
+elif rs.get("overall_score", 0) >= 60:
+    check("Score>=60 means at least DEVELOPMENT", rs.get("readiness") in ("PRODUCTION", "PILOT", "DEVELOPMENT"))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.14.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.15.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:
