@@ -776,6 +776,19 @@ check("Has confidence_sentence", "models" in ev_sb.get("confidence_sentence", ""
 check("Has action", len(ev_sb.get("action", "")) > 5)
 check("Has models_used list", isinstance(ev_sb.get("models_used"), list))
 
+# ── [45] Data Improvement Plan ──────────────────────
+print("\n[45] Data Improvement Plan")
+dip = api("POST", "/api/data/improvement-plan", {"source": "demo"}, timeout=120)
+check("Has headline", len(dip.get("headline", "")) > 10)
+check("Has risk_level", dip.get("risk_level") in ("GREEN", "AMBER", "RED"))
+check("Has overall_accuracy", 0 < dip.get("overall_accuracy", 0) <= 1)
+check("Has per_class_performance", len(dip.get("per_class_performance", [])) > 0)
+pcp = dip.get("per_class_performance", [{}])[0]
+check("Per-class has recall", "recall" in pcp)
+check("Per-class has status", pcp.get("status") in ("GOOD", "NEEDS_DATA", "CRITICAL"))
+check("Has action_plan", isinstance(dip.get("action_plan"), list))
+check("Has stakeholder brief", "headline" in dip.get("stakeholder_brief", {}))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")

@@ -4040,6 +4040,140 @@ async def data_recommendations(request: Request):
     return _sanitize_for_json(result)
 
 
+@app.post("/api/data/improvement-plan")
+async def data_improvement_plan(request: Request):
+    """Generate a comprehensive data improvement plan for stakeholders.
+
+    Combines: (1) class imbalance analysis, (2) model accuracy per class,
+    (3) depth coverage gaps, and (4) specific collection targets into
+    a prioritized action list that maximizes accuracy per effort invested.
+
+    This is what stakeholders need to make budget decisions about data collection.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    # Get current data recommendations
+    recs = data_collection_recommendations(df)
+
+    # Get current model accuracy per class (from cached classify)
+    cache_key = f"clf_{source}_gradient_boosting_enh"
+    if cache_key not in _classify_cache:
+        clf = await asyncio.to_thread(classify_enhanced, df, classifier="gradient_boosting")
+        _classify_cache[cache_key] = clf
+    clf = _classify_cache[cache_key]
+
+    class_names = clf.get("class_names", [])
+    cm = clf.get("confusion_matrix", [])
+    if hasattr(cm, "tolist"):
+        cm = cm.tolist()
+
+    # Per-class recall (the metric that matters: can we find each type?)
+    per_class = []
+    for i, cls_name in enumerate(class_names):
+        if i < len(cm):
+            row = cm[i]
+            total = sum(row) if isinstance(row, list) else int(row.sum())
+            correct = row[i] if isinstance(row, list) and i < len(row) else 0
+            recall = correct / max(total, 1)
+            per_class.append({
+                "class": cls_name,
+                "n_samples": total,
+                "recall": round(recall, 3),
+                "correctly_identified": correct,
+                "missed": total - correct,
+                "status": "GOOD" if recall >= 0.7 else "NEEDS_DATA" if recall >= 0.4 else "CRITICAL",
+            })
+
+    # Sort by recall (worst first = highest priority)
+    per_class.sort(key=lambda x: x["recall"])
+
+    # Build action plan
+    actions = []
+    for pc in per_class:
+        if pc["status"] == "CRITICAL":
+            actions.append({
+                "priority": 1,
+                "target_class": pc["class"],
+                "current_recall": f"{pc['recall']:.0%}",
+                "n_samples": pc["n_samples"],
+                "action": (f"URGENT: Collect {max(50 - pc['n_samples'], 20)} more '{pc['class']}' "
+                          f"fracture measurements. Only {pc['recall']:.0%} are correctly identified. "
+                          f"The model misses {pc['missed']} of {pc['n_samples']} fractures of this type."),
+                "expected_impact": "Balanced accuracy could improve 5-15%.",
+            })
+        elif pc["status"] == "NEEDS_DATA":
+            actions.append({
+                "priority": 2,
+                "target_class": pc["class"],
+                "current_recall": f"{pc['recall']:.0%}",
+                "n_samples": pc["n_samples"],
+                "action": (f"Add ~{max(30 - pc['n_samples'], 10)} more '{pc['class']}' measurements. "
+                          f"Current recall is {pc['recall']:.0%} ({pc['missed']} missed)."),
+                "expected_impact": "Marginal accuracy improvement 2-5%.",
+            })
+
+    # Add data recommendations from the general function
+    for pa in recs.get("priority_actions", []):
+        actions.append({"priority": 1, "action": pa["action"],
+                       "expected_impact": pa.get("expected_impact", "")})
+    for rec in recs.get("recommendations", [])[:3]:
+        actions.append({"priority": 3, "action": rec["action"],
+                       "expected_impact": rec.get("expected_impact", "")})
+
+    # Sort by priority
+    actions.sort(key=lambda x: x.get("priority", 99))
+
+    # Overall accuracy
+    acc = float(clf.get("cv_mean_accuracy", 0))
+    n_critical = sum(1 for pc in per_class if pc["status"] == "CRITICAL")
+    n_needs = sum(1 for pc in per_class if pc["status"] == "NEEDS_DATA")
+
+    if n_critical == 0 and n_needs == 0:
+        headline = (f"Model accuracy is {acc:.0%}. All fracture types are well-classified. "
+                    f"No urgent data collection needed.")
+        risk = "GREEN"
+    elif n_critical > 0:
+        worst = per_class[0]
+        headline = (f"Model accuracy is {acc:.0%} but {n_critical} fracture type(s) have "
+                    f"critical recall below 40%. '{worst['class']}' is the weakest "
+                    f"({worst['recall']:.0%} recall). See action plan below.")
+        risk = "RED"
+    else:
+        headline = (f"Model accuracy is {acc:.0%}. {n_needs} fracture type(s) could improve "
+                    f"with more data. See recommendations below.")
+        risk = "AMBER"
+
+    return _sanitize_for_json({
+        "headline": headline,
+        "risk_level": risk,
+        "overall_accuracy": round(acc, 4),
+        "n_total_samples": len(df),
+        "n_classes": len(class_names),
+        "per_class_performance": per_class,
+        "action_plan": actions[:10],
+        "data_completeness_pct": recs.get("data_completeness_pct", 0),
+        "stakeholder_brief": {
+            "headline": headline,
+            "risk_level": risk,
+            "confidence_sentence": (
+                f"Based on {len(df)} fractures across {df[WELL_COL].nunique() if WELL_COL in df.columns else 1} well(s). "
+                f"Overall CV accuracy: {acc:.0%}."
+            ),
+            "action": (
+                "No urgent data collection needed. Monitor and periodically re-evaluate."
+                if risk == "GREEN"
+                else f"Priority: collect more data for {n_critical + n_needs} under-performing class(es). "
+                     f"See the action plan for specific targets."
+            ),
+        },
+    })
+
+
 # ── Data Anomaly Detection ────────────────────────────
 
 @app.post("/api/data/anomaly-detection")
