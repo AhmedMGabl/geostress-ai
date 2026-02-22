@@ -320,10 +320,12 @@ dm = exec_r.get("decision_matrix", {})
 check("Has decision_matrix", len(dm) > 0)
 check("Has verdict", dm.get("verdict") in ["GO", "CONDITIONAL GO", "NO-GO"])
 check("Has verdict_note", isinstance(dm.get("verdict_note"), str) and len(dm["verdict_note"]) > 0)
-check("Has 4 factors", len(dm.get("factors", [])) == 4)
+check("Has 6 factors", len(dm.get("factors", [])) == 6)
 factor_names = [f["factor"] for f in dm.get("factors", [])]
 check("Has Data Sufficiency factor", "Data Sufficiency" in factor_names)
 check("Has Safety Margin factor", "Safety Margin" in factor_names)
+check("Has WSM Quality factor", "WSM Quality" in factor_names)
+check("Has Data Quality factor", "Data Quality" in factor_names)
 for f in dm.get("factors", []):
     check(f'Factor "{f["factor"]}" has valid status',
           f.get("status") in ["GREEN", "AMBER", "RED"],
@@ -385,6 +387,21 @@ check("Has thrust fault bounds", "shmax_range_mpa" in sp.get("thrust_fault", {})
 sp2 = api("POST", "/api/analysis/stress-polygon", {"depth_m": 3300, "mu": 0.6})
 check("Stress polygon endpoint works", sp2.get("frictional_limit_ratio", 0) > 1)
 check("Has friction sensitivity", len(sp2.get("friction_sensitivity", {})) == 3)
+
+# Stress polygon validation on inversion
+sp_val = inv3.get("stress_polygon", {}).get("validation", {})
+check("Has stress polygon validation",
+      sp_val.get("status") in ["WITHIN_BOUNDS", "NEAR_LIMIT", "EXCEEDS_BOUNDS"])
+check("Has effective stress ratio", isinstance(sp_val.get("effective_ratio"), (int, float)))
+
+# Multi-criteria CS% ordering: Mogi > MC > DP (DP is most conservative)
+mc_mc = inv3.get("multi_criteria_cs", {}).get("mohr_coulomb_pct", -1)
+mc_dp = inv3.get("multi_criteria_cs", {}).get("drucker_prager_pct", -1)
+mc_mg = inv3.get("multi_criteria_cs", {}).get("mogi_coulomb_pct", -1)
+check("Mogi-Coulomb CS% >= MC CS% (sigma2 correction)",
+      mc_mg >= mc_mc, f"Mogi={mc_mg}% >= MC={mc_mc}%")
+check("Drucker-Prager CS% <= MC CS% (conservative smooth yield)",
+      mc_dp <= mc_mc, f"DP={mc_dp}% <= MC={mc_mc}%")
 
 
 # ── 19. v3.7.0: Mud Weight Window ───────────────────

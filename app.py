@@ -1324,6 +1324,24 @@ async def run_inversion(request: Request):
     # Overburden from density integration: ρ_avg ≈ 2500 kg/m³
     sv_overburden = 2500 * 9.81 * depth_m / 1e6 if depth_m > 0 else sv
     sp = _stress_polygon(sv_overburden, pp, float(result["mu"]))
+
+    # Validate inversion results against stress polygon
+    sigma1_val = response["sigma1"]
+    sigma3_val = response["sigma3"]
+    sigma2_val = response["sigma2"]
+    k_limit = sp["frictional_limit_ratio"]
+    effective_ratio = (sigma1_val - pp) / max(sigma3_val - pp, 0.01)
+    if effective_ratio <= k_limit * 1.0:
+        sp_validity = "WITHIN_BOUNDS"
+        sp_msg = "Inversion results are physically consistent with frictional equilibrium."
+    elif effective_ratio <= k_limit * 1.1:
+        sp_validity = "NEAR_LIMIT"
+        sp_msg = f"Stress ratio {effective_ratio:.2f} is near the frictional limit {k_limit:.2f}. Results are at the boundary of physical feasibility."
+    else:
+        sp_validity = "EXCEEDS_BOUNDS"
+        sp_msg = f"Stress ratio {effective_ratio:.2f} exceeds frictional limit {k_limit:.2f}. Results may be unreliable — check regime assumption."
+    sp["validation"] = {"status": sp_validity, "message": sp_msg,
+                        "effective_ratio": round(effective_ratio, 3)}
     response["stress_polygon"] = sp
 
     # ── Mud Weight Window ──
@@ -1357,11 +1375,15 @@ async def run_inversion(request: Request):
     b_mc = (2 * np.sqrt(2) / 3) * mu_val * np.cos(np.arctan(mu_val))
     mogi_failure = a_mc + b_mc * (sigma_n_arr - pp)
     mogi_cs = float(np.mean(tau_arr > mogi_failure) * 100)
-    # Drucker-Prager
+    # Drucker-Prager (circumscribed cone — matches MC on compression meridian)
+    # On the τ-σn plane, DP simplifies to τ = c_dp + μ_dp * σn_eff
+    # Circumscribed: μ_dp = 6 sin(φ) / (3 + sin(φ)), c_dp adjusted accordingly
     phi = np.arctan(mu_val)
-    k_dp = 6 * cohesion * np.cos(phi) / (np.sqrt(3) * (3 - np.sin(phi)))
-    alpha_dp = 2 * np.sin(phi) / (np.sqrt(3) * (3 - np.sin(phi)))
-    dp_failure = k_dp + alpha_dp * (sigma_n_arr - pp) * 3
+    sin_phi = np.sin(phi)
+    cos_phi = np.cos(phi)
+    mu_dp = 6 * sin_phi / (3 + sin_phi)  # circumscribed (less conservative)
+    c_dp = 6 * cohesion * cos_phi / (3 + sin_phi)
+    dp_failure = c_dp + mu_dp * (sigma_n_arr - pp)
     dp_cs = float(np.mean(tau_arr > dp_failure) * 100)
     response["multi_criteria_cs"] = {
         "mohr_coulomb_pct": round(mc_cs, 1),
@@ -3793,6 +3815,34 @@ async def run_executive_summary(request: Request):
     else:
         sm_status, sm_note = "RED", f"{cs_pct:.0f}% critically stressed — HIGH risk, expect fluid losses"
     dm_factors.append({"factor": "Safety Margin", "status": sm_status, "detail": sm_note})
+
+    # 5. WSM Quality Compliance
+    wsm_rank = inv_unc.get("wsm_quality_rank", "E")
+    if wsm_rank in ("A", "B"):
+        wsm_status = "GREEN"
+        wsm_note = f"WSM Quality Grade {wsm_rank} — meets international publication standard"
+    elif wsm_rank == "C":
+        wsm_status = "AMBER"
+        wsm_note = f"WSM Quality Grade {wsm_rank} — acceptable for operational use, not for publication"
+    else:
+        wsm_status = "RED"
+        wsm_note = f"WSM Quality Grade {wsm_rank} — below minimum quality for stress analysis"
+    dm_factors.append({"factor": "WSM Quality", "status": wsm_status, "detail": wsm_note})
+
+    # 6. Data Quality (QC pass rate)
+    from src.data_loader import qc_fracture_data
+    qc = qc_fracture_data(df_well)
+    qc_rate = qc.get("pass_rate", 0)
+    if qc_rate >= 0.8:
+        qc_status = "GREEN"
+        qc_note = f"{qc_rate*100:.0f}% fractures pass QC — high-quality input data"
+    elif qc_rate >= 0.5:
+        qc_status = "AMBER"
+        qc_note = f"{qc_rate*100:.0f}% fractures pass QC — some data quality issues (check depth coverage)"
+    else:
+        qc_status = "RED"
+        qc_note = f"Only {qc_rate*100:.0f}% fractures pass QC — significant data quality problems"
+    dm_factors.append({"factor": "Data Quality", "status": qc_status, "detail": qc_note})
 
     # Overall verdict
     statuses = [f["status"] for f in dm_factors]
