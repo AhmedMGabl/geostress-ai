@@ -2904,6 +2904,119 @@ async function runNegativeOutcomes() {
     }
 }
 
+// ── Data Validation ──────────────────────────────────
+async function runDataValidation() {
+    showLoading("Validating data quality...");
+    try {
+        var r = await api("/api/data/validate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, source: currentSource })
+        });
+        var el = document.getElementById("dv-results");
+        if (!el) return;
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("dv-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.action + '</div>';
+
+        var qColor = r.quality === "GOOD" ? "text-success" : r.quality === "ACCEPTABLE" ? "text-warning" : "text-danger";
+        document.getElementById("dv-quality").className = "metric-value " + qColor;
+        document.getElementById("dv-quality").textContent = r.quality;
+        document.getElementById("dv-critical").textContent = r.n_critical;
+        document.getElementById("dv-warnings").textContent = r.n_warnings;
+        document.getElementById("dv-samples").textContent = r.n_samples;
+
+        var tbody = document.getElementById("dv-issues-body");
+        tbody.innerHTML = "";
+        (r.issues || []).forEach(function(i) {
+            var sc = i.severity === "CRITICAL" ? "danger" : i.severity === "WARNING" ? "warning" : "secondary";
+            tbody.innerHTML += '<tr><td><span class="badge bg-' + sc + '">' + i.severity + '</span></td>' +
+                '<td>' + i.field + '</td><td>' + i.detail + '</td></tr>';
+        });
+        (r.recommendations || []).forEach(function(rec) {
+            tbody.innerHTML += '<tr class="table-info"><td><span class="badge bg-info">REC</span></td><td colspan="2">' + rec + '</td></tr>';
+        });
+
+        el.classList.remove("d-none");
+        showToast("Data quality: " + r.quality + " (" + r.n_critical + " critical, " + r.n_warnings + " warnings)");
+    } catch (err) {
+        showToast("Validation error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Cache Warmup ─────────────────────────────────────
+async function runCacheWarmup() {
+    showLoading("Warming caches for faster response...");
+    try {
+        var r = await api("/api/system/warmup", { method: "POST" });
+        showToast("Cache warming started: " + (r.targets || []).length + " targets. Responses will be faster.");
+    } catch (err) {
+        showToast("Warmup error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── RLHF Preference Model ───────────────────────────
+async function runPreferenceModel() {
+    showLoading("Building RLHF preference model from expert reviews...");
+    try {
+        var r = await api("/api/rlhf/preference-model", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, source: currentSource })
+        }, 120);
+        var el = document.getElementById("pref-results");
+        if (!el) return;
+
+        if (r.status === "INSUFFICIENT_DATA") {
+            el.innerHTML = '<div class="alert alert-info"><i class="bi bi-info-circle"></i> ' + r.message + '</div>';
+            el.classList.remove("d-none");
+            return;
+        }
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("pref-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        document.getElementById("pref-reviews").textContent = r.n_reviews;
+        document.getElementById("pref-accepted").textContent = r.accepted;
+        document.getElementById("pref-rejected").textContent = r.rejected;
+        var impColor = r.improvement >= 0 ? "text-success" : "text-danger";
+        document.getElementById("pref-improvement").className = "metric-value " + impColor;
+        document.getElementById("pref-improvement").textContent = (r.improvement >= 0 ? "+" : "") + (r.improvement * 100).toFixed(1) + "%";
+
+        if (r.plot) {
+            document.getElementById("pref-plot-img").innerHTML = '<img src="data:image/png;base64,' + r.plot + '" class="img-fluid">';
+        }
+
+        var tt = r.type_trust || {};
+        if (Object.keys(tt).length > 0) {
+            var tbody = document.getElementById("pref-trust-body");
+            tbody.innerHTML = "";
+            Object.keys(tt).forEach(function(t) {
+                var v = tt[t];
+                var tc = v.trust_score >= 0.7 ? "success" : v.trust_score >= 0.4 ? "warning" : "danger";
+                tbody.innerHTML += '<tr><td>' + t + '</td><td>' + v.accepted + '</td><td>' + v.rejected + '</td>' +
+                    '<td><span class="badge bg-' + tc + '">' + (v.trust_score * 100).toFixed(0) + '%</span></td></tr>';
+            });
+            document.getElementById("pref-trust-section").classList.remove("d-none");
+        }
+
+        el.classList.remove("d-none");
+        showToast("Preference model: " + r.n_reviews + " reviews, " + (r.improvement >= 0 ? "+" : "") + (r.improvement * 100).toFixed(1) + "%");
+    } catch (err) {
+        showToast("Preference model error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 // ── Clustering ────────────────────────────────────
 
 async function runClustering() {

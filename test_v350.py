@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 through v3.13.0.
+"""Test suite for GeoStress AI v3.5.0 through v3.14.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -995,10 +995,51 @@ if no.get("systematic_biases"):
     check("Bias has confused_with", isinstance(b0.get("confused_with"), str))
 check("Has stakeholder_brief", "headline" in no.get("stakeholder_brief", {}))
 
+# ── [57] Data Validation ──────────────────────────────
+print("\n[57] Data Validation")
+dv = api("POST", "/api/data/validate", {"well": "3P", "source": "demo"}, timeout=60)
+check("Has quality", dv.get("quality") in ("GOOD", "ACCEPTABLE", "POOR"))
+check("Has n_samples", isinstance(dv.get("n_samples"), int) and dv["n_samples"] > 0)
+check("Has n_critical", isinstance(dv.get("n_critical"), int))
+check("Has n_warnings", isinstance(dv.get("n_warnings"), int))
+check("Has issues list", isinstance(dv.get("issues"), list))
+check("Has recommendations", isinstance(dv.get("recommendations"), list) and len(dv["recommendations"]) > 0)
+check("Has column_summary", isinstance(dv.get("column_summary"), dict))
+check("Has stakeholder_brief", "headline" in dv.get("stakeholder_brief", {}))
+if dv.get("issues"):
+    i0 = dv["issues"][0]
+    check("Issue has severity", i0.get("severity") in ("CRITICAL", "WARNING", "INFO"))
+    check("Issue has field", isinstance(i0.get("field"), str))
+    check("Issue has detail", isinstance(i0.get("detail"), str))
+
+# ── [58] Cache Warmup ─────────────────────────────────
+print("\n[58] Cache Warmup")
+wu = api("POST", "/api/system/warmup", timeout=30)
+check("Has status WARMING", wu.get("status") == "WARMING")
+check("Has targets", isinstance(wu.get("targets"), list) and len(wu["targets"]) > 0)
+check("Has message", isinstance(wu.get("message"), str))
+
+# ── [59] RLHF Preference Model ───────────────────────
+print("\n[59] RLHF Preference Model")
+pm = api("POST", "/api/rlhf/preference-model", {"well": "3P", "source": "demo"}, timeout=180)
+check("Has status", pm.get("status") in ("OK", "INSUFFICIENT_DATA"))
+if pm.get("status") == "OK":
+    check("Has n_reviews", isinstance(pm.get("n_reviews"), int) and pm["n_reviews"] >= 5)
+    check("Has accepted count", isinstance(pm.get("accepted"), int))
+    check("Has rejected count", isinstance(pm.get("rejected"), int))
+    check("Has type_trust", isinstance(pm.get("type_trust"), dict))
+    check("Has baseline_accuracy", isinstance(pm.get("baseline_accuracy"), (int, float)))
+    check("Has weighted_accuracy", isinstance(pm.get("weighted_accuracy"), (int, float)))
+    check("Has improvement", isinstance(pm.get("improvement"), (int, float)))
+    check("Has plot", isinstance(pm.get("plot"), str) and pm["plot"].startswith("data:image"))
+    check("Has stakeholder_brief", "headline" in pm.get("stakeholder_brief", {}))
+else:
+    check("Has message", isinstance(pm.get("message"), str))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.13.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.14.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

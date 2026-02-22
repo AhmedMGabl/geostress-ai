@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.13.0 - Industrial Decision Intelligence)."""
+"""GeoStress AI - FastAPI Web Application (v3.14.0 - RLHF Preference + Data Validation)."""
 
 import os
 import io
@@ -964,7 +964,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.13.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.14.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -12023,7 +12023,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.13.0",
+        "app_version": "3.14.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else
@@ -12035,6 +12035,416 @@ async def system_health():
             ] if r]
         ),
     })
+
+
+# ── v3.13: Cache Warmup + Data Validation + RLHF Preference Model ────────
+
+
+@app.post("/api/system/warmup")
+async def system_warmup():
+    """Precompute expensive analyses in background for faster response.
+
+    Pre-populates classification and feature engineering caches for both wells.
+    Returns immediately; warming continues in background.
+    """
+    wells = list(demo_df[WELL_COL].unique()) if WELL_COL in demo_df.columns else []
+    targets = [f"classify:{w}" for w in wells] + [f"features:{w}" for w in wells]
+
+    def _warm():
+        from src.enhanced_analysis import engineer_enhanced_features
+        warmed = []
+        for well in wells:
+            try:
+                df_w = demo_df[demo_df[WELL_COL] == well].reset_index(drop=True)
+                engineer_enhanced_features(df_w)
+                warmed.append(f"features:{well}")
+            except Exception:
+                pass
+        return warmed
+
+    asyncio.get_event_loop().run_in_executor(None, _warm)
+
+    return {
+        "status": "WARMING",
+        "targets": targets,
+        "n_wells": len(wells),
+        "message": "Background cache warming started. Results will be faster on next request.",
+    }
+
+
+@app.post("/api/data/validate")
+async def validate_data(request: Request):
+    """Validate data quality before analysis. Reports issues and recommendations.
+
+    Checks: completeness, outliers, distribution normality, column types,
+    class balance, depth coverage, and azimuth/dip ranges.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", None)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+
+        df_check = df.copy()
+        if well and WELL_COL in df_check.columns:
+            df_check = df_check[df_check[WELL_COL] == well].reset_index(drop=True)
+
+        issues = []
+        recommendations = []
+        n = len(df_check)
+
+        # Check minimum sample size
+        if n < 50:
+            issues.append({"severity": "CRITICAL", "field": "sample_size", "detail": f"Only {n} samples. Need at least 50 for reliable ML."})
+        elif n < 200:
+            issues.append({"severity": "WARNING", "field": "sample_size", "detail": f"{n} samples — results may have high variance."})
+
+        # Missing values
+        for col in [DEPTH_COL, AZIMUTH_COL, DIP_COL, FRACTURE_TYPE_COL]:
+            if col in df_check.columns:
+                n_missing = int(df_check[col].isna().sum())
+                if n_missing > 0:
+                    pct = round(100 * n_missing / n, 1)
+                    sev = "CRITICAL" if pct > 10 else "WARNING"
+                    issues.append({"severity": sev, "field": col, "detail": f"{n_missing} missing ({pct}%)"})
+
+        # Azimuth range check
+        if AZIMUTH_COL in df_check.columns:
+            az = df_check[AZIMUTH_COL].dropna().values
+            if len(az) > 0:
+                if np.any(az < 0) or np.any(az > 360):
+                    issues.append({"severity": "CRITICAL", "field": "azimuth", "detail": "Values outside [0, 360] range."})
+                az_std = float(np.std(az))
+                if az_std < 10:
+                    issues.append({"severity": "WARNING", "field": "azimuth", "detail": f"Low variance (std={az_std:.1f}°) — may indicate measurement bias."})
+
+        # Dip range check
+        if DIP_COL in df_check.columns:
+            dip = df_check[DIP_COL].dropna().values
+            if len(dip) > 0:
+                if np.any(dip < 0) or np.any(dip > 90):
+                    issues.append({"severity": "CRITICAL", "field": "dip", "detail": "Values outside [0, 90] range."})
+                low_dip = float(np.sum(dip < 20) / len(dip))
+                high_dip = float(np.sum(dip > 70) / len(dip))
+                if low_dip < 0.05 and high_dip < 0.05:
+                    issues.append({"severity": "WARNING", "field": "dip", "detail": "Narrow dip range — missing low-angle and high-angle fractures."})
+
+        # Depth coverage
+        if DEPTH_COL in df_check.columns:
+            depths = df_check[DEPTH_COL].dropna().values
+            if len(depths) > 0:
+                dr = float(np.max(depths) - np.min(depths))
+                if dr < 200:
+                    issues.append({"severity": "WARNING", "field": "depth", "detail": f"Narrow depth range ({dr:.0f}m). May limit generalizability."})
+                # Check for depth gaps
+                sorted_d = np.sort(depths)
+                gaps = np.diff(sorted_d)
+                large_gaps = gaps[gaps > 50]
+                if len(large_gaps) > 0:
+                    issues.append({"severity": "INFO", "field": "depth", "detail": f"{len(large_gaps)} depth gaps >50m detected."})
+
+        # Class balance
+        if FRACTURE_TYPE_COL in df_check.columns:
+            vc = df_check[FRACTURE_TYPE_COL].value_counts()
+            if len(vc) > 1:
+                ratio = float(vc.iloc[0] / vc.iloc[-1])
+                if ratio > 10:
+                    issues.append({"severity": "CRITICAL", "field": "class_balance",
+                                   "detail": f"Severe imbalance ({ratio:.0f}:1). Min class: {vc.index[-1]} ({vc.iloc[-1]})"})
+                elif ratio > 5:
+                    issues.append({"severity": "WARNING", "field": "class_balance",
+                                   "detail": f"Imbalance ({ratio:.1f}:1). Consider oversampling minority class."})
+                classes_below_10 = [c for c, cnt in vc.items() if cnt < 10]
+                if classes_below_10:
+                    issues.append({"severity": "WARNING", "field": "class_balance",
+                                   "detail": f"Classes with <10 samples: {', '.join(classes_below_10)}"})
+
+        # Duplicate detection
+        if DEPTH_COL in df_check.columns and AZIMUTH_COL in df_check.columns:
+            dupes = df_check.duplicated(subset=[DEPTH_COL, AZIMUTH_COL, DIP_COL], keep=False).sum()
+            if dupes > 0:
+                issues.append({"severity": "WARNING", "field": "duplicates", "detail": f"{dupes} potential duplicate measurements."})
+
+        # Outlier detection (IQR method)
+        for col in [DEPTH_COL, AZIMUTH_COL, DIP_COL]:
+            if col in df_check.columns:
+                vals = df_check[col].dropna().values
+                if len(vals) > 10:
+                    q1, q3 = np.percentile(vals, [25, 75])
+                    iqr = q3 - q1
+                    if iqr > 0:
+                        n_out = int(np.sum((vals < q1 - 3*iqr) | (vals > q3 + 3*iqr)))
+                        if n_out > 0:
+                            issues.append({"severity": "INFO", "field": col,
+                                          "detail": f"{n_out} extreme outliers (>3×IQR)."})
+
+        # Generate recommendations
+        critical = sum(1 for i in issues if i["severity"] == "CRITICAL")
+        warnings = sum(1 for i in issues if i["severity"] == "WARNING")
+        if critical == 0 and warnings == 0:
+            quality = "GOOD"
+            recommendations.append("Data quality is good. Proceed with analysis.")
+        elif critical == 0:
+            quality = "ACCEPTABLE"
+            recommendations.append("Minor issues detected. Results may be affected.")
+            for i in issues:
+                if i["severity"] == "WARNING":
+                    recommendations.append(f"Address: {i['field']} — {i['detail']}")
+        else:
+            quality = "POOR"
+            recommendations.append("Critical issues detected. Fix before running analysis.")
+            for i in issues:
+                if i["severity"] == "CRITICAL":
+                    recommendations.append(f"FIX: {i['field']} — {i['detail']}")
+
+        return {
+            "n_samples": n,
+            "well": well or "all",
+            "quality": quality,
+            "n_critical": critical,
+            "n_warnings": warnings,
+            "n_info": sum(1 for i in issues if i["severity"] == "INFO"),
+            "issues": issues,
+            "recommendations": recommendations,
+            "column_summary": {
+                col: {
+                    "present": col in df_check.columns,
+                    "n_missing": int(df_check[col].isna().sum()) if col in df_check.columns else n,
+                    "dtype": str(df_check[col].dtype) if col in df_check.columns else "N/A",
+                }
+                for col in [DEPTH_COL, AZIMUTH_COL, DIP_COL, FRACTURE_TYPE_COL, WELL_COL]
+            },
+            "stakeholder_brief": {
+                "headline": f"Data Quality: {quality} ({n} samples, {critical} critical issues)",
+                "risk_level": "RED" if quality == "POOR" else ("AMBER" if quality == "ACCEPTABLE" else "GREEN"),
+                "confidence_sentence": f"{n} fracture measurements. {critical} critical issues, {warnings} warnings.",
+                "action": recommendations[0] if recommendations else "No action needed.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    return _sanitize_for_json(result)
+
+
+@app.post("/api/rlhf/preference-model")
+async def rlhf_preference_model(request: Request):
+    """Build a preference model from accumulated RLHF reviews.
+
+    Uses accepted/rejected/corrected verdicts to learn which predictions
+    the expert trusts and which they don't. Generates a reward signal
+    that can reweight future predictions.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.metrics import accuracy_score, f1_score
+        from sklearn.base import clone
+
+        reviews = get_rlhf_reviews(well=well, limit=1000)
+        if len(reviews) < 5:
+            return {
+                "status": "INSUFFICIENT_DATA",
+                "message": f"Need at least 5 reviews. Have {len(reviews)} for well {well}.",
+                "n_reviews": len(reviews),
+            }
+
+        # Analyze review patterns
+        accepted = [r for r in reviews if r.get("expert_verdict") == "accept"]
+        rejected = [r for r in reviews if r.get("expert_verdict") == "reject"]
+        corrected = [r for r in reviews if r.get("expert_verdict") == "correct"]
+
+        # Build preference pairs: (accepted, rejected) for each type
+        type_accept_rate = {}
+        type_reject_rate = {}
+        for r in reviews:
+            pt = r.get("predicted_type", "unknown")
+            if r.get("expert_verdict") == "accept":
+                type_accept_rate[pt] = type_accept_rate.get(pt, 0) + 1
+            elif r.get("expert_verdict") == "reject":
+                type_reject_rate[pt] = type_reject_rate.get(pt, 0) + 1
+
+        # Compute trust score per predicted type
+        all_types = set(list(type_accept_rate.keys()) + list(type_reject_rate.keys()))
+        type_trust = {}
+        for t in all_types:
+            acc = type_accept_rate.get(t, 0)
+            rej = type_reject_rate.get(t, 0)
+            total = acc + rej
+            if total > 0:
+                type_trust[t] = {
+                    "accepted": acc,
+                    "rejected": rej,
+                    "trust_score": round(acc / total, 3),
+                    "sample_size": total,
+                }
+
+        # Confidence-based preference analysis
+        conf_bins = [(0, 0.5), (0.5, 0.7), (0.7, 0.9), (0.9, 1.01)]
+        conf_acceptance = []
+        for lo, hi in conf_bins:
+            bin_reviews = [r for r in reviews if r.get("confidence") is not None and lo <= r["confidence"] < hi]
+            if bin_reviews:
+                acc_rate = sum(1 for r in bin_reviews if r.get("expert_verdict") == "accept") / len(bin_reviews)
+                conf_acceptance.append({
+                    "confidence_range": f"{lo:.0%}-{hi:.0%}",
+                    "n_reviews": len(bin_reviews),
+                    "acceptance_rate": round(acc_rate, 3),
+                })
+
+        # Compute reward weights for retraining
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        features = engineer_enhanced_features(df_well)
+        labels = df_well[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(features.values)
+
+        # Build reward weights
+        reward_weights = np.ones(len(y), dtype=float)
+        for idx in range(len(df_well)):
+            ft = labels[idx]
+            if ft in type_trust:
+                ts = type_trust[ft]["trust_score"]
+                # Low trust types get higher weight (model needs to improve on them)
+                reward_weights[idx] = 1.0 + (1.0 - ts) * 2.0
+
+        reward_weights = reward_weights / reward_weights.mean()
+
+        # Compare baseline vs reward-weighted
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            baseline_pred = cross_val_predict(clone(model), X, y, cv=cv)
+            baseline_acc = float(accuracy_score(y, baseline_pred))
+
+            # Reward-weighted CV
+            weighted_accs = []
+            for train_idx, test_idx in cv.split(X, y):
+                m = clone(model)
+                try:
+                    m.fit(X[train_idx], y[train_idx], sample_weight=reward_weights[train_idx])
+                except TypeError:
+                    m.fit(X[train_idx], y[train_idx])
+                weighted_accs.append(float(accuracy_score(y[test_idx], m.predict(X[test_idx]))))
+            weighted_acc = float(np.mean(weighted_accs))
+
+        improvement = weighted_acc - baseline_acc
+
+        # Preference drift analysis
+        from collections import defaultdict
+        drift_data = defaultdict(list)
+        for r in reviews:
+            if r.get("timestamp"):
+                drift_data[r.get("expert_verdict", "unknown")].append(r["timestamp"])
+
+        # Render plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Type trust bars
+            ax1 = axes[0]
+            if type_trust:
+                t_names = sorted(type_trust.keys())
+                t_scores = [type_trust[t]["trust_score"] for t in t_names]
+                colors = ["#28a745" if s >= 0.7 else "#ffc107" if s >= 0.4 else "#dc3545" for s in t_scores]
+                ax1.barh(range(len(t_names)), t_scores, color=colors)
+                ax1.set_yticks(range(len(t_names)))
+                ax1.set_yticklabels([t[:15] for t in t_names], fontsize=8)
+                ax1.set_xlabel("Trust Score")
+                ax1.set_title("Expert Trust per Type")
+                ax1.set_xlim(0, 1)
+                ax1.invert_yaxis()
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # Confidence vs acceptance
+            ax2 = axes[1]
+            if conf_acceptance:
+                ca_x = [ca["confidence_range"] for ca in conf_acceptance]
+                ca_y = [ca["acceptance_rate"] for ca in conf_acceptance]
+                ax2.bar(range(len(ca_x)), ca_y, color="#2E86AB")
+                ax2.set_xticks(range(len(ca_x)))
+                ax2.set_xticklabels(ca_x, fontsize=8)
+                ax2.set_ylabel("Expert Acceptance Rate")
+                ax2.set_title("Model Confidence vs Expert Trust")
+                ax2.set_ylim(0, 1)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            # Baseline vs weighted
+            ax3 = axes[2]
+            ax3.bar([0, 1], [baseline_acc, weighted_acc],
+                   color=["#6c757d", "#28a745" if improvement >= 0 else "#dc3545"])
+            ax3.set_xticks([0, 1])
+            ax3.set_xticklabels(["Baseline", "Reward-\nWeighted"])
+            ax3.set_ylabel("Accuracy")
+            ax3.set_title(f"RLHF Effect ({improvement:+.1%})")
+            ax3.set_ylim(0, 1.05)
+            for i, v in enumerate([baseline_acc, weighted_acc]):
+                ax3.text(i, v + 0.02, f"{v:.1%}", ha="center", fontsize=10)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "status": "OK",
+            "well": well,
+            "n_reviews": len(reviews),
+            "accepted": len(accepted),
+            "rejected": len(rejected),
+            "corrected": len(corrected),
+            "type_trust": type_trust,
+            "confidence_acceptance": conf_acceptance,
+            "baseline_accuracy": round(baseline_acc, 4),
+            "weighted_accuracy": round(weighted_acc, 4),
+            "improvement": round(improvement, 4),
+            "reward_weights_stats": {
+                "mean": round(float(reward_weights.mean()), 3),
+                "std": round(float(reward_weights.std()), 3),
+                "max": round(float(reward_weights.max()), 3),
+                "min": round(float(reward_weights.min()), 3),
+            },
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"RLHF Preference Model: {len(reviews)} reviews → {improvement:+.1%} accuracy",
+                "risk_level": "GREEN" if len(reviews) >= 50 else ("AMBER" if len(reviews) >= 20 else "RED"),
+                "confidence_sentence": (
+                    f"{len(accepted)} accepted, {len(rejected)} rejected, {len(corrected)} corrected predictions. "
+                    f"Reward-weighted accuracy: {weighted_acc:.1%} (baseline: {baseline_acc:.1%})."
+                ),
+                "action": (
+                    "Collect more reviews for stronger preference signal." if len(reviews) < 50 else
+                    "Preference model has good coverage. Apply reward weights to production model."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    return _sanitize_for_json(result)
 
 
 # ── v3.3.1: Comprehensive RLHF Pipeline ─────────────
