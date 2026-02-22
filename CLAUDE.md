@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 ```
-app.py              - FastAPI backend (v3.4.0), 100+ API endpoints, serves templates
+app.py              - FastAPI backend (v3.6.0), 170+ API endpoints, serves templates
 src/
   data_loader.py    - Load Excel files, parse fracture orientation data, compute normals
   geostress.py      - Stress tensor construction, Mohr-Coulomb (with Pp), Bayesian MCMC, auto regime detection
@@ -170,15 +170,18 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 
 ## Test Suites
 
+- `test_v350.py` — 67 tests: v3.5/3.6 input validation, calibration, uncertainty, confidence, decision matrix
 - `test_v340.py` — 44 tests: core API, inversion, classification, MLOps, RLHF, batch, stakeholder, UI
 - `test_v330.py` — 18 tests: v3.3.x endpoint coverage
 
-## Performance (v3.4.0)
+## Performance (v3.6.0)
 
-- `invert_stress`: ~1.1s (popsize=10, maxiter=200)
+- Feature engineering: 0.085s (vectorized numpy, was 2s with O(n²) loops)
+- `invert_stress`: ~1.1s + 10ms uncertainty (Hessian-based, no extra inversions)
 - `auto_detect_regime`: ~3.3s (3 sequential inversions)
-- `classify_enhanced`: ~6.3s (fast mode when n_folds<=3)
-- Batch (2 wells): ~20s cold, ~2s cached
+- `classify_enhanced`: ~3.2s RF / ~3.7s XGBoost (3-fold single-pass CV, was 12-21s)
+- Batch (2 wells): ~21s cold via asyncio.gather (was 28s), ~2s cached
+- Executive summary: ~8s cold, cached thereafter
 
 ## Domain Concepts
 
@@ -367,3 +370,16 @@ python -c "from src.enhanced_analysis import compare_models; from src.data_loade
 - Comprehensive report: 7 modules → GO/CAUTION/NO-GO verdict + executive brief (0.02s cached, ~130s cold)
 - Class imbalance is severe: Boundary=13 vs Continuous=231 (17.8:1 ratio) — Trustworthiness Report correctly flags this
 - Audit trail: `_audit_record()` called on 30+ endpoints, app_version=3.1.0, result hashing for integrity
+- v3.5.0: Field calibration system — LOT/XLOT/DFIT/Minifracs measurements stored in SQLite, validate against model predictions
+- Calibration validation computes per-measurement predicted vs measured MPa, overall calibration_score (0-100), rating (CALIBRATED/ACCEPTABLE/NEEDS_RECALIBRATION/UNRELIABLE)
+- Calibration endpoints: POST /api/calibration/add-measurement, POST /api/calibration/validate, GET /api/calibration/measurements
+- Input validation across all endpoints: classifier whitelist, regime whitelist, numeric range checks (depth 0-15000, friction 0.1-2.0, rating 1-5, n_clusters 2-20)
+- Well-not-found returns 404 (not 400) for cluster and inversion endpoints
+- v3.6.0: Hessian-based uncertainty (_fast_uncertainty) — Cramér-Rao bound at optimal point, ~10ms overhead
+- Uncertainty block on inversion: shmax_ci_90, sigma1_ci_90, sigma3_ci_90, mu_ci_90, R_ci_90, quality (WELL/MODERATELY/POORLY_CONSTRAINED)
+- CS% sensitivity range: friction ±0.1 → critically_stressed_range {low_friction, best_estimate, high_friction}
+- Per-class prediction confidence from predict_proba: mean_prediction_confidence, per_class_confidence, accuracy_range
+- GO/NO-GO decision matrix on executive summary: 4 factors (Data Sufficiency, Model Reliability, Stress Constraint, Safety Margin) → verdict
+- Vectorized feature engineering: O(n²) → O(n log n) via np.searchsorted + cumsum windowing
+- classify_enhanced single-pass: cross_val_predict only (no cross_validate), 3-fold default, 4 fits total (was 11)
+- Batch parallelization: asyncio.gather for per-well processing

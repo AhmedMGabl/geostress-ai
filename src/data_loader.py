@@ -143,6 +143,99 @@ def fracture_plane_normal(azimuth_deg: np.ndarray, dip_deg: np.ndarray) -> np.nd
     return np.column_stack([nx, ny, nz])
 
 
+def qc_fracture_data(df: pd.DataFrame,
+                     min_dip: float = 5.0,
+                     max_dip: float = 85.0,
+                     min_count_per_well: int = 10,
+                     depth_gap_threshold_m: float = 200.0) -> dict:
+    """Apply WSM-standard QC filters to fracture orientation data.
+
+    Based on EAGE borehole image log QC standards and WSM 2025 criteria.
+
+    Filters:
+      - Low dip (<5°): likely bedding planes, not tectonic fractures
+      - High dip (>85°): may be drilling-induced features in deviated wells
+      - Insufficient data: wells with <10 fractures unreliable for stress
+      - Missing depth: fractures without depth cannot be used for profiles
+      - Depth gaps: zones >200m without data suggest incomplete coverage
+
+    Returns QC report with per-fracture flags and overall pass rate.
+    """
+    qc_flags = pd.Series("PASS", index=df.index)
+
+    # Flag near-horizontal picks (likely bedding, not tectonic fractures)
+    low_dip = df[DIP_COL] < min_dip
+    qc_flags[low_dip] = "LOW_DIP_EXCLUDED"
+
+    # Flag near-vertical picks (may be drilling-induced in deviated wells)
+    high_dip = df[DIP_COL] > max_dip
+    qc_flags[high_dip] = "HIGH_DIP_REVIEW"
+
+    # Flag fractures with missing/NaN depth
+    missing_depth = df[DEPTH_COL].isna()
+    qc_flags[missing_depth] = "MISSING_DEPTH"
+
+    # Flag wells with insufficient data count
+    for well in df[WELL_COL].unique():
+        mask = df[WELL_COL] == well
+        if mask.sum() < min_count_per_well:
+            qc_flags[mask] = "INSUFFICIENT_DATA"
+
+    # Detect depth coverage gaps per well
+    depth_gaps = {}
+    for well in df[WELL_COL].unique():
+        well_df = df[df[WELL_COL] == well].dropna(subset=[DEPTH_COL])
+        if len(well_df) < 2:
+            continue
+        sorted_depths = well_df[DEPTH_COL].sort_values().values
+        gaps = np.diff(sorted_depths)
+        large_gaps = gaps > depth_gap_threshold_m
+        if large_gaps.any():
+            gap_info = []
+            gap_idx = np.where(large_gaps)[0]
+            for gi in gap_idx:
+                gap_info.append({
+                    "top_m": round(float(sorted_depths[gi]), 1),
+                    "bottom_m": round(float(sorted_depths[gi + 1]), 1),
+                    "gap_m": round(float(gaps[gi]), 1),
+                })
+            depth_gaps[well] = gap_info
+
+    # Azimuth scatter assessment per well (circular std)
+    azimuth_quality = {}
+    for well in df[WELL_COL].unique():
+        well_df = df[(df[WELL_COL] == well) & (qc_flags == "PASS")]
+        if len(well_df) < 2:
+            azimuth_quality[well] = {"circular_std_deg": None, "preferred_orientation": False}
+            continue
+        az_rad = np.radians(well_df[AZIMUTH_COL].values)
+        R_len = np.sqrt(np.mean(np.sin(az_rad))**2 + np.mean(np.cos(az_rad))**2)
+        circ_std = np.degrees(np.sqrt(-2 * np.log(max(R_len, 1e-10))))
+        azimuth_quality[well] = {
+            "circular_std_deg": round(circ_std, 1),
+            "resultant_length": round(R_len, 3),
+            "preferred_orientation": R_len > 0.3,  # Rayleigh test threshold
+        }
+
+    passed = (qc_flags == "PASS").sum()
+    flag_counts = qc_flags.value_counts().to_dict()
+
+    return {
+        "total": len(df),
+        "passed": int(passed),
+        "pass_rate": round(passed / max(len(df), 1), 3),
+        "flags": flag_counts,
+        "depth_gaps": depth_gaps,
+        "azimuth_quality": azimuth_quality,
+        "qc_flags": qc_flags,
+        "min_dip_filter": min_dip,
+        "max_dip_filter": max_dip,
+        "wsm_note": ("QC based on WSM 2025 and EAGE borehole image log standards. "
+                     "LOW_DIP fractures are likely bedding. HIGH_DIP may be "
+                     "drilling-induced. Both are excluded from stress analysis."),
+    }
+
+
 if __name__ == "__main__":
     # Quick test
     df = load_all_fractures()
@@ -150,3 +243,7 @@ if __name__ == "__main__":
     print(f"Fracture types: {df[FRACTURE_TYPE_COL].unique().tolist()}")
     print()
     print(fracture_summary(df))
+    print()
+    qc = qc_fracture_data(df)
+    print(f"QC: {qc['passed']}/{qc['total']} passed ({qc['pass_rate']*100:.1f}%)")
+    print(f"Flags: {qc['flags']}")

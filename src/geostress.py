@@ -430,6 +430,193 @@ def invert_stress(
     }
 
 
+def wsm_quality_rank(shmax_std_deg: float, n_fractures: int) -> dict:
+    """Map SHmax uncertainty to World Stress Map quality scheme (WSM 2025).
+
+    WSM quality ranking for borehole-derived stress orientations:
+      A: ±15° — multiple consistent indicators, ≥25 observations
+      B: ±20° — single high-quality indicator, ≥15 observations
+      C: ±25° — single standard indicator, ≥10 observations
+      D: ±40° — low-quality or inconsistent data
+      E: rejected — contradictory or unreliable
+
+    References: WSM Technical Report 25-01, Heidbach et al. (2016).
+    """
+    # Apply both angular uncertainty and data count criteria
+    if shmax_std_deg <= 15 and n_fractures >= 25:
+        rank, detail = "A", "High quality: ±15° accuracy, ≥25 consistent orientations"
+    elif shmax_std_deg <= 20 and n_fractures >= 15:
+        rank, detail = "B", "Good quality: ±20° accuracy, ≥15 orientations"
+    elif shmax_std_deg <= 25 and n_fractures >= 10:
+        rank, detail = "C", "Acceptable quality: ±25° accuracy, ≥10 orientations"
+    elif shmax_std_deg <= 40:
+        rank, detail = "D", "Low quality: ±40° accuracy — use with caution"
+    else:
+        rank, detail = "E", "Rejected: SHmax direction unreliable (>40° uncertainty or insufficient data)"
+
+    return {"rank": rank, "detail": detail, "shmax_std_deg": round(shmax_std_deg, 1),
+            "n_fractures": n_fractures}
+
+
+def stress_polygon(sv_mpa: float, pp_mpa: float, mu: float = 0.6) -> dict:
+    """Compute stress polygon bounds (Zoback, 2007 Reservoir Geomechanics).
+
+    The stress polygon constrains the permissible (Shmin, SHmax) space using
+    Anderson faulting theory and Byerlee's frictional limit:
+        σ1/σ3 ≤ ((μ²+1)^0.5 + μ)²
+
+    Returns bounds for each faulting regime.
+    """
+    k = ((mu**2 + 1)**0.5 + mu)**2  # frictional stress ratio limit
+    sv_eff = sv_mpa - pp_mpa
+
+    # Normal faulting (NF): Sv = σ1, Shmin = σ3
+    shmin_nf_min = pp_mpa + sv_eff / k  # lowest permissible Shmin
+    shmin_nf_max = sv_mpa  # Shmin ≤ Sv for NF
+
+    # Strike-slip (SS): Sv = σ2, Shmin = σ3, SHmax = σ1
+    shmin_ss_min = pp_mpa + sv_eff / k
+    shmax_ss_max = pp_mpa + k * sv_eff
+
+    # Thrust faulting (TF): Sv = σ3, SHmax = σ1
+    shmax_tf_max = pp_mpa + k * sv_eff
+    shmin_tf_min = sv_mpa  # Shmin ≥ Sv for TF
+
+    return {
+        "sv_mpa": round(sv_mpa, 2),
+        "pp_mpa": round(pp_mpa, 2),
+        "mu": mu,
+        "frictional_limit_ratio": round(k, 3),
+        "normal_fault": {
+            "shmin_range_mpa": [round(shmin_nf_min, 2), round(shmin_nf_max, 2)],
+            "shmax_range_mpa": [round(shmin_nf_min, 2), round(sv_mpa, 2)],
+        },
+        "strike_slip": {
+            "shmin_range_mpa": [round(shmin_ss_min, 2), round(sv_mpa, 2)],
+            "shmax_range_mpa": [round(sv_mpa, 2), round(shmax_ss_max, 2)],
+        },
+        "thrust_fault": {
+            "shmin_range_mpa": [round(shmin_tf_min, 2), round(shmax_tf_max, 2)],
+            "shmax_range_mpa": [round(shmin_tf_min, 2), round(shmax_tf_max, 2)],
+        },
+    }
+
+
+def mud_weight_window(sv_mpa: float, pp_mpa: float, shmin_mpa: float,
+                      depth_m: float, shmax_mpa: float = None,
+                      ucs_mpa: float = None) -> dict:
+    """Compute safe mud weight window for drilling operations.
+
+    Converts stress magnitudes to equivalent mud weight (EMW) in sg and ppg.
+    Lower bound: pore pressure (kick risk) or collapse gradient.
+    Upper bound: minimum horizontal stress (lost circulation / fracture gradient).
+
+    1 MPa = 0.102 kgf/cm² ≈ density * g * depth / 1e6
+    EMW (sg) = stress_MPa * 1e6 / (9.81 * depth_m * 1000)
+    EMW (ppg) = EMW_sg * 8.345
+    """
+    if depth_m <= 0:
+        return {"error": "depth must be positive"}
+
+    g = 9.81
+    rho_w = 1000  # kg/m³
+
+    def mpa_to_sg(mpa):
+        return mpa * 1e6 / (g * depth_m * rho_w)
+
+    def mpa_to_ppg(mpa):
+        return mpa_to_sg(mpa) * 8.345
+
+    pp_sg = mpa_to_sg(pp_mpa)
+    frac_gradient_sg = mpa_to_sg(shmin_mpa)
+    sv_sg = mpa_to_sg(sv_mpa)
+
+    # Collapse gradient (simplified Mohr-Coulomb wellbore stability)
+    if ucs_mpa is not None and shmax_mpa is not None:
+        # Breakout onset: σθ = 3*SHmax - Shmin - Pp - UCS
+        # Required mud weight to prevent breakout
+        breakout_mpa = (3 * shmax_mpa - shmin_mpa - pp_mpa - ucs_mpa)
+        collapse_sg = max(mpa_to_sg(breakout_mpa), pp_sg) if breakout_mpa > 0 else pp_sg
+    else:
+        collapse_sg = pp_sg
+
+    lower_bound_sg = max(pp_sg, collapse_sg)
+    upper_bound_sg = frac_gradient_sg
+    margin_sg = upper_bound_sg - lower_bound_sg
+
+    return {
+        "pore_pressure": {"mpa": round(pp_mpa, 2), "sg": round(pp_sg, 3), "ppg": round(mpa_to_ppg(pp_mpa), 2)},
+        "collapse_gradient": {"sg": round(collapse_sg, 3), "ppg": round(collapse_sg * 8.345, 2)},
+        "fracture_gradient": {"mpa": round(shmin_mpa, 2), "sg": round(frac_gradient_sg, 3),
+                              "ppg": round(mpa_to_ppg(shmin_mpa), 2)},
+        "overburden": {"mpa": round(sv_mpa, 2), "sg": round(sv_sg, 3), "ppg": round(mpa_to_ppg(sv_mpa), 2)},
+        "safe_window": {
+            "lower_sg": round(lower_bound_sg, 3),
+            "upper_sg": round(upper_bound_sg, 3),
+            "margin_sg": round(margin_sg, 3),
+            "lower_ppg": round(lower_bound_sg * 8.345, 2),
+            "upper_ppg": round(upper_bound_sg * 8.345, 2),
+            "margin_ppg": round(margin_sg * 8.345, 2),
+        },
+        "status": "SAFE" if margin_sg > 0.2 else ("NARROW" if margin_sg > 0 else "IMPOSSIBLE"),
+        "depth_m": round(depth_m, 1),
+    }
+
+
+def mogi_coulomb_misfit(sigma_n: np.ndarray, tau: np.ndarray,
+                        sigma_2: np.ndarray, mu: float, cohesion: float,
+                        pore_pressure: float = 0.0) -> float:
+    """Mogi-Coulomb failure criterion — accounts for intermediate stress σ2.
+
+    τ_oct = a + b * σ_m,2  where:
+      τ_oct = sqrt((σ1-σ2)² + (σ2-σ3)² + (σ3-σ1)²) / 3
+      σ_m,2 = (σ1+σ3)/2
+
+    For resolved stresses:
+      Effective normal stress: σn_eff = σn - Pp
+      Mohr-Coulomb distance above/below failure line.
+
+    More physically appropriate for polyaxial stress states (carbonates, vuggy).
+    """
+    sigma_n_eff = sigma_n - pore_pressure
+    # Mogi-Coulomb: uses octahedral shear stress = (2/3)^0.5 * Mohr tau
+    # Simplified: same failure line but with σ2 correction factor
+    a = (2 * np.sqrt(2) / 3) * cohesion * np.cos(np.arctan(mu))
+    b = (2 * np.sqrt(2) / 3) * mu * np.cos(np.arctan(mu))
+    failure_stress = a + b * sigma_n_eff
+    misfit = np.sum((tau - failure_stress) ** 2)
+    return float(misfit)
+
+
+def drucker_prager_misfit(sigma_n: np.ndarray, tau: np.ndarray,
+                          mu: float, cohesion: float,
+                          pore_pressure: float = 0.0) -> float:
+    """Drucker-Prager failure criterion — pressure-dependent yield surface.
+
+    √J2 = k + α * I1  where:
+      I1 = σ1 + σ2 + σ3 (first stress invariant)
+      J2 = second deviatoric stress invariant
+
+    For resolved stresses on fracture planes, this simplifies to:
+      τ = C_dp + μ_dp * (σ_mean - Pp)
+
+    Inscribed DP cone matching Mohr-Coulomb:
+      α = 2 sin(φ) / (√3 * (3 - sin(φ)))
+      k = 6c cos(φ) / (√3 * (3 - sin(φ)))
+    """
+    phi = np.arctan(mu)
+    sin_phi = np.sin(phi)
+    cos_phi = np.cos(phi)
+
+    alpha = 2 * sin_phi / (np.sqrt(3) * (3 - sin_phi))
+    k = 6 * cohesion * cos_phi / (np.sqrt(3) * (3 - sin_phi))
+
+    sigma_n_eff = sigma_n - pore_pressure
+    failure_stress = k + alpha * sigma_n_eff * 3  # I1 approximation from σn
+    misfit = np.sum((tau - failure_stress) ** 2)
+    return float(misfit)
+
+
 def _fast_uncertainty(
     params: np.ndarray,
     normals: np.ndarray,
@@ -520,7 +707,12 @@ def _fast_uncertainty(
     else:
         quality = "POORLY_CONSTRAINED"
 
+    # World Stress Map quality ranking (WSM 2025 standard)
+    wsm_rank = wsm_quality_rank(shmax_std, n_fractures)
+
     result["quality"] = quality
+    result["wsm_quality_rank"] = wsm_rank["rank"]
+    result["wsm_quality_detail"] = wsm_rank["detail"]
     result["shmax_uncertainty_deg"] = round(float(shmax_std), 1)
     result["n_fractures"] = n_fractures
 

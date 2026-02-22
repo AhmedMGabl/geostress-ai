@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.6.0 - Industrial UQ & Performance)."""
+"""GeoStress AI - FastAPI Web Application (v3.7.0 - Industrial Grade)."""
 
 import os
 import io
@@ -768,6 +768,104 @@ async def data_quality(source: str = "demo"):
     return _sanitize_for_json(validate_data_quality(df))
 
 
+@app.get("/api/data/qc")
+async def fracture_qc(source: str = "demo", well: str = None):
+    """Run WSM-standard fracture QC filters on orientation data.
+
+    Returns per-fracture QC flags, pass rate, depth gap analysis,
+    and azimuth scatter assessment. Based on EAGE borehole image
+    log standards and WSM 2025 criteria.
+    """
+    from src.data_loader import qc_fracture_data
+    df = get_df(source)
+    if well:
+        df = df[df[WELL_COL] == well]
+        if len(df) == 0:
+            raise HTTPException(404, f"Well '{well}' not found")
+    qc = qc_fracture_data(df)
+    # Don't include the pandas Series in the response
+    qc_resp = {k: v for k, v in qc.items() if k != "qc_flags"}
+    return _sanitize_for_json(qc_resp)
+
+
+@app.post("/api/analysis/mud-weight-window")
+async def compute_mud_weight_window(request: Request):
+    """Compute safe mud weight window for drilling operations.
+
+    Converts stress magnitudes to equivalent mud weight (EMW) in sg and ppg.
+    This is the #1 deliverable drilling engineers use for well planning.
+
+    Required: well, source. Optional: depth_m, regime, cohesion.
+    """
+    body = await request.json()
+    well = body.get("well", "3P")
+    source = body.get("source", "demo")
+    depth_m = float(body.get("depth_m", 3300))
+    regime = body.get("regime", "auto")
+    cohesion = float(body.get("cohesion", 0))
+    pp = body.get("pore_pressure")
+
+    if depth_m <= 0 or depth_m > 15000:
+        raise HTTPException(400, "depth_m must be between 0 and 15000")
+
+    df = get_df(source)
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True)
+    if len(df_well) == 0:
+        raise HTTPException(404, f"Well '{well}' not found")
+
+    if pp is None:
+        pp = 1000 * 9.81 * depth_m / 1e6  # hydrostatic
+
+    # Get inversion results — must compute normals first
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values)
+
+    if regime == "auto":
+        auto = await asyncio.to_thread(
+            auto_detect_regime, normals, depth_m=depth_m,
+            cohesion=cohesion, pore_pressure=float(pp))
+        regime = auto["best_regime"]
+
+    result = await asyncio.to_thread(
+        invert_stress, normals, regime=regime, cohesion=cohesion,
+        pore_pressure=float(pp))
+
+    # Compute overburden and mud weight window
+    from src.geostress import mud_weight_window as _mww
+    sv = 2500 * 9.81 * depth_m / 1e6
+    sigma1 = float(result["sigma1"])
+    sigma3 = float(result["sigma3"])
+    sigma2 = float(result["sigma2"])
+    shmin_val = min(sigma2, sigma3)
+    shmax_val = max(sigma1, sigma2)
+
+    # Multi-depth profile
+    depths = np.linspace(max(depth_m * 0.5, 500), depth_m * 1.5, 10)
+    profile = []
+    for d in depths:
+        sv_d = 2500 * 9.81 * d / 1e6
+        pp_d = 1000 * 9.81 * d / 1e6
+        # Scale stresses proportionally with depth
+        scale = d / depth_m
+        mw = _mww(sv_d, pp_d, shmin_val * scale, d, shmax_mpa=shmax_val * scale)
+        profile.append({
+            "depth_m": round(d, 1),
+            "pp_sg": mw["pore_pressure"]["sg"],
+            "collapse_sg": mw["collapse_gradient"]["sg"],
+            "frac_gradient_sg": mw["fracture_gradient"]["sg"],
+            "overburden_sg": mw["overburden"]["sg"],
+            "status": mw["status"],
+        })
+
+    # Point estimate at requested depth
+    mww = _mww(sv, float(pp), shmin_val, depth_m, shmax_mpa=shmax_val)
+    mww["depth_profile"] = profile
+    mww["well"] = well
+    mww["regime"] = regime
+
+    return _sanitize_for_json(mww)
+
+
 @app.get("/api/data/wells")
 async def list_wells(source: str = "demo"):
     df = get_df(source)
@@ -1214,6 +1312,66 @@ async def run_inversion(request: Request):
             "stakeholder_summary": auto_detection["stakeholder_summary"],
         }
 
+    # ── WSM Quality Ranking ──
+    response["uncertainty"]["wsm_quality_rank"] = unc.get("wsm_quality_rank", "E")
+    response["uncertainty"]["wsm_quality_detail"] = unc.get("wsm_quality_detail",
+        "No uncertainty data available")
+
+    # ── Stress Polygon (Anderson faulting bounds) ──
+    from src.geostress import stress_polygon as _stress_polygon, mud_weight_window as _mww
+    sv = response["sigma1"] if regime == "normal" else (
+         response["sigma2"] if regime == "strike_slip" else response["sigma3"])
+    # Overburden from density integration: ρ_avg ≈ 2500 kg/m³
+    sv_overburden = 2500 * 9.81 * depth_m / 1e6 if depth_m > 0 else sv
+    sp = _stress_polygon(sv_overburden, pp, float(result["mu"]))
+    response["stress_polygon"] = sp
+
+    # ── Mud Weight Window ──
+    shmin_val = min(response["sigma2"], response["sigma3"])
+    shmax_val = max(response["sigma1"], response["sigma2"])
+    mww = _mww(sv_overburden, pp, shmin_val, depth_m, shmax_mpa=shmax_val)
+    response["mud_weight_window"] = mww
+
+    # ── Calibration disclosure ──
+    response["calibration_warning"] = {
+        "requires_calibration": True,
+        "message": ("Stress magnitudes (σ1, σ3) are estimated from fracture orientation "
+                    "data alone and are physically underdetermined without LOT/XLOT/DFIT "
+                    "calibration. Use calibrated field measurements to anchor magnitudes. "
+                    "Orientation (SHmax azimuth) is more reliable than magnitudes."),
+        "reliable_outputs": ["shmax_azimuth_deg", "R", "regime", "critically_stressed_pct"],
+        "requires_validation": ["sigma1", "sigma2", "sigma3"],
+    }
+
+    # ── Multi-criteria CS% ──
+    from src.geostress import mogi_coulomb_misfit, drucker_prager_misfit
+    sigma_n_arr = result["sigma_n"]
+    tau_arr = result["tau"]
+    # Approximate sigma_2 on each plane for Mogi-Coulomb
+    sigma2_val = float(result["sigma2"])
+    sigma2_arr = np.full_like(sigma_n_arr, sigma2_val)
+    mc_cs = float(np.mean(tau_arr > (cohesion + float(result["mu"]) * (sigma_n_arr - pp))) * 100)
+    # Mogi-Coulomb uses octahedral correction
+    mu_val = float(result["mu"])
+    a_mc = (2 * np.sqrt(2) / 3) * cohesion * np.cos(np.arctan(mu_val))
+    b_mc = (2 * np.sqrt(2) / 3) * mu_val * np.cos(np.arctan(mu_val))
+    mogi_failure = a_mc + b_mc * (sigma_n_arr - pp)
+    mogi_cs = float(np.mean(tau_arr > mogi_failure) * 100)
+    # Drucker-Prager
+    phi = np.arctan(mu_val)
+    k_dp = 6 * cohesion * np.cos(phi) / (np.sqrt(3) * (3 - np.sin(phi)))
+    alpha_dp = 2 * np.sin(phi) / (np.sqrt(3) * (3 - np.sin(phi)))
+    dp_failure = k_dp + alpha_dp * (sigma_n_arr - pp) * 3
+    dp_cs = float(np.mean(tau_arr > dp_failure) * 100)
+    response["multi_criteria_cs"] = {
+        "mohr_coulomb_pct": round(mc_cs, 1),
+        "mogi_coulomb_pct": round(mogi_cs, 1),
+        "drucker_prager_pct": round(dp_cs, 1),
+        "note": ("Different failure criteria yield different CS% estimates. "
+                 "Mogi-Coulomb accounts for intermediate stress σ2 (better for carbonates). "
+                 "Drucker-Prager uses a smooth yield surface (better for ductile formations)."),
+    }
+
     # Audit trail
     _audit_record("stress_inversion",
                   {"regime": regime, "depth_m": depth_m, "cohesion": cohesion,
@@ -1269,7 +1427,7 @@ async def run_classification(request: Request):
         len(df), len(feat_imp), source=source,
     )
 
-    return _sanitize_for_json({
+    resp = {
         "cv_mean_accuracy": round(float(clf_result["cv_mean_accuracy"]), 4),
         "cv_std_accuracy": round(float(clf_result["cv_std_accuracy"]), 4),
         "cv_f1_mean": round(float(clf_result.get("cv_f1_mean", 0)), 4),
@@ -1284,7 +1442,11 @@ async def run_classification(request: Request):
                 round(float(clf_result["cv_mean_accuracy"] + 2 * clf_result["cv_std_accuracy"]), 4),
             ],
         },
-    })
+    }
+    # Spatial (depth-blocked) CV — geological ML best practice
+    if "spatial_cv" in clf_result:
+        resp["spatial_cv"] = clf_result["spatial_cv"]
+    return _sanitize_for_json(resp)
 
 
 @app.post("/api/analysis/deep-ensemble")
@@ -1843,6 +2005,53 @@ async def run_sensitivity(request: Request):
     response = _sanitize_for_json(sens_result)
     _sensitivity_cache[cache_key] = response
     return response
+
+
+@app.post("/api/analysis/stress-polygon")
+async def compute_stress_polygon(request: Request):
+    """Compute stress polygon bounds (Anderson faulting theory).
+
+    The stress polygon constrains permissible (Shmin, SHmax) stress states
+    using Byerlee's frictional limit. Every commercial geomechanics tool
+    (VISAGE, JewelSuite, Decision Space) displays this. Results that fall
+    outside the polygon are physically impossible.
+
+    Reference: Zoback (2007) Reservoir Geomechanics, Cambridge University Press.
+    """
+    body = await request.json()
+    depth_m = float(body.get("depth_m", 3300))
+    mu = float(body.get("mu", 0.6))
+    pp_mpa = body.get("pore_pressure")
+
+    if depth_m <= 0 or depth_m > 15000:
+        raise HTTPException(400, "depth_m must be between 0 and 15000")
+    if mu < 0.1 or mu > 2.0:
+        raise HTTPException(400, "friction must be between 0.1 and 2.0")
+
+    sv = 2500 * 9.81 * depth_m / 1e6
+    if pp_mpa is None:
+        pp_mpa = 1000 * 9.81 * depth_m / 1e6
+    pp_mpa = float(pp_mpa)
+
+    from src.geostress import stress_polygon as _sp
+    polygon = _sp(sv, pp_mpa, mu)
+
+    # Also compute for a range of friction values (sensitivity)
+    mu_range = [0.4, 0.6, 0.8]
+    sensitivity = {}
+    for m in mu_range:
+        sp_m = _sp(sv, pp_mpa, m)
+        sensitivity[f"mu_{m}"] = {
+            "normal_shmin_min": sp_m["normal_fault"]["shmin_range_mpa"][0],
+            "thrust_shmax_max": sp_m["thrust_fault"]["shmax_range_mpa"][1],
+        }
+
+    polygon["friction_sensitivity"] = sensitivity
+    polygon["note"] = ("Stress polygon bounds the physically permissible stress "
+                       "space. Inversion results outside these bounds indicate "
+                       "either incorrect regime assumption or unreliable data.")
+
+    return _sanitize_for_json(polygon)
 
 
 @app.post("/api/analysis/what-if")
@@ -8150,7 +8359,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.6.0",
+        "app_version": "3.7.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

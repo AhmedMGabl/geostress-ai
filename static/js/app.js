@@ -1399,6 +1399,89 @@ async function runInversion() {
             }
         }
 
+        // WSM Quality Ranking (international standard)
+        if (r.uncertainty && r.uncertainty.wsm_quality_rank) {
+            var wsmEl = document.getElementById("inv-wsm-quality");
+            if (wsmEl) {
+                var wsm = r.uncertainty;
+                var wsmColor = wsm.wsm_quality_rank <= "B" ? "success" :
+                               wsm.wsm_quality_rank === "C" ? "warning" :
+                               wsm.wsm_quality_rank === "D" ? "danger" : "dark";
+                wsmEl.innerHTML = '<div class="card border-' + wsmColor + ' mb-3">' +
+                    '<div class="card-header py-2 bg-' + wsmColor + ' bg-opacity-10">' +
+                    '<i class="bi bi-globe me-1"></i> <strong>WSM Quality Rank</strong> ' +
+                    '<span class="badge bg-' + wsmColor + ' fs-6">Grade ' + wsm.wsm_quality_rank + '</span></div>' +
+                    '<div class="card-body py-2">' +
+                    '<p class="mb-1">' + wsm.wsm_quality_detail + '</p>' +
+                    '<p class="small text-muted mb-0">World Stress Map 2025 standard (Heidbach et al.). ' +
+                    'SHmax uncertainty: ±' + (wsm.shmax_std_deg || "?") + '°</p></div></div>';
+                wsmEl.classList.remove("d-none");
+            }
+        }
+
+        // Calibration Warning (stress magnitude underdetermination)
+        if (r.calibration_warning) {
+            var calWEl = document.getElementById("inv-calibration-warning");
+            if (calWEl) {
+                calWEl.innerHTML = '<div class="alert alert-warning mb-3 py-2">' +
+                    '<i class="bi bi-exclamation-triangle me-1"></i> ' +
+                    '<strong>Calibration Notice:</strong> ' + r.calibration_warning.message + '</div>';
+                calWEl.classList.remove("d-none");
+            }
+        }
+
+        // Multi-criteria CS% comparison
+        if (r.multi_criteria_cs) {
+            var mcEl = document.getElementById("inv-multi-criteria");
+            if (mcEl) {
+                var mc = r.multi_criteria_cs;
+                mcEl.innerHTML = '<div class="card border-secondary mb-3">' +
+                    '<div class="card-header py-2 bg-secondary bg-opacity-10">' +
+                    '<i class="bi bi-layers me-1"></i> <strong>Multi-Criteria CS%</strong></div>' +
+                    '<div class="card-body py-2"><div class="row text-center">' +
+                    '<div class="col-md-4"><div class="metric-card"><div class="metric-label">Mohr-Coulomb</div>' +
+                    '<div class="metric-value">' + mc.mohr_coulomb_pct + '%</div></div></div>' +
+                    '<div class="col-md-4"><div class="metric-card"><div class="metric-label">Mogi-Coulomb</div>' +
+                    '<div class="metric-value">' + mc.mogi_coulomb_pct + '%</div>' +
+                    '<div class="small text-muted">Accounts for σ2</div></div></div>' +
+                    '<div class="col-md-4"><div class="metric-card"><div class="metric-label">Drucker-Prager</div>' +
+                    '<div class="metric-value">' + mc.drucker_prager_pct + '%</div>' +
+                    '<div class="small text-muted">Smooth yield</div></div></div>' +
+                    '</div><p class="small text-muted mt-2 mb-0">' + mc.note + '</p></div></div>';
+                mcEl.classList.remove("d-none");
+            }
+        }
+
+        // Mud Weight Window
+        if (r.mud_weight_window) {
+            var mwEl = document.getElementById("inv-mud-weight");
+            if (mwEl) {
+                var mw = r.mud_weight_window;
+                var sw = mw.safe_window || {};
+                var mwColor = mw.status === "SAFE" ? "success" :
+                              mw.status === "NARROW" ? "warning" : "danger";
+                mwEl.innerHTML = '<div class="card border-' + mwColor + ' mb-3">' +
+                    '<div class="card-header py-2 bg-' + mwColor + ' bg-opacity-10">' +
+                    '<i class="bi bi-droplet me-1"></i> <strong>Mud Weight Window</strong> ' +
+                    '<span class="badge bg-' + mwColor + '">' + mw.status + '</span></div>' +
+                    '<div class="card-body py-2"><div class="row text-center">' +
+                    '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Pore Pressure</div>' +
+                    '<div class="metric-value">' + (mw.pore_pressure ? mw.pore_pressure.ppg : "?") + ' ppg</div>' +
+                    '<div class="small text-muted">' + (mw.pore_pressure ? mw.pore_pressure.sg : "?") + ' sg</div></div></div>' +
+                    '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Lower Bound</div>' +
+                    '<div class="metric-value">' + (sw.lower_ppg || "?") + ' ppg</div>' +
+                    '<div class="small text-muted">Kick/collapse</div></div></div>' +
+                    '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Upper Bound</div>' +
+                    '<div class="metric-value">' + (sw.upper_ppg || "?") + ' ppg</div>' +
+                    '<div class="small text-muted">Frac gradient</div></div></div>' +
+                    '<div class="col-md-3"><div class="metric-card"><div class="metric-label">Margin</div>' +
+                    '<div class="metric-value">' + (sw.margin_ppg || "?") + ' ppg</div>' +
+                    '<div class="small text-muted">' + (sw.margin_sg ? sw.margin_sg.toFixed(3) : "?") + ' sg</div></div></div>' +
+                    '</div></div></div>';
+                mwEl.classList.remove("d-none");
+            }
+        }
+
         // Risk categories
         if (r.risk_categories) {
             val("inv-high-risk", r.risk_categories.high);
@@ -2186,6 +2269,24 @@ async function runClassification() {
             });
             ctbody.appendChild(tr);
         });
+
+        // Spatial (depth-blocked) CV warning
+        var spatEl = document.getElementById("clf-spatial-cv");
+        if (spatEl && r.spatial_cv) {
+            var sp = r.spatial_cv;
+            var drop = ((r.cv_mean_accuracy - sp.spatial_cv_accuracy) * 100).toFixed(1);
+            var spColor = parseFloat(drop) > 10 ? "danger" : parseFloat(drop) > 5 ? "warning" : "info";
+            spatEl.innerHTML = '<div class="alert alert-' + spColor + ' py-2 mb-3">' +
+                '<i class="bi bi-geo-alt me-1"></i> <strong>Spatial CV (depth-blocked):</strong> ' +
+                (sp.spatial_cv_accuracy * 100).toFixed(1) + '% accuracy ' +
+                '(±' + (sp.spatial_cv_std * 100).toFixed(1) + '%), ' +
+                'F1: ' + (sp.spatial_cv_f1 * 100).toFixed(1) + '%. ' +
+                '<span class="fw-bold">Accuracy drop: ' + drop + '%</span> vs random CV. ' +
+                '<span class="text-muted">' + sp.note + '</span></div>';
+            spatEl.classList.remove("d-none");
+        } else if (spatEl) {
+            spatEl.classList.add("d-none");
+        }
 
         showToast("Classification: " + (r.cv_mean_accuracy * 100).toFixed(1) + "% accuracy (" + classifier + ")");
     } catch (err) {

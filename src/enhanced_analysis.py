@@ -1110,6 +1110,56 @@ def classify_enhanced(
 
     cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
 
+    # ── Depth-blocked CV (WSM/geological ML best practice) ──
+    # Spatial autocorrelation: adjacent fractures share geology.
+    # Random CV leaks this spatial info → optimistic accuracy.
+    # Depth-blocked folds use contiguous depth intervals instead.
+    spatial_cv_result = None
+    if DEPTH_COL in df.columns:
+        depths = df[DEPTH_COL].values
+        valid_depths = ~np.isnan(depths)
+        if valid_depths.sum() >= n_folds * 3:
+            sorted_idx = np.argsort(depths[valid_depths])
+            n_valid = len(sorted_idx)
+            fold_labels = np.zeros(n_valid, dtype=int)
+            fold_size = n_valid // n_folds
+            for fi in range(n_folds):
+                start = fi * fold_size
+                end = (fi + 1) * fold_size if fi < n_folds - 1 else n_valid
+                fold_labels[start:end] = fi
+            # Map back to full array
+            full_fold = np.full(len(depths), -1, dtype=int)
+            valid_idx = np.where(valid_depths)[0]
+            full_fold[valid_idx[sorted_idx]] = fold_labels
+            # Run spatial CV
+            spatial_acc = []
+            spatial_f1 = []
+            for fi in range(n_folds):
+                test_mask = full_fold == fi
+                train_mask = (full_fold >= 0) & (~test_mask)
+                if test_mask.sum() == 0 or train_mask.sum() == 0:
+                    continue
+                # Check at least 2 classes in both train and test
+                if len(np.unique(y[train_mask])) < 2 or len(np.unique(y[test_mask])) < 2:
+                    continue
+                from sklearn.base import clone as _clone
+                m_spatial = _clone(model)
+                m_spatial.fit(X[train_mask], y[train_mask])
+                y_s_pred = m_spatial.predict(X[test_mask])
+                spatial_acc.append(accuracy_score(y[test_mask], y_s_pred))
+                spatial_f1.append(f1_score(y[test_mask], y_s_pred,
+                                           average="weighted", zero_division=0))
+            if spatial_acc:
+                spatial_cv_result = {
+                    "spatial_cv_accuracy": round(float(np.mean(spatial_acc)), 4),
+                    "spatial_cv_std": round(float(np.std(spatial_acc)), 4),
+                    "spatial_cv_f1": round(float(np.mean(spatial_f1)), 4),
+                    "note": ("Depth-blocked CV uses contiguous depth intervals as folds. "
+                             "Lower accuracy than random CV indicates spatial autocorrelation — "
+                             "the model may be memorizing depth-local patterns rather than "
+                             "learning generalizable fracture characteristics."),
+                }
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
 
@@ -1161,7 +1211,7 @@ def classify_enhanced(
         except Exception:
             pass
 
-    return {
+    result = {
         "model": model,
         "scaler": scaler,
         "label_encoder": le,
@@ -1179,6 +1229,9 @@ def classify_enhanced(
         "class_confidence": class_confidence,
         "mean_confidence": mean_confidence,
     }
+    if spatial_cv_result:
+        result["spatial_cv"] = spatial_cv_result
+    return result
 
 
 # ──────────────────────────────────────────────────────

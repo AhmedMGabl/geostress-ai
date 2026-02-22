@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 / v3.6.0.
+"""Test suite for GeoStress AI v3.5.0 / v3.6.0 / v3.7.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -330,10 +330,121 @@ for f in dm.get("factors", []):
           f.get("status"))
 
 
+# ── 15. v3.7.0: WSM Quality Ranking ──────────────────
+
+print("\n[15] WSM Quality Ranking (v3.7.0)")
+
+inv3 = api("POST", "/api/analysis/inversion", {
+    "well": "3P", "regime": "strike_slip", "source": "demo"
+})
+unc3 = inv3.get("uncertainty", {})
+check("Has WSM quality rank", unc3.get("wsm_quality_rank") in ["A", "B", "C", "D", "E"])
+check("WSM rank detail is string", isinstance(unc3.get("wsm_quality_detail"), str) and
+      len(unc3["wsm_quality_detail"]) > 10)
+check("WSM rank A or B for 3P", unc3.get("wsm_quality_rank") in ["A", "B"],
+      unc3.get("wsm_quality_rank"))
+
+
+# ── 16. v3.7.0: Calibration Warning ─────────────────
+
+print("\n[16] Calibration Warning (v3.7.0)")
+
+cw = inv3.get("calibration_warning", {})
+check("Has calibration warning", cw.get("requires_calibration") is True)
+check("Warning mentions LOT/XLOT", "LOT" in cw.get("message", ""))
+check("Lists reliable outputs", "shmax_azimuth_deg" in cw.get("reliable_outputs", []))
+check("Lists outputs needing validation", "sigma1" in cw.get("requires_validation", []))
+
+
+# ── 17. v3.7.0: Multi-Criteria CS% ──────────────────
+
+print("\n[17] Multi-Criteria CS% (v3.7.0)")
+
+mc = inv3.get("multi_criteria_cs", {})
+check("Has Mohr-Coulomb CS%", isinstance(mc.get("mohr_coulomb_pct"), (int, float)))
+check("Has Mogi-Coulomb CS%", isinstance(mc.get("mogi_coulomb_pct"), (int, float)))
+check("Has Drucker-Prager CS%", isinstance(mc.get("drucker_prager_pct"), (int, float)))
+check("Multi-criteria has note", len(mc.get("note", "")) > 20)
+check("Different criteria give different values",
+      mc.get("mohr_coulomb_pct") != mc.get("drucker_prager_pct"))
+
+
+# ── 18. v3.7.0: Stress Polygon ──────────────────────
+
+print("\n[18] Stress Polygon (v3.7.0)")
+
+sp = inv3.get("stress_polygon", {})
+check("Has stress polygon", len(sp) > 0)
+check("Has Sv", isinstance(sp.get("sv_mpa"), (int, float)))
+check("Has frictional limit ratio", sp.get("frictional_limit_ratio", 0) > 1)
+check("Has normal fault bounds", "shmin_range_mpa" in sp.get("normal_fault", {}))
+check("Has strike-slip bounds", "shmax_range_mpa" in sp.get("strike_slip", {}))
+check("Has thrust fault bounds", "shmax_range_mpa" in sp.get("thrust_fault", {}))
+
+# Stress polygon endpoint
+sp2 = api("POST", "/api/analysis/stress-polygon", {"depth_m": 3300, "mu": 0.6})
+check("Stress polygon endpoint works", sp2.get("frictional_limit_ratio", 0) > 1)
+check("Has friction sensitivity", len(sp2.get("friction_sensitivity", {})) == 3)
+
+
+# ── 19. v3.7.0: Mud Weight Window ───────────────────
+
+print("\n[19] Mud Weight Window (v3.7.0)")
+
+mw = inv3.get("mud_weight_window", {})
+check("Inversion includes mud weight", len(mw) > 0)
+check("Has safe window", "safe_window" in mw)
+check("Has pore pressure in ppg",
+      isinstance(mw.get("pore_pressure", {}).get("ppg"), (int, float)))
+check("Has status", mw.get("status") in ["SAFE", "NARROW", "IMPOSSIBLE"])
+
+# Dedicated endpoint
+mw2 = api("POST", "/api/analysis/mud-weight-window", {
+    "well": "3P", "source": "demo", "depth_m": 3300
+}, timeout=120)
+check("MWW endpoint has safe window", "safe_window" in mw2)
+check("MWW has depth profile", len(mw2.get("depth_profile", [])) > 0)
+check("MWW profile has status", mw2["depth_profile"][0].get("status") is not None)
+
+
+# ── 20. v3.7.0: Fracture QC ─────────────────────────
+
+print("\n[20] Fracture QC (v3.7.0)")
+
+qc = api("GET", "/api/data/qc?source=demo")
+check("QC has total", qc.get("total", 0) > 0)
+check("QC has pass rate", 0 <= qc.get("pass_rate", -1) <= 1)
+check("QC has flags", isinstance(qc.get("flags"), dict))
+check("QC has azimuth quality", isinstance(qc.get("azimuth_quality"), dict))
+check("QC has WSM note", "WSM" in qc.get("wsm_note", ""))
+
+# Per-well QC
+qc_3p = api("GET", "/api/data/qc?source=demo&well=3P")
+check("Per-well QC works", qc_3p.get("total", 0) > 0)
+check("Well 3P has better pass rate", qc_3p.get("pass_rate", 0) > qc.get("pass_rate", 0))
+
+
+# ── 21. v3.7.0: Spatial (Depth-Blocked) CV ──────────
+
+print("\n[21] Spatial (Depth-Blocked) CV (v3.7.0)")
+
+clf3 = api("POST", "/api/analysis/classify", {
+    "classifier": "random_forest", "source": "demo"
+})
+sp_cv = clf3.get("spatial_cv", {})
+check("Has spatial CV results", len(sp_cv) > 0)
+check("Has spatial CV accuracy",
+      isinstance(sp_cv.get("spatial_cv_accuracy"), (int, float)))
+check("Has spatial CV note", len(sp_cv.get("note", "")) > 20)
+check("Spatial CV < random CV (spatial autocorrelation)",
+      sp_cv.get("spatial_cv_accuracy", 1) < clf3.get("cv_mean_accuracy", 0),
+      f"spatial={sp_cv.get('spatial_cv_accuracy')}, random={clf3.get('cv_mean_accuracy')}")
+
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.6.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.7.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

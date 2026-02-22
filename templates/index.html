@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.6</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.7</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -805,6 +805,18 @@
                         <!-- Uncertainty Confidence Intervals -->
                         <div id="inv-uncertainty" class="d-none mb-4"></div>
 
+                        <!-- WSM Quality Ranking -->
+                        <div id="inv-wsm-quality" class="d-none mb-4"></div>
+
+                        <!-- Calibration Warning -->
+                        <div id="inv-calibration-warning" class="d-none mb-4"></div>
+
+                        <!-- Multi-Criteria CS% -->
+                        <div id="inv-multi-criteria" class="d-none mb-4"></div>
+
+                        <!-- Mud Weight Window -->
+                        <div id="inv-mud-weight" class="d-none mb-4"></div>
+
                         <!-- Risk Assessment Banner -->
                         <div id="risk-banner" class="alert mb-4 d-none">
                             <h5 class="alert-heading" id="risk-title"></h5>
@@ -1394,6 +1406,8 @@
                                 </div>
                             </div>
                         </div>
+                        <!-- Spatial CV Warning -->
+                        <div id="clf-spatial-cv" class="d-none mt-3"></div>
                     </div>
                 </div>
 
