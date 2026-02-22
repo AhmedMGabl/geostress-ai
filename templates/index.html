@@ -665,6 +665,64 @@
                         </div>
                     </div>
 
+                    <!-- Cross-Well Drift Detection -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-triangle-fill"></i> Cross-Well Feature Drift</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runDriftDetection()">
+                                <i class="bi bi-play-fill"></i> Detect Drift
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Compares feature distributions between wells using Kolmogorov-Smirnov test. Detects distribution shifts that would cause model degradation. Critical for production monitoring.</p>
+                            <div id="drift-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Alert Level</div><div class="metric-value" id="drift-alert">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Max Drift</div><div class="metric-value" id="drift-max">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Retrain?</div><div class="metric-value" id="drift-retrain">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Wells</div><div class="metric-value" id="drift-wells">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="drift-brief"></div>
+                                <h6>Top Drifted Features</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Wells</th><th>Feature</th><th>KS Stat</th><th>p-value</th><th>Severity</th></tr></thead><tbody id="drift-table-body"></tbody></table>
+                                </div>
+                                <div class="text-center"><img id="drift-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Domain Adaptation -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-left-right"></i> Well-to-Well Domain Adaptation</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runDomainAdapt()">
+                                <i class="bi bi-play-fill"></i> Adapt
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Applies importance reweighting and feature selection to improve cross-well transfer. Tests 3 adaptation strategies and recommends the best approach.</p>
+                            <div id="da-results" class="d-none">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Method</div><div class="metric-value" id="da-best">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Improvement</div><div class="metric-value" id="da-improve">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Train Well</div><div class="metric-value" id="da-train">-</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Test Well</div><div class="metric-value" id="da-test">-</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="da-brief"></div>
+                                <h6>Adaptation Methods Comparison</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Method</th><th>Accuracy</th><th>F1</th><th>Description</th></tr></thead><tbody id="da-methods-body"></tbody></table>
+                                </div>
+                                <h6>Per-Class Results (Best Method)</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Class</th><th>Precision</th><th>Recall</th><th>Support</th></tr></thead><tbody id="da-class-body"></tbody></table>
+                                </div>
+                                <div class="text-center"><img id="da-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

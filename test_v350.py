@@ -1422,10 +1422,50 @@ sb = cw.get("stakeholder_brief", {})
 check("Brief has headline", isinstance(sb.get("headline"), str))
 check("Brief has risk_level", sb.get("risk_level") in ("GREEN", "AMBER", "RED"))
 
+# ── [74] Cross-Well Feature Drift ────────────────────────
+print("\n[74] Cross-Well Feature Drift")
+dr = api("POST", "/api/analysis/cross-well-drift", {"source": "demo"}, timeout=60)
+check("Status 200", dr is not None)
+check("Has n_wells", isinstance(dr.get("n_wells"), int) and dr["n_wells"] >= 2)
+check("Has comparisons", isinstance(dr.get("comparisons"), list) and len(dr["comparisons"]) >= 1)
+dc0 = dr["comparisons"][0]
+check("Comp has well_a", isinstance(dc0.get("well_a"), str))
+check("Comp has well_b", isinstance(dc0.get("well_b"), str))
+check("Comp has n_features", isinstance(dc0.get("n_features"), int))
+check("Comp has n_drifted", isinstance(dc0.get("n_drifted"), int))
+check("Comp has drift_pct", isinstance(dc0.get("drift_pct"), (int, float)))
+check("Comp has overall_severity", dc0.get("overall_severity") in ("HIGH", "MEDIUM", "LOW"))
+check("Has overall_alert", dr.get("overall_alert") in ("HIGH", "MEDIUM", "LOW"))
+check("Has max_drift_pct", isinstance(dr.get("max_drift_pct"), (int, float)))
+check("Has retrain_needed", isinstance(dr.get("retrain_needed"), bool))
+check("Has plot", isinstance(dr.get("plot"), str) and len(dr["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(dr.get("stakeholder_brief"), dict))
+
+# ── [75] Well-to-Well Domain Adaptation ──────────────────
+print("\n[75] Well-to-Well Domain Adaptation")
+da = api("POST", "/api/analysis/domain-adapt-wells", {"source": "demo"}, timeout=120)
+check("Status 200", da is not None)
+check("Has train_well", isinstance(da.get("train_well"), str))
+check("Has test_well", isinstance(da.get("test_well"), str))
+check("Has n_train", isinstance(da.get("n_train"), int) and da["n_train"] > 0)
+check("Has n_test", isinstance(da.get("n_test"), int) and da["n_test"] > 0)
+check("Has n_features", isinstance(da.get("n_features"), int))
+check("Has methods", isinstance(da.get("methods"), list) and len(da["methods"]) >= 2)
+m0 = da["methods"][0]
+check("Method has method", isinstance(m0.get("method"), str))
+check("Method has accuracy", isinstance(m0.get("accuracy"), (int, float)))
+check("Method has f1", isinstance(m0.get("f1"), (int, float)))
+check("Method has description", isinstance(m0.get("description"), str))
+check("Has best_method", isinstance(da.get("best_method"), str))
+check("Has improvement", isinstance(da.get("improvement"), (int, float)))
+check("Has per_class", isinstance(da.get("per_class"), list) and len(da["per_class"]) >= 1)
+check("Has plot", isinstance(da.get("plot"), str) and len(da["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(da.get("stakeholder_brief"), dict))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.20.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.21.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

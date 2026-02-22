@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.20.0 - Pore Pressure + Hetero-Ensemble + Anomaly Detection)."""
+"""GeoStress AI - FastAPI Web Application (v3.21.0 - Pore Pressure + Hetero-Ensemble + Anomaly Detection)."""
 
 import os
 import io
@@ -1001,7 +1001,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.20.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.21.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -13649,6 +13649,355 @@ async def cross_well_test(request: Request):
     return result
 
 
+# ── Cross-Well Drift Detection ──────────────────────────────────────────
+
+_crosswell_drift_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/cross-well-drift")
+async def cross_well_drift(request: Request):
+    """Detect feature distribution drift BETWEEN wells (not within).
+
+    Complements the per-well drift-detection by comparing feature
+    distributions across wells using KS test. High inter-well drift
+    explains why cross-well transfer fails.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    cache_key = f"drift:{source}"
+    if cache_key in _crosswell_drift_cache:
+        return _crosswell_drift_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from scipy.stats import ks_2samp
+        from src.enhanced_analysis import engineer_enhanced_features
+
+        wells = list(df[WELL_COL].unique()) if WELL_COL in df.columns else []
+        if len(wells) < 2:
+            return {
+                "status": "INSUFFICIENT_WELLS",
+                "message": "Drift detection requires at least 2 wells for comparison.",
+            }
+
+        # Compute features per well
+        well_features = {}
+        for well in wells[:4]:
+            df_w = df[df[WELL_COL] == well].reset_index(drop=True)
+            features = engineer_enhanced_features(df_w)
+            well_features[well] = features
+
+        # Pairwise drift detection
+        comparisons = []
+        for i, well_a in enumerate(wells):
+            for j, well_b in enumerate(wells):
+                if i >= j:
+                    continue
+                fa = well_features[well_a]
+                fb = well_features[well_b]
+                common_cols = list(set(fa.columns) & set(fb.columns))
+
+                feature_drifts = []
+                n_drifted = 0
+                for col in sorted(common_cols):
+                    a_vals = fa[col].dropna().values
+                    b_vals = fb[col].dropna().values
+                    if len(a_vals) < 5 or len(b_vals) < 5:
+                        continue
+                    stat, p_val = ks_2samp(a_vals, b_vals)
+                    drifted = p_val < 0.05
+                    if drifted:
+                        n_drifted += 1
+                    feature_drifts.append({
+                        "feature": col, "ks_statistic": round(float(stat), 4),
+                        "p_value": round(float(p_val), 4), "drifted": drifted,
+                        "severity": "HIGH" if stat > 0.3 else ("MEDIUM" if stat > 0.15 else "LOW"),
+                    })
+
+                feature_drifts.sort(key=lambda f: f["ks_statistic"], reverse=True)
+                drift_pct = n_drifted / max(len(feature_drifts), 1) * 100
+
+                comparisons.append({
+                    "well_a": well_a, "well_b": well_b,
+                    "n_features": len(feature_drifts),
+                    "n_drifted": n_drifted,
+                    "drift_pct": round(drift_pct, 1),
+                    "top_drifted": feature_drifts[:10],
+                    "all_features": feature_drifts,
+                    "overall_severity": "HIGH" if drift_pct > 50 else ("MEDIUM" if drift_pct > 25 else "LOW"),
+                })
+
+        # Summary
+        max_drift = max(c["drift_pct"] for c in comparisons) if comparisons else 0
+        overall_alert = "HIGH" if max_drift > 50 else ("MEDIUM" if max_drift > 25 else "LOW")
+        retrain_needed = max_drift > 30
+
+        # Plot
+        with plot_lock:
+            n_comp = len(comparisons)
+            fig, axes = plt.subplots(1, min(n_comp + 1, 3), figsize=(5 * min(n_comp + 1, 3), 5))
+            if n_comp + 1 == 1:
+                axes = [axes]
+
+            for i, comp in enumerate(comparisons[:2]):
+                ax = axes[i]
+                top = comp["top_drifted"][:8]
+                names = [t["feature"][:15] for t in top]
+                stats = [t["ks_statistic"] for t in top]
+                colors = ["#dc3545" if t["severity"] == "HIGH" else "#ffc107" if t["severity"] == "MEDIUM" else "#28a745" for t in top]
+                ax.barh(names, stats, color=colors, alpha=0.8)
+                ax.set_xlabel("KS Statistic")
+                ax.set_title(f"{comp['well_a']} vs {comp['well_b']}\n({comp['drift_pct']:.0f}% drifted)")
+                ax.axvline(x=0.15, color="gray", linestyle="--", alpha=0.5)
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+
+            # Summary pie
+            ax_s = axes[-1]
+            import numpy as np
+            all_sevs = [f["severity"] for c in comparisons for f in c["all_features"]]
+            sev_counts = {"HIGH": sum(1 for s in all_sevs if s == "HIGH"),
+                         "MEDIUM": sum(1 for s in all_sevs if s == "MEDIUM"),
+                         "LOW": sum(1 for s in all_sevs if s == "LOW")}
+            labels = [f"{k}: {v}" for k, v in sev_counts.items() if v > 0]
+            sizes = [v for v in sev_counts.values() if v > 0]
+            ax_colors = {"HIGH": "#dc3545", "MEDIUM": "#ffc107", "LOW": "#28a745"}
+            pie_colors = [ax_colors[k] for k, v in sev_counts.items() if v > 0]
+            if sizes:
+                ax_s.pie(sizes, labels=labels, colors=pie_colors, autopct="%1.0f%%", startangle=90)
+            ax_s.set_title(f"Overall: {overall_alert}")
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "n_wells": len(wells),
+            "comparisons": [{k: v for k, v in c.items() if k != "all_features"} for c in comparisons],
+            "overall_alert": overall_alert,
+            "max_drift_pct": round(max_drift, 1),
+            "retrain_needed": retrain_needed,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Data drift: {overall_alert} alert ({max_drift:.0f}% features shifted)",
+                "risk_level": "RED" if overall_alert == "HIGH" else ("AMBER" if overall_alert == "MEDIUM" else "GREEN"),
+                "confidence_sentence": (
+                    f"Compared feature distributions across {len(wells)} wells. "
+                    f"{max_drift:.0f}% of features show significant distribution shift (KS test, p<0.05). "
+                    + ("Model retraining recommended." if retrain_needed else "Current model remains valid.")
+                ),
+                "action": (
+                    "HIGH drift detected. Retrain model with combined well data."
+                    if retrain_needed else
+                    "Drift is within acceptable limits. Continue monitoring."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _crosswell_drift_cache[cache_key] = result
+    return result
+
+
+# ── Well-to-Well Domain Adaptation ──────────────────────────────────────
+
+_domain_adapt_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/domain-adapt-wells")
+async def domain_adapt_wells(request: Request):
+    """Apply domain adaptation to improve cross-well transfer.
+
+    Uses importance reweighting (density ratio estimation) and feature
+    alignment to reduce distribution mismatch between wells.
+    Compares naive transfer vs adapted transfer accuracy.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    train_well = body.get("train_well")
+    test_well = body.get("test_well")
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    wells = list(df[WELL_COL].unique()) if WELL_COL in df.columns else []
+    if len(wells) < 2:
+        raise HTTPException(400, "Need at least 2 wells for domain adaptation")
+
+    if train_well is None:
+        train_well = wells[0]
+    if test_well is None:
+        test_well = wells[1]
+
+    cache_key = f"adapt:{train_well}:{test_well}:{source}"
+    if cache_key in _domain_adapt_cache:
+        return _domain_adapt_cache[cache_key]
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.metrics import accuracy_score, f1_score, balanced_accuracy_score, classification_report
+        from sklearn.base import clone
+        from sklearn.linear_model import LogisticRegression
+
+        # Prepare data
+        le_global = LabelEncoder()
+        le_global.fit(df[FRACTURE_TYPE_COL].values)
+        class_names = le_global.classes_.tolist()
+        all_labels = list(range(len(class_names)))
+
+        df_train = df[df[WELL_COL] == train_well].reset_index(drop=True)
+        df_test = df[df[WELL_COL] == test_well].reset_index(drop=True)
+
+        feat_train = engineer_enhanced_features(df_train)
+        feat_test = engineer_enhanced_features(df_test)
+
+        common_cols = sorted(set(feat_train.columns) & set(feat_test.columns))
+        X_train_raw = feat_train[common_cols].values
+        X_test_raw = feat_test[common_cols].values
+
+        y_train = le_global.transform(df_train[FRACTURE_TYPE_COL].values)
+        y_test = le_global.transform(df_test[FRACTURE_TYPE_COL].values)
+
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train_raw)
+        X_test = scaler.transform(X_test_raw)
+
+        model_template = _get_models().get("random_forest", list(_get_models().values())[0])
+
+        # Method 1: Naive transfer (no adaptation)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m_naive = clone(model_template)
+            m_naive.fit(X_train, y_train)
+            pred_naive = m_naive.predict(X_test)
+            acc_naive = float(accuracy_score(y_test, pred_naive))
+            f1_naive = float(f1_score(y_test, pred_naive, average="weighted", zero_division=0))
+
+        # Method 2: Importance reweighting via domain classifier
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # Train a domain classifier to distinguish wells
+            X_domain = np.vstack([X_train, X_test])
+            y_domain = np.array([0] * len(X_train) + [1] * len(X_test))
+            domain_clf = LogisticRegression(max_iter=500, random_state=42)
+            domain_clf.fit(X_domain, y_domain)
+            # Importance weights: P(target|x) / P(source|x)
+            domain_proba = domain_clf.predict_proba(X_train)
+            eps = 1e-6
+            weights = (domain_proba[:, 1] + eps) / (domain_proba[:, 0] + eps)
+            weights = np.clip(weights, 0.1, 10.0)
+            weights = weights / weights.mean()
+
+            m_reweight = clone(model_template)
+            try:
+                m_reweight.fit(X_train, y_train, sample_weight=weights)
+            except TypeError:
+                m_reweight.fit(X_train, y_train)
+            pred_reweight = m_reweight.predict(X_test)
+            acc_reweight = float(accuracy_score(y_test, pred_reweight))
+            f1_reweight = float(f1_score(y_test, pred_reweight, average="weighted", zero_division=0))
+
+        # Method 3: Feature selection (remove high-drift features)
+        from scipy.stats import ks_2samp
+        drift_scores = []
+        for i, col in enumerate(common_cols):
+            stat, _ = ks_2samp(X_train[:, i], X_test[:, i])
+            drift_scores.append(stat)
+        # Keep only low-drift features (bottom 70%)
+        threshold = np.percentile(drift_scores, 70)
+        stable_mask = np.array(drift_scores) <= threshold
+        X_train_stable = X_train[:, stable_mask]
+        X_test_stable = X_test[:, stable_mask]
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m_stable = clone(model_template)
+            m_stable.fit(X_train_stable, y_train)
+            pred_stable = m_stable.predict(X_test_stable)
+            acc_stable = float(accuracy_score(y_test, pred_stable))
+            f1_stable = float(f1_score(y_test, pred_stable, average="weighted", zero_division=0))
+
+        methods = [
+            {"method": "Naive Transfer", "accuracy": round(acc_naive, 4), "f1": round(f1_naive, 4), "description": "Train on source, test on target directly"},
+            {"method": "Importance Reweighting", "accuracy": round(acc_reweight, 4), "f1": round(f1_reweight, 4), "description": "Domain classifier weights source samples"},
+            {"method": "Stable Features Only", "accuracy": round(acc_stable, 4), "f1": round(f1_stable, 4), "description": f"Remove {int(sum(~stable_mask))}/{len(common_cols)} high-drift features"},
+        ]
+
+        best_method = max(methods, key=lambda m: m["accuracy"])
+        improvement = best_method["accuracy"] - acc_naive
+
+        # Per-class breakdown for best method
+        best_preds = pred_reweight if best_method["method"] == "Importance Reweighting" else (pred_stable if best_method["method"] == "Stable Features Only" else pred_naive)
+        report = classification_report(y_test, best_preds, labels=all_labels, target_names=class_names, output_dict=True, zero_division=0)
+        per_class = [{"class": cn, "precision": round(report[cn]["precision"], 3), "recall": round(report[cn]["recall"], 3), "support": int(report[cn]["support"])} for cn in class_names]
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+            ax1 = axes[0]
+            m_names = [m["method"][:15] for m in methods]
+            m_accs = [m["accuracy"] for m in methods]
+            colors = ["#dc3545" if a < 0.3 else "#ffc107" if a < 0.5 else "#28a745" for a in m_accs]
+            bars = ax1.bar(m_names, m_accs, color=colors, alpha=0.8)
+            ax1.set_ylabel("Accuracy")
+            ax1.set_title(f"Domain Adaptation: {train_well} -> {test_well}")
+            ax1.set_ylim(0, 1)
+            for b, a in zip(bars, m_accs):
+                ax1.text(b.get_x() + b.get_width()/2, a + 0.02, f"{a:.1%}", ha="center")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            per_class_names = [pc["class"][:10] for pc in per_class]
+            per_class_recalls = [pc["recall"] for pc in per_class]
+            rc = ["#28a745" if r >= 0.5 else "#ffc107" if r >= 0.2 else "#dc3545" for r in per_class_recalls]
+            ax2.barh(per_class_names, per_class_recalls, color=rc, alpha=0.8)
+            ax2.set_xlabel("Recall")
+            ax2.set_title(f"Best Method: {best_method['method']}")
+            ax2.set_xlim(0, 1)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "train_well": train_well, "test_well": test_well,
+            "n_train": len(y_train), "n_test": len(y_test),
+            "n_features": len(common_cols),
+            "methods": methods, "best_method": best_method["method"],
+            "improvement": round(improvement, 4),
+            "per_class": per_class, "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Domain adaptation: {best_method['method']} achieves {best_method['accuracy']:.1%}",
+                "risk_level": "GREEN" if best_method["accuracy"] >= 0.5 else ("AMBER" if best_method["accuracy"] >= 0.2 else "RED"),
+                "confidence_sentence": (
+                    f"Tested 3 adaptation strategies: {train_well}->{test_well}. "
+                    f"Best: {best_method['method']} at {best_method['accuracy']:.1%} "
+                    f"({'+'}{improvement:.1%} vs naive)."
+                ),
+                "action": (
+                    f"Use {best_method['method']} for cross-well deployment."
+                    if improvement > 0.05 else
+                    "No adaptation method significantly helps. Build well-specific models."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _domain_adapt_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -14740,7 +15089,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.20.0",
+        "app_version": "3.21.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

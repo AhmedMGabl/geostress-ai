@@ -9548,3 +9548,89 @@ async function runCrossWellTest() {
         hideLoading();
     }
 }
+
+// ── Drift Detection ────────────────────────────────────────────────
+async function runDriftDetection() {
+    var results = document.getElementById('drift-results');
+    results.classList.add('d-none');
+    showLoading('Detecting data drift between wells...');
+    try {
+        var r = await apiPost('/api/analysis/cross-well-drift', {source: currentSource()});
+        results.classList.remove('d-none');
+        if (r.status === 'INSUFFICIENT_WELLS') {
+            results.innerHTML = '<div class="alert alert-warning">' + r.message + '</div>';
+            return;
+        }
+        var ac = r.overall_alert === 'HIGH' ? 'danger' : r.overall_alert === 'MEDIUM' ? 'warning' : 'success';
+        document.getElementById('drift-alert').innerHTML = '<span class="badge bg-' + ac + '">' + r.overall_alert + '</span>';
+        document.getElementById('drift-max').textContent = r.max_drift_pct + '%';
+        document.getElementById('drift-retrain').textContent = r.retrain_needed ? 'YES' : 'No';
+        document.getElementById('drift-wells').textContent = r.n_wells;
+        if (r.stakeholder_brief) {
+            document.getElementById('drift-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence;
+        }
+        var tbody = document.getElementById('drift-table-body');
+        tbody.innerHTML = '';
+        if (r.comparisons) {
+            for (var i = 0; i < r.comparisons.length; i++) {
+                var comp = r.comparisons[i];
+                var td = comp.top_drifted || [];
+                for (var j = 0; j < Math.min(td.length, 5); j++) {
+                    var f = td[j];
+                    var sc = f.severity === 'HIGH' ? 'danger' : f.severity === 'MEDIUM' ? 'warning' : 'success';
+                    tbody.innerHTML += '<tr><td>' + comp.well_a + ' vs ' + comp.well_b + '</td><td>' + f.feature + '</td><td>' + f.ks_statistic + '</td><td>' + f.p_value + '</td><td><span class="badge bg-' + sc + '">' + f.severity + '</span></td></tr>';
+                }
+            }
+        }
+        if (r.plot) document.getElementById('drift-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Domain Adaptation ──────────────────────────────────────────────
+async function runDomainAdapt() {
+    var results = document.getElementById('da-results');
+    results.classList.add('d-none');
+    showLoading('Running domain adaptation between wells...');
+    try {
+        var r = await apiPost('/api/analysis/domain-adapt-wells', {source: currentSource()});
+        results.classList.remove('d-none');
+        document.getElementById('da-best').textContent = r.best_method || '-';
+        var imp = r.improvement || 0;
+        document.getElementById('da-improve').textContent = (imp >= 0 ? '+' : '') + (imp * 100).toFixed(1) + '%';
+        document.getElementById('da-train').textContent = r.train_well;
+        document.getElementById('da-test').textContent = r.test_well;
+        if (r.stakeholder_brief) {
+            document.getElementById('da-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence;
+        }
+        // Methods table
+        var mBody = document.getElementById('da-methods-body');
+        mBody.innerHTML = '';
+        if (r.methods) {
+            for (var i = 0; i < r.methods.length; i++) {
+                var m = r.methods[i];
+                var isBest = m.method === r.best_method;
+                mBody.innerHTML += '<tr' + (isBest ? ' class="table-success"' : '') + '><td>' + m.method + '</td><td>' + (m.accuracy * 100).toFixed(1) + '%</td><td>' + (m.f1 * 100).toFixed(1) + '%</td><td class="small">' + m.description + '</td></tr>';
+            }
+        }
+        // Per-class
+        var cBody = document.getElementById('da-class-body');
+        cBody.innerHTML = '';
+        if (r.per_class) {
+            for (var i = 0; i < r.per_class.length; i++) {
+                var c = r.per_class[i];
+                cBody.innerHTML += '<tr><td>' + c['class'] + '</td><td>' + (c.precision * 100).toFixed(0) + '%</td><td>' + (c.recall * 100).toFixed(0) + '%</td><td>' + c.support + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('da-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
