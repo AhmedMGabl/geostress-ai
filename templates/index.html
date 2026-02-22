@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.3</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.5</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -2176,6 +2176,82 @@
                     <!-- Data Recommendations -->
                     <div id="data-rec-results" class="d-none">
                         <div id="data-rec-content"></div>
+                    </div>
+
+                    <hr class="my-4">
+
+                    <!-- Field Calibration Section -->
+                    <h5 class="mb-3"><i class="bi bi-geo-alt"></i> Field Stress Calibration</h5>
+                    <p class="text-muted small">Compare model predictions against actual field measurements (LOT, XLOT, minifrac). This is the gold standard for validating geomechanical models in the oil industry.</p>
+
+                    <div class="card mb-3">
+                        <div class="card-header"><i class="bi bi-plus-circle"></i> Add Field Measurement</div>
+                        <div class="card-body">
+                            <div class="row g-2">
+                                <div class="col-md-3">
+                                    <label class="form-label small">Test Type</label>
+                                    <select class="form-select form-select-sm" id="field-test-type">
+                                        <option value="LOT">LOT (Leak-Off Test)</option>
+                                        <option value="XLOT">XLOT (Extended LOT)</option>
+                                        <option value="minifrac">Minifrac</option>
+                                        <option value="hydraulic_fracture">Hydraulic Fracture</option>
+                                        <option value="breakout">Borehole Breakout</option>
+                                        <option value="DIF">Drilling-Induced Fracture</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label small">Depth (m)</label>
+                                    <input type="number" class="form-control form-control-sm" id="field-depth" value="3000" min="0" max="15000">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label small">Stress (MPa)</label>
+                                    <input type="number" class="form-control form-control-sm" id="field-stress" value="50" min="0" max="200" step="0.1">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label small">Direction</label>
+                                    <select class="form-select form-select-sm" id="field-direction">
+                                        <option value="Shmin">Shmin (from LOT)</option>
+                                        <option value="SHmax">SHmax</option>
+                                        <option value="Sv">Sv (overburden)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">Azimuth (optional)</label>
+                                    <input type="number" class="form-control form-control-sm" id="field-azimuth" placeholder="0-360" min="0" max="360">
+                                </div>
+                            </div>
+                            <div class="row g-2 mt-2">
+                                <div class="col-md-9">
+                                    <input type="text" class="form-control form-control-sm" id="field-notes" placeholder="Notes (e.g., formation name, test quality...)">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-success btn-sm w-100" onclick="addFieldMeasurement()">
+                                        <i class="bi bi-plus-lg"></i> Add Measurement
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-primary btn-sm" onclick="runFieldValidation()">
+                            <i class="bi bi-check2-circle"></i> Validate Against Field Data
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="loadFieldMeasurements()">
+                            <i class="bi bi-list-ul"></i> View All Measurements
+                        </button>
+                    </div>
+
+                    <div id="field-validation-results" class="d-none">
+                        <div class="row mb-3" id="field-cal-metrics"></div>
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-table"></i> Measurement vs Prediction</div>
+                            <div class="card-body" id="field-cal-table"></div>
+                        </div>
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-info-circle"></i> Recommendations</div>
+                            <div class="card-body" id="field-cal-recommendations"></div>
+                        </div>
                     </div>
                 </div>
 

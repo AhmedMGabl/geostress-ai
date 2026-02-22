@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.3.0 - Production MLOps)."""
+"""GeoStress AI - FastAPI Web Application (v3.5.0 - Industrial Validation)."""
 
 import os
 import io
@@ -122,6 +122,55 @@ _comprehensive_cache = BoundedCache(10)
 
 # Pre-computed startup snapshot for instant page load
 _startup_snapshot = {}
+
+# ── Input validation constants ──────────────────────────────
+VALID_REGIMES = {"normal", "strike_slip", "thrust", "auto"}
+VALID_CLASSIFIERS = {
+    "random_forest", "gradient_boosting", "svm", "mlp",
+    "xgboost", "lightgbm", "catboost",
+}
+VALID_SOURCES = {"demo", "uploaded"}
+VALID_FRACTURE_TYPES = {
+    "Boundary", "Brecciated", "Continuous", "Discontinuous", "Vuggy",
+}
+DEPTH_RANGE = (0, 15000)    # meters
+COHESION_RANGE = (0, 100)   # MPa
+PP_RANGE = (0, 500)         # MPa
+FRICTION_RANGE = (0.0, 2.0)
+
+
+def _validate_well(well: str, df: pd.DataFrame) -> None:
+    """Raise 404 if well doesn't exist in data."""
+    available = df[WELL_COL].unique().tolist() if WELL_COL in df.columns else []
+    if well not in available:
+        raise HTTPException(404, f"Well '{well}' not found. Available: {available}")
+
+
+def _validate_regime(regime: str) -> None:
+    if regime not in VALID_REGIMES:
+        raise HTTPException(400, f"regime must be one of {sorted(VALID_REGIMES)}")
+
+
+def _validate_classifier(classifier: str) -> None:
+    if classifier not in VALID_CLASSIFIERS:
+        raise HTTPException(400, f"classifier must be one of {sorted(VALID_CLASSIFIERS)}")
+
+
+def _validate_source(source: str) -> str:
+    if source not in VALID_SOURCES:
+        raise HTTPException(400, f"source must be one of {sorted(VALID_SOURCES)}")
+    return source
+
+
+def _validate_float(value, name: str, lo: float, hi: float) -> float:
+    try:
+        v = float(value)
+    except (ValueError, TypeError):
+        raise HTTPException(400, f"{name} must be a number")
+    if v < lo or v > hi:
+        raise HTTPException(400, f"{name}={v} is out of valid range ({lo}-{hi})")
+    return v
+
 
 # Audit trail and model history now persist in SQLite (see src/persistence.py).
 # Locks kept for thread safety around DB writes.
@@ -570,15 +619,37 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 async def global_exception_handler(request: Request, exc: Exception):
     """Catch unhandled errors and return a clean JSON response.
 
+    Maps common input errors to 400 instead of 500.
     Never expose raw tracebacks in production.
     """
     import traceback
     traceback.print_exc()  # Log to server console for debugging
+
+    # Map known input/logic errors to 400
+    if isinstance(exc, (ValueError, TypeError, KeyError)):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Invalid input",
+                "message": str(exc)[:200],
+                "suggestion": "Check parameter values and types.",
+            },
+        )
+    if isinstance(exc, (IndexError, AttributeError)):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Data processing error",
+                "message": str(exc)[:200],
+                "suggestion": "The data may be missing required columns or have unexpected format.",
+            },
+        )
+
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal server error",
-            "message": str(exc)[:200],  # Truncate to avoid leaking details
+            "message": str(exc)[:200],
             "suggestion": "Try again or contact support if the issue persists.",
         },
     )
@@ -1144,6 +1215,7 @@ async def run_classification(request: Request):
     classifier = body.get("classifier", "random_forest")
     source = body.get("source", "demo")
     use_enhanced = body.get("enhanced", True)
+    _validate_classifier(classifier)
 
     df = get_df(source)
 
@@ -1197,6 +1269,7 @@ async def run_deep_ensemble(request: Request):
     body = await request.json()
     source = body.get("source", "demo")
     classifier = body.get("classifier", "gradient_boosting")
+    _validate_classifier(classifier)
     n_ensemble = int(body.get("n_ensemble", 5))
     n_ensemble = max(3, min(n_ensemble, 10))  # clamp 3-10
 
@@ -1216,7 +1289,10 @@ async def run_transfer_learning(request: Request):
     source_well = body.get("source_well", "3P")
     target_well = body.get("target_well", "6P")
     classifier = body.get("classifier", "gradient_boosting")
-    fine_tune_fraction = float(body.get("fine_tune_fraction", 0.2))
+    _validate_classifier(classifier)
+    fine_tune_fraction = _validate_float(
+        body.get("fine_tune_fraction", 0.2), "fine_tune_fraction", 0.01, 1.0
+    )
 
     df = get_df(source)
     result = await asyncio.to_thread(
@@ -1245,10 +1321,12 @@ async def run_clustering(request: Request):
     n_clusters = body.get("n_clusters", None)
     source = body.get("source", "demo")
 
+    if n_clusters is not None:
+        n_clusters = int(_validate_float(n_clusters, "n_clusters", 2, 15))
+
     df = get_df(source)
+    _validate_well(well, df)
     df_well = df[df[WELL_COL] == well].reset_index(drop=True)
-    if len(df_well) == 0:
-        raise HTTPException(404, f"No data for well {well}")
 
     clust = await asyncio.to_thread(
         cluster_fracture_sets, df_well, n_clusters=n_clusters
@@ -1365,7 +1443,7 @@ async def submit_feedback(request: Request):
     body = await request.json()
     well = body.get("well", "")
     analysis_type = body.get("analysis_type", "general")
-    rating = int(body.get("rating", 3))
+    rating = int(_validate_float(body.get("rating", 3), "rating", 1, 5))
     comment = body.get("comment", "")
     expert_name = body.get("expert_name", "anonymous")
 
@@ -1601,6 +1679,7 @@ async def retrain_model(request: Request):
     body = await request.json()
     source = body.get("source", "demo")
     classifier = body.get("classifier", "xgboost")
+    _validate_classifier(classifier)
 
     df = get_df(source)
     result = await asyncio.to_thread(
@@ -1621,6 +1700,7 @@ async def run_feedback_effectiveness(request: Request):
     source = body.get("source", "demo")
     well = body.get("well")
     classifier = body.get("classifier", "random_forest")
+    _validate_classifier(classifier)
 
     df = get_df(source)
     if df is None:
@@ -1676,6 +1756,7 @@ async def shap_explanations(request: Request):
     body = await request.json()
     source = body.get("source", "demo")
     classifier = body.get("classifier", "gradient_boosting")
+    _validate_classifier(classifier)
 
     df = get_df(source)
 
@@ -1707,8 +1788,11 @@ async def run_sensitivity(request: Request):
     source = body.get("source", "demo")
     well = body.get("well", None)
     regime = body.get("regime", "strike_slip")
-    depth_m = float(body.get("depth", 3000))
+    _validate_regime(regime)
+    depth_m = _validate_float(body.get("depth", 3000), "depth", *DEPTH_RANGE)
     pore_pressure = body.get("pore_pressure", None)
+    if pore_pressure is not None:
+        pore_pressure = _validate_float(pore_pressure, "pore_pressure", *PP_RANGE)
 
     df = get_df(source)
     if well:
@@ -1746,9 +1830,9 @@ async def run_what_if(request: Request):
     body = await request.json()
     source = body.get("source", "demo")
     well = body.get("well", "3P")
-    friction = float(body.get("friction", 0.6))
-    pore_pressure = float(body.get("pore_pressure", 0))
-    depth_m = float(body.get("depth", 3000))
+    friction = _validate_float(body.get("friction", 0.6), "friction", *FRICTION_RANGE)
+    pore_pressure = _validate_float(body.get("pore_pressure", 0), "pore_pressure", *PP_RANGE)
+    depth_m = _validate_float(body.get("depth", 3000), "depth", *DEPTH_RANGE)
 
     df = get_df(source)
     if df is None:
@@ -1896,8 +1980,11 @@ async def run_bayesian(request: Request):
     source = body.get("source", "demo")
     well = body.get("well", None)
     regime = body.get("regime", "strike_slip")
-    depth_m = float(body.get("depth", 3000))
+    _validate_regime(regime)
+    depth_m = _validate_float(body.get("depth", 3000), "depth", *DEPTH_RANGE)
     pore_pressure = body.get("pore_pressure", None)
+    if pore_pressure is not None:
+        pore_pressure = _validate_float(pore_pressure, "pore_pressure", *PP_RANGE)
     fast = body.get("fast", True)
 
     df = get_df(source)
@@ -1938,8 +2025,11 @@ async def run_risk_matrix(request: Request):
     source = body.get("source", "demo")
     well = body.get("well", None)
     regime = body.get("regime", "strike_slip")
-    depth_m = float(body.get("depth", 3000))
+    _validate_regime(regime)
+    depth_m = _validate_float(body.get("depth", 3000), "depth", *DEPTH_RANGE)
     pore_pressure = body.get("pore_pressure", None)
+    if pore_pressure is not None:
+        pore_pressure = _validate_float(pore_pressure, "pore_pressure", *PP_RANGE)
 
     df = get_df(source)
     if well:
@@ -7961,7 +8051,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.4.0",
+        "app_version": "3.5.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else
@@ -8336,6 +8426,266 @@ async def rlhf_retrain(request: Request):
             else "No accuracy improvement yet — more expert reviews may help."
         ),
     })
+
+
+# ── Field Calibration & Ground-Truth Validation ──────
+
+_field_measurements: dict[str, list] = {}  # well -> list of measurements
+
+
+@app.post("/api/calibration/add-measurement")
+async def add_field_measurement(request: Request):
+    """Record a field stress measurement (LOT, XLOT, minifrac) for model validation.
+
+    In the oil industry, these are ground-truth measurements that the model
+    predictions should match. Comparing predictions against field data is how
+    engineers build trust in geomechanical models.
+    """
+    body = await request.json()
+    well = body.get("well", "")
+    if not well:
+        raise HTTPException(400, "well is required")
+
+    test_type = body.get("test_type", "LOT")
+    valid_tests = {"LOT", "XLOT", "minifrac", "hydraulic_fracture", "breakout", "DIF"}
+    if test_type not in valid_tests:
+        raise HTTPException(400, f"test_type must be one of {sorted(valid_tests)}")
+
+    depth_m = _validate_float(body.get("depth_m", 0), "depth_m", *DEPTH_RANGE)
+    measured_stress_mpa = _validate_float(
+        body.get("measured_stress_mpa", 0), "measured_stress_mpa", 0, 200
+    )
+    stress_direction = body.get("stress_direction", "Shmin")
+    valid_dirs = {"Shmin", "SHmax", "Sv"}
+    if stress_direction not in valid_dirs:
+        raise HTTPException(400, f"stress_direction must be one of {sorted(valid_dirs)}")
+
+    azimuth_deg = body.get("azimuth_deg", None)
+    if azimuth_deg is not None:
+        azimuth_deg = _validate_float(azimuth_deg, "azimuth_deg", 0, 360)
+
+    notes = body.get("notes", "")
+
+    measurement = {
+        "id": hashlib.sha256(
+            f"{well}_{test_type}_{depth_m}_{datetime.now().timestamp()}".encode()
+        ).hexdigest()[:10],
+        "well": well,
+        "test_type": test_type,
+        "depth_m": depth_m,
+        "measured_stress_mpa": measured_stress_mpa,
+        "stress_direction": stress_direction,
+        "azimuth_deg": azimuth_deg,
+        "notes": notes,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if well not in _field_measurements:
+        _field_measurements[well] = []
+    _field_measurements[well].append(measurement)
+
+    _audit_record("field_measurement_added", measurement, {}, well=well)
+
+    return {"status": "ok", "measurement": measurement,
+            "total_for_well": len(_field_measurements[well])}
+
+
+@app.get("/api/calibration/measurements")
+async def get_field_measurements(well: str = None):
+    """Get all recorded field measurements, optionally filtered by well."""
+    if well:
+        return {"well": well, "measurements": _field_measurements.get(well, [])}
+    return {"measurements": _field_measurements}
+
+
+@app.post("/api/calibration/validate")
+async def validate_against_field(request: Request):
+    """Compare model stress predictions against field measurements.
+
+    This is the critical industrial validation step — the model is only
+    trustworthy if its predictions match what was actually measured in the field.
+    Returns per-measurement comparison, overall bias, and calibration score.
+    """
+    body = await request.json()
+    well = body.get("well", "3P")
+    source = body.get("source", "demo")
+    depth_m = _validate_float(body.get("depth_m", 3000), "depth_m", *DEPTH_RANGE)
+    pp_mpa = _validate_float(body.get("pp_mpa", 30), "pp_mpa", *PP_RANGE)
+
+    measurements = _field_measurements.get(well, [])
+    if not measurements:
+        return _sanitize_for_json({
+            "status": "no_measurements",
+            "well": well,
+            "message": (
+                f"No field measurements recorded for well {well}. "
+                "Use POST /api/calibration/add-measurement to add LOT, XLOT, "
+                "or minifrac test results for validation."
+            ),
+            "recommendation": (
+                "Field calibration requires at least one stress measurement. "
+                "Common sources: Leak-Off Test (LOT) gives Shmin at test depth; "
+                "Extended LOT (XLOT) gives both Shmin and SHmax; "
+                "Breakout analysis gives SHmax direction."
+            ),
+        })
+
+    # Run model prediction
+    df = get_df(source)
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True)
+    if len(df_well) == 0:
+        raise HTTPException(404, f"No fracture data for well {well}")
+
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values
+    )
+
+    # Auto-detect regime
+    auto = await asyncio.to_thread(
+        auto_detect_regime, normals, depth_m, 0.0, pp_mpa,
+    )
+    regime = auto["best_regime"]
+
+    inv = await asyncio.to_thread(
+        invert_stress, normals,
+        regime=regime, depth_m=depth_m, pore_pressure=pp_mpa,
+    )
+
+    # Extract model predictions
+    sigma1 = float(inv.get("sigma1", 0))
+    sigma3 = float(inv.get("sigma3", 0))
+    shmax_deg = float(inv.get("shmax_azimuth_deg", 0))
+
+    # Vertical stress estimate (overburden, ~25 MPa/km)
+    sv = 0.025 * depth_m
+
+    model_stresses = {
+        "Sv": sv,
+        "SHmax": sigma1 if regime == "thrust" else (
+            sigma1 if regime == "strike_slip" else sv
+        ),
+        "Shmin": sigma3,
+    }
+
+    # Compare each measurement
+    comparisons = []
+    total_error_pct = 0
+    total_azimuth_error = 0
+    n_stress_comparisons = 0
+    n_azimuth_comparisons = 0
+
+    for m in measurements:
+        predicted = model_stresses.get(m["stress_direction"], None)
+        measured = m["measured_stress_mpa"]
+
+        comp = {
+            "measurement_id": m["id"],
+            "test_type": m["test_type"],
+            "depth_m": m["depth_m"],
+            "stress_direction": m["stress_direction"],
+            "measured_mpa": measured,
+            "predicted_mpa": round(predicted, 2) if predicted else None,
+        }
+
+        if predicted is not None and measured > 0:
+            error = predicted - measured
+            error_pct = abs(error) / measured * 100
+            comp["error_mpa"] = round(error, 2)
+            comp["error_pct"] = round(error_pct, 1)
+            comp["rating"] = (
+                "EXCELLENT" if error_pct < 5 else
+                "GOOD" if error_pct < 15 else
+                "FAIR" if error_pct < 30 else
+                "POOR"
+            )
+            total_error_pct += error_pct
+            n_stress_comparisons += 1
+
+        if m.get("azimuth_deg") is not None:
+            az_error = abs(shmax_deg - m["azimuth_deg"])
+            if az_error > 180:
+                az_error = 360 - az_error
+            comp["azimuth_measured"] = m["azimuth_deg"]
+            comp["azimuth_predicted"] = round(shmax_deg, 1)
+            comp["azimuth_error_deg"] = round(az_error, 1)
+            total_azimuth_error += az_error
+            n_azimuth_comparisons += 1
+
+        comp["notes"] = m.get("notes", "")
+        comparisons.append(comp)
+
+    # Overall calibration metrics
+    avg_error_pct = total_error_pct / max(n_stress_comparisons, 1)
+    avg_az_error = total_azimuth_error / max(n_azimuth_comparisons, 1)
+
+    calibration_score = max(0, 100 - avg_error_pct * 2)
+    if n_azimuth_comparisons > 0:
+        calibration_score = calibration_score * 0.7 + max(0, 100 - avg_az_error) * 0.3
+
+    overall_rating = (
+        "CALIBRATED" if calibration_score >= 80 else
+        "ACCEPTABLE" if calibration_score >= 60 else
+        "NEEDS_RECALIBRATION" if calibration_score >= 40 else
+        "UNRELIABLE"
+    )
+
+    # Generate recommendations
+    recommendations = []
+    if n_stress_comparisons < 3:
+        recommendations.append(
+            f"Only {n_stress_comparisons} stress comparison(s) available. "
+            "Add more LOT/XLOT measurements for robust calibration."
+        )
+    if n_azimuth_comparisons == 0:
+        recommendations.append(
+            "No directional measurements available. Add breakout or DIF "
+            "observations to validate SHmax azimuth predictions."
+        )
+    if avg_error_pct > 20:
+        recommendations.append(
+            f"Average stress error is {avg_error_pct:.0f}%. Consider: "
+            "(1) Check pore pressure assumptions, "
+            "(2) Verify the tectonic regime, "
+            "(3) Review if measurements and fractures are at similar depths."
+        )
+    if avg_az_error > 20 and n_azimuth_comparisons > 0:
+        recommendations.append(
+            f"SHmax azimuth error is {avg_az_error:.0f}°. This may indicate "
+            "local stress perturbations from faults or geological heterogeneity."
+        )
+
+    result = {
+        "well": well,
+        "regime": regime,
+        "model_predictions": {
+            "sigma1_mpa": round(sigma1, 2),
+            "sigma3_mpa": round(sigma3, 2),
+            "shmax_azimuth_deg": round(shmax_deg, 1),
+            "sv_mpa": round(sv, 2),
+        },
+        "comparisons": comparisons,
+        "n_measurements": len(measurements),
+        "n_stress_comparisons": n_stress_comparisons,
+        "n_azimuth_comparisons": n_azimuth_comparisons,
+        "avg_stress_error_pct": round(avg_error_pct, 1),
+        "avg_azimuth_error_deg": round(avg_az_error, 1) if n_azimuth_comparisons > 0 else None,
+        "calibration_score": round(calibration_score, 1),
+        "overall_rating": overall_rating,
+        "recommendations": recommendations,
+        "industry_context": (
+            "In the oil industry, a calibrated geomechanical model should predict "
+            "Shmin within 5-10% of LOT/XLOT values. SHmax azimuth should be within "
+            "10-15° of breakout/DIF observations. Models with >20% stress error or "
+            ">30° azimuth error should not be used for well planning without recalibration."
+        ),
+    }
+
+    _audit_record("field_calibration",
+                  {"well": well, "n_measurements": len(measurements)},
+                  {"calibration_score": calibration_score, "rating": overall_rating},
+                  well=well, source=source)
+
+    return _sanitize_for_json(result)
 
 
 # ── Batch Well Processing ────────────────────────────

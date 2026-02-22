@@ -4039,6 +4039,167 @@ async function runDataRecommendations() {
 }
 
 
+// ── Field Calibration ─────────────────────────────
+
+async function addFieldMeasurement() {
+    var testType = document.getElementById("field-test-type").value;
+    var depth = parseFloat(document.getElementById("field-depth").value);
+    var stress = parseFloat(document.getElementById("field-stress").value);
+    var direction = document.getElementById("field-direction").value;
+    var azimuth = document.getElementById("field-azimuth").value;
+    var notes = document.getElementById("field-notes").value;
+
+    if (!depth || !stress) {
+        showToast("Depth and stress magnitude are required", "Error");
+        return;
+    }
+
+    var payload = {
+        well: currentWell,
+        test_type: testType,
+        depth_m: depth,
+        measured_stress_mpa: stress,
+        stress_direction: direction,
+        notes: notes
+    };
+    if (azimuth) payload.azimuth_deg = parseFloat(azimuth);
+
+    try {
+        var r = await api("/api/calibration/add-measurement", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        showToast("Measurement added (" + r.total_for_well + " total for " + currentWell + ")");
+        document.getElementById("field-notes").value = "";
+    } catch (err) {
+        showToast("Error adding measurement: " + err.message, "Error");
+    }
+}
+
+async function loadFieldMeasurements() {
+    try {
+        var r = await api("/api/calibration/measurements?well=" + currentWell);
+        var measurements = r.measurements || [];
+        if (measurements.length === 0) {
+            showToast("No measurements recorded for well " + currentWell);
+            return;
+        }
+
+        var resultsDiv = document.getElementById("field-validation-results");
+        resultsDiv.classList.remove("d-none");
+
+        var tableDiv = document.getElementById("field-cal-table");
+        var html = '<table class="table table-sm table-striped"><thead><tr>' +
+            '<th>Type</th><th>Depth (m)</th><th>Stress (MPa)</th><th>Direction</th><th>Azimuth</th><th>Notes</th>' +
+            '</tr></thead><tbody>';
+        measurements.forEach(function(m) {
+            html += '<tr><td>' + m.test_type + '</td><td>' + m.depth_m +
+                '</td><td>' + m.measured_stress_mpa + '</td><td>' + m.stress_direction +
+                '</td><td>' + (m.azimuth_deg || '-') + '</td><td>' + (m.notes || '-') + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        tableDiv.innerHTML = html;
+        document.getElementById("field-cal-metrics").innerHTML = '';
+        document.getElementById("field-cal-recommendations").innerHTML =
+            '<p class="text-muted small">' + measurements.length + ' measurement(s) recorded. Click "Validate" to compare against model predictions.</p>';
+
+        showToast(measurements.length + " measurement(s) loaded");
+    } catch (err) {
+        showToast("Error loading measurements: " + err.message, "Error");
+    }
+}
+
+async function runFieldValidation() {
+    showLoading("Validating model against field measurements...");
+    try {
+        var depth = parseFloat(document.getElementById("field-depth").value) || 3000;
+        var r = await api("/api/calibration/validate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                well: currentWell,
+                source: currentSource,
+                depth_m: depth,
+                pp_mpa: 30
+            })
+        });
+
+        var resultsDiv = document.getElementById("field-validation-results");
+        resultsDiv.classList.remove("d-none");
+
+        if (r.status === "no_measurements") {
+            document.getElementById("field-cal-metrics").innerHTML =
+                '<div class="col-12"><div class="alert alert-info">' +
+                '<i class="bi bi-info-circle me-1"></i> ' + r.message +
+                '</div><p class="small text-muted">' + r.recommendation + '</p></div>';
+            document.getElementById("field-cal-table").innerHTML = '';
+            document.getElementById("field-cal-recommendations").innerHTML = '';
+            showToast("No field measurements — add some first");
+            return;
+        }
+
+        // Metrics
+        var ratingColor = r.overall_rating === "CALIBRATED" ? "success" :
+                         r.overall_rating === "ACCEPTABLE" ? "info" :
+                         r.overall_rating === "NEEDS_RECALIBRATION" ? "warning" : "danger";
+        var metricsHtml = '<div class="col-md-3"><div class="metric-card">' +
+            '<div class="metric-label">Calibration Score</div>' +
+            '<div class="metric-value">' + r.calibration_score + '/100</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card">' +
+            '<div class="metric-label">Rating</div>' +
+            '<div class="metric-value text-' + ratingColor + '">' + r.overall_rating + '</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card">' +
+            '<div class="metric-label">Avg Stress Error</div>' +
+            '<div class="metric-value">' + r.avg_stress_error_pct + '%</div></div></div>' +
+            '<div class="col-md-3"><div class="metric-card">' +
+            '<div class="metric-label">Measurements</div>' +
+            '<div class="metric-value">' + r.n_measurements + '</div></div></div>';
+        document.getElementById("field-cal-metrics").innerHTML = metricsHtml;
+
+        // Comparison table
+        var tableHtml = '<table class="table table-sm"><thead><tr>' +
+            '<th>Test</th><th>Depth</th><th>Direction</th>' +
+            '<th>Measured (MPa)</th><th>Predicted (MPa)</th><th>Error</th><th>Rating</th>' +
+            '</tr></thead><tbody>';
+        r.comparisons.forEach(function(c) {
+            var rowClass = c.rating === "EXCELLENT" ? "table-success" :
+                          c.rating === "GOOD" ? "" :
+                          c.rating === "FAIR" ? "table-warning" : "table-danger";
+            tableHtml += '<tr class="' + rowClass + '"><td>' + c.test_type + '</td>' +
+                '<td>' + c.depth_m + 'm</td><td>' + c.stress_direction + '</td>' +
+                '<td>' + c.measured_mpa + '</td><td>' + (c.predicted_mpa || '-') + '</td>' +
+                '<td>' + (c.error_pct ? c.error_pct + '%' : '-') + '</td>' +
+                '<td>' + (c.rating || '-') + '</td></tr>';
+        });
+        tableHtml += '</tbody></table>';
+
+        // Model predictions summary
+        var mp = r.model_predictions;
+        tableHtml += '<div class="mt-2 small text-muted">Model: regime=' + r.regime +
+            ', sigma1=' + mp.sigma1_mpa + 'MPa, sigma3=' + mp.sigma3_mpa +
+            'MPa, SHmax=' + mp.shmax_azimuth_deg + '°, Sv=' + mp.sv_mpa + 'MPa</div>';
+
+        document.getElementById("field-cal-table").innerHTML = tableHtml;
+
+        // Recommendations
+        var recHtml = '';
+        r.recommendations.forEach(function(rec) {
+            recHtml += '<div class="alert alert-info py-1 small"><i class="bi bi-lightbulb me-1"></i> ' + rec + '</div>';
+        });
+        recHtml += '<p class="small text-muted mt-2"><i class="bi bi-info-circle me-1"></i> ' +
+            r.industry_context + '</p>';
+        document.getElementById("field-cal-recommendations").innerHTML = recHtml;
+
+        showToast("Calibration: " + r.overall_rating + " (score " + r.calibration_score + "/100)");
+    } catch (err) {
+        showToast("Validation error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+
 // ── Learning Curve ────────────────────────────────
 
 async function runLearningCurve() {
