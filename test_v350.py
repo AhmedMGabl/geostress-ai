@@ -1,4 +1,4 @@
-"""Test suite for GeoStress AI v3.5.0 through v3.12.0.
+"""Test suite for GeoStress AI v3.5.0 through v3.13.0.
 
 Tests: input validation, field calibration, error boundaries,
 uncertainty quantification, decision matrix.
@@ -913,10 +913,92 @@ sb = eb.get("stakeholder_brief", {})
 check("Brief has risk_level", sb.get("risk_level") in ("GREEN", "AMBER", "RED"))
 check("Brief has action", len(sb.get("action", "")) > 10)
 
+# ── [53] Auto-Retrain from Feedback ───────────────────
+print("\n[53] Auto-Retrain from Feedback")
+ar = api("POST", "/api/analysis/auto-retrain", {
+    "well": "3P", "classifier": "random_forest", "source": "demo"
+}, timeout=180)
+check("Has status", ar.get("status") in ("PROMOTED", "REJECTED", "NO_FEEDBACK"))
+if ar.get("status") != "NO_FEEDBACK":
+    check("Has classifier", isinstance(ar.get("classifier"), str))
+    check("Has baseline", isinstance(ar.get("baseline"), dict))
+    check("Baseline has accuracy", isinstance(ar.get("baseline", {}).get("accuracy"), (int, float)))
+    check("Has retrained", isinstance(ar.get("retrained"), dict))
+    check("Retrained has accuracy", isinstance(ar.get("retrained", {}).get("accuracy"), (int, float)))
+    check("Has improvement", isinstance(ar.get("improvement"), (int, float)))
+    check("Has feedback_used", isinstance(ar.get("feedback_used"), dict))
+    check("Feedback has corrections", isinstance(ar.get("feedback_used", {}).get("corrections"), int))
+    check("Feedback has failures", isinstance(ar.get("feedback_used", {}).get("failures"), int))
+    check("Has plot", isinstance(ar.get("plot"), str) and ar["plot"].startswith("data:image"))
+    check("Has stakeholder_brief", "headline" in ar.get("stakeholder_brief", {}))
+
+# ── [54] Model Arena ──────────────────────────────────
+print("\n[54] Model Arena")
+ma = api("POST", "/api/analysis/model-arena", {"well": "3P", "source": "demo"}, timeout=300)
+check("Has ranking", isinstance(ma.get("ranking"), list) and len(ma["ranking"]) >= 3)
+check("Has results dict", isinstance(ma.get("results"), dict))
+check("Has best_model", isinstance(ma.get("best_model"), str) and len(ma["best_model"]) > 0)
+check("Has best_composite", isinstance(ma.get("best_composite"), (int, float)))
+check("Has n_models", isinstance(ma.get("n_models"), int) and ma["n_models"] >= 3)
+check("Has plot", isinstance(ma.get("plot"), str) and ma["plot"].startswith("data:image"))
+best = ma.get("best_model", "")
+best_r = ma.get("results", {}).get(best, {})
+check("Best has accuracy", isinstance(best_r.get("accuracy"), (int, float)))
+check("Best has f1", isinstance(best_r.get("f1"), (int, float)))
+check("Best has ece", isinstance(best_r.get("ece"), (int, float)))
+check("Best has composite", isinstance(best_r.get("composite"), (int, float)))
+check("Best has rank 1", best_r.get("rank") == 1)
+check("Has stakeholder_brief", "headline" in ma.get("stakeholder_brief", {}))
+
+# ── [55] Stakeholder Decision Report ──────────────────
+print("\n[55] Stakeholder Decision Report")
+sd = api("POST", "/api/report/stakeholder-decision", {
+    "well": "3P", "classifier": "random_forest", "source": "demo"
+}, timeout=180)
+check("Has decision", sd.get("decision") in ("GO", "CONDITIONAL GO", "REVIEW REQUIRED", "NO-GO"))
+check("Has score", isinstance(sd.get("score"), int) and 0 <= sd["score"] <= 100)
+check("Has accuracy", isinstance(sd.get("accuracy"), (int, float)))
+check("Has class_risks", isinstance(sd.get("class_risks"), list) and len(sd["class_risks"]) > 0)
+cr0 = sd.get("class_risks", [{}])[0]
+check("Class risk has class", isinstance(cr0.get("class"), str))
+check("Class risk has risk_score", isinstance(cr0.get("risk_score"), (int, float)))
+check("Class risk has verdict", cr0.get("verdict") in ("LOW", "MEDIUM", "HIGH"))
+check("Has confidence_stats", isinstance(sd.get("confidence_stats"), dict))
+check("Stats has mean", isinstance(sd.get("confidence_stats", {}).get("mean"), (int, float)))
+check("Has economic_impact", isinstance(sd.get("economic_impact"), dict))
+check("Econ has cost_per_misclass", sd.get("economic_impact", {}).get("cost_per_misclass_usd") == 50000)
+check("Has evidence", isinstance(sd.get("evidence"), list))
+check("Has feedback_summary", isinstance(sd.get("feedback_summary"), dict))
+check("Has plot", isinstance(sd.get("plot"), str) and sd["plot"].startswith("data:image"))
+check("Has stakeholder_brief", "headline" in sd.get("stakeholder_brief", {}))
+
+# ── [56] Negative Outcome Learning ────────────────────
+print("\n[56] Negative Outcome Learning")
+no = api("POST", "/api/analysis/negative-outcomes", {
+    "well": "3P", "classifier": "random_forest", "source": "demo"
+}, timeout=180)
+check("Has n_errors", isinstance(no.get("n_errors"), int) and no["n_errors"] >= 0)
+check("Has error_rate", isinstance(no.get("error_rate"), (int, float)))
+check("Has n_synthetic_added", isinstance(no.get("n_synthetic_added"), int))
+check("Has systematic_biases", isinstance(no.get("systematic_biases"), list))
+check("Has feature_diffs", isinstance(no.get("feature_diffs"), list))
+check("Has baseline", isinstance(no.get("baseline"), dict))
+check("Baseline has accuracy", isinstance(no.get("baseline", {}).get("accuracy"), (int, float)))
+check("Has augmented", isinstance(no.get("augmented"), dict))
+check("Augmented has accuracy", isinstance(no.get("augmented", {}).get("accuracy"), (int, float)))
+check("Has improvement", isinstance(no.get("improvement"), (int, float)))
+check("Has plot", isinstance(no.get("plot"), str) and no["plot"].startswith("data:image"))
+if no.get("systematic_biases"):
+    b0 = no["systematic_biases"][0]
+    check("Bias has true_class", isinstance(b0.get("true_class"), str))
+    check("Bias has error_rate", isinstance(b0.get("error_rate"), (int, float)))
+    check("Bias has confused_with", isinstance(b0.get("confused_with"), str))
+check("Has stakeholder_brief", "headline" in no.get("stakeholder_brief", {}))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.12.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.13.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

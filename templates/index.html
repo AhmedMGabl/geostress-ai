@@ -26,7 +26,7 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <h4><i class="bi bi-layers-half"></i> GeoStress AI</h4>
-                <small class="text-muted-light">Industrial Fracture Analysis v3.12</small>
+                <small class="text-muted-light">Industrial Fracture Analysis v3.13</small>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
             </div>
 
@@ -2210,6 +2210,117 @@
                                     </thead>
                                     <tbody id="nm-bs-table-body"></tbody>
                                 </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Stakeholder Decision Report + Negative Outcomes + Model Arena + Auto-Retrain -->
+                    <div class="card border-primary mt-4 mb-4">
+                        <div class="card-header bg-primary text-white"><i class="bi bi-file-earmark-text"></i> Advanced Industrial Analysis</div>
+                        <div class="card-body">
+                            <div class="d-flex gap-2 flex-wrap mb-3">
+                                <button class="btn btn-primary btn-sm" onclick="runStakeholderReport()">
+                                    <i class="bi bi-file-earmark-bar-graph"></i> Stakeholder Decision Report
+                                </button>
+                                <button class="btn btn-success btn-sm" onclick="runModelArena()">
+                                    <i class="bi bi-trophy"></i> Model Arena (Compare All)
+                                </button>
+                                <button class="btn btn-info btn-sm" onclick="runAutoRetrain()">
+                                    <i class="bi bi-arrow-repeat"></i> Auto-Retrain from Feedback
+                                </button>
+                                <button class="btn btn-danger btn-sm" onclick="runNegativeOutcomes()">
+                                    <i class="bi bi-bug"></i> Negative Outcome Learning
+                                </button>
+                            </div>
+
+                            <!-- Stakeholder Decision Report Results -->
+                            <div id="sdr-results" class="d-none mb-4">
+                                <h5><i class="bi bi-file-earmark-bar-graph"></i> Stakeholder Decision Report</h5>
+                                <div id="sdr-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-2"><div class="metric-card"><div class="metric-label">Decision</div><div class="metric-value fs-5" id="sdr-decision">--</div></div></div>
+                                    <div class="col-md-2"><div class="metric-card"><div class="metric-label">Score</div><div class="metric-value" id="sdr-score">--</div></div></div>
+                                    <div class="col-md-2"><div class="metric-card"><div class="metric-label">Accuracy</div><div class="metric-value" id="sdr-accuracy">--</div></div></div>
+                                    <div class="col-md-2"><div class="metric-card"><div class="metric-label">Econ Risk</div><div class="metric-value" id="sdr-econ-risk">--</div></div></div>
+                                    <div class="col-md-2"><div class="metric-card"><div class="metric-label">Low Conf</div><div class="metric-value" id="sdr-low-conf">--</div></div></div>
+                                    <div class="col-md-2"><div class="metric-card"><div class="metric-label">Reviews</div><div class="metric-value" id="sdr-reviews">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-3" id="sdr-plot-img"></div>
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <div class="card"><div class="card-header py-1"><i class="bi bi-shield"></i> Per-Class Risk</div>
+                                            <div class="card-body p-0" style="max-height:250px;overflow-y:auto">
+                                                <table class="table table-sm table-hover mb-0">
+                                                    <thead class="table-light"><tr><th>Class</th><th>Recall</th><th>Risk Score</th><th>Verdict</th></tr></thead>
+                                                    <tbody id="sdr-class-risk-body"></tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="card"><div class="card-header py-1"><i class="bi bi-list-check"></i> Evidence Chain</div>
+                                            <div class="card-body p-0" style="max-height:250px;overflow-y:auto">
+                                                <table class="table table-sm mb-0">
+                                                    <thead class="table-light"><tr><th>Factor</th><th>Impact</th><th>Severity</th></tr></thead>
+                                                    <tbody id="sdr-evidence-body"></tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Model Arena Results -->
+                            <div id="arena-results" class="d-none mb-4">
+                                <h5><i class="bi bi-trophy"></i> Model Arena</h5>
+                                <div id="arena-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Model</div><div class="metric-value" id="arena-best">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Accuracy</div><div class="metric-value" id="arena-best-acc">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Models Tested</div><div class="metric-value" id="arena-n-models">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Composite</div><div class="metric-value" id="arena-composite">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-3" id="arena-plot-img"></div>
+                                <div class="card"><div class="card-header py-1"><i class="bi bi-table"></i> Full Ranking</div>
+                                    <div class="card-body p-0"><table class="table table-sm table-hover mb-0">
+                                        <thead class="table-light"><tr><th>Rank</th><th>Model</th><th>Accuracy</th><th>F1</th><th>Bal Acc</th><th>ECE</th><th>Speed</th><th>Composite</th></tr></thead>
+                                        <tbody id="arena-table-body"></tbody>
+                                    </table></div>
+                                </div>
+                            </div>
+
+                            <!-- Auto-Retrain Results -->
+                            <div id="retrain-results" class="d-none mb-4">
+                                <h5><i class="bi bi-arrow-repeat"></i> Auto-Retrain from Feedback</h5>
+                                <div id="retrain-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Status</div><div class="metric-value" id="retrain-status">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Improvement</div><div class="metric-value" id="retrain-improvement">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Corrections Used</div><div class="metric-value" id="retrain-corrections">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Failures Used</div><div class="metric-value" id="retrain-failures">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-3" id="retrain-plot-img"></div>
+                            </div>
+
+                            <!-- Negative Outcome Results -->
+                            <div id="negout-results" class="d-none mb-4">
+                                <h5><i class="bi bi-bug"></i> Negative Outcome Learning</h5>
+                                <div id="negout-brief" class="mb-2"></div>
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Errors Found</div><div class="metric-value" id="negout-errors">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Biases</div><div class="metric-value" id="negout-biases">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Synthetic Added</div><div class="metric-value" id="negout-synthetic">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Improvement</div><div class="metric-value" id="negout-improvement">--</div></div></div>
+                                </div>
+                                <div class="text-center mb-3" id="negout-plot-img"></div>
+                                <div id="negout-biases-section" class="d-none">
+                                    <div class="card"><div class="card-header py-1"><i class="bi bi-exclamation-triangle"></i> Systematic Biases</div>
+                                        <div class="card-body p-0"><table class="table table-sm table-hover mb-0">
+                                            <thead class="table-light"><tr><th>True Class</th><th>Error Rate</th><th>Confused With</th><th>Count</th></tr></thead>
+                                            <tbody id="negout-bias-body"></tbody>
+                                        </table></div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

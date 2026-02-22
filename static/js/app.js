@@ -2700,6 +2700,210 @@ async function runErrorBudget() {
     }
 }
 
+// ── Stakeholder Decision Report ──────────────────────
+async function runStakeholderReport() {
+    showLoading("Generating comprehensive stakeholder decision report...");
+    try {
+        var classifier = document.getElementById("classifier-select").value;
+        var r = await api("/api/report/stakeholder-decision", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, classifier: classifier, source: currentSource })
+        }, 120);
+        var el = document.getElementById("sdr-results");
+        if (!el) return;
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("sdr-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '<br><em>' + sb.action + '</em></div>';
+
+        var dColor = r.decision === "GO" ? "text-success" : r.decision.includes("CONDITIONAL") ? "text-warning" : "text-danger";
+        document.getElementById("sdr-decision").className = "metric-value fs-5 " + dColor;
+        document.getElementById("sdr-decision").textContent = r.decision;
+        document.getElementById("sdr-score").textContent = r.score + "/100";
+        document.getElementById("sdr-accuracy").textContent = (r.accuracy * 100).toFixed(1) + "%";
+        var ei = r.economic_impact || {};
+        document.getElementById("sdr-econ-risk").textContent = "$" + ((ei.total_economic_risk_usd || 0) / 1000).toFixed(0) + "K";
+        document.getElementById("sdr-low-conf").textContent = (r.confidence_stats || {}).below_70pct || 0;
+        document.getElementById("sdr-reviews").textContent = (r.feedback_summary || {}).total_reviews || 0;
+
+        if (r.plot) {
+            document.getElementById("sdr-plot-img").innerHTML = '<img src="data:image/png;base64,' + r.plot + '" class="img-fluid">';
+        }
+
+        // Class risks
+        var crBody = document.getElementById("sdr-class-risk-body");
+        crBody.innerHTML = "";
+        (r.class_risks || []).forEach(function(cr) {
+            var vc = cr.verdict === "HIGH" ? "danger" : cr.verdict === "MEDIUM" ? "warning" : "success";
+            crBody.innerHTML += '<tr><td>' + cr.class + '</td><td>' + (cr.recall * 100).toFixed(1) + '%</td>' +
+                '<td>' + cr.risk_score + '</td><td><span class="badge bg-' + vc + '">' + cr.verdict + '</span></td></tr>';
+        });
+
+        // Evidence
+        var evBody = document.getElementById("sdr-evidence-body");
+        evBody.innerHTML = "";
+        (r.evidence || []).forEach(function(ev) {
+            var sc = ev.severity === "POSITIVE" ? "success" : ev.severity === "HIGH" ? "danger" : ev.severity === "MEDIUM" ? "warning" : "secondary";
+            evBody.innerHTML += '<tr><td>' + ev.factor + '</td><td>' + ev.impact + '</td>' +
+                '<td><span class="badge bg-' + sc + '">' + ev.severity + '</span></td></tr>';
+        });
+
+        el.classList.remove("d-none");
+        showToast("Decision: " + r.decision + " (score " + r.score + "/100)");
+    } catch (err) {
+        showToast("Stakeholder report error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Model Arena ──────────────────────────────────────
+async function runModelArena() {
+    showLoading("Running model arena — testing all classifiers (this may take a minute)...");
+    try {
+        var r = await api("/api/analysis/model-arena", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, source: currentSource })
+        }, 180);
+        var el = document.getElementById("arena-results");
+        if (!el) return;
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("arena-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        document.getElementById("arena-best").textContent = (r.best_model || "").replace(/_/g, " ");
+        var br = (r.results || {})[r.best_model] || {};
+        document.getElementById("arena-best-acc").textContent = ((br.accuracy || 0) * 100).toFixed(1) + "%";
+        document.getElementById("arena-n-models").textContent = r.n_models;
+        document.getElementById("arena-composite").textContent = (r.best_composite || 0).toFixed(3);
+
+        if (r.plot) {
+            document.getElementById("arena-plot-img").innerHTML = '<img src="data:image/png;base64,' + r.plot + '" class="img-fluid">';
+        }
+
+        var tbody = document.getElementById("arena-table-body");
+        tbody.innerHTML = "";
+        (r.ranking || []).forEach(function(name) {
+            var m = r.results[name];
+            var isBest = name === r.best_model;
+            tbody.innerHTML += '<tr' + (isBest ? ' class="table-success"' : '') + '>' +
+                '<td>' + m.rank + '</td><td>' + name.replace(/_/g, " ") + (isBest ? ' ★' : '') + '</td>' +
+                '<td>' + (m.accuracy * 100).toFixed(1) + '%</td>' +
+                '<td>' + (m.f1 || 0).toFixed(3) + '</td>' +
+                '<td>' + ((m.balanced_accuracy || 0) * 100).toFixed(1) + '%</td>' +
+                '<td>' + (m.ece || 0).toFixed(3) + '</td>' +
+                '<td>' + (m.speed_seconds || 0).toFixed(1) + 's</td>' +
+                '<td><strong>' + (m.composite || 0).toFixed(3) + '</strong></td></tr>';
+        });
+
+        el.classList.remove("d-none");
+        showToast("Arena: " + (r.best_model || "").replace(/_/g, " ") + " wins!");
+    } catch (err) {
+        showToast("Model arena error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Auto-Retrain from Feedback ───────────────────────
+async function runAutoRetrain() {
+    showLoading("Auto-retraining model from accumulated feedback...");
+    try {
+        var classifier = document.getElementById("classifier-select").value;
+        var r = await api("/api/analysis/auto-retrain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, classifier: classifier, source: currentSource })
+        }, 120);
+        var el = document.getElementById("retrain-results");
+        if (!el) return;
+
+        if (r.status === "NO_FEEDBACK") {
+            el.innerHTML = '<div class="alert alert-info"><i class="bi bi-info-circle"></i> ' + r.message + '</div>';
+            el.classList.remove("d-none");
+            return;
+        }
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("retrain-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
+
+        var sc = r.status === "PROMOTED" ? "text-success" : "text-danger";
+        document.getElementById("retrain-status").className = "metric-value " + sc;
+        document.getElementById("retrain-status").textContent = r.status;
+        document.getElementById("retrain-improvement").textContent = (r.improvement >= 0 ? "+" : "") + (r.improvement * 100).toFixed(1) + "%";
+        var fu = r.feedback_used || {};
+        document.getElementById("retrain-corrections").textContent = fu.corrections || 0;
+        document.getElementById("retrain-failures").textContent = fu.failures || 0;
+
+        if (r.plot) {
+            document.getElementById("retrain-plot-img").innerHTML = '<img src="data:image/png;base64,' + r.plot + '" class="img-fluid" style="max-height:400px">';
+        }
+
+        el.classList.remove("d-none");
+        showToast("Auto-retrain: " + r.status + " (" + (r.improvement >= 0 ? "+" : "") + (r.improvement * 100).toFixed(1) + "%)");
+    } catch (err) {
+        showToast("Auto-retrain error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Negative Outcome Learning ────────────────────────
+async function runNegativeOutcomes() {
+    showLoading("Analyzing failure patterns and learning from negative outcomes...");
+    try {
+        var classifier = document.getElementById("classifier-select").value;
+        var r = await api("/api/analysis/negative-outcomes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ well: currentWell, classifier: classifier, source: currentSource })
+        }, 120);
+        var el = document.getElementById("negout-results");
+        if (!el) return;
+
+        var sb = r.stakeholder_brief || {};
+        var bColor = sb.risk_level === "GREEN" ? "success" : sb.risk_level === "AMBER" ? "warning" : "danger";
+        document.getElementById("negout-brief").innerHTML =
+            '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '<br><em>' + sb.action + '</em></div>';
+
+        document.getElementById("negout-errors").textContent = r.n_errors;
+        document.getElementById("negout-biases").textContent = (r.systematic_biases || []).length;
+        document.getElementById("negout-synthetic").textContent = r.n_synthetic_added;
+        var impColor = r.improvement >= 0 ? "text-success" : "text-danger";
+        document.getElementById("negout-improvement").className = "metric-value " + impColor;
+        document.getElementById("negout-improvement").textContent = (r.improvement >= 0 ? "+" : "") + (r.improvement * 100).toFixed(1) + "%";
+
+        if (r.plot) {
+            document.getElementById("negout-plot-img").innerHTML = '<img src="data:image/png;base64,' + r.plot + '" class="img-fluid">';
+        }
+
+        var biases = r.systematic_biases || [];
+        if (biases.length > 0) {
+            var bBody = document.getElementById("negout-bias-body");
+            bBody.innerHTML = "";
+            biases.forEach(function(b) {
+                bBody.innerHTML += '<tr><td>' + b.true_class + '</td><td>' + (b.error_rate * 100).toFixed(1) + '%</td>' +
+                    '<td>' + b.confused_with + '</td><td>' + b.confusion_count + '</td></tr>';
+            });
+            document.getElementById("negout-biases-section").classList.remove("d-none");
+        }
+
+        el.classList.remove("d-none");
+        showToast("Negative learning: " + biases.length + " biases, " + (r.improvement >= 0 ? "+" : "") + (r.improvement * 100).toFixed(1) + "%");
+    } catch (err) {
+        showToast("Negative outcome error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 // ── Clustering ────────────────────────────────────
 
 async function runClustering() {
