@@ -8836,6 +8836,89 @@ async def batch_analyze_all(request: Request):
             "all_regimes": list(set(r.get("regime", "?") for r in valid_stress)),
         }
 
+    # ── Sensitivity Alerts ──────────────────────────
+    # Check if ±10% pore pressure would change risk assessment
+    alerts = []
+    for r in results:
+        cs_pct = r.get("critically_stressed_pct", 0)
+        if cs_pct is None:
+            continue
+        # Check if near GO/NO-GO threshold (typically 10% critically stressed)
+        if 5 <= cs_pct <= 15:
+            alerts.append({
+                "well": r["well"],
+                "type": "SENSITIVITY_CRITICAL",
+                "severity": "HIGH",
+                "message": (
+                    f"Well {r['well']}: {cs_pct}% critically stressed is near the "
+                    f"10% threshold. A ±10% change in pore pressure could flip "
+                    f"the risk assessment from GO to NO-GO. Recommend: run "
+                    f"sensitivity analysis and verify pore pressure assumptions."
+                ),
+            })
+        if cs_pct > 30:
+            alerts.append({
+                "well": r["well"],
+                "type": "HIGH_RISK",
+                "severity": "CRITICAL",
+                "message": (
+                    f"Well {r['well']}: {cs_pct}% fractures are critically stressed. "
+                    f"Operations near this well carry elevated risk of fault "
+                    f"reactivation. Recommend: detailed geomechanical study before proceeding."
+                ),
+            })
+
+    # ── Multi-Well Consistency ────────────────────────
+    consistency = {}
+    if len(valid_stress) >= 2:
+        shmax_vals = [r["shmax_deg"] for r in valid_stress]
+        shmax_spread = max(shmax_vals) - min(shmax_vals)
+        # Handle circular range (e.g., 350° and 10°)
+        if shmax_spread > 180:
+            adjusted = [(v + 180) % 360 for v in shmax_vals]
+            shmax_spread = max(adjusted) - min(adjusted)
+
+        regimes = list(set(r.get("regime", "?") for r in valid_stress))
+        regime_consistent = len(regimes) == 1
+
+        consistency = {
+            "shmax_spread_deg": round(shmax_spread, 1),
+            "shmax_consistent": shmax_spread < 20,
+            "regime_consistent": regime_consistent,
+            "regimes": regimes,
+            "assessment": (
+                "CONSISTENT" if shmax_spread < 20 and regime_consistent else
+                "MINOR_VARIATION" if shmax_spread < 40 else
+                "SIGNIFICANT_VARIATION"
+            ),
+        }
+
+        if shmax_spread >= 20:
+            alerts.append({
+                "type": "WELL_INCONSISTENCY",
+                "severity": "WARNING",
+                "message": (
+                    f"SHmax varies by {shmax_spread:.0f}° between wells "
+                    f"({', '.join(str(r['well']) + '=' + str(r['shmax_deg']) + '°' for r in valid_stress)}). "
+                    f"This may indicate local stress perturbations from faults, "
+                    f"salt bodies, or geological heterogeneity. Investigate before "
+                    f"assuming uniform field stress."
+                ),
+            })
+
+        if not regime_consistent:
+            alerts.append({
+                "type": "REGIME_MISMATCH",
+                "severity": "WARNING",
+                "message": (
+                    f"Different tectonic regimes detected across wells: "
+                    f"{', '.join(regimes)}. This is unusual for a single field "
+                    f"and may indicate data quality issues or complex tectonics."
+                ),
+            })
+
+        field_summary["consistency"] = consistency
+
     if task_id:
         _emit_progress(task_id, "Complete", 100, f"{len(valid_stress)} wells analyzed")
 
@@ -8847,6 +8930,7 @@ async def batch_analyze_all(request: Request):
     return _sanitize_for_json({
         "wells": results,
         "field_summary": field_summary,
+        "alerts": alerts,
         "n_wells": len(wells),
         "elapsed_s": elapsed,
     })

@@ -7483,14 +7483,28 @@ async function runBatchAnalysis() {
             const fs = d.field_summary;
             html += '<div class="alert alert-info"><strong>Field:</strong> ' + fs.n_wells_analyzed + ' wells, SHmax ' + (fs.shmax_range||[])[0] + '\u00B0\u2013' + (fs.shmax_range||[])[1] + '\u00B0, Avg acc: ' + (fs.avg_accuracy ? (fs.avg_accuracy*100).toFixed(1)+'%' : '-') + '</div>';
         }
+        // Safety alerts
+        if (d.alerts && d.alerts.length > 0) {
+            d.alerts.forEach(function(a) {
+                var alertColor = a.severity === 'CRITICAL' ? 'danger' : a.severity === 'HIGH' ? 'warning' : 'info';
+                html += '<div class="alert alert-' + alertColor + ' py-2"><i class="bi bi-exclamation-triangle me-1"></i><strong>' + a.type.replace(/_/g, ' ') + ':</strong> ' + a.message + '</div>';
+            });
+        }
+        // Consistency
+        if (d.field_summary && d.field_summary.consistency) {
+            var c = d.field_summary.consistency;
+            var cColor = c.assessment === 'CONSISTENT' ? 'success' : c.assessment === 'MINOR_VARIATION' ? 'info' : 'warning';
+            html += '<div class="alert alert-' + cColor + ' py-2"><i class="bi bi-arrows-angle-expand me-1"></i><strong>Well Consistency:</strong> ' + c.assessment.replace(/_/g, ' ') + ' — SHmax spread: ' + c.shmax_spread_deg + '\u00B0, Regimes: ' + c.regimes.join(', ') + '</div>';
+        }
         if (d.wells && d.wells.length) {
             html += '<table class="table table-sm"><thead><tr><th>Well</th><th>N</th><th>Regime</th><th>SHmax</th><th>Accuracy</th><th>Quality</th><th>CS%</th></tr></thead><tbody>';
             d.wells.forEach(function(w) {
-                html += '<tr><td><strong>' + w.well + '</strong></td><td>' + w.n_fractures + '</td><td>' + (w.regime||'-') + '</td><td>' + (w.shmax_deg||'-') + '\u00B0</td><td>' + (w.accuracy?(w.accuracy*100).toFixed(1)+'%':'-') + '</td><td>' + (w.quality_grade||'-') + '</td><td>' + (w.critically_stressed_pct!=null?w.critically_stressed_pct+'%':'-') + '</td></tr>';
+                var csClass = (w.critically_stressed_pct > 10) ? ' class="table-danger"' : (w.critically_stressed_pct > 5 ? ' class="table-warning"' : '');
+                html += '<tr' + csClass + '><td><strong>' + w.well + '</strong></td><td>' + w.n_fractures + '</td><td>' + (w.regime||'-') + '</td><td>' + (w.shmax_deg||'-') + '\u00B0</td><td>' + (w.accuracy?(w.accuracy*100).toFixed(1)+'%':'-') + '</td><td>' + (w.quality_grade||'-') + '</td><td>' + (w.critically_stressed_pct!=null?w.critically_stressed_pct+'%':'-') + '</td></tr>';
             });
             html += '</tbody></table>';
         }
-        html += '<div class="text-muted small">' + d.elapsed_s + 's</div>';
+        html += '<div class="text-muted small">' + d.elapsed_s + 's | ' + (d.alerts ? d.alerts.length : 0) + ' alert(s)</div>';
         el.innerHTML = html;
         hideLoading();
     } catch(e) { el.innerHTML = '<div class="text-danger">Error: ' + e.message + '</div>'; hideLoading(); }
