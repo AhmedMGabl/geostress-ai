@@ -7489,8 +7489,61 @@ async function compareModelVersions() {
             </div>
             <div class="mt-2 small text-muted">Accuracy delta: ${d.deltas?.accuracy > 0 ? '+' : ''}${d.deltas?.accuracy ? (d.deltas.accuracy * 100).toFixed(1) : 0}%</div>`;
         el.innerHTML = html;
+        if (d.stakeholder_brief) {
+            renderStakeholderBrief('ab-test-brief', d.stakeholder_brief, 'ver-compare-detail');
+        }
     } catch(e) {
         el.innerHTML = `<div class="text-danger">Error: ${e.message}</div>`;
+    }
+}
+
+async function runAbTest() {
+    var el = document.getElementById('model-registry-result');
+    el.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running A/B test (comparing two models on same data)...</div>';
+    try {
+        var r = await fetch('/api/models/ab-test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, model_a: 'gradient_boosting', model_b: 'random_forest'})
+        });
+        var d = await r.json();
+        if (d.message && !d.verdict) {
+            el.innerHTML = '<div class="alert alert-info">' + d.message + '</div>';
+            return;
+        }
+        var agr = d.agreement || {};
+        var vc = agr.agreement_pct >= 90 ? 'success' : agr.agreement_pct >= 75 ? 'warning' : 'danger';
+        var html = '<h6>A/B Test: ' + d.model_a.name + ' vs ' + d.model_b.name + '</h6>';
+        html += '<div class="alert alert-' + vc + '">';
+        html += '<strong>' + d.verdict + '</strong>: Agreement ' + agr.agreement_pct + '% (' + agr.agree + '/' + agr.total + ' fractures match)';
+        if (d.winner && d.winner !== 'neither (both are comparable)') html += ' | Winner: <strong>' + d.winner + '</strong>';
+        html += '</div>';
+        html += '<div class="row g-3">';
+        html += '<div class="col-md-6"><div class="card ' + (d.verdict === 'MODEL_A_BETTER' ? 'border-success' : '') + '"><div class="card-header">' + d.model_a.name + '</div><div class="card-body">';
+        html += '<div>Accuracy: <strong>' + (d.model_a.accuracy * 100).toFixed(1) + '%</strong></div>';
+        html += '<div>F1: <strong>' + (d.model_a.f1 * 100).toFixed(1) + '%</strong></div>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-6"><div class="card ' + (d.verdict === 'MODEL_B_BETTER' ? 'border-success' : '') + '"><div class="card-header">' + d.model_b.name + '</div><div class="card-body">';
+        html += '<div>Accuracy: <strong>' + (d.model_b.accuracy * 100).toFixed(1) + '%</strong></div>';
+        html += '<div>F1: <strong>' + (d.model_b.f1 * 100).toFixed(1) + '%</strong></div>';
+        html += '</div></div></div></div>';
+        // Disagreement table
+        if (d.disagreements && d.disagreements.length > 0) {
+            html += '<div class="mt-3"><h6>Disagreements (' + d.disagreements.length + ' fractures)</h6>';
+            html += '<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Depth (m)</th><th>Azimuth</th><th>' + d.model_a.name + '</th><th>' + d.model_b.name + '</th></tr></thead><tbody>';
+            d.disagreements.slice(0, 20).forEach(function(dis) {
+                html += '<tr><td>' + dis.depth + '</td><td>' + dis.azimuth + '</td><td>' + dis.model_a_pred + '</td><td class="text-danger">' + dis.model_b_pred + '</td></tr>';
+            });
+            html += '</tbody></table>';
+            if (d.disagreements.length > 20) html += '<div class="small text-muted">Showing 20 of ' + d.disagreements.length + ' disagreements</div>';
+            html += '</div>';
+        }
+        el.innerHTML = html;
+        if (d.stakeholder_brief) {
+            renderStakeholderBrief('ab-test-brief', d.stakeholder_brief, 'ab-test-detail');
+        }
+    } catch(e) {
+        el.innerHTML = '<div class="text-danger">A/B test failed: ' + e.message + '</div>';
     }
 }
 

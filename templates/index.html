@@ -3116,12 +3116,14 @@
                             <div>
                                 <button class="btn btn-sm btn-outline-light me-1" onclick="loadModelRegistry()"><i class="bi bi-list-ul"></i> List Versions</button>
                                 <button class="btn btn-sm btn-outline-light me-1" onclick="registerModel()"><i class="bi bi-plus-circle"></i> Register</button>
-                                <button class="btn btn-sm btn-outline-light" onclick="compareModelVersions()"><i class="bi bi-arrow-left-right"></i> Compare</button>
+                                <button class="btn btn-sm btn-outline-light me-1" onclick="compareModelVersions()"><i class="bi bi-arrow-left-right"></i> Compare</button>
+                                <button class="btn btn-sm btn-outline-warning" onclick="runAbTest()"><i class="bi bi-shuffle"></i> A/B Test</button>
                             </div>
                         </div>
                         <div class="card-body" id="model-registry-result">
                             <p class="text-muted">Track model versions, compare performance, and rollback if needed.</p>
                         </div>
+                        <div id="ab-test-brief" class="d-none"></div>
                     </div>
 
                     <!-- Field Stress Integration -->

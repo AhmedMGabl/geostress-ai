@@ -699,6 +699,41 @@ else:
     check("CS>30% = RED risk", inv_risk == "RED",
           f"cs={inv_cs_pct}% risk={inv_risk}")
 
+# ── [38] A/B Test Endpoint ─────────────────────────
+print("\n[38] A/B Test Endpoint")
+ab = api("POST", "/api/models/ab-test", {"source": "demo", "model_a": "gradient_boosting", "model_b": "random_forest"})
+check("Has model_a", "model_a" in ab and "name" in ab["model_a"])
+check("Has model_b", "model_b" in ab and "name" in ab["model_b"])
+check("Has agreement", "agreement" in ab)
+agr = ab.get("agreement", {})
+check("Agreement total > 0", agr.get("total", 0) > 0)
+check("Agreement pct in range", 0 <= agr.get("agreement_pct", -1) <= 100)
+check("Has verdict", ab.get("verdict") in ("EQUIVALENT", "MODEL_A_BETTER", "MODEL_B_BETTER"))
+check("Has disagreements list", isinstance(ab.get("disagreements"), list))
+
+# ── [39] A/B Test Stakeholder Brief ─────────────────
+print("\n[39] A/B Test Stakeholder Brief")
+ab_sb = ab.get("stakeholder_brief", {})
+check("Has headline", len(ab_sb.get("headline", "")) > 10)
+check("Has risk_level", ab_sb.get("risk_level") in ("GREEN", "AMBER", "RED"))
+check("Has winner", "winner" in ab_sb)
+check("Has confidence_sentence", "accuracy" in ab_sb.get("confidence_sentence", ""))
+check("Has action", len(ab_sb.get("action", "")) > 5)
+check("Has disagreement_note", len(ab_sb.get("disagreement_note", "")) > 5)
+
+# ── [40] Version Compare Stakeholder Brief ──────────
+print("\n[40] Version Compare Stakeholder Brief")
+vc = api("POST", "/api/models/compare-versions", {"well": "3P"})
+if vc.get("verdict"):
+    vc_sb = vc.get("stakeholder_brief", {})
+    check("Has headline", len(vc_sb.get("headline", "")) > 10)
+    check("Has risk_level", vc_sb.get("risk_level") in ("GREEN", "AMBER", "RED"))
+    check("Has action", len(vc_sb.get("action", "")) > 5)
+    check("Has what_changed", "Accuracy" in vc_sb.get("what_changed", ""))
+    check("Has suitable_for", isinstance(vc_sb.get("suitable_for"), list))
+else:
+    check("Version compare needs 2+ versions (ok)", "message" in vc)
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")

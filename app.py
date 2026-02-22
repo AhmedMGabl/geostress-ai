@@ -636,6 +636,47 @@ def _rlhf_stakeholder_brief(n_queue, n_reviewed, n_total):
     }
 
 
+def _version_compare_stakeholder_brief(verdict, acc_delta, f1_delta, v_new, v_old):
+    """Build stakeholder brief for model version comparison."""
+    new_acc = v_new.get("accuracy") or 0
+    old_acc = v_old.get("accuracy") or 0
+    new_ver = v_new.get("version", "?")
+    old_ver = v_old.get("version", "?")
+
+    if verdict == "IMPROVED":
+        risk = "GREEN"
+        headline = (f"Model v{new_ver} outperforms v{old_ver} by "
+                    f"{abs(acc_delta):.1%} accuracy. Safe to keep.")
+        action = "No action needed. Continue using the latest model."
+    elif verdict == "DEGRADED":
+        risk = "RED"
+        headline = (f"Model v{new_ver} is worse than v{old_ver} by "
+                    f"{abs(acc_delta):.1%} accuracy. Consider rollback.")
+        action = (f"Click 'Rollback' to revert to version {old_ver}. "
+                  f"Investigate what changed (data corrections, sample size, feature drift).")
+    else:
+        risk = "AMBER"
+        headline = (f"Model v{new_ver} and v{old_ver} perform similarly "
+                    f"({new_acc:.1%} vs {old_acc:.1%}). Both are acceptable.")
+        action = "No urgent action. Monitor for drift over the next few analysis runs."
+
+    return {
+        "headline": headline,
+        "risk_level": risk,
+        "verdict": verdict,
+        "action": action,
+        "what_changed": (
+            f"Accuracy: {old_acc:.1%} -> {new_acc:.1%} ({acc_delta:+.1%}). "
+            f"F1: {(v_old.get('f1') or 0):.3f} -> {(v_new.get('f1') or 0):.3f} ({f1_delta:+.3f})."
+        ),
+        "suitable_for": (
+            ["Operational planning", "Drilling decisions"]
+            if verdict != "DEGRADED"
+            else ["Reference only — not recommended for active decisions"]
+        ),
+    }
+
+
 def render_plot(plot_func, *args, **kwargs) -> str | None:
     """Thread-safe wrapper: call a plot function and return base64 image."""
     with plot_lock:
@@ -8571,6 +8612,9 @@ async def compare_model_versions(request: Request):
             "f1": round(f1_delta, 4),
         },
         "all_versions": versions[:10],
+        "stakeholder_brief": _version_compare_stakeholder_brief(
+            verdict, acc_delta, f1_delta, v_new, v_old
+        ),
     })
 
 
@@ -8600,6 +8644,157 @@ async def rollback_model(request: Request):
         "model_type": model_type,
         "target_version": target_version,
     }
+
+
+@app.post("/api/models/ab-test")
+async def ab_test_models(request: Request):
+    """A/B test: run two classifiers on the same data and compare predictions.
+
+    Returns per-fracture agreement/disagreement, per-class metrics delta,
+    and a stakeholder brief explaining whether the newer model is trustworthy.
+
+    This is the gold standard for model validation in regulated industries:
+    instead of just comparing summary metrics, we compare individual predictions
+    to find where the models disagree (often the most informative fractures).
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    model_a = body.get("model_a", "gradient_boosting")
+    model_b = body.get("model_b", "random_forest")
+
+    _validate_classifier(model_a)
+    _validate_classifier(model_b)
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    # Run both classifiers
+    cache_key_a = f"clf_{source}_{model_a}_enh"
+    cache_key_b = f"clf_{source}_{model_b}_enh"
+
+    if cache_key_a in _classify_cache:
+        res_a = _classify_cache[cache_key_a]
+    else:
+        res_a = await asyncio.to_thread(classify_enhanced, df, classifier=model_a)
+        _classify_cache[cache_key_a] = res_a
+
+    if cache_key_b in _classify_cache:
+        res_b = _classify_cache[cache_key_b]
+    else:
+        res_b = await asyncio.to_thread(classify_enhanced, df, classifier=model_b)
+        _classify_cache[cache_key_b] = res_b
+
+    # Generate predictions from both trained models
+    def _predict(res, data):
+        model = res.get("model")
+        scaler = res.get("scaler")
+        le = res.get("label_encoder")
+        if model is None or scaler is None or le is None:
+            return []
+        features = engineer_enhanced_features(data)
+        X = scaler.transform(features.values)
+        y_pred = model.predict(X)
+        return le.inverse_transform(y_pred).tolist()
+
+    preds_a = await asyncio.to_thread(_predict, res_a, df)
+    preds_b = await asyncio.to_thread(_predict, res_b, df)
+
+    n_total = min(len(preds_a), len(preds_b))
+    if n_total == 0:
+        return {"message": "No predictions available for comparison",
+                "model_a": model_a, "model_b": model_b}
+
+    agree_count = sum(1 for i in range(n_total) if preds_a[i] == preds_b[i])
+    disagree_count = n_total - agree_count
+    agreement_pct = (agree_count / n_total) * 100
+
+    # Find disagreement indices and classes
+    disagreements = []
+    for i in range(min(n_total, len(df))):
+        if i < len(preds_a) and i < len(preds_b) and preds_a[i] != preds_b[i]:
+            row = df.iloc[i] if i < len(df) else {}
+            disagreements.append({
+                "index": i,
+                "depth": round(float(row.get(DEPTH_COL, 0)), 1) if hasattr(row, 'get') else 0,
+                "azimuth": round(float(row.get(AZIMUTH_COL, 0)), 1) if hasattr(row, 'get') else 0,
+                "model_a_pred": str(preds_a[i]),
+                "model_b_pred": str(preds_b[i]),
+            })
+
+    # Per-class agreement
+    class_names = res_a.get("class_names", [])
+    if not class_names:
+        class_names = res_b.get("class_names", [])
+
+    # Accuracy comparison
+    acc_a = float(res_a.get("cv_mean_accuracy", 0))
+    acc_b = float(res_b.get("cv_mean_accuracy", 0))
+    f1_a = float(res_a.get("cv_f1_mean", 0))
+    f1_b = float(res_b.get("cv_f1_mean", 0))
+
+    # Verdict
+    acc_delta = acc_a - acc_b
+    if abs(acc_delta) < 0.02:
+        verdict = "EQUIVALENT"
+        winner = "neither (both are comparable)"
+    elif acc_delta > 0:
+        verdict = "MODEL_A_BETTER"
+        winner = model_a
+    else:
+        verdict = "MODEL_B_BETTER"
+        winner = model_b
+
+    # Stakeholder brief
+    if agreement_pct >= 90:
+        risk = "GREEN"
+        headline = (f"Models agree on {agreement_pct:.0f}% of fractures. "
+                    f"Both are reliable — minor differences won't affect decisions.")
+    elif agreement_pct >= 75:
+        risk = "AMBER"
+        headline = (f"Models disagree on {disagree_count} fractures ({100-agreement_pct:.0f}%). "
+                    f"Review the disagreement list below — these fractures need expert judgment.")
+    else:
+        risk = "RED"
+        headline = (f"Significant disagreement: {disagree_count} fractures ({100-agreement_pct:.0f}%). "
+                    f"Models may be unreliable. Collect more training data before making decisions.")
+
+    brief = {
+        "headline": headline,
+        "risk_level": risk,
+        "winner": winner,
+        "confidence_sentence": (
+            f"{model_a}: {acc_a:.1%} accuracy, {model_b}: {acc_b:.1%} accuracy. "
+            f"Agreement rate: {agreement_pct:.0f}%."
+        ),
+        "action": (
+            f"Use {winner} for production decisions."
+            if verdict != "EQUIVALENT"
+            else "Both models are equivalent. Use the faster one or ensemble them for robustness."
+        ),
+        "disagreement_note": (
+            f"The {disagree_count} disagreements are concentrated in ambiguous fractures. "
+            f"An expert reviewing these {min(disagree_count, 20)} cases would provide "
+            f"the highest-value corrections for retraining."
+            if disagree_count > 0
+            else "Perfect agreement — no expert review needed."
+        ),
+    }
+
+    return _sanitize_for_json({
+        "model_a": {"name": model_a, "accuracy": round(acc_a, 4), "f1": round(f1_a, 4)},
+        "model_b": {"name": model_b, "accuracy": round(acc_b, 4), "f1": round(f1_b, 4)},
+        "verdict": verdict,
+        "winner": winner,
+        "agreement": {
+            "total": n_total,
+            "agree": agree_count,
+            "disagree": disagree_count,
+            "agreement_pct": round(agreement_pct, 1),
+        },
+        "disagreements": disagreements[:50],  # Cap at 50 for response size
+        "stakeholder_brief": brief,
+    })
 
 
 # ── Multi-Well Field Stress Integration ─────────────
