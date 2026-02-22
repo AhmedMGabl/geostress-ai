@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.19.0 - Pore Pressure + Hetero-Ensemble + Anomaly Detection)."""
+"""GeoStress AI - FastAPI Web Application (v3.20.0 - Pore Pressure + Hetero-Ensemble + Anomaly Detection)."""
 
 import os
 import io
@@ -1001,7 +1001,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.19.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.20.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -13267,6 +13267,388 @@ async def collection_planner(request: Request):
     return result
 
 
+# ── Conformal Prediction (Uncertainty-Aware Classification) ──────────────
+
+_conformal_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/conformal-predict")
+async def conformal_predict(request: Request):
+    """Provide calibrated prediction sets with guaranteed coverage.
+
+    Uses split conformal prediction: for each sample, returns a SET of
+    possible classes rather than a single prediction, with guaranteed
+    1-alpha coverage probability. Smaller sets = more confident.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    alpha = body.get("alpha", 0.1)  # 90% coverage by default
+
+    cache_key = f"conformal:{well}:{source}:{alpha}"
+    if cache_key in _conformal_cache:
+        return _conformal_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.base import clone
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+
+        all_models = _get_models()
+        model = clone(all_models.get("random_forest", list(all_models.values())[0]))
+
+        # Split conformal: use CV to generate non-conformity scores
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        # Collect softmax scores for each sample via CV
+        all_proba = np.zeros((n, len(class_names)))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for train_idx, cal_idx in cv.split(X, y):
+                m = clone(model)
+                m.fit(X[train_idx], y[train_idx])
+                proba = m.predict_proba(X[cal_idx])
+                all_proba[cal_idx] = proba
+
+        # Non-conformity score: 1 - P(true class)
+        scores = 1.0 - all_proba[np.arange(n), y]
+
+        # Quantile threshold for conformal sets
+        q = np.quantile(scores, 1 - alpha)
+
+        # Build prediction sets for each sample
+        prediction_sets = []
+        set_sizes = []
+        for i in range(n):
+            included = []
+            for j, cn in enumerate(class_names):
+                if 1 - all_proba[i, j] <= q:
+                    included.append(cn)
+            if len(included) == 0:
+                included = [class_names[np.argmax(all_proba[i])]]
+            set_sizes.append(len(included))
+            prediction_sets.append(included)
+
+        avg_set_size = float(np.mean(set_sizes))
+        singleton_pct = float(sum(1 for s in set_sizes if s == 1) / n * 100)
+        coverage = float(sum(1 for i in range(n) if class_names[y[i]] in prediction_sets[i]) / n * 100)
+
+        # Per-class analysis
+        class_analysis = []
+        for j, cn in enumerate(class_names):
+            mask = y == j
+            if mask.sum() == 0:
+                continue
+            class_sets = [set_sizes[i] for i in range(n) if mask[i]]
+            class_cov = sum(1 for i in range(n) if mask[i] and cn in prediction_sets[i]) / max(mask.sum(), 1) * 100
+            class_analysis.append({
+                "class": cn, "count": int(mask.sum()),
+                "avg_set_size": round(float(np.mean(class_sets)), 2),
+                "singleton_pct": round(float(sum(1 for s in class_sets if s == 1) / max(len(class_sets), 1) * 100), 1),
+                "coverage": round(class_cov, 1),
+                "confidence": "HIGH" if np.mean(class_sets) < 1.5 else ("MEDIUM" if np.mean(class_sets) < 2.5 else "LOW"),
+            })
+
+        # Example uncertain predictions (large sets)
+        uncertain_samples = []
+        uncertain_idx = np.argsort(set_sizes)[-10:][::-1]
+        for idx in uncertain_idx:
+            if set_sizes[idx] > 1:
+                depth_val = float(df_well[DEPTH_COL].iloc[idx]) if DEPTH_COL in df_well.columns else None
+                uncertain_samples.append({
+                    "index": int(idx),
+                    "depth_m": round(depth_val, 1) if depth_val else None,
+                    "true_class": class_names[y[idx]],
+                    "prediction_set": prediction_sets[idx],
+                    "set_size": set_sizes[idx],
+                    "max_probability": round(float(np.max(all_proba[idx])), 3),
+                })
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            unique_sizes, size_counts = np.unique(set_sizes, return_counts=True)
+            colors = ["#28a745" if s == 1 else "#ffc107" if s == 2 else "#dc3545" for s in unique_sizes]
+            ax1.bar([str(s) for s in unique_sizes], size_counts, color=colors)
+            ax1.set_xlabel("Prediction Set Size")
+            ax1.set_ylabel("Count")
+            ax1.set_title(f"Conformal Sets (alpha={alpha})")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            ca_names = [ca["class"][:10] for ca in class_analysis]
+            ca_sizes = [ca["avg_set_size"] for ca in class_analysis]
+            ca_colors = ["#28a745" if ca["confidence"] == "HIGH" else "#ffc107" if ca["confidence"] == "MEDIUM" else "#dc3545" for ca in class_analysis]
+            ax2.barh(ca_names, ca_sizes, color=ca_colors)
+            ax2.set_xlabel("Avg Set Size")
+            ax2.set_title("Per-Class Confidence")
+            ax2.axvline(x=1.5, color="gray", linestyle="--", alpha=0.5)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            if DEPTH_COL in df_well.columns:
+                depths = df_well[DEPTH_COL].values
+                cs = ["#28a745" if s == 1 else "#ffc107" if s == 2 else "#dc3545" for s in set_sizes]
+                ax3.scatter(set_sizes, depths, c=cs, alpha=0.4, s=10)
+                ax3.set_xlabel("Set Size")
+                ax3.set_ylabel("Depth (m)")
+                ax3.set_title("Uncertainty vs Depth")
+                ax3.invert_yaxis()
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "alpha": alpha,
+            "coverage_target": round((1 - alpha) * 100, 1),
+            "actual_coverage": round(coverage, 1),
+            "avg_set_size": round(avg_set_size, 2),
+            "singleton_pct": round(singleton_pct, 1),
+            "class_analysis": class_analysis,
+            "uncertain_samples": uncertain_samples[:10],
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Prediction confidence: {singleton_pct:.0f}% of fractures have unambiguous classification",
+                "risk_level": "GREEN" if singleton_pct > 80 else ("AMBER" if singleton_pct > 50 else "RED"),
+                "confidence_sentence": (
+                    f"At {(1-alpha)*100:.0f}% confidence level, average prediction set contains "
+                    f"{avg_set_size:.1f} classes. {singleton_pct:.0f}% of predictions are singletons "
+                    f"(unambiguous). Actual coverage: {coverage:.0f}%."
+                ),
+                "action": (
+                    "Predictions are reliable for operational use."
+                    if singleton_pct > 70 else
+                    "Many ambiguous predictions. Collect more data for uncertain classes."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _conformal_cache[cache_key] = result
+    return result
+
+
+# ── Cross-Well Generalization Test ──────────────────────────────────────
+
+_crosswell_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/cross-well-test")
+async def cross_well_test(request: Request):
+    """Train on one well, test on another to measure true generalization.
+
+    This is the real deployment scenario: build a model on existing data
+    and predict on a new well. Current within-well CV is overly optimistic.
+    Returns train-A-test-B and train-B-test-A results with per-class breakdown.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    cache_key = f"crosswell:{source}"
+    if cache_key in _crosswell_cache:
+        return _crosswell_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import engineer_enhanced_features, _get_models
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.metrics import accuracy_score, f1_score, balanced_accuracy_score, classification_report
+        from sklearn.base import clone
+
+        wells = list(df[WELL_COL].unique()) if WELL_COL in df.columns else []
+        if len(wells) < 2:
+            return {
+                "status": "INSUFFICIENT_WELLS",
+                "message": "Cross-well test requires at least 2 wells.",
+                "n_wells": len(wells),
+            }
+
+        all_models = _get_models()
+        model_name = "random_forest"
+        model_template = all_models.get(model_name, list(all_models.values())[0])
+
+        # Prepare per-well data
+        well_data = {}
+        le_global = LabelEncoder()
+        all_labels = df[FRACTURE_TYPE_COL].values
+        le_global.fit(all_labels)
+        class_names = le_global.classes_.tolist()
+
+        for well in wells[:4]:  # max 4 wells
+            df_w = df[df[WELL_COL] == well].reset_index(drop=True)
+            features = engineer_enhanced_features(df_w)
+            y = le_global.transform(df_w[FRACTURE_TYPE_COL].values)
+            well_data[well] = {"X": features.values, "y": y, "n": len(y)}
+
+        # Run all pairwise train-test combinations
+        cross_results = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for train_well in wells[:4]:
+                for test_well in wells[:4]:
+                    if train_well == test_well:
+                        continue
+                    td = well_data[train_well]
+                    te = well_data[test_well]
+
+                    scaler = StandardScaler()
+                    X_train = scaler.fit_transform(td["X"])
+                    X_test = scaler.transform(te["X"])
+
+                    m = clone(model_template)
+                    m.fit(X_train, td["y"])
+                    preds = m.predict(X_test)
+
+                    acc = float(accuracy_score(te["y"], preds))
+                    f1_val = float(f1_score(te["y"], preds, average="weighted", zero_division=0))
+                    bal = float(balanced_accuracy_score(te["y"], preds))
+                    all_labels = list(range(len(class_names)))
+                    report = classification_report(te["y"], preds, labels=all_labels, target_names=class_names, output_dict=True, zero_division=0)
+
+                    per_class = []
+                    for cn in class_names:
+                        r = report.get(cn, {})
+                        per_class.append({
+                            "class": cn,
+                            "precision": round(r.get("precision", 0), 3),
+                            "recall": round(r.get("recall", 0), 3),
+                            "f1": round(r.get("f1-score", 0), 3),
+                            "support": int(r.get("support", 0)),
+                        })
+
+                    cross_results.append({
+                        "train_well": train_well, "test_well": test_well,
+                        "train_samples": td["n"], "test_samples": te["n"],
+                        "accuracy": round(acc, 4), "f1": round(f1_val, 4),
+                        "balanced_accuracy": round(bal, 4),
+                        "per_class": per_class,
+                    })
+
+        # Within-well CV for comparison (how much does cross-well degrade?)
+        within_results = []
+        for well in wells[:4]:
+            from sklearn.model_selection import StratifiedKFold, cross_val_predict
+            wd = well_data[well]
+            scaler = StandardScaler()
+            X_s = scaler.fit_transform(wd["X"])
+            min_count = min(np.bincount(wd["y"]))
+            n_splits = min(5, max(2, min_count))
+            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                preds = cross_val_predict(clone(model_template), X_s, wd["y"], cv=cv)
+            within_results.append({
+                "well": well,
+                "accuracy": round(float(accuracy_score(wd["y"], preds)), 4),
+                "f1": round(float(f1_score(wd["y"], preds, average="weighted", zero_division=0)), 4),
+            })
+
+        # Degradation analysis
+        avg_within = np.mean([w["accuracy"] for w in within_results])
+        avg_cross = np.mean([c["accuracy"] for c in cross_results])
+        degradation = float(avg_within - avg_cross)
+
+        transfer_grade = "A" if degradation < 0.05 else ("B" if degradation < 0.1 else ("C" if degradation < 0.2 else "D"))
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+            ax1 = axes[0]
+            labels_cr = [f"{cr['train_well']}->{cr['test_well']}" for cr in cross_results]
+            accs_cr = [cr["accuracy"] for cr in cross_results]
+            colors_cr = ["#28a745" if a >= 0.7 else "#ffc107" if a >= 0.5 else "#dc3545" for a in accs_cr]
+            ax1.barh(labels_cr, accs_cr, color=colors_cr, alpha=0.8)
+            ax1.set_xlabel("Accuracy")
+            ax1.set_title("Cross-Well Transfer")
+            ax1.set_xlim(0, 1)
+            for i, a in enumerate(accs_cr):
+                ax1.text(a + 0.01, i, f"{a:.1%}", va="center", fontsize=8)
+            ax1.axvline(x=avg_within, color="blue", linestyle="--", alpha=0.5, label=f"Within-well avg: {avg_within:.1%}")
+            ax1.legend(fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            within_names = [w["well"] for w in within_results]
+            within_accs = [w["accuracy"] for w in within_results]
+            cross_accs_per_well = {}
+            for cr in cross_results:
+                tw = cr["test_well"]
+                cross_accs_per_well.setdefault(tw, []).append(cr["accuracy"])
+            cross_avg = [np.mean(cross_accs_per_well.get(wn, [0])) for wn in within_names]
+            x = np.arange(len(within_names))
+            ax2.bar(x - 0.2, within_accs, 0.35, label="Within-Well CV", color="#2E86AB")
+            ax2.bar(x + 0.2, cross_avg, 0.35, label="Cross-Well Transfer", color="#E8630A")
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(within_names)
+            ax2.set_ylabel("Accuracy")
+            ax2.set_title(f"Within vs Cross-Well (Grade: {transfer_grade})")
+            ax2.legend()
+            ax2.set_ylim(0, 1)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "n_wells": len(wells),
+            "model": model_name,
+            "cross_results": cross_results,
+            "within_results": within_results,
+            "avg_within_accuracy": round(float(avg_within), 4),
+            "avg_cross_accuracy": round(float(avg_cross), 4),
+            "degradation": round(degradation, 4),
+            "transfer_grade": transfer_grade,
+            "class_names": class_names,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Cross-well transfer: Grade {transfer_grade} ({degradation:.1%} degradation)",
+                "risk_level": "GREEN" if transfer_grade in ("A", "B") else ("AMBER" if transfer_grade == "C" else "RED"),
+                "confidence_sentence": (
+                    f"Within-well accuracy: {avg_within:.1%}. Cross-well: {avg_cross:.1%}. "
+                    f"Degradation: {degradation:.1%}. "
+                    + ("Model generalizes well across wells."
+                       if transfer_grade in ("A", "B") else
+                       "Model does NOT generalize well. Use well-specific models.")
+                ),
+                "action": (
+                    "Safe to deploy across wells." if transfer_grade in ("A", "B") else
+                    "Build well-specific models or collect more cross-well data."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _crosswell_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -14358,7 +14740,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.19.0",
+        "app_version": "3.20.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

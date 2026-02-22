@@ -9465,3 +9465,86 @@ async function runCollectionPlanner() {
         hideLoading();
     }
 }
+
+// ── Conformal Prediction ───────────────────────────────────────────
+async function runConformalPredict() {
+    var results = document.getElementById('cf-results');
+    results.classList.add('d-none');
+    showLoading('Running conformal prediction analysis...');
+    try {
+        var r = await apiPost('/api/analysis/conformal-predict', {well: currentWell(), source: currentSource()});
+        results.classList.remove('d-none');
+        document.getElementById('cf-coverage').textContent = r.actual_coverage + '%';
+        document.getElementById('cf-avg-size').textContent = r.avg_set_size;
+        document.getElementById('cf-singleton').textContent = r.singleton_pct + '%';
+        if (r.stakeholder_brief) {
+            var rc = r.stakeholder_brief.risk_level === 'GREEN' ? 'success' : r.stakeholder_brief.risk_level === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('cf-risk').innerHTML = '<span class="badge bg-' + rc + '">' + r.stakeholder_brief.risk_level + '</span>';
+            document.getElementById('cf-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence;
+        }
+        // Per-class table
+        var classBody = document.getElementById('cf-class-body');
+        classBody.innerHTML = '';
+        if (r.class_analysis) {
+            for (var i = 0; i < r.class_analysis.length; i++) {
+                var c = r.class_analysis[i];
+                var cc = c.confidence === 'HIGH' ? 'success' : c.confidence === 'MEDIUM' ? 'warning' : 'danger';
+                classBody.innerHTML += '<tr><td>' + c['class'] + '</td><td>' + c.count + '</td><td>' + c.avg_set_size + '</td><td>' + c.singleton_pct + '%</td><td>' + c.coverage + '%</td><td><span class="badge bg-' + cc + '">' + c.confidence + '</span></td></tr>';
+            }
+        }
+        // Uncertain samples
+        var uncBody = document.getElementById('cf-uncertain-body');
+        uncBody.innerHTML = '';
+        if (r.uncertain_samples) {
+            for (var i = 0; i < r.uncertain_samples.length; i++) {
+                var u = r.uncertain_samples[i];
+                uncBody.innerHTML += '<tr><td>' + (u.depth_m || '-') + '</td><td>' + u.true_class + '</td><td>' + u.prediction_set.join(', ') + '</td><td>' + u.set_size + '</td><td>' + u.max_probability + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('cf-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Cross-Well Generalization Test ─────────────────────────────────
+async function runCrossWellTest() {
+    var results = document.getElementById('cw-results');
+    results.classList.add('d-none');
+    showLoading('Testing cross-well generalization...');
+    try {
+        var r = await apiPost('/api/analysis/cross-well-test', {source: currentSource()});
+        results.classList.remove('d-none');
+        if (r.status === 'INSUFFICIENT_WELLS') {
+            results.innerHTML = '<div class="alert alert-warning">' + r.message + '</div>';
+            return;
+        }
+        var gc = r.transfer_grade === 'A' || r.transfer_grade === 'B' ? 'success' : r.transfer_grade === 'C' ? 'warning' : 'danger';
+        document.getElementById('cw-grade').innerHTML = '<span class="badge bg-' + gc + ' fs-4">' + r.transfer_grade + '</span>';
+        document.getElementById('cw-within').textContent = (r.avg_within_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('cw-cross').textContent = (r.avg_cross_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('cw-degrad').textContent = (r.degradation * 100).toFixed(1) + '%';
+        if (r.stakeholder_brief) {
+            document.getElementById('cw-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence;
+        }
+        // Cross-well table
+        var tbody = document.getElementById('cw-table-body');
+        tbody.innerHTML = '';
+        if (r.cross_results) {
+            for (var i = 0; i < r.cross_results.length; i++) {
+                var cr = r.cross_results[i];
+                var ac = cr.accuracy >= 0.7 ? 'table-success' : cr.accuracy >= 0.5 ? 'table-warning' : 'table-danger';
+                tbody.innerHTML += '<tr class="' + ac + '"><td>' + cr.train_well + '</td><td>' + cr.test_well + '</td><td>' + cr.train_samples + '</td><td>' + cr.test_samples + '</td><td>' + (cr.accuracy * 100).toFixed(1) + '%</td><td>' + (cr.f1 * 100).toFixed(1) + '%</td><td>' + (cr.balanced_accuracy * 100).toFixed(1) + '%</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('cw-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
