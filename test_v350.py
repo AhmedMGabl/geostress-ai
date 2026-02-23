@@ -1983,10 +1983,107 @@ check("Class Balance check", "Class Balance" in check_names_or)
 check("Model Accuracy check", "Model Accuracy" in check_names_or)
 check("Model Consensus check", "Model Consensus" in check_names_or)
 
+# ── [91] Geomechanical Feature Enrichment ─────────────
+print("\n[91] Geomechanical Feature Enrichment")
+gf = api("POST", "/api/analysis/geomech-features", {"source": "demo", "well": "3P"}, timeout=300)
+check("Status 200", gf is not None)
+check("Has well", gf.get("well") == "3P")
+check("Has n_samples", isinstance(gf.get("n_samples"), int) and gf["n_samples"] > 0)
+check("Has shmax_azimuth", isinstance(gf.get("shmax_azimuth"), (int, float)))
+check("Has stress_ratio", isinstance(gf.get("stress_ratio"), (int, float)))
+check("Has friction", isinstance(gf.get("friction"), (int, float)))
+check("Has n_geomech_features", isinstance(gf.get("n_geomech_features"), int) and gf["n_geomech_features"] >= 5)
+check("Has geomech_feature_names", isinstance(gf.get("geomech_feature_names"), list))
+check("Has feature_stats", isinstance(gf.get("feature_stats"), list) and len(gf["feature_stats"]) >= 5)
+fs0gf = gf["feature_stats"][0]
+check("FS has feature", isinstance(fs0gf.get("feature"), str))
+check("FS has mean", isinstance(fs0gf.get("mean"), (int, float)))
+check("FS has std", isinstance(fs0gf.get("std"), (int, float)))
+check("Has n_critically_stressed", isinstance(gf.get("n_critically_stressed"), int))
+check("Has comparisons", isinstance(gf.get("comparisons"), list) and len(gf["comparisons"]) >= 2)
+c0gf = gf["comparisons"][0]
+check("C has model", isinstance(c0gf.get("model"), str))
+check("C has baseline_accuracy", isinstance(c0gf.get("baseline_accuracy"), (int, float)))
+check("C has enriched_accuracy", isinstance(c0gf.get("enriched_accuracy"), (int, float)))
+check("C has accuracy_delta", isinstance(c0gf.get("accuracy_delta"), (int, float)))
+check("C has improved", isinstance(c0gf.get("improved"), bool))
+check("Has avg_accuracy_delta", isinstance(gf.get("avg_accuracy_delta"), (int, float)))
+check("Has n_models_improved", isinstance(gf.get("n_models_improved"), int))
+check("Has plot", isinstance(gf.get("plot"), str) and len(gf["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(gf.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(gf["stakeholder_brief"].get("headline"), str))
+
+# slip_tendency in feature names
+check("slip_tendency feature", "slip_tendency" in gf["geomech_feature_names"])
+check("dilation_tendency feature", "dilation_tendency" in gf["geomech_feature_names"])
+
+# ── [92] RLHF Iterative Feedback Loop ────────────────
+print("\n[92] RLHF Iterative Feedback Loop")
+ri = api("POST", "/api/analysis/rlhf-iterate", {"source": "demo", "well": "3P"}, timeout=300)
+check("Status 200", ri is not None)
+check("Has well", ri.get("well") == "3P")
+check("Has n_samples", isinstance(ri.get("n_samples"), int) and ri["n_samples"] > 0)
+check("Has n_iterations", isinstance(ri.get("n_iterations"), int) and ri["n_iterations"] >= 2)
+check("Has baseline_accuracy", isinstance(ri.get("baseline_accuracy"), (int, float)))
+check("Has final_accuracy", isinstance(ri.get("final_accuracy"), (int, float)))
+check("Has total_improvement", isinstance(ri.get("total_improvement"), (int, float)))
+check("Has converged", isinstance(ri.get("converged"), bool))
+check("Has iterations", isinstance(ri.get("iterations"), list) and len(ri["iterations"]) >= 2)
+it0 = ri["iterations"][0]
+check("IT has iteration", isinstance(it0.get("iteration"), int) and it0["iteration"] == 1)
+check("IT has accuracy", isinstance(it0.get("accuracy"), (int, float)))
+check("IT has improvement_vs_prev", isinstance(it0.get("improvement_vs_prev"), (int, float)))
+check("IT has total_improvement", isinstance(it0.get("total_improvement"), (int, float)))
+check("IT has n_errors", isinstance(it0.get("n_errors"), int))
+check("IT has n_pairs_trained", isinstance(it0.get("n_pairs_trained"), int))
+check("IT has avg_reward_score", isinstance(it0.get("avg_reward_score"), (int, float)))
+check("Has plot", isinstance(ri.get("plot"), str) and len(ri["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(ri.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(ri["stakeholder_brief"].get("headline"), str))
+
+# Param validation
+check("n_iterations=1 rejected", api_expect_error("POST", "/api/analysis/rlhf-iterate", {"source": "demo", "well": "3P", "n_iterations": 1}))
+
+# Custom iterations
+ri3 = api("POST", "/api/analysis/rlhf-iterate", {"source": "demo", "well": "3P", "n_iterations": 3}, timeout=300)
+check("n_iterations=3 works", ri3 is not None and len(ri3.get("iterations", [])) == 3)
+
+# ── [93] Domain Shift Robustness ──────────────────────
+print("\n[93] Domain Shift Robustness")
+ds = api("POST", "/api/analysis/domain-shift", {"source": "demo", "well": "3P"}, timeout=180)
+check("Status 200", ds is not None)
+check("Has well", ds.get("well") == "3P")
+check("Has n_samples", isinstance(ds.get("n_samples"), int) and ds["n_samples"] > 0)
+check("Has n_zones", isinstance(ds.get("n_zones"), int) and ds["n_zones"] >= 2)
+check("Has avg_same_domain", isinstance(ds.get("avg_same_domain"), (int, float)))
+check("Has avg_cross_domain", isinstance(ds.get("avg_cross_domain"), (int, float)))
+check("Has domain_gap", isinstance(ds.get("domain_gap"), (int, float)))
+check("Has zone_summary", isinstance(ds.get("zone_summary"), list) and len(ds["zone_summary"]) >= 2)
+z0ds = ds["zone_summary"][0]
+check("Z has zone", isinstance(z0ds.get("zone"), int))
+check("Z has depth_range", isinstance(z0ds.get("depth_range"), (list, tuple)) and len(z0ds["depth_range"]) == 2)
+check("Z has n_samples", isinstance(z0ds.get("n_samples"), int))
+check("Z has self_accuracy", isinstance(z0ds.get("self_accuracy"), (int, float)))
+check("Z has transfer_accuracy", isinstance(z0ds.get("transfer_accuracy"), (int, float)))
+check("Z has gap", isinstance(z0ds.get("gap"), (int, float)))
+check("Has cross_domain_matrix", isinstance(ds.get("cross_domain_matrix"), list))
+check("Matrix size correct", len(ds["cross_domain_matrix"]) == ds["n_zones"] ** 2)
+check("Has worst_transitions", isinstance(ds.get("worst_transitions"), list))
+check("Has plot", isinstance(ds.get("plot"), str) and len(ds["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(ds.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(ds["stakeholder_brief"].get("headline"), str))
+
+# Param validation
+check("n_zones=1 rejected", api_expect_error("POST", "/api/analysis/domain-shift", {"source": "demo", "well": "3P", "n_zones": 1}))
+
+# Custom zones
+ds5 = api("POST", "/api/analysis/domain-shift", {"source": "demo", "well": "3P", "n_zones": 5}, timeout=180)
+check("n_zones=5 works", ds5 is not None and ds5.get("n_zones") == 5)
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.26.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.27.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

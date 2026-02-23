@@ -10210,3 +10210,106 @@ async function runOperationalReadiness() {
         hideLoading();
     }
 }
+
+// ── Geomechanical Feature Enrichment ─────────────────────────────────
+async function runGeomechFeatures() {
+    showLoading('Computing geomechanical features...');
+    var results = document.getElementById('gf-results');
+    try {
+        var r = await apiPost('/api/analysis/geomech-features', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('gf-n').textContent = r.n_geomech_features;
+        document.getElementById('gf-delta').textContent = (r.avg_accuracy_delta >= 0 ? '+' : '') + (r.avg_accuracy_delta * 100).toFixed(2) + '%';
+        document.getElementById('gf-improved').textContent = r.n_models_improved + '/' + r.comparisons.length;
+        document.getElementById('gf-crit').textContent = r.n_critically_stressed;
+        document.getElementById('gf-shmax').textContent = r.shmax_azimuth + '°';
+        document.getElementById('gf-ratio').textContent = r.stress_ratio;
+        if (r.stakeholder_brief) {
+            document.getElementById('gf-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var cb = document.getElementById('gf-comp-body');
+        cb.innerHTML = '';
+        if (r.comparisons) {
+            for (var i = 0; i < r.comparisons.length; i++) {
+                var c = r.comparisons[i];
+                var dc = c.improved ? 'text-success' : 'text-danger';
+                cb.innerHTML += '<tr><td>' + c.model + '</td><td>' + (c.baseline_accuracy * 100).toFixed(1) + '%</td><td>' + (c.enriched_accuracy * 100).toFixed(1) + '%</td><td class="' + dc + '">' + (c.accuracy_delta >= 0 ? '+' : '') + (c.accuracy_delta * 100).toFixed(2) + '%</td><td>' + (c.improved ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-x-circle text-danger"></i>') + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('gf-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── RLHF Iterative Loop ─────────────────────────────────────────────
+async function runRlhfIterate() {
+    showLoading('Running RLHF iterations...');
+    var results = document.getElementById('ri-results');
+    try {
+        var r = await apiPost('/api/analysis/rlhf-iterate', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('ri-base').textContent = (r.baseline_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('ri-final').textContent = (r.final_accuracy * 100).toFixed(1) + '%';
+        var gc = r.total_improvement >= 0 ? 'text-success' : 'text-danger';
+        document.getElementById('ri-gain').innerHTML = '<span class="' + gc + '">' + (r.total_improvement >= 0 ? '+' : '') + (r.total_improvement * 100).toFixed(2) + '%</span>';
+        document.getElementById('ri-n').textContent = r.n_iterations;
+        document.getElementById('ri-conv').innerHTML = r.converged ? '<span class="badge bg-success">YES</span>' : '<span class="badge bg-warning">NO</span>';
+        document.getElementById('ri-citer').textContent = r.convergence_iteration || '-';
+        if (r.stakeholder_brief) {
+            document.getElementById('ri-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var ib = document.getElementById('ri-iter-body');
+        ib.innerHTML = '';
+        if (r.iterations) {
+            for (var i = 0; i < r.iterations.length; i++) {
+                var it = r.iterations[i];
+                var ic = it.improvement_vs_prev >= 0 ? 'text-success' : 'text-danger';
+                ib.innerHTML += '<tr><td>' + it.iteration + '</td><td>' + (it.accuracy * 100).toFixed(1) + '%</td><td class="' + ic + '">' + (it.improvement_vs_prev >= 0 ? '+' : '') + (it.improvement_vs_prev * 100).toFixed(2) + '%</td><td>' + (it.total_improvement >= 0 ? '+' : '') + (it.total_improvement * 100).toFixed(2) + '%</td><td>' + it.n_errors + '</td><td>' + it.n_pairs_trained + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('ri-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Domain Shift Robustness ──────────────────────────────────────────
+async function runDomainShift() {
+    showLoading('Testing domain shift robustness...');
+    var results = document.getElementById('ds-results');
+    try {
+        var r = await apiPost('/api/analysis/domain-shift', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('ds-zones').textContent = r.n_zones;
+        document.getElementById('ds-same').textContent = (r.avg_same_domain * 100).toFixed(1) + '%';
+        document.getElementById('ds-cross').textContent = (r.avg_cross_domain * 100).toFixed(1) + '%';
+        var gc = r.domain_gap < 0.1 ? 'text-success' : (r.domain_gap < 0.2 ? 'text-warning' : 'text-danger');
+        document.getElementById('ds-gap').innerHTML = '<span class="' + gc + '">' + (r.domain_gap * 100).toFixed(1) + '%</span>';
+        document.getElementById('ds-n').textContent = r.n_samples;
+        if (r.stakeholder_brief) {
+            document.getElementById('ds-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var zb = document.getElementById('ds-zone-body');
+        zb.innerHTML = '';
+        if (r.zone_summary) {
+            for (var i = 0; i < r.zone_summary.length; i++) {
+                var z = r.zone_summary[i];
+                var zc = z.gap < 0.1 ? '' : (z.gap < 0.2 ? 'table-warning' : 'table-danger');
+                zb.innerHTML += '<tr class="' + zc + '"><td>Zone ' + z.zone + '</td><td>' + z.depth_range[0] + '-' + z.depth_range[1] + 'm</td><td>' + z.n_samples + '</td><td>' + (z.self_accuracy * 100).toFixed(1) + '%</td><td>' + (z.transfer_accuracy * 100).toFixed(1) + '%</td><td>' + (z.gap * 100).toFixed(1) + '%</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('ds-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

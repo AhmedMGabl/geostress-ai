@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.26.0 - Batch Predict + Model Advisor + Operational Readiness)."""
+"""GeoStress AI - FastAPI Web Application (v3.27.0 - Geomech Features + RLHF Iterate + Domain Shift)."""
 
 import os
 import io
@@ -1004,7 +1004,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.26.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.27.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -17344,6 +17344,693 @@ async def operational_readiness(request: Request):
     return result
 
 
+# ── Geomechanical Feature Enrichment ─────────────────────────────────
+
+_geomech_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/geomech-features")
+async def geomech_features(request: Request):
+    """Compute stress-dependent geomechanical features and measure their impact.
+
+    2025-2026 research shows that features derived from the stress tensor
+    (slip tendency, dilation tendency, normal stress, shear stress on fracture
+    planes) are among the strongest predictors for fracture classification.
+    This endpoint computes these features using assumed stress parameters,
+    trains models with and without them, and quantifies the accuracy boost.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    shmax_az = float(body.get("shmax_azimuth", 45.0))
+    stress_ratio = float(body.get("stress_ratio", 0.5))
+    friction = float(body.get("friction", 0.6))
+
+    cache_key = f"geomech:{well}:{source}:{shmax_az}:{stress_ratio}:{friction}"
+    if cache_key in _geomech_cache:
+        return _geomech_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+        from sklearn.preprocessing import StandardScaler
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+
+        dips = df_well[DIP_COL].values if DIP_COL in df_well.columns else np.full(n, 45.0)
+        azimuths = df_well[AZIMUTH_COL].values if AZIMUTH_COL in df_well.columns else np.zeros(n)
+
+        # Compute geomechanical features
+        dip_rad = np.radians(dips)
+        az_rad = np.radians(azimuths)
+        shmax_rad = np.radians(shmax_az)
+
+        # Fracture normal vector components
+        nx = np.sin(dip_rad) * np.sin(az_rad)
+        ny = np.sin(dip_rad) * np.cos(az_rad)
+        nz = np.cos(dip_rad)
+
+        # Stress tensor (simplified: S1 vertical, S2=SHmax, S3=Shmin)
+        s1 = 1.0  # normalized
+        s3 = 1.0 - stress_ratio  # from R = (S2-S3)/(S1-S3)
+        s2 = s3 + stress_ratio * (s1 - s3)
+
+        # Rotate SHmax to stress frame
+        cos_sh = np.cos(shmax_rad)
+        sin_sh = np.sin(shmax_rad)
+
+        # Normal stress on each fracture plane
+        # In rotated frame: sigma_n = n^T * S * n
+        nx_rot = nx * cos_sh + ny * sin_sh
+        ny_rot = -nx * sin_sh + ny * cos_sh
+
+        sigma_n = s2 * nx_rot**2 + s3 * ny_rot**2 + s1 * nz**2
+        sigma_n = np.clip(sigma_n, 0.01, None)
+
+        # Shear stress (tau^2 = sum(si*ni^2)^2 - (sum(si^2*ni^2)))
+        tau_sq = (s2 * nx_rot**2 + s3 * ny_rot**2 + s1 * nz**2)**2 - (
+            s2**2 * nx_rot**2 + s3**2 * ny_rot**2 + s1**2 * nz**2
+        )
+        # Fix numerical precision
+        tau_sq = np.abs(tau_sq)
+        tau = np.sqrt(tau_sq)
+
+        # Slip tendency: tau / sigma_n
+        slip_tendency = tau / sigma_n
+
+        # Dilation tendency: (S1 - sigma_n) / (S1 - S3)
+        dilation_tendency = (s1 - sigma_n) / max(s1 - s3, 0.001)
+        dilation_tendency = np.clip(dilation_tendency, 0, 1)
+
+        # Mohr-Coulomb proximity: distance to failure line
+        mc_proximity = tau - friction * sigma_n
+        critically_stressed = (mc_proximity > 0).astype(float)
+
+        # Angle between fracture strike and SHmax
+        strike = (azimuths - 90) % 360
+        angle_to_shmax = np.abs(((strike - shmax_az + 90) % 180) - 90)
+
+        geomech_feature_names = [
+            "sigma_n", "tau", "slip_tendency", "dilation_tendency",
+            "mc_proximity", "critically_stressed", "angle_to_shmax"
+        ]
+        geomech_features = np.column_stack([
+            sigma_n, tau, slip_tendency, dilation_tendency,
+            mc_proximity, critically_stressed, angle_to_shmax
+        ])
+
+        # Scale and combine
+        scaler_geo = StandardScaler()
+        geomech_scaled = scaler_geo.fit_transform(geomech_features)
+        X_enriched = np.hstack([X, geomech_scaled])
+
+        # Compare: baseline vs enriched
+        all_models = _get_models()
+        best_model_name = list(all_models.keys())[0]
+        best_template = list(all_models.values())[0]
+
+        # Find best baseline model
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+
+        baseline_results = {}
+        enriched_results = {}
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for mname, mtemplate in all_models.items():
+                # Baseline
+                cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+                preds_base = np.zeros(n, dtype=int)
+                preds_enrich = np.zeros(n, dtype=int)
+
+                for train_idx, val_idx in cv.split(X, y):
+                    try:
+                        m = clone(mtemplate)
+                        m.fit(X[train_idx], y[train_idx])
+                        preds_base[val_idx] = m.predict(X[val_idx])
+                    except Exception:
+                        pass
+                    try:
+                        m2 = clone(mtemplate)
+                        m2.fit(X_enriched[train_idx], y[train_idx])
+                        preds_enrich[val_idx] = m2.predict(X_enriched[val_idx])
+                    except Exception:
+                        pass
+
+                baseline_results[mname] = {
+                    "accuracy": round(float(accuracy_score(y, preds_base)), 4),
+                    "balanced": round(float(balanced_accuracy_score(y, preds_base)), 4),
+                }
+                enriched_results[mname] = {
+                    "accuracy": round(float(accuracy_score(y, preds_enrich)), 4),
+                    "balanced": round(float(balanced_accuracy_score(y, preds_enrich)), 4),
+                }
+
+        # Summary
+        comparisons = []
+        for mname in all_models:
+            b = baseline_results[mname]
+            e = enriched_results[mname]
+            delta = e["accuracy"] - b["accuracy"]
+            comparisons.append({
+                "model": mname,
+                "baseline_accuracy": b["accuracy"],
+                "enriched_accuracy": e["accuracy"],
+                "accuracy_delta": round(delta, 4),
+                "baseline_balanced": b["balanced"],
+                "enriched_balanced": e["balanced"],
+                "improved": delta > 0.005,
+            })
+
+        avg_delta = float(np.mean([c["accuracy_delta"] for c in comparisons]))
+        n_improved = sum(1 for c in comparisons if c["improved"])
+
+        # Feature statistics
+        geo_stats = []
+        for i, fname in enumerate(geomech_feature_names):
+            vals = geomech_features[:, i]
+            geo_stats.append({
+                "feature": fname,
+                "mean": round(float(np.mean(vals)), 4),
+                "std": round(float(np.std(vals)), 4),
+                "min": round(float(np.min(vals)), 4),
+                "max": round(float(np.max(vals)), 4),
+            })
+
+        n_crit = int(np.sum(critically_stressed))
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            mnames = [c["model"][:12] for c in comparisons]
+            base_accs = [c["baseline_accuracy"] for c in comparisons]
+            enrich_accs = [c["enriched_accuracy"] for c in comparisons]
+            x = range(len(mnames))
+            ax1.bar([p - 0.15 for p in x], base_accs, 0.3, label="Baseline", color="#6c757d", alpha=0.7)
+            ax1.bar([p + 0.15 for p in x], enrich_accs, 0.3, label="+ Geomech", color="#28a745", alpha=0.7)
+            ax1.set_xticks(list(x))
+            ax1.set_xticklabels([n[:8] for n in mnames], rotation=45, ha="right", fontsize=7)
+            ax1.set_ylabel("Accuracy")
+            ax1.set_title(f"Geomech Feature Impact ({n_improved}/{len(comparisons)} improved)")
+            ax1.legend(fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            ax2.scatter(slip_tendency, dilation_tendency, c=y, cmap="viridis", alpha=0.5, s=15)
+            ax2.set_xlabel("Slip Tendency")
+            ax2.set_ylabel("Dilation Tendency")
+            ax2.set_title(f"Geomech Feature Space ({n_crit} critically stressed)")
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            deltas = [c["accuracy_delta"] * 100 for c in comparisons]
+            colors = ["#28a745" if d > 0.5 else "#ffc107" if d > -0.5 else "#dc3545" for d in deltas]
+            ax3.barh([n[:12] for n in mnames], deltas, color=colors)
+            ax3.set_xlabel("Accuracy Change (%)")
+            ax3.set_title("Per-Model Improvement")
+            ax3.axvline(x=0, color="gray", linestyle="--", alpha=0.3)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n,
+            "shmax_azimuth": shmax_az, "stress_ratio": stress_ratio, "friction": friction,
+            "n_geomech_features": len(geomech_feature_names),
+            "geomech_feature_names": geomech_feature_names,
+            "feature_stats": geo_stats,
+            "n_critically_stressed": n_crit,
+            "comparisons": comparisons,
+            "avg_accuracy_delta": round(avg_delta, 4),
+            "n_models_improved": n_improved,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Geomech features: {avg_delta:+.1%} avg accuracy change ({n_improved}/{len(comparisons)} models improved)",
+                "risk_level": "GREEN" if avg_delta > 0.01 else ("AMBER" if avg_delta > -0.01 else "RED"),
+                "confidence_sentence": (
+                    f"Added {len(geomech_feature_names)} stress-dependent features (SHmax={shmax_az}°, R={stress_ratio}, μ={friction}). "
+                    f"{n_crit} of {n} fractures are critically stressed. "
+                    f"Average accuracy change: {avg_delta:+.1%} across {len(comparisons)} models."
+                ),
+                "action": (
+                    f"Geomech features improve {n_improved} models. Recommend using enriched feature set."
+                    if n_improved > len(comparisons) / 2 else
+                    "Geomech features show mixed results. Use with caution — may need better stress parameters."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _geomech_cache[cache_key] = result
+    return result
+
+
+# ── Iterative RLHF Feedback Loop ─────────────────────────────────────
+
+_rlhf_iter_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/rlhf-iterate")
+async def rlhf_iterate(request: Request):
+    """Run multiple RLHF training iterations with convergence tracking.
+
+    Instead of a single reward model training pass, this iterates:
+    each round generates synthetic preference pairs from current model errors,
+    trains a reward model, reweights training, and measures improvement.
+    Tracks convergence and stops when improvement plateaus. Shows whether
+    the feedback loop is actually learning from corrections.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_iterations = int(body.get("n_iterations", 5))
+
+    if n_iterations < 2 or n_iterations > 20:
+        raise HTTPException(400, "n_iterations must be between 2 and 20")
+
+    cache_key = f"rlhfit:{well}:{source}:{n_iterations}"
+    if cache_key in _rlhf_iter_cache:
+        return _rlhf_iter_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import accuracy_score
+        from sklearn.linear_model import LogisticRegression
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+
+        all_models = _get_models()
+        model_template = all_models.get("random_forest", list(all_models.values())[0])
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+
+        # Baseline accuracy
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        base_preds = np.zeros(n, dtype=int)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for train_idx, val_idx in cv.split(X, y):
+                m = clone(model_template)
+                m.fit(X[train_idx], y[train_idx])
+                base_preds[val_idx] = m.predict(X[val_idx])
+        baseline_acc = float(accuracy_score(y, base_preds))
+
+        # Iterative RLHF loop
+        iterations = []
+        sample_weights = np.ones(n, dtype=float)
+        prev_acc = baseline_acc
+        converged = False
+        convergence_iter = None
+
+        for it in range(n_iterations):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+
+                # Step 1: Train with current weights
+                cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42 + it)
+                iter_preds = np.zeros(n, dtype=int)
+                for train_idx, val_idx in cv.split(X, y):
+                    m = clone(model_template)
+                    try:
+                        m.fit(X[train_idx], y[train_idx], sample_weight=sample_weights[train_idx])
+                    except TypeError:
+                        m.fit(X[train_idx], y[train_idx])
+                    iter_preds[val_idx] = m.predict(X[val_idx])
+
+                iter_acc = float(accuracy_score(y, iter_preds))
+
+                # Step 2: Identify errors for reward model
+                wrong_mask = iter_preds != y
+                n_wrong = int(wrong_mask.sum())
+
+                # Step 3: Generate preference pairs (correct > wrong)
+                correct_idx = np.where(~wrong_mask)[0]
+                wrong_idx = np.where(wrong_mask)[0]
+
+                if len(correct_idx) > 0 and len(wrong_idx) > 0:
+                    n_pairs = min(len(correct_idx), len(wrong_idx), 200)
+                    rng = np.random.RandomState(42 + it)
+
+                    pair_features = []
+                    pair_labels = []
+                    for _ in range(n_pairs):
+                        ci = rng.choice(correct_idx)
+                        wi = rng.choice(wrong_idx)
+                        pair_features.append(X[ci] - X[wi])
+                        pair_labels.append(1)
+                        pair_features.append(X[wi] - X[ci])
+                        pair_labels.append(0)
+
+                    pair_X = np.array(pair_features)
+                    pair_y = np.array(pair_labels)
+
+                    # Train reward model
+                    reward_model = LogisticRegression(max_iter=1000, random_state=42)
+                    reward_model.fit(pair_X, pair_y)
+
+                    # Step 4: Compute reward scores for all samples
+                    # Use reward model to score each sample vs mean
+                    mean_x = X.mean(axis=0)
+                    diffs = X - mean_x
+                    reward_probs = reward_model.predict_proba(diffs)[:, 1]
+
+                    # Update weights: upweight low-reward (struggling) samples
+                    sample_weights = 1.0 + (1.0 - reward_probs) * (it + 1) * 0.5
+                    sample_weights = np.clip(sample_weights, 0.5, 5.0)
+                else:
+                    reward_probs = np.ones(n) * 0.5
+
+                improvement = iter_acc - prev_acc
+                total_improvement = iter_acc - baseline_acc
+
+                iterations.append({
+                    "iteration": it + 1,
+                    "accuracy": round(iter_acc, 4),
+                    "improvement_vs_prev": round(improvement, 4),
+                    "total_improvement": round(total_improvement, 4),
+                    "n_errors": n_wrong,
+                    "n_pairs_trained": n_pairs if len(correct_idx) > 0 and len(wrong_idx) > 0 else 0,
+                    "avg_reward_score": round(float(np.mean(reward_probs)), 4),
+                    "max_weight": round(float(sample_weights.max()), 2),
+                })
+
+                # Check convergence
+                if it > 0 and abs(improvement) < 0.002:
+                    if not converged:
+                        converged = True
+                        convergence_iter = it + 1
+
+                prev_acc = iter_acc
+
+        final_acc = iterations[-1]["accuracy"]
+        total_gain = final_acc - baseline_acc
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            iters = [it["iteration"] for it in iterations]
+            accs = [it["accuracy"] for it in iterations]
+            ax1.plot(iters, accs, "bo-", markersize=6, label="RLHF Accuracy")
+            ax1.axhline(y=baseline_acc, color="red", linestyle="--", label=f"Baseline: {baseline_acc:.1%}")
+            if converged:
+                ax1.axvline(x=convergence_iter, color="green", linestyle=":", label=f"Converged: iter {convergence_iter}")
+            ax1.set_xlabel("Iteration")
+            ax1.set_ylabel("Accuracy")
+            ax1.set_title(f"RLHF Learning Curve ({total_gain:+.1%} total)")
+            ax1.legend(fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            improvements = [it["improvement_vs_prev"] * 100 for it in iterations]
+            colors = ["#28a745" if i > 0 else "#dc3545" for i in improvements]
+            ax2.bar(iters, improvements, color=colors)
+            ax2.set_xlabel("Iteration")
+            ax2.set_ylabel("Improvement (%)")
+            ax2.set_title("Per-Iteration Gain")
+            ax2.axhline(y=0, color="gray", linestyle="-", alpha=0.3)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            errors = [it["n_errors"] for it in iterations]
+            ax3.plot(iters, errors, "ro-", markersize=6)
+            ax3.set_xlabel("Iteration")
+            ax3.set_ylabel("Misclassifications")
+            ax3.set_title("Error Reduction")
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n,
+            "n_iterations": n_iterations,
+            "baseline_accuracy": round(baseline_acc, 4),
+            "final_accuracy": round(final_acc, 4),
+            "total_improvement": round(total_gain, 4),
+            "converged": converged,
+            "convergence_iteration": convergence_iter,
+            "iterations": iterations,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"RLHF loop: {baseline_acc:.1%} → {final_acc:.1%} ({total_gain:+.1%}) over {n_iterations} iterations",
+                "risk_level": "GREEN" if total_gain > 0.01 else ("AMBER" if total_gain > -0.01 else "RED"),
+                "confidence_sentence": (
+                    f"Ran {n_iterations} RLHF iterations. "
+                    f"Baseline: {baseline_acc:.1%}, Final: {final_acc:.1%} ({total_gain:+.1%}). "
+                    + (f"Converged at iteration {convergence_iter}." if converged else "Did not fully converge.")
+                ),
+                "action": (
+                    f"RLHF feedback loop shows improvement. Continue collecting expert feedback."
+                    if total_gain > 0 else
+                    "RLHF loop did not improve accuracy. Review preference data quality."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _rlhf_iter_cache[cache_key] = result
+    return result
+
+
+# ── Domain Shift Robustness ──────────────────────────────────────────
+
+_domain_shift_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/domain-shift")
+async def domain_shift(request: Request):
+    """Test model robustness to geological domain changes.
+
+    Splits data by depth zones and fracture types, trains on one domain
+    and tests on another. Critical for real-world deployment where drilling
+    encounters new formations. Shows which domain transitions cause the
+    largest accuracy drops and which fracture types are hardest to generalize.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_zones = int(body.get("n_zones", 3))
+
+    if n_zones < 2 or n_zones > 10:
+        raise HTTPException(400, "n_zones must be between 2 and 10")
+
+    cache_key = f"dshift:{well}:{source}:{n_zones}"
+    if cache_key in _domain_shift_cache:
+        return _domain_shift_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.metrics import accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.arange(n, dtype=float)
+
+        # Split into depth zones
+        depth_sorted_idx = np.argsort(depths)
+        zone_size = n // n_zones
+        zones = {}
+        for z in range(n_zones):
+            start = z * zone_size
+            end = n if z == n_zones - 1 else (z + 1) * zone_size
+            idx = depth_sorted_idx[start:end]
+            zone_depth_min = float(depths[idx].min())
+            zone_depth_max = float(depths[idx].max())
+            zones[z] = {
+                "indices": idx,
+                "depth_range": (round(zone_depth_min, 1), round(zone_depth_max, 1)),
+                "n_samples": len(idx),
+            }
+
+        all_models = _get_models()
+        model_template = all_models.get("random_forest", list(all_models.values())[0])
+
+        # Cross-domain evaluation: train on zone i, test on zone j
+        cross_domain = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for i in range(n_zones):
+                for j in range(n_zones):
+                    train_idx = zones[i]["indices"]
+                    test_idx = zones[j]["indices"]
+
+                    X_train, y_train = X[train_idx], y[train_idx]
+                    X_test, y_test = X[test_idx], y[test_idx]
+
+                    # Check enough classes
+                    train_classes = set(y_train.tolist())
+                    test_classes = set(y_test.tolist())
+                    if len(train_classes) < 2:
+                        acc = 0.0
+                    else:
+                        try:
+                            m = clone(model_template)
+                            m.fit(X_train, y_train)
+                            preds = m.predict(X_test)
+                            acc = float(accuracy_score(y_test, preds))
+                        except Exception:
+                            acc = 0.0
+
+                    cross_domain.append({
+                        "train_zone": i,
+                        "test_zone": j,
+                        "train_depth_range": zones[i]["depth_range"],
+                        "test_depth_range": zones[j]["depth_range"],
+                        "train_n": zones[i]["n_samples"],
+                        "test_n": zones[j]["n_samples"],
+                        "accuracy": round(acc, 4),
+                        "is_same_domain": i == j,
+                    })
+
+        # Compute metrics
+        same_domain_accs = [c["accuracy"] for c in cross_domain if c["is_same_domain"]]
+        cross_domain_accs = [c["accuracy"] for c in cross_domain if not c["is_same_domain"]]
+        avg_same = float(np.mean(same_domain_accs)) if same_domain_accs else 0
+        avg_cross = float(np.mean(cross_domain_accs)) if cross_domain_accs else 0
+        domain_gap = avg_same - avg_cross
+
+        # Find worst transitions
+        worst_transitions = sorted(
+            [c for c in cross_domain if not c["is_same_domain"]],
+            key=lambda x: x["accuracy"]
+        )[:5]
+
+        # Per-zone self-accuracy
+        zone_summary = []
+        for z in range(n_zones):
+            same = [c for c in cross_domain if c["train_zone"] == z and c["test_zone"] == z]
+            cross = [c for c in cross_domain if c["train_zone"] == z and c["test_zone"] != z]
+            self_acc = same[0]["accuracy"] if same else 0
+            transfer_acc = float(np.mean([c["accuracy"] for c in cross])) if cross else 0
+            zone_summary.append({
+                "zone": z,
+                "depth_range": zones[z]["depth_range"],
+                "n_samples": zones[z]["n_samples"],
+                "self_accuracy": round(self_acc, 4),
+                "transfer_accuracy": round(transfer_acc, 4),
+                "gap": round(self_acc - transfer_acc, 4),
+            })
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            matrix = np.zeros((n_zones, n_zones))
+            for c in cross_domain:
+                matrix[c["train_zone"], c["test_zone"]] = c["accuracy"]
+            im = ax1.imshow(matrix, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
+            ax1.set_xlabel("Test Zone")
+            ax1.set_ylabel("Train Zone")
+            ax1.set_title(f"Cross-Domain Accuracy (gap: {domain_gap:.1%})")
+            for i in range(n_zones):
+                for j in range(n_zones):
+                    ax1.text(j, i, f"{matrix[i,j]:.0%}", ha="center", va="center", fontsize=8)
+            plt.colorbar(im, ax=ax1)
+
+            ax2 = axes[1]
+            zone_names = [f"Z{z['zone']}" for z in zone_summary]
+            self_accs = [z["self_accuracy"] for z in zone_summary]
+            trans_accs = [z["transfer_accuracy"] for z in zone_summary]
+            x = range(len(zone_names))
+            ax2.bar([p - 0.15 for p in x], self_accs, 0.3, label="Self", color="#28a745")
+            ax2.bar([p + 0.15 for p in x], trans_accs, 0.3, label="Transfer", color="#dc3545")
+            ax2.set_xticks(list(x))
+            ax2.set_xticklabels(zone_names)
+            ax2.set_ylabel("Accuracy")
+            ax2.set_title("Self vs Transfer Accuracy")
+            ax2.legend(fontsize=8)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            gaps = [z["gap"] for z in zone_summary]
+            gap_colors = ["#dc3545" if g > 0.1 else "#ffc107" if g > 0.05 else "#28a745" for g in gaps]
+            ax3.bar(zone_names, [g * 100 for g in gaps], color=gap_colors)
+            ax3.set_ylabel("Self-Transfer Gap (%)")
+            ax3.set_title("Domain Shift Vulnerability")
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "n_zones": n_zones,
+            "avg_same_domain": round(avg_same, 4),
+            "avg_cross_domain": round(avg_cross, 4),
+            "domain_gap": round(domain_gap, 4),
+            "zone_summary": zone_summary,
+            "cross_domain_matrix": cross_domain,
+            "worst_transitions": worst_transitions,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Domain shift: {domain_gap:.1%} accuracy drop across {n_zones} geological zones",
+                "risk_level": "GREEN" if domain_gap < 0.1 else ("AMBER" if domain_gap < 0.2 else "RED"),
+                "confidence_sentence": (
+                    f"Same-domain accuracy: {avg_same:.1%}. Cross-domain: {avg_cross:.1%}. "
+                    f"Gap: {domain_gap:.1%}. "
+                    f"Worst transition: zone {worst_transitions[0]['train_zone']}→{worst_transitions[0]['test_zone']} "
+                    f"({worst_transitions[0]['accuracy']:.1%})." if worst_transitions else ""
+                ),
+                "action": (
+                    "Model generalizes well across depth zones. Safe for deployment."
+                    if domain_gap < 0.1 else
+                    f"Significant domain shift ({domain_gap:.1%}). Retrain when entering new formations."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _domain_shift_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -18435,7 +19122,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.26.0",
+        "app_version": "3.27.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

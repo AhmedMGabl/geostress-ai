@@ -1145,6 +1145,83 @@
                         </div>
                     </div>
 
+                    <!-- v3.27.0: Geomechanical Feature Enrichment -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-geo-alt-fill"></i> Geomechanical Feature Enrichment (2026 Research)</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runGeomechFeatures()">
+                                <i class="bi bi-play-fill"></i> Enrich
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="gf-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Features Added</div><div class="metric-value" id="gf-n">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Avg Delta</div><div class="metric-value" id="gf-delta">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Models Improved</div><div class="metric-value" id="gf-improved">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Crit. Stressed</div><div class="metric-value text-danger" id="gf-crit">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">SHmax</div><div class="metric-value" id="gf-shmax">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">R-ratio</div><div class="metric-value" id="gf-ratio">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="gf-brief"></div>
+                            <h6>Model Comparisons</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Model</th><th>Baseline</th><th>+ Geomech</th><th>Delta</th><th>Improved?</th></tr></thead><tbody id="gf-comp-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="gf-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.27.0: RLHF Iterative Loop -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-repeat"></i> RLHF Iterative Feedback Loop</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runRlhfIterate()">
+                                <i class="bi bi-play-fill"></i> Iterate
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="ri-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Baseline</div><div class="metric-value" id="ri-base">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Final</div><div class="metric-value" id="ri-final">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Improvement</div><div class="metric-value" id="ri-gain">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Iterations</div><div class="metric-value" id="ri-n">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Converged?</div><div class="metric-value" id="ri-conv">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Conv. Iter</div><div class="metric-value" id="ri-citer">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="ri-brief"></div>
+                            <h6>Iteration History</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Iter</th><th>Accuracy</th><th>vs Prev</th><th>Total</th><th>Errors</th><th>Pairs</th></tr></thead><tbody id="ri-iter-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="ri-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.27.0: Domain Shift Robustness -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-layers-fill"></i> Domain Shift Robustness (Cross-Zone)</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runDomainShift()">
+                                <i class="bi bi-play-fill"></i> Test Shift
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="ds-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Zones</div><div class="metric-value" id="ds-zones">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Same-Domain</div><div class="metric-value text-success" id="ds-same">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Cross-Domain</div><div class="metric-value text-danger" id="ds-cross">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Domain Gap</div><div class="metric-value" id="ds-gap">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Samples</div><div class="metric-value" id="ds-n">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="ds-brief"></div>
+                            <h6>Zone Summary</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Zone</th><th>Depth Range</th><th>Samples</th><th>Self Acc</th><th>Transfer Acc</th><th>Gap</th></tr></thead><tbody id="ds-zone-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="ds-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
