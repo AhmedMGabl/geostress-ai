@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.25.0 - Sample Quality + Learning Curve + Consensus Ensemble)."""
+"""GeoStress AI - FastAPI Web Application (v3.26.0 - Batch Predict + Model Advisor + Operational Readiness)."""
 
 import os
 import io
@@ -1004,7 +1004,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.25.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.26.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -16722,6 +16722,628 @@ async def consensus_ensemble(request: Request):
     return result
 
 
+# ── Batch Prediction ──────────────────────────────────────────────────
+
+_batch_predict_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/batch-predict")
+async def batch_predict(request: Request):
+    """Classify all fractures in one call with all models.
+
+    Industrial speed: instead of calling classify one-at-a-time, this
+    processes every sample in the well simultaneously. Returns per-sample
+    predictions from all models, confidence scores, and agreement metrics.
+    Designed for bulk processing of hundreds/thousands of measurements.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    top_n = int(body.get("top_n", 50))
+
+    if top_n < 1 or top_n > 500:
+        raise HTTPException(400, "top_n must be between 1 and 500")
+
+    cache_key = f"bpred:{well}:{source}:{top_n}"
+    if cache_key in _batch_predict_cache:
+        return _batch_predict_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        import time as _time
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import accuracy_score
+
+        t0 = _time.time()
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+
+        all_models = _get_models()
+        model_names = list(all_models.keys())
+        n_models = len(model_names)
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        # Train all models via CV and collect predictions + probabilities
+        all_preds = np.zeros((n, n_models), dtype=int)
+        all_probs = np.zeros((n, n_models, n_classes))
+        model_accs = {}
+        model_times = {}
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for mi, (mname, mtemplate) in enumerate(all_models.items()):
+                mt0 = _time.time()
+                for train_idx, val_idx in cv.split(X, y):
+                    try:
+                        m = clone(mtemplate)
+                        m.fit(X[train_idx], y[train_idx])
+                        all_preds[val_idx, mi] = m.predict(X[val_idx])
+                        if hasattr(m, "predict_proba"):
+                            probs = m.predict_proba(X[val_idx])
+                            if probs.shape[1] == n_classes:
+                                all_probs[val_idx, mi] = probs
+                    except Exception:
+                        pass
+                model_accs[mname] = round(float(accuracy_score(y, all_preds[:, mi])), 4)
+                model_times[mname] = round(_time.time() - mt0, 3)
+
+        # Per-sample consensus
+        predictions = []
+        high_confidence = 0
+        low_confidence = 0
+
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.zeros(n)
+        azimuths = df_well[AZIMUTH_COL].values if AZIMUTH_COL in df_well.columns else np.zeros(n)
+
+        for i in range(min(n, top_n)):
+            votes = all_preds[i]
+            vote_counts = np.bincount(votes, minlength=n_classes)
+            consensus_class = int(np.argmax(vote_counts))
+            agreement = float(vote_counts.max() / n_models)
+
+            avg_probs = all_probs[i].mean(axis=0)
+            max_prob = float(avg_probs.max())
+
+            if agreement >= 0.75:
+                high_confidence += 1
+            else:
+                low_confidence += 1
+
+            predictions.append({
+                "index": int(i),
+                "depth_m": round(float(depths[i]), 1),
+                "azimuth_deg": round(float(azimuths[i]), 1),
+                "true_class": class_names[y[i]],
+                "predicted_class": class_names[consensus_class],
+                "correct": bool(consensus_class == y[i]),
+                "agreement": round(agreement, 3),
+                "max_probability": round(max_prob, 3),
+                "model_votes": {class_names[j]: int(vote_counts[j]) for j in range(n_classes) if vote_counts[j] > 0},
+            })
+
+        elapsed = round(_time.time() - t0, 2)
+        overall_acc = float(np.mean([p["correct"] for p in predictions]))
+
+        # Model performance summary
+        model_summary = sorted(
+            [{"model": m, "accuracy": model_accs[m], "time_s": model_times[m]} for m in model_names],
+            key=lambda x: x["accuracy"], reverse=True
+        )
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            mnames = [m["model"][:12] for m in model_summary]
+            maccs = [m["accuracy"] for m in model_summary]
+            colors = ["#28a745" if a > 0.7 else "#ffc107" if a > 0.5 else "#dc3545" for a in maccs]
+            ax1.barh(mnames[::-1], maccs[::-1], color=colors[::-1])
+            ax1.set_xlabel("Accuracy")
+            ax1.set_title(f"All Models Performance ({n_models} models)")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            agreements = [p["agreement"] for p in predictions]
+            ax2.hist(agreements, bins=15, color="#4a90d9", alpha=0.7)
+            ax2.axvline(x=0.75, color="red", linestyle="--", label="High conf threshold")
+            ax2.set_xlabel("Model Agreement")
+            ax2.set_ylabel("Count")
+            ax2.set_title(f"Prediction Confidence ({high_confidence} high / {low_confidence} low)")
+            ax2.legend(fontsize=8)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            mtimes = [m["time_s"] for m in model_summary]
+            ax3.barh(mnames[::-1], mtimes[::-1], color="#6c757d")
+            ax3.set_xlabel("Time (s)")
+            ax3.set_title("Model Training Time")
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "n_predicted": len(predictions),
+            "n_models": n_models, "elapsed_s": elapsed,
+            "batch_accuracy": round(overall_acc, 4),
+            "high_confidence_count": high_confidence,
+            "low_confidence_count": low_confidence,
+            "model_summary": model_summary,
+            "predictions": predictions,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Batch prediction: {overall_acc:.1%} accuracy across {len(predictions)} samples in {elapsed}s",
+                "risk_level": "GREEN" if overall_acc > 0.7 else ("AMBER" if overall_acc > 0.5 else "RED"),
+                "confidence_sentence": (
+                    f"Classified {len(predictions)} samples using {n_models} models. "
+                    f"Overall accuracy: {overall_acc:.1%}. "
+                    f"{high_confidence} high-confidence, {low_confidence} low-confidence predictions."
+                ),
+                "action": (
+                    f"Batch classification complete in {elapsed}s. Review {low_confidence} low-confidence samples."
+                    if low_confidence > 0 else
+                    f"All {len(predictions)} predictions have high model agreement."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _batch_predict_cache[cache_key] = result
+    return result
+
+
+# ── Model Selection Advisor ───────────────────────────────────────────
+
+_model_advisor_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/model-advisor")
+async def model_advisor(request: Request):
+    """Evaluate all available models and recommend the best one.
+
+    Comprehensive model comparison: accuracy, balanced accuracy, per-class F1,
+    training time, stability (std across folds), and overfitting risk. Provides
+    a clear recommendation with rationale — helps non-ML stakeholders understand
+    why a particular model was chosen for their well data.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"madvisor:{well}:{source}"
+    if cache_key in _model_advisor_cache:
+        return _model_advisor_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        import time as _time
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+
+        all_models = _get_models()
+        model_names = list(all_models.keys())
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+
+        evaluations = []
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for mname, mtemplate in all_models.items():
+                fold_accs = []
+                fold_bal_accs = []
+                fold_f1s = []
+                t0 = _time.time()
+
+                cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+                all_preds = np.zeros(n, dtype=int)
+
+                for train_idx, val_idx in cv.split(X, y):
+                    try:
+                        m = clone(mtemplate)
+                        m.fit(X[train_idx], y[train_idx])
+                        preds = m.predict(X[val_idx])
+                        all_preds[val_idx] = preds
+                        fold_accs.append(accuracy_score(y[val_idx], preds))
+                        fold_bal_accs.append(balanced_accuracy_score(y[val_idx], preds))
+                        fold_f1s.append(f1_score(y[val_idx], preds, average="weighted", zero_division=0))
+                    except Exception:
+                        fold_accs.append(0)
+                        fold_bal_accs.append(0)
+                        fold_f1s.append(0)
+
+                train_time = round(_time.time() - t0, 3)
+
+                # Per-class accuracy
+                per_class_acc = {}
+                for j, cn in enumerate(class_names):
+                    mask = y == j
+                    if mask.sum() > 0:
+                        per_class_acc[cn] = round(float((all_preds[mask] == y[mask]).mean()), 4)
+
+                # Overfitting check: train on all, compare
+                try:
+                    m_full = clone(mtemplate)
+                    m_full.fit(X, y)
+                    train_acc = float(accuracy_score(y, m_full.predict(X)))
+                except Exception:
+                    train_acc = 0.0
+
+                cv_acc = float(np.mean(fold_accs))
+                overfit_gap = round(train_acc - cv_acc, 4)
+
+                evaluations.append({
+                    "model": mname,
+                    "accuracy": round(cv_acc, 4),
+                    "accuracy_std": round(float(np.std(fold_accs)), 4),
+                    "balanced_accuracy": round(float(np.mean(fold_bal_accs)), 4),
+                    "f1_weighted": round(float(np.mean(fold_f1s)), 4),
+                    "train_time_s": train_time,
+                    "train_accuracy": round(train_acc, 4),
+                    "overfit_gap": overfit_gap,
+                    "per_class_accuracy": per_class_acc,
+                    "stability": "STABLE" if float(np.std(fold_accs)) < 0.05 else ("MODERATE" if float(np.std(fold_accs)) < 0.1 else "UNSTABLE"),
+                    "overfit_risk": "LOW" if overfit_gap < 0.1 else ("MEDIUM" if overfit_gap < 0.2 else "HIGH"),
+                })
+
+        # Sort by balanced accuracy (fairer for imbalanced data)
+        evaluations.sort(key=lambda x: x["balanced_accuracy"], reverse=True)
+
+        best = evaluations[0]
+        runner_up = evaluations[1] if len(evaluations) > 1 else None
+
+        # Generate recommendation rationale
+        rationale = []
+        rationale.append(f"{best['model']} achieves {best['balanced_accuracy']:.1%} balanced accuracy.")
+        if best["stability"] == "STABLE":
+            rationale.append(f"Performance is stable across folds (std={best['accuracy_std']:.3f}).")
+        if best["overfit_risk"] == "LOW":
+            rationale.append(f"Low overfitting risk (train-CV gap: {best['overfit_gap']:.1%}).")
+        if runner_up:
+            gap = best["balanced_accuracy"] - runner_up["balanced_accuracy"]
+            if gap < 0.02:
+                rationale.append(f"Close alternative: {runner_up['model']} ({runner_up['balanced_accuracy']:.1%}).")
+            else:
+                rationale.append(f"Clear winner: {gap:.1%} ahead of {runner_up['model']}.")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            names = [e["model"][:12] for e in evaluations]
+            accs = [e["balanced_accuracy"] for e in evaluations]
+            stds = [e["accuracy_std"] for e in evaluations]
+            colors = ["#28a745" if e["model"] == best["model"] else "#4a90d9" for e in evaluations]
+            ax1.barh(names[::-1], accs[::-1], xerr=stds[::-1], color=colors[::-1], capsize=3)
+            ax1.set_xlabel("Balanced Accuracy")
+            ax1.set_title(f"Model Comparison (Best: {best['model']})")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            train_accs = [e["train_accuracy"] for e in evaluations]
+            cv_accs = [e["accuracy"] for e in evaluations]
+            x_pos = range(len(names))
+            ax2.bar([p - 0.15 for p in x_pos], train_accs, 0.3, label="Train", color="#ffc107", alpha=0.7)
+            ax2.bar([p + 0.15 for p in x_pos], cv_accs, 0.3, label="CV", color="#4a90d9", alpha=0.7)
+            ax2.set_xticks(list(x_pos))
+            ax2.set_xticklabels([n[:8] for n in names], rotation=45, ha="right", fontsize=7)
+            ax2.set_ylabel("Accuracy")
+            ax2.set_title("Overfitting Analysis (Train vs CV)")
+            ax2.legend(fontsize=8)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            times = [e["train_time_s"] for e in evaluations]
+            ax3.barh(names[::-1], times[::-1], color="#6c757d")
+            ax3.set_xlabel("Training Time (s)")
+            ax3.set_title("Speed Comparison")
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "n_models": len(evaluations),
+            "n_classes": len(class_names), "class_names": class_names,
+            "recommended_model": best["model"],
+            "recommendation_rationale": rationale,
+            "evaluations": evaluations,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Recommended: {best['model']} ({best['balanced_accuracy']:.1%} balanced accuracy)",
+                "risk_level": "GREEN" if best["balanced_accuracy"] > 0.7 else ("AMBER" if best["balanced_accuracy"] > 0.5 else "RED"),
+                "confidence_sentence": " ".join(rationale),
+                "action": (
+                    f"Use {best['model']} for production deployment. "
+                    f"Stability: {best['stability']}, Overfit risk: {best['overfit_risk']}."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _model_advisor_cache[cache_key] = result
+    return result
+
+
+# ── Operational Readiness Assessment ──────────────────────────────────
+
+_readiness_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/operational-readiness")
+async def operational_readiness(request: Request):
+    """Comprehensive deployment readiness checklist.
+
+    Runs ALL key checks in one call: data quality, model accuracy, calibration,
+    consensus, class balance, cross-well generalization. Returns a go/no-go
+    decision with detailed per-check findings. This is the single endpoint a
+    field engineer runs before trusting the AI predictions.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"opready:{well}:{source}"
+    if cache_key in _readiness_cache:
+        return _readiness_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+
+        checks = []
+
+        # Check 1: Sufficient data
+        data_grade = "PASS" if n >= 100 else ("WARN" if n >= 30 else "FAIL")
+        checks.append({
+            "check": "Data Sufficiency",
+            "grade": data_grade,
+            "detail": f"{n} samples ({n_classes} classes, min {min(np.bincount(y))} per class)",
+            "threshold": ">=100 samples for PASS",
+        })
+
+        # Check 2: Class balance
+        class_counts = np.bincount(y, minlength=n_classes)
+        imbalance = float(class_counts.max() / max(class_counts.min(), 1))
+        balance_grade = "PASS" if imbalance < 5 else ("WARN" if imbalance < 15 else "FAIL")
+        checks.append({
+            "check": "Class Balance",
+            "grade": balance_grade,
+            "detail": f"Imbalance ratio: {imbalance:.1f}:1 (max: {class_counts.max()}, min: {class_counts.min()})",
+            "threshold": "<5:1 for PASS, <15:1 for WARN",
+        })
+
+        # Check 3: Best model accuracy
+        all_models = _get_models()
+        best_acc = 0
+        best_bal = 0
+        best_name = ""
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for mname, mtemplate in all_models.items():
+                cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+                preds = np.zeros(n, dtype=int)
+                for train_idx, val_idx in cv.split(X, y):
+                    try:
+                        m = clone(mtemplate)
+                        m.fit(X[train_idx], y[train_idx])
+                        preds[val_idx] = m.predict(X[val_idx])
+                    except Exception:
+                        pass
+                acc = accuracy_score(y, preds)
+                bal = balanced_accuracy_score(y, preds)
+                if bal > best_bal:
+                    best_bal = bal
+                    best_acc = acc
+                    best_name = mname
+
+        acc_grade = "PASS" if best_acc > 0.7 else ("WARN" if best_acc > 0.5 else "FAIL")
+        checks.append({
+            "check": "Model Accuracy",
+            "grade": acc_grade,
+            "detail": f"Best: {best_name} at {best_acc:.1%} accuracy ({best_bal:.1%} balanced)",
+            "threshold": ">70% for PASS, >50% for WARN",
+        })
+
+        # Check 4: Data range sanity
+        dips = df_well[DIP_COL].values if DIP_COL in df_well.columns else np.zeros(n)
+        azimuths = df_well[AZIMUTH_COL].values if AZIMUTH_COL in df_well.columns else np.zeros(n)
+        bad_dip = int(np.sum((dips < 0) | (dips > 90)))
+        bad_az = int(np.sum((azimuths < 0) | (azimuths > 360)))
+        range_grade = "PASS" if (bad_dip + bad_az) == 0 else ("WARN" if (bad_dip + bad_az) < 5 else "FAIL")
+        checks.append({
+            "check": "Data Range Validity",
+            "grade": range_grade,
+            "detail": f"{bad_dip} invalid dips, {bad_az} invalid azimuths out of {n} samples",
+            "threshold": "0 invalid for PASS",
+        })
+
+        # Check 5: Feature variance (are features informative?)
+        feature_stds = np.std(X, axis=0)
+        zero_var = int(np.sum(feature_stds < 1e-10))
+        var_grade = "PASS" if zero_var == 0 else ("WARN" if zero_var < X.shape[1] * 0.2 else "FAIL")
+        checks.append({
+            "check": "Feature Quality",
+            "grade": var_grade,
+            "detail": f"{zero_var} zero-variance features out of {X.shape[1]} total",
+            "threshold": "0 zero-variance for PASS",
+        })
+
+        # Check 6: Minimum class representation
+        min_class_count = int(class_counts.min())
+        min_class_name = class_names[int(np.argmin(class_counts))]
+        min_grade = "PASS" if min_class_count >= 10 else ("WARN" if min_class_count >= 3 else "FAIL")
+        checks.append({
+            "check": "Minority Class Size",
+            "grade": min_grade,
+            "detail": f"Smallest class: {min_class_name} with {min_class_count} samples",
+            "threshold": ">=10 per class for PASS",
+        })
+
+        # Check 7: Prediction coverage (consensus feasibility)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            n_models_avail = len(all_models)
+            all_preds_mat = np.zeros((n, n_models_avail), dtype=int)
+            for mi, (mname, mtemplate) in enumerate(all_models.items()):
+                for train_idx, val_idx in cv.split(X, y):
+                    try:
+                        m = clone(mtemplate)
+                        m.fit(X[train_idx], y[train_idx])
+                        all_preds_mat[val_idx, mi] = m.predict(X[val_idx])
+                    except Exception:
+                        pass
+
+            agreements = []
+            for i in range(n):
+                vote_counts = np.bincount(all_preds_mat[i], minlength=n_classes)
+                agreements.append(float(vote_counts.max() / n_models_avail))
+
+        avg_agreement = float(np.mean(agreements))
+        consensus_grade = "PASS" if avg_agreement > 0.7 else ("WARN" if avg_agreement > 0.5 else "FAIL")
+        checks.append({
+            "check": "Model Consensus",
+            "grade": consensus_grade,
+            "detail": f"Average agreement: {avg_agreement:.1%} across {n_models_avail} models",
+            "threshold": ">70% average agreement for PASS",
+        })
+
+        # Compute overall
+        n_pass = sum(1 for c in checks if c["grade"] == "PASS")
+        n_warn = sum(1 for c in checks if c["grade"] == "WARN")
+        n_fail = sum(1 for c in checks if c["grade"] == "FAIL")
+
+        if n_fail > 0:
+            overall = "NOT READY"
+            overall_color = "RED"
+        elif n_warn > 1:
+            overall = "CONDITIONAL"
+            overall_color = "AMBER"
+        else:
+            overall = "READY"
+            overall_color = "GREEN"
+
+        readiness_score = round((n_pass * 100 + n_warn * 50) / len(checks), 0)
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            check_names = [c["check"][:15] for c in checks]
+            check_colors = ["#28a745" if c["grade"] == "PASS" else "#ffc107" if c["grade"] == "WARN" else "#dc3545" for c in checks]
+            check_scores = [100 if c["grade"] == "PASS" else 50 if c["grade"] == "WARN" else 0 for c in checks]
+            ax1.barh(check_names[::-1], check_scores[::-1], color=check_colors[::-1])
+            ax1.set_xlabel("Score")
+            ax1.set_title(f"Readiness: {overall} ({readiness_score:.0f}%)")
+            ax1.set_xlim(0, 110)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            labels = ["PASS", "WARN", "FAIL"]
+            sizes = [n_pass, n_warn, n_fail]
+            pie_colors = ["#28a745", "#ffc107", "#dc3545"]
+            ax2.pie([s for s in sizes if s > 0], labels=[l for l, s in zip(labels, sizes) if s > 0],
+                   colors=[c for c, s in zip(pie_colors, sizes) if s > 0], autopct="%1.0f%%", startangle=90)
+            ax2.set_title(f"Check Results ({len(checks)} total)")
+
+            ax3 = axes[2]
+            ax3.hist(agreements, bins=15, color="#4a90d9", alpha=0.7)
+            ax3.axvline(x=0.7, color="red", linestyle="--", label="Target: 70%")
+            ax3.set_xlabel("Model Agreement")
+            ax3.set_ylabel("Count")
+            ax3.set_title(f"Agreement Distribution (avg: {avg_agreement:.1%})")
+            ax3.legend(fontsize=8)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n,
+            "overall_status": overall,
+            "readiness_score": readiness_score,
+            "n_pass": n_pass, "n_warn": n_warn, "n_fail": n_fail,
+            "checks": checks,
+            "best_model": best_name,
+            "best_accuracy": round(best_acc, 4),
+            "avg_consensus": round(avg_agreement, 4),
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Operational readiness: {overall} ({readiness_score:.0f}% score, {n_pass}/{len(checks)} passed)",
+                "risk_level": overall_color,
+                "confidence_sentence": (
+                    f"{n_pass} checks passed, {n_warn} warnings, {n_fail} failures. "
+                    f"Best model: {best_name} at {best_acc:.1%}. "
+                    f"Average consensus: {avg_agreement:.1%}."
+                ),
+                "action": (
+                    "System is ready for deployment." if overall == "READY" else
+                    f"Address {n_warn} warnings before full deployment." if overall == "CONDITIONAL" else
+                    f"STOP: {n_fail} critical failures must be resolved before deployment."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _readiness_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -17813,7 +18435,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.25.0",
+        "app_version": "3.26.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

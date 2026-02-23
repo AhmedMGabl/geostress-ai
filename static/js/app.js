@@ -10093,3 +10093,120 @@ async function runConsensusEnsemble() {
         hideLoading();
     }
 }
+
+// ── Batch Prediction ─────────────────────────────────────────────────
+async function runBatchPredict() {
+    showLoading('Running batch prediction...');
+    var results = document.getElementById('bp-results');
+    try {
+        var r = await apiPost('/api/analysis/batch-predict', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('bp-models').textContent = r.n_models;
+        document.getElementById('bp-n').textContent = r.n_predicted;
+        document.getElementById('bp-acc').textContent = (r.batch_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('bp-high').textContent = r.high_confidence_count;
+        document.getElementById('bp-low').textContent = r.low_confidence_count;
+        document.getElementById('bp-time').textContent = r.elapsed_s + 's';
+        if (r.stakeholder_brief) {
+            document.getElementById('bp-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var mb = document.getElementById('bp-model-body');
+        mb.innerHTML = '';
+        if (r.model_summary) {
+            for (var i = 0; i < r.model_summary.length; i++) {
+                var m = r.model_summary[i];
+                mb.innerHTML += '<tr><td>' + m.model + '</td><td>' + (m.accuracy * 100).toFixed(1) + '%</td><td>' + m.time_s + '</td></tr>';
+            }
+        }
+        var pb = document.getElementById('bp-pred-body');
+        pb.innerHTML = '';
+        if (r.predictions) {
+            for (var i = 0; i < Math.min(r.predictions.length, 30); i++) {
+                var p = r.predictions[i];
+                var rc = p.correct ? 'table-success' : 'table-danger';
+                var votes = '';
+                for (var k in (p.model_votes || {})) { votes += k + ':' + p.model_votes[k] + ' '; }
+                pb.innerHTML += '<tr class="' + rc + '"><td>' + p.index + '</td><td>' + p.depth_m + '</td><td>' + p.true_class + '</td><td>' + p.predicted_class + '</td><td>' + (p.agreement * 100).toFixed(0) + '%</td><td class="small">' + votes + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('bp-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Model Selection Advisor ──────────────────────────────────────────
+async function runModelAdvisor() {
+    showLoading('Evaluating all models...');
+    var results = document.getElementById('ma-results');
+    try {
+        var r = await apiPost('/api/analysis/model-advisor', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('ma-best').textContent = r.recommended_model;
+        var be = r.evaluations ? r.evaluations[0] : null;
+        document.getElementById('ma-bal').textContent = be ? (be.balanced_accuracy * 100).toFixed(1) + '%' : '-';
+        document.getElementById('ma-n').textContent = r.n_models;
+        document.getElementById('ma-classes').textContent = r.n_classes;
+        if (r.recommendation_rationale) {
+            document.getElementById('ma-rationale').innerHTML = '<i class="bi bi-lightbulb"></i> <strong>Recommendation:</strong> ' + r.recommendation_rationale.join(' ');
+        }
+        if (r.stakeholder_brief) {
+            document.getElementById('ma-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var eb = document.getElementById('ma-eval-body');
+        eb.innerHTML = '';
+        if (r.evaluations) {
+            for (var i = 0; i < r.evaluations.length; i++) {
+                var e = r.evaluations[i];
+                var sc = e.stability === 'STABLE' ? 'success' : (e.stability === 'MODERATE' ? 'warning' : 'danger');
+                var oc = e.overfit_risk === 'LOW' ? 'success' : (e.overfit_risk === 'MEDIUM' ? 'warning' : 'danger');
+                var bold = e.model === r.recommended_model ? 'fw-bold' : '';
+                eb.innerHTML += '<tr class="' + bold + '"><td>' + e.model + '</td><td>' + (e.accuracy * 100).toFixed(1) + '%</td><td>' + (e.balanced_accuracy * 100).toFixed(1) + '%</td><td>' + (e.f1_weighted * 100).toFixed(1) + '%</td><td>' + e.train_time_s + 's</td><td><span class="badge bg-' + sc + '">' + e.stability + '</span></td><td><span class="badge bg-' + oc + '">' + e.overfit_risk + '</span></td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('ma-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Operational Readiness ────────────────────────────────────────────
+async function runOperationalReadiness() {
+    showLoading('Running operational readiness assessment...');
+    var results = document.getElementById('or-results');
+    try {
+        var r = await apiPost('/api/analysis/operational-readiness', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var sc = r.overall_status === 'READY' ? 'success' : (r.overall_status === 'CONDITIONAL' ? 'warning' : 'danger');
+        document.getElementById('or-status').innerHTML = '<span class="badge bg-' + sc + '">' + r.overall_status + '</span>';
+        document.getElementById('or-score').textContent = r.readiness_score + '%';
+        document.getElementById('or-pass').textContent = r.n_pass;
+        document.getElementById('or-warn').textContent = r.n_warn;
+        document.getElementById('or-fail').textContent = r.n_fail;
+        document.getElementById('or-model').textContent = r.best_model;
+        if (r.stakeholder_brief) {
+            document.getElementById('or-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var cb = document.getElementById('or-check-body');
+        cb.innerHTML = '';
+        if (r.checks) {
+            for (var i = 0; i < r.checks.length; i++) {
+                var c = r.checks[i];
+                var gc = c.grade === 'PASS' ? 'success' : (c.grade === 'WARN' ? 'warning' : 'danger');
+                cb.innerHTML += '<tr><td>' + c.check + '</td><td><span class="badge bg-' + gc + '">' + c.grade + '</span></td><td>' + c.detail + '</td><td class="small text-muted">' + c.threshold + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('or-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

@@ -1064,6 +1064,87 @@
                         </div>
                     </div>
 
+                    <!-- v3.26.0: Batch Prediction -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-lightning-charge-fill"></i> Batch Prediction (All Models)</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runBatchPredict()">
+                                <i class="bi bi-play-fill"></i> Batch Predict
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="bp-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Models</div><div class="metric-value" id="bp-models">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Predicted</div><div class="metric-value" id="bp-n">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Accuracy</div><div class="metric-value" id="bp-acc">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">High Conf</div><div class="metric-value text-success" id="bp-high">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Low Conf</div><div class="metric-value text-warning" id="bp-low">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Time</div><div class="metric-value" id="bp-time">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="bp-brief"></div>
+                            <h6>Model Summary</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Model</th><th>Accuracy</th><th>Time (s)</th></tr></thead><tbody id="bp-model-body"></tbody></table>
+                            </div>
+                            <h6>Sample Predictions</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>#</th><th>Depth</th><th>True</th><th>Predicted</th><th>Agree</th><th>Votes</th></tr></thead><tbody id="bp-pred-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="bp-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.26.0: Model Selection Advisor -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-award-fill"></i> Model Selection Advisor</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runModelAdvisor()">
+                                <i class="bi bi-play-fill"></i> Advise
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="ma-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Recommended</div><div class="metric-value" id="ma-best">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Balanced Acc</div><div class="metric-value" id="ma-bal">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Models Tested</div><div class="metric-value" id="ma-n">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Classes</div><div class="metric-value" id="ma-classes">-</div></div></div>
+                            </div>
+                            <div class="alert alert-info border small" id="ma-rationale"></div>
+                            <div class="alert alert-light border small" id="ma-brief"></div>
+                            <h6>Model Evaluations</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Model</th><th>Accuracy</th><th>Balanced</th><th>F1</th><th>Time</th><th>Stability</th><th>Overfit</th></tr></thead><tbody id="ma-eval-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="ma-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.26.0: Operational Readiness -->
+                    <div class="card mb-4 border-dark">
+                        <div class="card-header bg-dark bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-clipboard2-check-fill"></i> Operational Readiness Assessment</span>
+                            <button class="btn btn-sm btn-outline-dark" onclick="runOperationalReadiness()">
+                                <i class="bi bi-play-fill"></i> Assess
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="or-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Status</div><div class="metric-value" id="or-status">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Score</div><div class="metric-value" id="or-score">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Passed</div><div class="metric-value text-success" id="or-pass">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Warnings</div><div class="metric-value text-warning" id="or-warn">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Failures</div><div class="metric-value text-danger" id="or-fail">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Best Model</div><div class="metric-value" id="or-model">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="or-brief"></div>
+                            <h6>Readiness Checks</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Check</th><th>Grade</th><th>Detail</th><th>Threshold</th></tr></thead><tbody id="or-check-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="or-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

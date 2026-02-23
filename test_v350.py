@@ -1883,10 +1883,110 @@ check("min_agreement=0.8 works", ce8 is not None and isinstance(ce8.get("consens
 check("Higher threshold = lower consensus", ce8["consensus_rate"] <= ce["consensus_rate"] + 0.01)
 check("Consensus accuracy valid", isinstance(ce8.get("accepted_accuracy"), (int, float)))
 
+# ── [88] Batch Prediction ─────────────────────────────
+print("\n[88] Batch Prediction")
+bp = api("POST", "/api/analysis/batch-predict", {"source": "demo", "well": "3P"}, timeout=180)
+check("Status 200", bp is not None)
+check("Has well", bp.get("well") == "3P")
+check("Has n_samples", isinstance(bp.get("n_samples"), int) and bp["n_samples"] > 0)
+check("Has n_predicted", isinstance(bp.get("n_predicted"), int) and bp["n_predicted"] > 0)
+check("Has n_models", isinstance(bp.get("n_models"), int) and bp["n_models"] >= 2)
+check("Has elapsed_s", isinstance(bp.get("elapsed_s"), (int, float)) and bp["elapsed_s"] > 0)
+check("Has batch_accuracy", isinstance(bp.get("batch_accuracy"), (int, float)))
+check("Has high_confidence_count", isinstance(bp.get("high_confidence_count"), int))
+check("Has low_confidence_count", isinstance(bp.get("low_confidence_count"), int))
+check("Conf counts sum", bp["high_confidence_count"] + bp["low_confidence_count"] == bp["n_predicted"])
+check("Has model_summary", isinstance(bp.get("model_summary"), list) and len(bp["model_summary"]) >= 2)
+ms0bp = bp["model_summary"][0]
+check("MS has model", isinstance(ms0bp.get("model"), str))
+check("MS has accuracy", isinstance(ms0bp.get("accuracy"), (int, float)))
+check("MS has time_s", isinstance(ms0bp.get("time_s"), (int, float)))
+check("Has predictions", isinstance(bp.get("predictions"), list) and len(bp["predictions"]) > 0)
+p0bp = bp["predictions"][0]
+check("P has index", isinstance(p0bp.get("index"), int))
+check("P has true_class", isinstance(p0bp.get("true_class"), str))
+check("P has predicted_class", isinstance(p0bp.get("predicted_class"), str))
+check("P has correct", isinstance(p0bp.get("correct"), bool))
+check("P has agreement", isinstance(p0bp.get("agreement"), (int, float)))
+check("P has model_votes", isinstance(p0bp.get("model_votes"), dict))
+check("Has plot", isinstance(bp.get("plot"), str) and len(bp["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(bp.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(bp["stakeholder_brief"].get("headline"), str))
+
+# Param validation
+check("top_n=0 rejected", api_expect_error("POST", "/api/analysis/batch-predict", {"source": "demo", "well": "3P", "top_n": 0}))
+
+# Custom top_n
+bp10 = api("POST", "/api/analysis/batch-predict", {"source": "demo", "well": "3P", "top_n": 10}, timeout=180)
+check("top_n=10 works", bp10 is not None and bp10.get("n_predicted") == 10)
+
+# ── [89] Model Selection Advisor ──────────────────────
+print("\n[89] Model Selection Advisor")
+ma = api("POST", "/api/analysis/model-advisor", {"source": "demo", "well": "3P"}, timeout=180)
+check("Status 200", ma is not None)
+check("Has well", ma.get("well") == "3P")
+check("Has n_samples", isinstance(ma.get("n_samples"), int) and ma["n_samples"] > 0)
+check("Has n_models", isinstance(ma.get("n_models"), int) and ma["n_models"] >= 2)
+check("Has n_classes", isinstance(ma.get("n_classes"), int) and ma["n_classes"] >= 2)
+check("Has class_names", isinstance(ma.get("class_names"), list))
+check("Has recommended_model", isinstance(ma.get("recommended_model"), str))
+check("Has recommendation_rationale", isinstance(ma.get("recommendation_rationale"), list) and len(ma["recommendation_rationale"]) > 0)
+check("Has evaluations", isinstance(ma.get("evaluations"), list) and len(ma["evaluations"]) >= 2)
+e0ma = ma["evaluations"][0]
+check("E has model", isinstance(e0ma.get("model"), str))
+check("E has accuracy", isinstance(e0ma.get("accuracy"), (int, float)))
+check("E has accuracy_std", isinstance(e0ma.get("accuracy_std"), (int, float)))
+check("E has balanced_accuracy", isinstance(e0ma.get("balanced_accuracy"), (int, float)))
+check("E has f1_weighted", isinstance(e0ma.get("f1_weighted"), (int, float)))
+check("E has train_time_s", isinstance(e0ma.get("train_time_s"), (int, float)))
+check("E has train_accuracy", isinstance(e0ma.get("train_accuracy"), (int, float)))
+check("E has overfit_gap", isinstance(e0ma.get("overfit_gap"), (int, float)))
+check("E has per_class_accuracy", isinstance(e0ma.get("per_class_accuracy"), dict))
+check("E has stability", e0ma.get("stability") in ("STABLE", "MODERATE", "UNSTABLE"))
+check("E has overfit_risk", e0ma.get("overfit_risk") in ("LOW", "MEDIUM", "HIGH"))
+check("Recommended is first", ma["evaluations"][0]["model"] == ma["recommended_model"])
+check("Has plot", isinstance(ma.get("plot"), str) and len(ma["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(ma.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(ma["stakeholder_brief"].get("headline"), str))
+check("Brief has risk_level", ma["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
+
+# ── [90] Operational Readiness Assessment ─────────────
+print("\n[90] Operational Readiness Assessment")
+orr = api("POST", "/api/analysis/operational-readiness", {"source": "demo", "well": "3P"}, timeout=300)
+check("Status 200", orr is not None)
+check("Has well", orr.get("well") == "3P")
+check("Has n_samples", isinstance(orr.get("n_samples"), int) and orr["n_samples"] > 0)
+check("Has overall_status", orr.get("overall_status") in ("READY", "CONDITIONAL", "NOT READY"))
+check("Has readiness_score", isinstance(orr.get("readiness_score"), (int, float)) and 0 <= orr["readiness_score"] <= 100)
+check("Has n_pass", isinstance(orr.get("n_pass"), int))
+check("Has n_warn", isinstance(orr.get("n_warn"), int))
+check("Has n_fail", isinstance(orr.get("n_fail"), int))
+check("Grades sum to checks", orr["n_pass"] + orr["n_warn"] + orr["n_fail"] == len(orr.get("checks", [])))
+check("Has checks", isinstance(orr.get("checks"), list) and len(orr["checks"]) >= 5)
+c0or = orr["checks"][0]
+check("Check has check name", isinstance(c0or.get("check"), str))
+check("Check has grade", c0or.get("grade") in ("PASS", "WARN", "FAIL"))
+check("Check has detail", isinstance(c0or.get("detail"), str))
+check("Check has threshold", isinstance(c0or.get("threshold"), str))
+check("Has best_model", isinstance(orr.get("best_model"), str))
+check("Has best_accuracy", isinstance(orr.get("best_accuracy"), (int, float)))
+check("Has avg_consensus", isinstance(orr.get("avg_consensus"), (int, float)))
+check("Has plot", isinstance(orr.get("plot"), str) and len(orr["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(orr.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(orr["stakeholder_brief"].get("headline"), str))
+check("Brief has risk_level", orr["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
+
+# Verify specific checks exist
+check_names_or = [c["check"] for c in orr["checks"]]
+check("Data Sufficiency check", "Data Sufficiency" in check_names_or)
+check("Class Balance check", "Class Balance" in check_names_or)
+check("Model Accuracy check", "Model Accuracy" in check_names_or)
+check("Model Consensus check", "Model Consensus" in check_names_or)
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.25.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.26.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:
