@@ -9967,3 +9967,129 @@ async function runMonitorSim() {
         hideLoading();
     }
 }
+
+// ── Per-Sample Data Quality ──────────────────────────────────────────
+async function runSampleQuality() {
+    showLoading('Scoring sample quality...');
+    var results = document.getElementById('sq-results');
+    try {
+        var r = await apiPost('/api/analysis/sample-quality', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('sq-clean').textContent = r.n_clean;
+        document.getElementById('sq-minor').textContent = r.n_minor;
+        document.getElementById('sq-warning').textContent = r.n_warning;
+        document.getElementById('sq-critical').textContent = r.n_critical;
+        document.getElementById('sq-quality').textContent = r.overall_quality_pct + '%';
+        document.getElementById('sq-n').textContent = r.n_samples;
+        if (r.stakeholder_brief) {
+            document.getElementById('sq-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var fb = document.getElementById('sq-flag-body');
+        fb.innerHTML = '';
+        if (r.flag_types) {
+            for (var k in r.flag_types) {
+                fb.innerHTML += '<tr><td><code>' + k + '</code></td><td>' + r.flag_types[k] + '</td></tr>';
+            }
+        }
+        var sb = document.getElementById('sq-sample-body');
+        sb.innerHTML = '';
+        if (r.flagged_samples) {
+            for (var i = 0; i < r.flagged_samples.length; i++) {
+                var s = r.flagged_samples[i];
+                var gc = s.grade === 'CRITICAL' ? 'danger' : (s.grade === 'WARNING' ? 'warning' : 'secondary');
+                sb.innerHTML += '<tr><td>' + s.index + '</td><td>' + s.depth_m + '</td><td>' + s.azimuth_deg + '</td><td>' + s.dip_deg + '</td><td>' + s.quality_score + '</td><td><span class="badge bg-' + gc + '">' + s.grade + '</span></td><td class="small">' + (s.flags || []).join('; ') + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('sq-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Learning Curve Projection ────────────────────────────────────────
+async function runLearningProj() {
+    showLoading('Projecting learning curve...');
+    var results = document.getElementById('lcp-results');
+    try {
+        var r = await apiPost('/api/analysis/learning-curve-projection', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('lcp-acc').textContent = (r.current_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('lcp-asymptote').textContent = (r.asymptote * 100).toFixed(1) + '%';
+        document.getElementById('lcp-gap').textContent = (r.remaining_gap * 100).toFixed(1) + '%';
+        var rc = r.roi_grade === 'HIGH' ? 'success' : (r.roi_grade === 'MEDIUM' ? 'warning' : 'secondary');
+        document.getElementById('lcp-roi').innerHTML = '<span class="badge bg-' + rc + '">' + r.roi_grade + '</span>';
+        document.getElementById('lcp-fit').innerHTML = r.fit_success ? '<span class="badge bg-success">YES</span>' : '<span class="badge bg-danger">NO</span>';
+        document.getElementById('lcp-target').textContent = (r.n_for_90pct_asymptote || '-').toLocaleString();
+        if (r.stakeholder_brief) {
+            document.getElementById('lcp-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var pb = document.getElementById('lcp-proj-body');
+        pb.innerHTML = '';
+        if (r.projections) {
+            for (var i = 0; i < r.projections.length; i++) {
+                var p = r.projections[i];
+                pb.innerHTML += '<tr><td>' + p.multiplier + 'x</td><td>' + p.n_samples.toLocaleString() + '</td><td>' + (p.projected_accuracy * 100).toFixed(1) + '%</td><td>' + (p.gain_vs_current >= 0 ? '+' : '') + (p.gain_vs_current * 100).toFixed(2) + '%</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('lcp-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Consensus Ensemble ───────────────────────────────────────────────
+async function runConsensusEnsemble() {
+    showLoading('Running consensus ensemble...');
+    var results = document.getElementById('ce-results');
+    try {
+        var r = await apiPost('/api/analysis/consensus-ensemble', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('ce-models').textContent = r.n_models;
+        document.getElementById('ce-accepted').textContent = r.n_accepted;
+        document.getElementById('ce-rejected').textContent = r.n_rejected;
+        document.getElementById('ce-rate').textContent = (r.consensus_rate * 100).toFixed(1) + '%';
+        document.getElementById('ce-acc').textContent = (r.accepted_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('ce-thresh').textContent = (r.min_agreement * 100).toFixed(0) + '%';
+        if (r.stakeholder_brief) {
+            document.getElementById('ce-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var mb = document.getElementById('ce-model-body');
+        mb.innerHTML = '';
+        if (r.model_ranking) {
+            for (var i = 0; i < r.model_ranking.length; i++) {
+                var m = r.model_ranking[i];
+                mb.innerHTML += '<tr><td>' + m.model + '</td><td>' + (m.accuracy * 100).toFixed(1) + '%</td></tr>';
+            }
+        }
+        var cb = document.getElementById('ce-class-body');
+        cb.innerHTML = '';
+        if (r.per_class) {
+            for (var i = 0; i < r.per_class.length; i++) {
+                var c = r.per_class[i];
+                cb.innerHTML += '<tr><td>' + c['class'] + '</td><td>' + c.count + '</td><td>' + (c.consensus_rate * 100).toFixed(1) + '%</td><td>' + (c.accuracy_when_accepted * 100).toFixed(1) + '%</td><td>' + (c.avg_agreement * 100).toFixed(1) + '%</td></tr>';
+            }
+        }
+        var rb = document.getElementById('ce-reject-body');
+        rb.innerHTML = '';
+        if (r.rejected_samples) {
+            for (var i = 0; i < r.rejected_samples.length; i++) {
+                var s = r.rejected_samples[i];
+                var votes = '';
+                for (var k in (s.vote_distribution || {})) { votes += k + ':' + s.vote_distribution[k] + ' '; }
+                rb.innerHTML += '<tr><td>' + s.index + '</td><td>' + (s.depth_m || '-') + '</td><td>' + s.true_class + '</td><td>' + (s.max_agreement * 100).toFixed(0) + '%</td><td class="small">' + votes + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('ce-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

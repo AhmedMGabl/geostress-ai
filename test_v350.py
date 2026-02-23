@@ -1765,10 +1765,128 @@ check("n_batches=1 rejected", api_expect_error("POST", "/api/analysis/monitoring
 ms5 = api("POST", "/api/analysis/monitoring-simulation", {"source": "demo", "well": "3P", "n_batches": 5}, timeout=120)
 check("n_batches=5 works", ms5 is not None and isinstance(ms5.get("batches"), list))
 
+# ── [85] Per-Sample Data Quality ──────────────────────
+print("\n[85] Per-Sample Data Quality")
+sq = api("POST", "/api/analysis/sample-quality", {"source": "demo", "well": "3P"}, timeout=60)
+check("Status 200", sq is not None)
+check("Has well", sq.get("well") == "3P")
+check("Has n_samples", isinstance(sq.get("n_samples"), int) and sq["n_samples"] > 0)
+check("Has n_clean", isinstance(sq.get("n_clean"), int))
+check("Has n_minor", isinstance(sq.get("n_minor"), int))
+check("Has n_warning", isinstance(sq.get("n_warning"), int))
+check("Has n_critical", isinstance(sq.get("n_critical"), int))
+check("Grades sum to n", sq["n_clean"] + sq["n_minor"] + sq["n_warning"] + sq["n_critical"] == sq["n_samples"])
+check("Has overall_quality_pct", isinstance(sq.get("overall_quality_pct"), (int, float)) and 0 <= sq["overall_quality_pct"] <= 100)
+check("Has flag_types dict", isinstance(sq.get("flag_types"), dict))
+check("Has flagged_samples list", isinstance(sq.get("flagged_samples"), list))
+if sq["flagged_samples"]:
+    fs0 = sq["flagged_samples"][0]
+    check("FS has index", isinstance(fs0.get("index"), int))
+    check("FS has depth_m", isinstance(fs0.get("depth_m"), (int, float)))
+    check("FS has azimuth_deg", isinstance(fs0.get("azimuth_deg"), (int, float)))
+    check("FS has dip_deg", isinstance(fs0.get("dip_deg"), (int, float)))
+    check("FS has quality_score", isinstance(fs0.get("quality_score"), (int, float)) and fs0["quality_score"] > 0)
+    check("FS has grade", fs0.get("grade") in ("MINOR", "WARNING", "CRITICAL"))
+    check("FS has flags list", isinstance(fs0.get("flags"), list) and len(fs0["flags"]) > 0)
+check("Has plot", isinstance(sq.get("plot"), str) and len(sq["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(sq.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(sq["stakeholder_brief"].get("headline"), str))
+check("Brief has risk_level", sq["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
+check("Brief has action", isinstance(sq["stakeholder_brief"].get("action"), str))
+
+# Well 6P
+sq6 = api("POST", "/api/analysis/sample-quality", {"source": "demo", "well": "6P"}, timeout=60)
+check("6P works", sq6 is not None and sq6.get("well") == "6P")
+check("6P has grades", isinstance(sq6.get("n_clean"), int))
+
+# ── [86] Learning Curve Projection ────────────────────
+print("\n[86] Learning Curve Projection")
+lc = api("POST", "/api/analysis/learning-curve-projection", {"source": "demo", "well": "3P"}, timeout=180)
+check("Status 200", lc is not None)
+check("Has well", lc.get("well") == "3P")
+check("Has n_samples", isinstance(lc.get("n_samples"), int) and lc["n_samples"] > 0)
+check("Has current_accuracy", isinstance(lc.get("current_accuracy"), (int, float)))
+check("Accuracy in range", 0 <= lc["current_accuracy"] <= 1)
+check("Has asymptote", isinstance(lc.get("asymptote"), (int, float)))
+check("Has remaining_gap", isinstance(lc.get("remaining_gap"), (int, float)) and lc["remaining_gap"] >= 0)
+check("Has fit_success", isinstance(lc.get("fit_success"), bool))
+check("Has curve_points", isinstance(lc.get("curve_points"), list) and len(lc["curve_points"]) >= 3)
+cp0 = lc["curve_points"][0]
+check("CP has n_samples", isinstance(cp0.get("n_samples"), int))
+check("CP has fraction", isinstance(cp0.get("fraction"), (int, float)))
+check("CP has accuracy_mean", isinstance(cp0.get("accuracy_mean"), (int, float)))
+check("CP has accuracy_std", isinstance(cp0.get("accuracy_std"), (int, float)))
+check("Has projections", isinstance(lc.get("projections"), list) and len(lc["projections"]) >= 4)
+p0 = lc["projections"][0]
+check("Proj has multiplier", isinstance(p0.get("multiplier"), int))
+check("Proj has n_samples", isinstance(p0.get("n_samples"), int))
+check("Proj has projected_accuracy", isinstance(p0.get("projected_accuracy"), (int, float)))
+check("Proj has gain_vs_current", isinstance(p0.get("gain_vs_current"), (int, float)))
+check("Has n_for_90pct_asymptote", isinstance(lc.get("n_for_90pct_asymptote"), int) and lc["n_for_90pct_asymptote"] > 0)
+check("Has roi_grade", lc.get("roi_grade") in ("HIGH", "MEDIUM", "LOW"))
+check("Has plot", isinstance(lc.get("plot"), str) and len(lc["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(lc.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(lc["stakeholder_brief"].get("headline"), str))
+check("Brief has risk_level", lc["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
+
+if lc["fit_success"]:
+    check("Has fit_params when success", isinstance(lc.get("fit_params"), dict))
+    check("Fit has a", isinstance(lc["fit_params"].get("a"), (int, float)))
+    check("Fit has b", isinstance(lc["fit_params"].get("b"), (int, float)))
+    check("Fit has c", isinstance(lc["fit_params"].get("c"), (int, float)))
+
+# Projections should be monotonically increasing
+accs = [p["projected_accuracy"] for p in lc["projections"]]
+check("Projections non-decreasing", all(accs[i] <= accs[i+1] + 0.001 for i in range(len(accs)-1)))
+
+# ── [87] Consensus Ensemble with Rejection ────────────
+print("\n[87] Consensus Ensemble with Rejection")
+ce = api("POST", "/api/analysis/consensus-ensemble", {"source": "demo", "well": "3P"}, timeout=180)
+check("Status 200", ce is not None)
+check("Has well", ce.get("well") == "3P")
+check("Has n_samples", isinstance(ce.get("n_samples"), int) and ce["n_samples"] > 0)
+check("Has n_models", isinstance(ce.get("n_models"), int) and ce["n_models"] >= 2)
+check("Has min_agreement", isinstance(ce.get("min_agreement"), (int, float)))
+check("Has n_accepted", isinstance(ce.get("n_accepted"), int))
+check("Has n_rejected", isinstance(ce.get("n_rejected"), int))
+check("Accepted + Rejected = Total", ce["n_accepted"] + ce["n_rejected"] == ce["n_samples"])
+check("Has consensus_rate", isinstance(ce.get("consensus_rate"), (int, float)) and 0 <= ce["consensus_rate"] <= 1)
+check("Has accepted_accuracy", isinstance(ce.get("accepted_accuracy"), (int, float)))
+check("Has model_ranking", isinstance(ce.get("model_ranking"), list) and len(ce["model_ranking"]) >= 2)
+mr0 = ce["model_ranking"][0]
+check("MR has model", isinstance(mr0.get("model"), str))
+check("MR has accuracy", isinstance(mr0.get("accuracy"), (int, float)))
+check("Has per_class", isinstance(ce.get("per_class"), list) and len(ce["per_class"]) >= 2)
+pc0 = ce["per_class"][0]
+check("PC has class", isinstance(pc0.get("class"), str))
+check("PC has count", isinstance(pc0.get("count"), int))
+check("PC has consensus_rate", isinstance(pc0.get("consensus_rate"), (int, float)))
+check("PC has accuracy_when_accepted", isinstance(pc0.get("accuracy_when_accepted"), (int, float)))
+check("PC has avg_agreement", isinstance(pc0.get("avg_agreement"), (int, float)))
+check("Has rejected_samples", isinstance(ce.get("rejected_samples"), list))
+if ce["rejected_samples"]:
+    rs0 = ce["rejected_samples"][0]
+    check("RS has index", isinstance(rs0.get("index"), int))
+    check("RS has true_class", isinstance(rs0.get("true_class"), str))
+    check("RS has vote_distribution", isinstance(rs0.get("vote_distribution"), dict))
+    check("RS has max_agreement", isinstance(rs0.get("max_agreement"), (int, float)))
+check("Has plot", isinstance(ce.get("plot"), str) and len(ce["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(ce.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(ce["stakeholder_brief"].get("headline"), str))
+
+# Param validation
+check("min_agreement=0.3 rejected", api_expect_error("POST", "/api/analysis/consensus-ensemble", {"source": "demo", "well": "3P", "min_agreement": 0.3}))
+
+# Custom threshold
+ce8 = api("POST", "/api/analysis/consensus-ensemble", {"source": "demo", "well": "3P", "min_agreement": 0.8}, timeout=180)
+check("min_agreement=0.8 works", ce8 is not None and isinstance(ce8.get("consensus_rate"), (int, float)))
+check("Higher threshold = lower consensus", ce8["consensus_rate"] <= ce["consensus_rate"] + 0.01)
+check("Consensus accuracy valid", isinstance(ce8.get("accepted_accuracy"), (int, float)))
+
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.24.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.25.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

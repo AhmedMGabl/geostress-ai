@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.24.0 - RLHF Reward + Negative Learning + Monitoring)."""
+"""GeoStress AI - FastAPI Web Application (v3.25.0 - Sample Quality + Learning Curve + Consensus Ensemble)."""
 
 import os
 import io
@@ -778,7 +778,10 @@ def _sanitize_for_json(obj):
         return int(obj)
     elif isinstance(obj, (np.floating,)):
         v = float(obj)
-        return None if np.isnan(v) else v
+        return None if np.isnan(v) or np.isinf(v) else v
+    elif isinstance(obj, float):
+        import math
+        return None if math.isnan(obj) or math.isinf(obj) else obj
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
     return obj
@@ -1001,7 +1004,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.24.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.25.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -16089,6 +16092,636 @@ async def monitoring_simulation(request: Request):
     return result
 
 
+# ── Per-Sample Data Quality Scoring ────────────────────────────────────
+
+_sample_quality_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/sample-quality")
+async def sample_quality(request: Request):
+    """Score each individual fracture measurement on data quality.
+
+    Flags suspicious samples: outlier dip angles, physically impossible
+    azimuths, statistical outliers in feature space, and near-duplicate
+    entries. Helps companies clean their data before analysis — garbage
+    in, garbage out is the #1 risk in geostress prediction.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"squal:{well}:{source}"
+    if cache_key in _sample_quality_cache:
+        return _sample_quality_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        n = len(df_well)
+        if n < 5:
+            return {"error": "Not enough data for quality scoring", "n_samples": n}
+
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.zeros(n)
+        azimuths = df_well[AZIMUTH_COL].values if AZIMUTH_COL in df_well.columns else np.zeros(n)
+        dips = df_well[DIP_COL].values if DIP_COL in df_well.columns else np.zeros(n)
+
+        # Scoring: 0=clean, higher=more suspicious
+        scores = np.zeros(n, dtype=float)
+        flags = [[] for _ in range(n)]
+
+        # 1. Range checks
+        for i in range(n):
+            if dips[i] < 0 or dips[i] > 90:
+                scores[i] += 3.0
+                flags[i].append("INVALID_DIP: dip out of 0-90 range")
+            if azimuths[i] < 0 or azimuths[i] > 360:
+                scores[i] += 3.0
+                flags[i].append("INVALID_AZIMUTH: azimuth out of 0-360 range")
+            if depths[i] < 0:
+                scores[i] += 3.0
+                flags[i].append("NEGATIVE_DEPTH: depth below zero")
+
+        # 2. Statistical outliers (z-score > 3)
+        for col, vals, name in [(DEPTH_COL, depths, "depth"), (DIP_COL, dips, "dip")]:
+            mean, std = np.mean(vals), np.std(vals)
+            if std > 0:
+                z_scores = np.abs((vals - mean) / std)
+                for i in range(n):
+                    if z_scores[i] > 3:
+                        scores[i] += 2.0
+                        flags[i].append(f"OUTLIER_{name.upper()}: z-score {z_scores[i]:.1f}")
+                    elif z_scores[i] > 2:
+                        scores[i] += 1.0
+                        flags[i].append(f"MILD_OUTLIER_{name.upper()}: z-score {z_scores[i]:.1f}")
+
+        # 3. Near-duplicates (same depth/azimuth/dip within tolerance)
+        for i in range(n):
+            for j in range(i + 1, min(i + 50, n)):
+                if (abs(depths[i] - depths[j]) < 0.1 and
+                    abs(azimuths[i] - azimuths[j]) < 1.0 and
+                    abs(dips[i] - dips[j]) < 1.0):
+                    scores[i] += 1.5
+                    scores[j] += 1.5
+                    flags[i].append(f"NEAR_DUPLICATE: similar to sample {j}")
+                    flags[j].append(f"NEAR_DUPLICATE: similar to sample {i}")
+
+        # 4. Suspicious vertical fractures (dip exactly 90)
+        for i in range(n):
+            if abs(dips[i] - 90.0) < 0.01:
+                scores[i] += 0.5
+                flags[i].append("EXACT_90_DIP: perfectly vertical, may be measurement artifact")
+
+        # 5. Depth monotonicity check (should generally increase)
+        if n > 10:
+            for i in range(1, n):
+                if depths[i] < depths[i - 1] - 50:
+                    scores[i] += 1.0
+                    flags[i].append(f"DEPTH_REVERSAL: {depths[i]:.0f}m after {depths[i-1]:.0f}m")
+
+        # Categorize
+        quality_grades = []
+        for i in range(n):
+            if scores[i] == 0:
+                grade = "CLEAN"
+            elif scores[i] < 2:
+                grade = "MINOR"
+            elif scores[i] < 4:
+                grade = "WARNING"
+            else:
+                grade = "CRITICAL"
+            quality_grades.append(grade)
+
+        n_clean = quality_grades.count("CLEAN")
+        n_minor = quality_grades.count("MINOR")
+        n_warning = quality_grades.count("WARNING")
+        n_critical = quality_grades.count("CRITICAL")
+
+        # Top flagged samples
+        flagged_samples = []
+        sorted_idx = np.argsort(scores)[::-1]
+        for idx in sorted_idx[:20]:
+            if scores[idx] > 0:
+                flagged_samples.append({
+                    "index": int(idx),
+                    "depth_m": round(float(depths[idx]), 1),
+                    "azimuth_deg": round(float(azimuths[idx]), 1),
+                    "dip_deg": round(float(dips[idx]), 1),
+                    "quality_score": round(float(scores[idx]), 2),
+                    "grade": quality_grades[idx],
+                    "flags": flags[idx],
+                    "fracture_type": str(df_well[FRACTURE_TYPE_COL].iloc[idx]) if FRACTURE_TYPE_COL in df_well.columns else None,
+                })
+
+        # Flag type summary
+        all_flag_types = {}
+        for fl in flags:
+            for f in fl:
+                ftype = f.split(":")[0]
+                all_flag_types[ftype] = all_flag_types.get(ftype, 0) + 1
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            cats = ["CLEAN", "MINOR", "WARNING", "CRITICAL"]
+            counts = [n_clean, n_minor, n_warning, n_critical]
+            colors = ["#28a745", "#ffc107", "#fd7e14", "#dc3545"]
+            ax1.bar(cats, counts, color=colors)
+            ax1.set_ylabel("Count")
+            ax1.set_title(f"Sample Quality Distribution (n={n})")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            if depths.max() > depths.min():
+                sc_colors = [colors[cats.index(g)] for g in quality_grades]
+                ax2.scatter(azimuths, depths, c=sc_colors, alpha=0.5, s=15)
+                ax2.set_xlabel("Azimuth (deg)")
+                ax2.set_ylabel("Depth (m)")
+                ax2.set_title("Flagged Samples by Position")
+                ax2.invert_yaxis()
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            if all_flag_types:
+                ft_names = list(all_flag_types.keys())[:8]
+                ft_counts = [all_flag_types[k] for k in ft_names]
+                ax3.barh([f[:15] for f in ft_names], ft_counts, color="#dc3545")
+                ax3.set_xlabel("Count")
+                ax3.set_title("Flag Types")
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        overall_quality = round((n_clean + n_minor * 0.7) / max(n, 1) * 100, 1)
+
+        return {
+            "well": well, "n_samples": n,
+            "n_clean": n_clean, "n_minor": n_minor,
+            "n_warning": n_warning, "n_critical": n_critical,
+            "overall_quality_pct": overall_quality,
+            "flag_types": all_flag_types,
+            "flagged_samples": flagged_samples,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Data quality: {overall_quality:.0f}% clean ({n_warning + n_critical} flagged samples)",
+                "risk_level": "GREEN" if n_critical == 0 and n_warning < n * 0.05 else ("AMBER" if n_critical < 3 else "RED"),
+                "confidence_sentence": (
+                    f"{n_clean} clean, {n_minor} minor issues, {n_warning} warnings, "
+                    f"{n_critical} critical. Overall quality: {overall_quality:.0f}%."
+                ),
+                "action": (
+                    f"Review {n_critical} critical and {n_warning} warning samples before analysis."
+                    if (n_critical + n_warning) > 0 else
+                    "Data quality is good. Proceed with analysis."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _sample_quality_cache[cache_key] = result
+    return result
+
+
+# ── Learning Curve Projection ──────────────────────────────────────────
+
+_learning_proj_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/learning-curve-projection")
+async def learning_curve_projection(request: Request):
+    """Project how much additional data would improve accuracy.
+
+    Fits a power-law learning curve to subsets of current data, then
+    extrapolates to 2x, 5x, 10x dataset size. Helps companies decide
+    if collecting more data is worth the investment. Also estimates
+    the 'saturation point' where more data stops helping.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"lcproj:{well}:{source}"
+    if cache_key in _learning_proj_cache:
+        return _learning_proj_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import accuracy_score
+        from scipy.optimize import curve_fit
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+
+        all_models = _get_models()
+        model_template = all_models.get("random_forest", list(all_models.values())[0])
+
+        # Compute learning curve at different data sizes
+        fractions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        curve_points = []
+
+        for frac in fractions:
+            subset_size = max(int(n * frac), 10)
+            if subset_size >= n:
+                subset_size = n
+
+            accs = []
+            for seed in range(5):
+                rng = np.random.RandomState(seed)
+                idx = rng.permutation(n)[:subset_size]
+                X_sub, y_sub = X[idx], y[idx]
+
+                min_count = min(np.bincount(y_sub, minlength=len(class_names)))
+                if min_count < 2:
+                    continue
+                n_splits = min(3, max(2, min_count))
+                cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        fold_accs = []
+                        for train_idx, val_idx in cv.split(X_sub, y_sub):
+                            m = clone(model_template)
+                            m.fit(X_sub[train_idx], y_sub[train_idx])
+                            fold_accs.append(accuracy_score(y_sub[val_idx], m.predict(X_sub[val_idx])))
+                        accs.append(float(np.mean(fold_accs)))
+                except Exception:
+                    continue
+
+            if accs:
+                curve_points.append({
+                    "n_samples": subset_size,
+                    "fraction": round(frac, 2),
+                    "accuracy_mean": round(float(np.mean(accs)), 4),
+                    "accuracy_std": round(float(np.std(accs)), 4),
+                })
+
+        if len(curve_points) < 3:
+            return {"error": "Not enough data points for learning curve", "n_samples": n}
+
+        # Fit power-law: acc = a - b * n^(-c)
+        sizes = np.array([p["n_samples"] for p in curve_points], dtype=float)
+        accs_arr = np.array([p["accuracy_mean"] for p in curve_points])
+
+        try:
+            def power_law(x, a, b, c):
+                return a - b * np.power(x, -c)
+
+            popt, _ = curve_fit(power_law, sizes, accs_arr, p0=[0.9, 0.5, 0.5],
+                               bounds=([0.0, 0.0, 0.01], [1.0, 2.0, 2.0]), maxfev=5000)
+            a_fit, b_fit, c_fit = popt
+            fit_success = True
+        except Exception:
+            a_fit, b_fit, c_fit = accs_arr[-1], 0.1, 0.5
+            fit_success = False
+
+        # Project to larger datasets
+        projections = []
+        multipliers = [1, 2, 5, 10, 20]
+        for mult in multipliers:
+            proj_n = int(n * mult)
+            if fit_success:
+                proj_acc = float(a_fit - b_fit * proj_n ** (-c_fit))
+            else:
+                proj_acc = float(accs_arr[-1] + 0.01 * np.log(mult))
+            proj_acc = min(proj_acc, 0.99)
+            projections.append({
+                "multiplier": mult,
+                "n_samples": proj_n,
+                "projected_accuracy": round(proj_acc, 4),
+                "gain_vs_current": round(proj_acc - float(accs_arr[-1]), 4),
+            })
+
+        # Saturation analysis
+        asymptote = round(float(a_fit), 4) if fit_success else round(float(accs_arr[-1]) + 0.05, 4)
+        current_acc = float(accs_arr[-1])
+        remaining_gap = max(asymptote - current_acc, 0)
+
+        # Estimate samples needed for 90% of asymptote
+        if fit_success and b_fit > 0 and c_fit > 0:
+            target = a_fit - 0.1 * b_fit  # 90% of way to asymptote
+            try:
+                n_for_90 = int((b_fit / max(a_fit - target, 0.001)) ** (1 / c_fit))
+            except Exception:
+                n_for_90 = n * 10
+        else:
+            n_for_90 = n * 5
+
+        # ROI analysis
+        roi_grade = "HIGH" if remaining_gap > 0.1 else ("MEDIUM" if remaining_gap > 0.03 else "LOW")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            s = [p["n_samples"] for p in curve_points]
+            a = [p["accuracy_mean"] for p in curve_points]
+            ax1.plot(s, a, "bo-", markersize=6, label="Observed")
+            if fit_success:
+                x_fit = np.linspace(min(s), max(s) * 5, 100)
+                y_fit = a_fit - b_fit * x_fit ** (-c_fit)
+                ax1.plot(x_fit, y_fit, "r--", label=f"Power-law fit (asymptote: {a_fit:.1%})")
+                ax1.axhline(y=a_fit, color="gray", linestyle=":", alpha=0.5)
+            ax1.set_xlabel("Training Samples")
+            ax1.set_ylabel("Accuracy")
+            ax1.set_title("Learning Curve + Projection")
+            ax1.legend(fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            proj_mults = [p["multiplier"] for p in projections]
+            proj_accs = [p["projected_accuracy"] for p in projections]
+            proj_gains = [p["gain_vs_current"] for p in projections]
+            ax2.bar([f"{m}x" for m in proj_mults], proj_accs, color="#4a90d9")
+            ax2.set_xlabel("Data Multiplier")
+            ax2.set_ylabel("Projected Accuracy")
+            ax2.set_title("More Data = More Accuracy?")
+            ax2.axhline(y=current_acc, color="gray", linestyle="--", alpha=0.5, label=f"Current: {current_acc:.1%}")
+            ax2.legend(fontsize=8)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            ax3.bar([f"{m}x" for m in proj_mults[1:]], [g * 100 for g in proj_gains[1:]],
+                   color=["#28a745" if g > 0.02 else "#ffc107" if g > 0.005 else "#aaa" for g in proj_gains[1:]])
+            ax3.set_xlabel("Data Multiplier")
+            ax3.set_ylabel("Accuracy Gain (%)")
+            ax3.set_title(f"ROI of More Data ({roi_grade})")
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n,
+            "current_accuracy": round(current_acc, 4),
+            "asymptote": asymptote,
+            "remaining_gap": round(remaining_gap, 4),
+            "fit_success": fit_success,
+            "fit_params": {"a": round(float(a_fit), 4), "b": round(float(b_fit), 4), "c": round(float(c_fit), 4)} if fit_success else None,
+            "curve_points": curve_points,
+            "projections": projections,
+            "n_for_90pct_asymptote": n_for_90,
+            "roi_grade": roi_grade,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Learning curve: {remaining_gap:.1%} room for improvement, ROI={roi_grade}",
+                "risk_level": "GREEN" if roi_grade == "HIGH" else ("AMBER" if roi_grade == "MEDIUM" else "RED"),
+                "confidence_sentence": (
+                    f"Current accuracy: {current_acc:.1%}. Estimated asymptote: {asymptote:.1%}. "
+                    f"With 2x data: {projections[1]['projected_accuracy']:.1%} (+{projections[1]['gain_vs_current']:.1%}). "
+                    f"With 10x data: {projections[3]['projected_accuracy']:.1%} (+{projections[3]['gain_vs_current']:.1%}). "
+                    f"Need ~{n_for_90:,} samples for 90% of maximum achievable accuracy."
+                ),
+                "action": (
+                    f"Collecting more data will significantly improve accuracy (ROI: {roi_grade}). "
+                    f"Target {n_for_90:,} total samples."
+                    if roi_grade in ("HIGH", "MEDIUM") else
+                    "Model is near its learning limit. Focus on feature engineering or model architecture changes."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _learning_proj_cache[cache_key] = result
+    return result
+
+
+# ── Consensus Ensemble with Rejection ──────────────────────────────────
+
+_consensus_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/consensus-ensemble")
+async def consensus_ensemble(request: Request):
+    """Run multiple models and only accept classification when majority agrees.
+
+    Industrial safety: ambiguous cases (no model consensus) are REJECTED
+    for expert review. Reports consensus rate, per-class agreement, and
+    which model combinations produce the most reliable consensus.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    min_agreement = float(body.get("min_agreement", 0.6))
+
+    if min_agreement < 0.5 or min_agreement > 1.0:
+        raise HTTPException(400, "min_agreement must be between 0.5 and 1.0")
+
+    cache_key = f"consensus:{well}:{source}:{min_agreement}"
+    if cache_key in _consensus_cache:
+        return _consensus_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        import warnings
+        from src.enhanced_analysis import _get_models
+        from sklearn.base import clone
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+
+        all_models = _get_models()
+        model_names = list(all_models.keys())
+        n_models = len(model_names)
+
+        min_count = min(np.bincount(y))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        # Collect predictions from all models via CV
+        all_predictions = np.zeros((n, n_models), dtype=int)
+        model_accuracies = {}
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for mi, (mname, mtemplate) in enumerate(all_models.items()):
+                fold_preds = np.zeros(n, dtype=int)
+                for train_idx, val_idx in cv.split(X, y):
+                    try:
+                        m = clone(mtemplate)
+                        m.fit(X[train_idx], y[train_idx])
+                        preds = np.asarray(m.predict(X[val_idx])).ravel()
+                        fold_preds[val_idx] = preds
+                    except Exception:
+                        fold_preds[val_idx] = 0
+                all_predictions[:, mi] = fold_preds
+                model_accuracies[mname] = round(float(accuracy_score(y, fold_preds)), 4)
+
+        # Compute consensus for each sample
+        consensus_classes = []
+        agreement_scores = []
+        rejected_idx = []
+
+        for i in range(n):
+            votes = all_predictions[i]
+            vote_counts = np.bincount(votes, minlength=n_classes)
+            max_votes = vote_counts.max()
+            agreement = float(max_votes / n_models)
+            agreement_scores.append(agreement)
+
+            if agreement >= min_agreement:
+                consensus_classes.append(int(np.argmax(vote_counts)))
+            else:
+                consensus_classes.append(-1)  # rejected
+                rejected_idx.append(i)
+
+        consensus_arr = np.array(consensus_classes)
+        accepted_mask = consensus_arr >= 0
+        n_accepted = int(accepted_mask.sum())
+        n_rejected = int((~accepted_mask).sum())
+        consensus_rate = float(n_accepted / n)
+
+        # Accuracy of accepted predictions
+        if n_accepted > 0:
+            accepted_acc = float(accuracy_score(y[accepted_mask], consensus_arr[accepted_mask]))
+        else:
+            accepted_acc = 0.0
+
+        # Per-model accuracy
+        model_ranking = sorted(model_accuracies.items(), key=lambda x: x[1], reverse=True)
+
+        # Per-class consensus analysis
+        per_class = []
+        for j, cn in enumerate(class_names):
+            mask = y == j
+            if mask.sum() == 0:
+                continue
+            class_accepted = accepted_mask[mask].sum()
+            class_consensus_rate = float(class_accepted / mask.sum())
+            if class_accepted > 0:
+                class_acc = float(accuracy_score(y[mask & accepted_mask], consensus_arr[mask & accepted_mask]))
+            else:
+                class_acc = 0.0
+            avg_agreement = float(np.mean([agreement_scores[i] for i in range(n) if mask[i]]))
+            per_class.append({
+                "class": cn, "count": int(mask.sum()),
+                "consensus_rate": round(class_consensus_rate, 4),
+                "accuracy_when_accepted": round(class_acc, 4),
+                "avg_agreement": round(avg_agreement, 4),
+            })
+
+        # Rejected samples details
+        rejected_details = []
+        for idx in rejected_idx[:15]:
+            votes = all_predictions[idx]
+            vote_dist = {}
+            for mi, v in enumerate(votes):
+                cn = class_names[v]
+                vote_dist[cn] = vote_dist.get(cn, 0) + 1
+            depth_val = float(df_well[DEPTH_COL].iloc[idx]) if DEPTH_COL in df_well.columns and idx < len(df_well) else None
+            rejected_details.append({
+                "index": int(idx),
+                "depth_m": round(depth_val, 1) if depth_val else None,
+                "true_class": class_names[y[idx]],
+                "vote_distribution": vote_dist,
+                "max_agreement": round(float(agreement_scores[idx]), 3),
+            })
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            ax1.hist(agreement_scores, bins=20, color="#4a90d9", alpha=0.7)
+            ax1.axvline(x=min_agreement, color="red", linestyle="--", linewidth=2, label=f"Threshold: {min_agreement:.0%}")
+            ax1.set_xlabel("Agreement Score")
+            ax1.set_ylabel("Count")
+            ax1.set_title(f"Model Agreement Distribution ({consensus_rate:.0%} accepted)")
+            ax1.legend(fontsize=8)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            mr_names = [m[0][:10] for m in model_ranking]
+            mr_accs = [m[1] for m in model_ranking]
+            ax2.barh(mr_names[::-1], mr_accs[::-1], color="#4a90d9")
+            ax2.set_xlabel("Accuracy")
+            ax2.set_title("Individual Model Accuracies")
+            ax2.axvline(x=accepted_acc, color="green", linestyle="--", alpha=0.5, label=f"Consensus: {accepted_acc:.1%}")
+            ax2.legend(fontsize=8)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            pc_names = [p["class"][:10] for p in per_class]
+            pc_rates = [p["consensus_rate"] for p in per_class]
+            pc_colors = ["#28a745" if r > 0.8 else "#ffc107" if r > 0.5 else "#dc3545" for r in pc_rates]
+            ax3.barh(pc_names, pc_rates, color=pc_colors)
+            ax3.set_xlabel("Consensus Rate")
+            ax3.set_title("Per-Class Consensus")
+            ax3.axvline(x=min_agreement, color="red", linestyle="--", alpha=0.3)
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "n_models": n_models,
+            "min_agreement": min_agreement,
+            "n_accepted": n_accepted, "n_rejected": n_rejected,
+            "consensus_rate": round(consensus_rate, 4),
+            "accepted_accuracy": round(accepted_acc, 4),
+            "model_ranking": [{"model": m, "accuracy": a} for m, a in model_ranking],
+            "per_class": per_class,
+            "rejected_samples": rejected_details,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Consensus ensemble: {accepted_acc:.1%} accuracy on {consensus_rate:.0%} of samples ({n_models} models)",
+                "risk_level": "GREEN" if accepted_acc > 0.85 and consensus_rate > 0.7 else ("AMBER" if accepted_acc > 0.7 else "RED"),
+                "confidence_sentence": (
+                    f"{n_models} models vote on each sample. "
+                    f"{consensus_rate:.0%} reach consensus (>={min_agreement:.0%} agreement). "
+                    f"Consensus accuracy: {accepted_acc:.1%}. "
+                    f"{n_rejected} samples rejected for expert review."
+                ),
+                "action": (
+                    f"Use consensus ensemble for deployment. {n_rejected} samples need expert classification."
+                    if accepted_acc > 0.8 else
+                    "Consensus accuracy insufficient. Individual models need improvement first."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _consensus_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -17180,7 +17813,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.24.0",
+        "app_version": "3.25.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

@@ -974,6 +974,96 @@
                         </div>
                     </div>
 
+                    <!-- v3.25.0: Sample Quality Scoring -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-shield-check"></i> Per-Sample Data Quality</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runSampleQuality()">
+                                <i class="bi bi-play-fill"></i> Score Quality
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="sq-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Clean</div><div class="metric-value text-success" id="sq-clean">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Minor</div><div class="metric-value text-warning" id="sq-minor">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Warning</div><div class="metric-value text-orange" id="sq-warning">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Critical</div><div class="metric-value text-danger" id="sq-critical">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Quality %</div><div class="metric-value" id="sq-quality">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Samples</div><div class="metric-value" id="sq-n">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="sq-brief"></div>
+                            <h6>Flag Types</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Flag Type</th><th>Count</th></tr></thead><tbody id="sq-flag-body"></tbody></table>
+                            </div>
+                            <h6>Top Flagged Samples</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>#</th><th>Depth</th><th>Az</th><th>Dip</th><th>Score</th><th>Grade</th><th>Flags</th></tr></thead><tbody id="sq-sample-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="sq-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.25.0: Learning Curve Projection -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-up-arrow"></i> Learning Curve Projection</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runLearningProj()">
+                                <i class="bi bi-play-fill"></i> Project
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="lcp-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Current Acc</div><div class="metric-value" id="lcp-acc">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Asymptote</div><div class="metric-value" id="lcp-asymptote">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Gap</div><div class="metric-value" id="lcp-gap">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">ROI Grade</div><div class="metric-value" id="lcp-roi">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Fit OK?</div><div class="metric-value" id="lcp-fit">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">90% Target</div><div class="metric-value" id="lcp-target">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="lcp-brief"></div>
+                            <h6>Projections</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Multiplier</th><th>Samples</th><th>Projected Acc</th><th>Gain</th></tr></thead><tbody id="lcp-proj-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="lcp-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.25.0: Consensus Ensemble -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-people-fill"></i> Consensus Ensemble (Multi-Model Vote)</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runConsensusEnsemble()">
+                                <i class="bi bi-play-fill"></i> Run Consensus
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="ce-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Models</div><div class="metric-value" id="ce-models">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Accepted</div><div class="metric-value text-success" id="ce-accepted">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Rejected</div><div class="metric-value text-danger" id="ce-rejected">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Consensus Rate</div><div class="metric-value" id="ce-rate">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Accepted Acc</div><div class="metric-value" id="ce-acc">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Threshold</div><div class="metric-value" id="ce-thresh">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="ce-brief"></div>
+                            <h6>Model Rankings</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Model</th><th>Accuracy</th></tr></thead><tbody id="ce-model-body"></tbody></table>
+                            </div>
+                            <h6>Per-Class Consensus</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Class</th><th>Count</th><th>Consensus Rate</th><th>Accuracy</th><th>Avg Agreement</th></tr></thead><tbody id="ce-class-body"></tbody></table>
+                            </div>
+                            <h6>Rejected Samples (for Expert Review)</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>#</th><th>Depth</th><th>True Class</th><th>Max Agreement</th><th>Vote Distribution</th></tr></thead><tbody id="ce-reject-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="ce-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
