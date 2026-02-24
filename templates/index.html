@@ -1639,6 +1639,90 @@
                         </div>
                     </div>
 
+                    <!-- v3.34.0: Model Monitoring -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-up-arrow"></i> Model Monitoring & Drift Detection</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runModelMonitoring()">
+                                <i class="bi bi-play-fill"></i> Monitor
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="monitor-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Drift Status</div><div class="metric-value" id="monitor-status">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Avg PSI</div><div class="metric-value" id="monitor-psi">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">High Drift Features</div><div class="metric-value" id="monitor-high">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Model Accuracy</div><div class="metric-value" id="monitor-acc">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="monitor-brief"></div>
+                            <h6>Feature Drift</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Feature</th><th>PSI</th><th>Severity</th><th>Ref Mean</th><th>New Mean</th><th>Shift</th></tr></thead><tbody id="monitor-features-body"></tbody></table>
+                            </div>
+                            <h6>Class Distribution Shift</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Class</th><th>Ref %</th><th>New %</th><th>Shift %</th><th>Severity</th></tr></thead><tbody id="monitor-class-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="monitor-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.34.0: Formation Boundaries -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-layers"></i> Formation Boundary Detection</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runFormationBoundaries()">
+                                <i class="bi bi-play-fill"></i> Detect
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="formation-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Boundaries Found</div><div class="metric-value" id="formation-count">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Segments</div><div class="metric-value" id="formation-segments">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Depth Range</div><div class="metric-value" id="formation-depth">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Fractures</div><div class="metric-value" id="formation-fractures">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="formation-brief"></div>
+                            <h6>Detected Boundaries</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Depth (m)</th><th>Confidence</th><th>Z-Score</th><th>Signals</th><th>Dip Change</th></tr></thead><tbody id="formation-boundaries-body"></tbody></table>
+                            </div>
+                            <h6>Formation Segments</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>#</th><th>Top (m)</th><th>Bottom (m)</th><th>Thickness</th><th>Fractures</th><th>Mean Dip</th><th>Dominant Type</th><th>Density</th></tr></thead><tbody id="formation-segments-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="formation-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.34.0: Full Report -->
+                    <div class="card mb-4 border-dark">
+                        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-file-earmark-text"></i> Comprehensive Analysis Report</span>
+                            <button class="btn btn-sm btn-outline-light" onclick="runFullReport()">
+                                <i class="bi bi-play-fill"></i> Generate Report
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="report-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Overall Assessment</div><div class="metric-value" id="report-assessment">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Model</div><div class="metric-value" id="report-model">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Accuracy</div><div class="metric-value" id="report-accuracy">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Risks</div><div class="metric-value" id="report-risks">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="report-brief"></div>
+                            <h6>Risks</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Severity</th><th>Risk</th><th>Detail</th><th>Mitigation</th></tr></thead><tbody id="report-risks-body"></tbody></table>
+                            </div>
+                            <h6>Recommended Actions</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>#</th><th>Action</th><th>Detail</th><th>Timeline</th></tr></thead><tbody id="report-actions-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="report-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

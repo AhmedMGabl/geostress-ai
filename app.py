@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.33.0 - Deployment Readiness + Sensitivity Analysis)."""
+"""GeoStress AI - FastAPI Web Application (v3.34.0 - Model Monitoring + Formation Boundaries + Report Generation)."""
 
 import os
 import io
@@ -24958,4 +24958,807 @@ async def api_sensitivity_analysis(request: Request):
     _audit_record("sensitivity_analysis", {"well": well, "n_perturbations": n_perturbations},
                   {"mean_flip_rate": result["mean_flip_rate"]}, source, well, elapsed)
     _sensitivity_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# v3.34.0 Caches
+# ────────────────────────────────────────────────────────────────────────
+_monitoring_cache: dict = {}
+_formation_cache: dict = {}
+_report_cache: dict = {}
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [111] Model Monitoring & Data Drift Detection
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/model-monitoring")
+async def api_model_monitoring(request: Request):
+    """Detect data drift and model degradation for production monitoring.
+
+    Uses Population Stability Index (PSI) and feature distribution comparison
+    to detect when new data has shifted from training distribution.
+    Alerts operators when predictions may be unreliable.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    reference_well = body.get("reference_well", None)
+
+    cache_key = f"monitoring:{well}:{source}:{reference_well}"
+    if cache_key in _monitoring_cache:
+        return _monitoring_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        n_classes = len(le.classes_)
+        class_names = le.classes_.tolist()
+
+        # ── Train/test split for temporal simulation ──
+        # Split data 80/20 to simulate "training" vs "new incoming" data
+        split = int(n * 0.8)
+        X_ref, X_new = X[:split], X[split:]
+        y_ref, y_new = y[:split], y[split:]
+
+        # If reference_well is specified, use cross-well comparison
+        if reference_well and reference_well != well:
+            try:
+                X_ref_full, y_ref_full, _, _, _ = get_cached_features(df, reference_well, source)
+                X_ref = X_ref_full
+                y_ref = y_ref_full
+            except Exception:
+                pass  # Fall back to temporal split
+
+        # ── Population Stability Index (PSI) per feature ──
+        def compute_psi(ref, new, bins=10):
+            """Compute PSI between reference and new distribution."""
+            eps = 1e-6
+            min_val = min(ref.min(), new.min())
+            max_val = max(ref.max(), new.max())
+            if max_val - min_val < eps:
+                return 0.0
+            bin_edges = np.linspace(min_val, max_val, bins + 1)
+            ref_hist = np.histogram(ref, bins=bin_edges)[0] / len(ref) + eps
+            new_hist = np.histogram(new, bins=bin_edges)[0] / len(new) + eps
+            psi = float(np.sum((new_hist - ref_hist) * np.log(new_hist / ref_hist)))
+            return round(psi, 6)
+
+        feature_drift = []
+        feature_names = features.columns.tolist() if hasattr(features, 'columns') else [f"f{i}" for i in range(X.shape[1])]
+        total_psi = 0.0
+        for i, fname in enumerate(feature_names[:X.shape[1]]):
+            psi = compute_psi(X_ref[:, i], X_new[:, i])
+            total_psi += psi
+            severity = "HIGH" if psi > 0.25 else ("MEDIUM" if psi > 0.10 else "LOW")
+            feature_drift.append({
+                "feature": fname,
+                "psi": psi,
+                "severity": severity,
+                "ref_mean": round(float(X_ref[:, i].mean()), 4),
+                "ref_std": round(float(X_ref[:, i].std()), 4),
+                "new_mean": round(float(X_new[:, i].mean()), 4),
+                "new_std": round(float(X_new[:, i].std()), 4),
+                "mean_shift": round(float(abs(X_new[:, i].mean() - X_ref[:, i].mean())), 4),
+            })
+        feature_drift.sort(key=lambda x: x["psi"], reverse=True)
+        avg_psi = total_psi / max(len(feature_names), 1)
+
+        # ── Class distribution shift ──
+        ref_counts = np.bincount(y_ref, minlength=n_classes)
+        new_counts = np.bincount(y_new, minlength=n_classes)
+        ref_dist = ref_counts / max(ref_counts.sum(), 1)
+        new_dist = new_counts / max(new_counts.sum(), 1)
+
+        class_drift = []
+        for c in range(n_classes):
+            shift = abs(float(new_dist[c] - ref_dist[c]))
+            class_drift.append({
+                "class": class_names[c],
+                "ref_pct": round(float(ref_dist[c] * 100), 1),
+                "new_pct": round(float(new_dist[c] * 100), 1),
+                "shift_pct": round(shift * 100, 1),
+                "severity": "HIGH" if shift > 0.15 else ("MEDIUM" if shift > 0.05 else "LOW"),
+            })
+        class_drift.sort(key=lambda x: x["shift_pct"], reverse=True)
+
+        # ── Model performance comparison ──
+        model_results = _evaluate_all_models(X, y, well, source)
+        best_name = max(model_results, key=lambda m: model_results[m]["balanced_accuracy"])
+        overall_ba = float(model_results[best_name]["balanced_accuracy"])
+
+        # ── Overall drift assessment ──
+        n_high_drift = sum(1 for fd in feature_drift if fd["severity"] == "HIGH")
+        n_medium_drift = sum(1 for fd in feature_drift if fd["severity"] == "MEDIUM")
+
+        if avg_psi > 0.25 or n_high_drift >= 3:
+            drift_status = "CRITICAL"
+            drift_color = "RED"
+        elif avg_psi > 0.10 or n_high_drift >= 1:
+            drift_status = "WARNING"
+            drift_color = "AMBER"
+        else:
+            drift_status = "STABLE"
+            drift_color = "GREEN"
+
+        # ── Recommendations ──
+        recommendations = []
+        if drift_status == "CRITICAL":
+            recommendations.append({
+                "priority": "CRITICAL",
+                "category": "Data Drift",
+                "action": f"Significant data drift detected (avg PSI={avg_psi:.3f}, {n_high_drift} features with high drift). Model retraining is strongly recommended.",
+                "impact": "Predictions may be unreliable for the new data. Retrain on recent data before making operational decisions.",
+            })
+        if n_high_drift > 0:
+            top_drift = feature_drift[0]
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Feature Drift",
+                "action": f"Feature '{top_drift['feature']}' has highest drift (PSI={top_drift['psi']:.3f}). Investigate measurement or geological changes.",
+                "impact": "Feature drift can indicate instrument recalibration, different geological zone, or processing changes.",
+            })
+        if any(cd["severity"] == "HIGH" for cd in class_drift):
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Class Distribution",
+                "action": "Class distribution has shifted significantly between reference and new data.",
+                "impact": "Model trained on different class proportions may underperform on shifted distribution.",
+            })
+        if drift_status == "STABLE":
+            recommendations.append({
+                "priority": "LOW",
+                "category": "Model Stability",
+                "action": f"Data distribution is stable (avg PSI={avg_psi:.3f}). No retraining needed.",
+                "impact": "Current model remains valid for incoming data.",
+            })
+
+        # ── Monitoring plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Feature PSI bar chart (top 10)
+            ax1 = axes[0]
+            top_features = feature_drift[:10]
+            fnames = [f["feature"][:12] for f in top_features]
+            psis = [f["psi"] for f in top_features]
+            colors_bar = ["#f44336" if p > 0.25 else "#FF9800" if p > 0.10 else "#4CAF50" for p in psis]
+            ax1.barh(fnames[::-1], psis[::-1], color=colors_bar[::-1])
+            ax1.axvline(0.10, color="orange", linestyle="--", alpha=0.7, label="Warning")
+            ax1.axvline(0.25, color="red", linestyle="--", alpha=0.7, label="Critical")
+            ax1.set_xlabel("PSI (Population Stability Index)")
+            ax1.set_title("Feature Drift (Top 10)")
+            ax1.legend(fontsize=8)
+
+            # Class distribution comparison
+            ax2 = axes[1]
+            x_pos = np.arange(n_classes)
+            width = 0.35
+            ax2.bar(x_pos - width/2, ref_dist * 100, width, label="Reference", color="#2196F3", alpha=0.8)
+            ax2.bar(x_pos + width/2, new_dist * 100, width, label="New Data", color="#FF5722", alpha=0.8)
+            ax2.set_xticks(x_pos)
+            ax2.set_xticklabels([c[:8] for c in class_names], rotation=45, ha="right", fontsize=8)
+            ax2.set_ylabel("% of samples")
+            ax2.set_title("Class Distribution Shift")
+            ax2.legend(fontsize=8)
+
+            # Drift summary gauge
+            ax3 = axes[2]
+            ax3.axis("off")
+            gauge_colors = {"STABLE": "#4CAF50", "WARNING": "#FF9800", "CRITICAL": "#f44336"}
+            ax3.text(0.5, 0.65, drift_status, ha="center", va="center", fontsize=36,
+                     fontweight="bold", color=gauge_colors.get(drift_status, "gray"),
+                     transform=ax3.transAxes)
+            ax3.text(0.5, 0.45, f"Avg PSI: {avg_psi:.4f}", ha="center", va="center",
+                     fontsize=16, transform=ax3.transAxes)
+            ax3.text(0.5, 0.3, f"{n_high_drift} high / {n_medium_drift} medium drift features",
+                     ha="center", va="center", fontsize=12, transform=ax3.transAxes)
+            ax3.text(0.5, 0.15, f"Reference: {len(X_ref)} samples | New: {len(X_new)} samples",
+                     ha="center", va="center", fontsize=10, color="gray", transform=ax3.transAxes)
+
+            fig.suptitle(f"Model Monitoring — {well}", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Drift status: {drift_status}. Avg PSI={avg_psi:.4f}. "
+                f"{n_high_drift} features with high drift."
+            ),
+            "risk_level": drift_color,
+            "what_this_means": (
+                "We compare the reference (training) data distribution with new incoming data. "
+                "If distributions shift, the model's predictions become less reliable. "
+                + ("Data is stable — model predictions remain valid." if drift_status == "STABLE"
+                   else "Some drift detected — monitor closely and consider retraining." if drift_status == "WARNING"
+                   else "Significant drift — retrain model before using predictions for operations.")
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "No action needed.",
+        }
+
+        return {
+            "well": well,
+            "reference_well": reference_well or f"{well} (temporal split)",
+            "n_reference": int(len(X_ref)),
+            "n_new": int(len(X_new)),
+            "drift_status": drift_status,
+            "drift_color": drift_color,
+            "avg_psi": round(avg_psi, 6),
+            "n_high_drift_features": n_high_drift,
+            "n_medium_drift_features": n_medium_drift,
+            "feature_drift": feature_drift,
+            "class_drift": class_drift,
+            "model_accuracy": round(overall_ba, 4),
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("model_monitoring", {"well": well, "reference_well": reference_well},
+                  {"drift_status": result["drift_status"]}, source, well, elapsed)
+    _monitoring_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [112] Formation Boundary Detection
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/formation-boundaries")
+async def api_formation_boundaries(request: Request):
+    """Detect formation boundaries from fracture density and orientation changes.
+
+    Uses changepoint detection to identify depths where fracture properties
+    shift significantly — indicating formation boundaries. Critical geological
+    information for well planning and correlation.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    min_segment_size = body.get("min_segment_size", 5)
+
+    if min_segment_size < 3 or min_segment_size > 50:
+        raise HTTPException(400, "min_segment_size must be between 3 and 50")
+
+    cache_key = f"formation:{well}:{source}:{min_segment_size}"
+    if cache_key in _formation_cache:
+        return _formation_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        class_names = le.classes_.tolist()
+
+        if DEPTH_COL not in df_well.columns:
+            raise HTTPException(400, "No depth data available")
+
+        depths = df_well[DEPTH_COL].values.astype(float)
+        azimuths = df_well[AZIMUTH_COL].values.astype(float) if AZIMUTH_COL in df_well.columns else np.zeros(n)
+        dips = df_well[DIP_COL].values.astype(float) if DIP_COL in df_well.columns else np.zeros(n)
+
+        # Sort by depth
+        sort_idx = np.argsort(depths)
+        depths = depths[sort_idx]
+        azimuths = azimuths[sort_idx]
+        dips = dips[sort_idx]
+        y_sorted = y[sort_idx]
+
+        depth_min = float(depths.min())
+        depth_max = float(depths.max())
+
+        # ── Changepoint detection using cumulative sum (CUSUM) ──
+        # Compute multiple signals for changepoint detection
+        # 1. Fracture density in sliding windows
+        window_size = max(min_segment_size, 5)
+        n_windows = max(1, n - window_size + 1)
+
+        density_signal = np.zeros(n)
+        mean_dip_signal = np.zeros(n)
+        mean_az_sin = np.zeros(n)
+        mean_az_cos = np.zeros(n)
+
+        for i in range(n):
+            lo = max(0, i - window_size // 2)
+            hi = min(n, i + window_size // 2 + 1)
+            depth_range = depths[hi-1] - depths[lo]
+            count = hi - lo
+            density_signal[i] = count / max(depth_range, 0.1)  # fractures per meter
+            mean_dip_signal[i] = np.mean(dips[lo:hi])
+            mean_az_sin[i] = np.mean(np.sin(np.radians(azimuths[lo:hi])))
+            mean_az_cos[i] = np.mean(np.cos(np.radians(azimuths[lo:hi])))
+
+        # Combine signals
+        combined_signal = np.column_stack([
+            (density_signal - density_signal.mean()) / max(density_signal.std(), 1e-6),
+            (mean_dip_signal - mean_dip_signal.mean()) / max(mean_dip_signal.std(), 1e-6),
+            mean_az_sin,
+            mean_az_cos,
+        ])
+
+        # ── CUSUM-based changepoint detection ──
+        def cusum_changepoints(signal, threshold=2.0, min_seg=5):
+            """Detect changepoints using CUSUM on a 1D signal."""
+            n_s = len(signal)
+            if n_s < 2 * min_seg:
+                return []
+
+            # Compute cumulative sum of deviations from mean
+            S = np.cumsum(signal - np.mean(signal))
+
+            # Find points where cumulative sum changes direction significantly
+            changepoints = []
+            for i in range(min_seg, n_s - min_seg):
+                left_mean = np.mean(signal[:i])
+                right_mean = np.mean(signal[i:])
+                diff = abs(right_mean - left_mean)
+                left_std = max(np.std(signal[:i]), 1e-6)
+                right_std = max(np.std(signal[i:]), 1e-6)
+                z_score = diff / ((left_std + right_std) / 2)
+                if z_score > threshold:
+                    changepoints.append((i, z_score))
+
+            # Non-maximum suppression — keep only local maxima
+            if not changepoints:
+                return []
+            changepoints.sort(key=lambda x: x[1], reverse=True)
+            selected = []
+            for idx, score in changepoints:
+                if all(abs(idx - s) >= min_seg for s, _ in selected):
+                    selected.append((idx, score))
+                if len(selected) >= 10:
+                    break
+            selected.sort(key=lambda x: x[0])
+            return selected
+
+        # Run changepoint detection on each signal dimension
+        all_cps = {}
+        signal_names = ["density", "dip", "azimuth_sin", "azimuth_cos"]
+        for dim, sname in enumerate(signal_names):
+            cps = cusum_changepoints(combined_signal[:, dim], threshold=1.5, min_seg=min_segment_size)
+            for idx, score in cps:
+                depth_val = float(depths[idx])
+                # Merge nearby changepoints across signals
+                merged = False
+                for existing_depth in list(all_cps.keys()):
+                    if abs(depth_val - existing_depth) < 2.0:  # within 2m
+                        all_cps[existing_depth]["score"] = max(all_cps[existing_depth]["score"], score)
+                        all_cps[existing_depth]["signals"].append(sname)
+                        merged = True
+                        break
+                if not merged:
+                    all_cps[depth_val] = {"score": score, "signals": [sname], "index": idx}
+
+        # ── Build boundary list ──
+        boundaries = []
+        for depth_val in sorted(all_cps.keys()):
+            cp_info = all_cps[depth_val]
+            idx = cp_info["index"]
+
+            # Characterize segments above and below
+            above_mask = sort_idx[:idx] if idx > 0 else np.array([], dtype=int)
+            below_mask = sort_idx[idx:] if idx < n else np.array([], dtype=int)
+
+            above_classes = {}
+            below_classes = {}
+            if len(above_mask) > 0:
+                for c_idx in range(len(class_names)):
+                    above_classes[class_names[c_idx]] = int((y_sorted[:idx] == c_idx).sum())
+            if len(below_mask) > 0:
+                for c_idx in range(len(class_names)):
+                    below_classes[class_names[c_idx]] = int((y_sorted[idx:] == c_idx).sum())
+
+            above_dip = float(np.mean(dips[:idx])) if idx > 0 else 0
+            below_dip = float(np.mean(dips[idx:])) if idx < n else 0
+            dip_change = abs(below_dip - above_dip)
+
+            confidence = "HIGH" if len(cp_info["signals"]) >= 3 else ("MEDIUM" if len(cp_info["signals"]) >= 2 else "LOW")
+
+            boundaries.append({
+                "depth_m": round(depth_val, 2),
+                "confidence": confidence,
+                "z_score": round(cp_info["score"], 2),
+                "signals_detected": cp_info["signals"],
+                "n_signals": len(cp_info["signals"]),
+                "above_mean_dip": round(above_dip, 1),
+                "below_mean_dip": round(below_dip, 1),
+                "dip_change_deg": round(dip_change, 1),
+                "above_class_distribution": above_classes,
+                "below_class_distribution": below_classes,
+            })
+
+        # ── Formation segments ──
+        boundary_depths = [0] + [b["depth_m"] for b in boundaries] + [depth_max + 1]
+        segments = []
+        for i in range(len(boundary_depths) - 1):
+            seg_mask = (depths >= boundary_depths[i]) & (depths < boundary_depths[i + 1])
+            seg_n = int(seg_mask.sum())
+            if seg_n > 0:
+                seg_depths = depths[seg_mask]
+                seg_dips = dips[seg_mask]
+                seg_types = y_sorted[seg_mask]
+                dominant_type = class_names[int(np.bincount(seg_types, minlength=len(class_names)).argmax())]
+                segments.append({
+                    "segment": i + 1,
+                    "top_m": round(float(seg_depths.min()), 2),
+                    "bottom_m": round(float(seg_depths.max()), 2),
+                    "thickness_m": round(float(seg_depths.max() - seg_depths.min()), 2),
+                    "n_fractures": seg_n,
+                    "mean_dip": round(float(seg_dips.mean()), 1),
+                    "std_dip": round(float(seg_dips.std()), 1),
+                    "dominant_fracture_type": dominant_type,
+                    "fracture_density_per_m": round(seg_n / max(seg_depths.max() - seg_depths.min(), 0.1), 2),
+                })
+
+        # ── Recommendations ──
+        recommendations = []
+        n_boundaries = len(boundaries)
+        if n_boundaries == 0:
+            recommendations.append({
+                "priority": "LOW",
+                "category": "Formation Continuity",
+                "action": "No significant formation boundaries detected. Fracture properties are relatively uniform.",
+                "impact": "Single formation interval — model can be applied uniformly across the well.",
+            })
+        else:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Formation Boundaries",
+                "action": f"{n_boundaries} formation boundaries detected. Consider training separate models for each segment.",
+                "impact": "Different formations may have different fracture patterns. A single model may underperform across boundaries.",
+            })
+            high_conf = [b for b in boundaries if b["confidence"] == "HIGH"]
+            if high_conf:
+                hc_depths = ", ".join(str(round(b["depth_m"], 1)) + "m" for b in high_conf)
+                recommendations.append({
+                    "priority": "HIGH",
+                    "category": "Key Boundaries",
+                    "action": f"{len(high_conf)} high-confidence boundaries at depths: {hc_depths}",
+                    "impact": "These boundaries show strong changes in multiple fracture properties (density, orientation, type).",
+                })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 8))
+
+            # Fracture density vs depth
+            ax1 = axes[0]
+            ax1.plot(density_signal, depths, 'b-', linewidth=1, alpha=0.7)
+            for b in boundaries:
+                color = "red" if b["confidence"] == "HIGH" else "orange" if b["confidence"] == "MEDIUM" else "gray"
+                ax1.axhline(b["depth_m"], color=color, linestyle="--", linewidth=2, alpha=0.8)
+            ax1.set_xlabel("Fracture Density (per m)")
+            ax1.set_ylabel("Depth (m)")
+            ax1.set_title("Fracture Density Profile")
+            ax1.invert_yaxis()
+
+            # Dip vs depth
+            ax2 = axes[1]
+            ax2.scatter(dips, depths, c=y_sorted, cmap="Set1", s=10, alpha=0.6)
+            ax2.plot(mean_dip_signal, depths, 'k-', linewidth=2, alpha=0.5, label="Moving avg")
+            for b in boundaries:
+                color = "red" if b["confidence"] == "HIGH" else "orange" if b["confidence"] == "MEDIUM" else "gray"
+                ax2.axhline(b["depth_m"], color=color, linestyle="--", linewidth=2, alpha=0.8)
+            ax2.set_xlabel("Dip (°)")
+            ax2.set_title("Dip Profile with Boundaries")
+            ax2.invert_yaxis()
+            ax2.legend(fontsize=8)
+
+            # Formation segments
+            ax3 = axes[2]
+            ax3.axis("off")
+            if segments:
+                y_start = 0.95
+                y_step = 0.9 / max(len(segments), 1)
+                seg_colors = plt.cm.Set3(np.linspace(0, 1, len(segments)))
+                for i, seg in enumerate(segments):
+                    y_pos = y_start - i * y_step
+                    ax3.add_patch(plt.Rectangle((0.05, y_pos - y_step * 0.8), 0.2, y_step * 0.7,
+                                                 facecolor=seg_colors[i], edgecolor="black", transform=ax3.transAxes))
+                    text = f"Seg {seg['segment']}: {seg['top_m']:.0f}-{seg['bottom_m']:.0f}m  |  {seg['n_fractures']} fractures  |  {seg['dominant_fracture_type']}"
+                    ax3.text(0.3, y_pos - y_step * 0.4, text, fontsize=9, va="center", transform=ax3.transAxes)
+                ax3.set_title("Formation Segments")
+
+            fig.suptitle(f"Formation Boundary Detection — {well}", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"{n_boundaries} formation boundaries detected across {depth_min:.0f}-{depth_max:.0f}m. "
+                f"{len(segments)} distinct segments identified."
+            ),
+            "risk_level": "AMBER" if n_boundaries > 0 else "GREEN",
+            "what_this_means": (
+                "Formation boundaries indicate where rock properties change significantly. "
+                "Fracture patterns differ across formations, so predictions may need to be "
+                "zone-specific. "
+                + (f"We found {n_boundaries} boundaries — the well spans multiple geological units."
+                   if n_boundaries > 0 else "No boundaries found — fracture properties are consistent.")
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "No action needed.",
+        }
+
+        return {
+            "well": well,
+            "depth_range_m": {"min": round(depth_min, 2), "max": round(depth_max, 2)},
+            "n_fractures": n,
+            "n_boundaries": n_boundaries,
+            "boundaries": boundaries,
+            "n_segments": len(segments),
+            "segments": segments,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("formation_boundaries", {"well": well},
+                  {"n_boundaries": result["n_boundaries"]}, source, well, elapsed)
+    _formation_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [113] Comprehensive Analysis Report
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/reports/full-report")
+async def api_full_report(request: Request):
+    """Generate a comprehensive analysis report combining key results.
+
+    Aggregates results from multiple analyses into a structured report
+    suitable for stakeholder presentation. Returns all key findings,
+    risks, and recommendations in a single response.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"report:{well}:{source}"
+    if cache_key in _report_cache:
+        return _report_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from collections import Counter
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        n_classes = len(le.classes_)
+        class_names = le.classes_.tolist()
+
+        depths = df_well[DEPTH_COL].values.astype(float) if DEPTH_COL in df_well.columns else np.zeros(n)
+
+        # ── Data Summary Section ──
+        class_counts = Counter(le.inverse_transform(y))
+        data_summary = {
+            "n_samples": n,
+            "n_classes": n_classes,
+            "class_names": class_names,
+            "class_distribution": {k: int(v) for k, v in class_counts.items()},
+            "depth_range_m": {"min": round(float(depths.min()), 2), "max": round(float(depths.max()), 2)} if len(depths) > 0 else None,
+            "n_features": int(X.shape[1]),
+        }
+
+        # ── Model Performance Section ──
+        model_results = _evaluate_all_models(X, y, well, source)
+        best_name = max(model_results, key=lambda m: model_results[m]["balanced_accuracy"])
+        best_ba = float(model_results[best_name]["balanced_accuracy"])
+        best_acc = float(model_results[best_name]["accuracy"])
+
+        model_summary = {
+            "n_models_evaluated": len(model_results),
+            "best_model": best_name,
+            "best_balanced_accuracy": round(best_ba, 4),
+            "best_accuracy": round(best_acc, 4),
+            "all_models": [
+                {
+                    "model": m,
+                    "balanced_accuracy": round(float(model_results[m]["balanced_accuracy"]), 4),
+                    "accuracy": round(float(model_results[m]["accuracy"]), 4),
+                }
+                for m in sorted(model_results, key=lambda m: model_results[m]["balanced_accuracy"], reverse=True)
+            ],
+        }
+
+        # ── Risk Assessment Section ──
+        risks = []
+        # Class imbalance risk
+        counts = np.bincount(y)
+        imbalance = max(counts) / max(min(counts), 1)
+        if imbalance > 5:
+            risks.append({"risk": "Severe class imbalance", "severity": "HIGH",
+                         "detail": f"Imbalance ratio {imbalance:.1f}:1. Minority class may be missed.",
+                         "mitigation": "Use SMOTE augmentation or collect more samples of rare types."})
+        elif imbalance > 3:
+            risks.append({"risk": "Moderate class imbalance", "severity": "MEDIUM",
+                         "detail": f"Imbalance ratio {imbalance:.1f}:1.",
+                         "mitigation": "Consider balanced sampling or class weights."})
+
+        # Model accuracy risk
+        if best_ba < 0.65:
+            risks.append({"risk": "Low model accuracy", "severity": "HIGH",
+                         "detail": f"Best balanced accuracy {best_ba:.1%}.",
+                         "mitigation": "Collect more data, improve feature engineering, or review labels."})
+        elif best_ba < 0.80:
+            risks.append({"risk": "Moderate model accuracy", "severity": "MEDIUM",
+                         "detail": f"Best balanced accuracy {best_ba:.1%}.",
+                         "mitigation": "Consider additional features or model tuning."})
+
+        # Sample size risk
+        if n < 100:
+            risks.append({"risk": "Small sample size", "severity": "HIGH",
+                         "detail": f"Only {n} samples for {n_classes} classes.",
+                         "mitigation": "Collect more labeled data for reliable training."})
+        elif n < 200:
+            risks.append({"risk": "Limited sample size", "severity": "MEDIUM",
+                         "detail": f"{n} samples for {n_classes} classes.",
+                         "mitigation": "More data would improve model robustness."})
+
+        # Per-class accuracy risk
+        best_preds = model_results[best_name]["preds"]
+        for c_idx in range(n_classes):
+            mask = y == c_idx
+            if mask.sum() > 0:
+                class_acc = float((best_preds[mask] == y[mask]).mean())
+                if class_acc < 0.3:
+                    risks.append({"risk": f"Poor accuracy for '{class_names[c_idx]}'", "severity": "HIGH",
+                                 "detail": f"Only {class_acc:.0%} accuracy for this class.",
+                                 "mitigation": f"Collect more '{class_names[c_idx]}' examples or review criteria."})
+
+        if not risks:
+            risks.append({"risk": "No significant risks identified", "severity": "LOW",
+                         "detail": "All checks within acceptable limits.",
+                         "mitigation": "Continue with standard monitoring."})
+
+        risks.sort(key=lambda r: {"HIGH": 0, "MEDIUM": 1, "LOW": 2}.get(r["severity"], 3))
+
+        # ── Recommendations Section ──
+        recommendations = []
+        recommendations.append({
+            "priority": 1,
+            "action": "Run Expert Feedback Loop",
+            "detail": "Submit domain expert corrections to improve model accuracy. Even a few corrections can significantly improve results.",
+            "timeline": "Immediate",
+        })
+        if best_ba < 0.80:
+            recommendations.append({
+                "priority": 2,
+                "action": "Collect Additional Training Data",
+                "detail": f"Current accuracy ({best_ba:.1%}) can be improved with more labeled data, especially for underrepresented classes.",
+                "timeline": "1-2 weeks",
+            })
+        recommendations.append({
+            "priority": 3,
+            "action": "Cross-Well Validation",
+            "detail": "Test model predictions against other wells to validate generalization before field deployment.",
+            "timeline": "Before deployment",
+        })
+        recommendations.append({
+            "priority": 4,
+            "action": "Sensitivity Check",
+            "detail": "Run sensitivity analysis to identify predictions that may be unreliable due to measurement uncertainty.",
+            "timeline": "Before deployment",
+        })
+        recommendations.append({
+            "priority": 5,
+            "action": "Set Up Monitoring",
+            "detail": "Enable data drift monitoring to detect when model retraining is needed.",
+            "timeline": "Ongoing",
+        })
+
+        # ── Overall Assessment ──
+        if best_ba >= 0.80 and n >= 200 and not any(r["severity"] == "HIGH" for r in risks):
+            overall = "STRONG"
+            overall_color = "GREEN"
+            overall_summary = "Model performance is strong. Ready for operational use with standard monitoring."
+        elif best_ba >= 0.65 and n >= 50:
+            overall = "ADEQUATE"
+            overall_color = "AMBER"
+            overall_summary = "Model performance is adequate but could be improved. Use with caution and expert oversight."
+        else:
+            overall = "INSUFFICIENT"
+            overall_color = "RED"
+            overall_summary = "Model performance or data quality is insufficient for operational use. Address risks before deployment."
+
+        # ── Report plot ──
+        with plot_lock:
+            fig = plt.figure(figsize=(16, 10))
+            gs = fig.add_gridspec(2, 3, hspace=0.35, wspace=0.3)
+
+            # Model comparison
+            ax1 = fig.add_subplot(gs[0, 0])
+            mnames = [m["model"][:10] for m in model_summary["all_models"]]
+            maccs = [m["balanced_accuracy"] for m in model_summary["all_models"]]
+            colors_m = ["#4CAF50" if a >= 0.8 else "#FF9800" if a >= 0.65 else "#f44336" for a in maccs]
+            ax1.barh(mnames[::-1], maccs[::-1], color=colors_m[::-1])
+            ax1.set_xlabel("Balanced Accuracy")
+            ax1.set_title("Model Comparison")
+            ax1.set_xlim(0, 1)
+
+            # Class distribution
+            ax2 = fig.add_subplot(gs[0, 1])
+            cdist = data_summary["class_distribution"]
+            ax2.pie(cdist.values(), labels=[k[:10] for k in cdist.keys()], autopct="%1.0f%%",
+                    colors=plt.cm.Set2(np.linspace(0, 1, len(cdist))))
+            ax2.set_title("Class Distribution")
+
+            # Risk severity
+            ax3 = fig.add_subplot(gs[0, 2])
+            sev_counts = Counter(r["severity"] for r in risks)
+            sev_labels = ["HIGH", "MEDIUM", "LOW"]
+            sev_values = [sev_counts.get(s, 0) for s in sev_labels]
+            sev_colors = ["#f44336", "#FF9800", "#4CAF50"]
+            ax3.bar(sev_labels, sev_values, color=sev_colors)
+            ax3.set_ylabel("Count")
+            ax3.set_title("Risk Summary")
+
+            # Overall assessment
+            ax4 = fig.add_subplot(gs[1, :])
+            ax4.axis("off")
+            assessment_colors = {"STRONG": "#4CAF50", "ADEQUATE": "#FF9800", "INSUFFICIENT": "#f44336"}
+            ax4.text(0.5, 0.7, f"Overall Assessment: {overall}", ha="center", va="center",
+                     fontsize=28, fontweight="bold", color=assessment_colors.get(overall, "gray"),
+                     transform=ax4.transAxes)
+            ax4.text(0.5, 0.45, overall_summary, ha="center", va="center", fontsize=14,
+                     transform=ax4.transAxes, wrap=True)
+            ax4.text(0.5, 0.2, f"Best Model: {best_name} ({best_ba:.1%})  |  Samples: {n}  |  Classes: {n_classes}  |  Risks: {len(risks)}",
+                     ha="center", va="center", fontsize=11, color="gray", transform=ax4.transAxes)
+
+            fig.suptitle(f"Comprehensive Analysis Report — {well}", fontweight="bold", fontsize=16)
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Overall: {overall}. Best model {best_name} achieves {best_ba:.1%} balanced accuracy. "
+                f"{len(risks)} risks identified."
+            ),
+            "risk_level": overall_color,
+            "what_this_means": overall_summary,
+            "recommendation": recommendations[0]["detail"] if recommendations else "No action needed.",
+        }
+
+        return {
+            "well": well,
+            "report_type": "comprehensive",
+            "overall_assessment": overall,
+            "overall_color": overall_color,
+            "overall_summary": overall_summary,
+            "data_summary": data_summary,
+            "model_summary": model_summary,
+            "risks": risks,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("full_report", {"well": well},
+                  {"overall": result["overall_assessment"]}, source, well, elapsed)
+    _report_cache[cache_key] = result
     return _sanitize_for_json(result)

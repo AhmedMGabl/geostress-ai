@@ -10950,3 +10950,135 @@ async function runSensitivityAnalysis() {
         hideLoading();
     }
 }
+
+// ── v3.34.0: Model Monitoring ────────────────────────
+async function runModelMonitoring() {
+    showLoading('Running model monitoring & drift detection...');
+    var results = document.getElementById('monitor-results');
+    try {
+        var r = await apiPost('/api/analysis/model-monitoring', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var stCls = r.drift_color === 'GREEN' ? 'text-success' : r.drift_color === 'AMBER' ? 'text-warning' : 'text-danger';
+        document.getElementById('monitor-status').textContent = r.drift_status;
+        document.getElementById('monitor-status').className = 'metric-value ' + stCls;
+        document.getElementById('monitor-psi').textContent = r.avg_psi.toFixed(4);
+        document.getElementById('monitor-high').textContent = r.n_high_drift_features;
+        document.getElementById('monitor-high').className = 'metric-value ' + (r.n_high_drift_features > 0 ? 'text-danger' : 'text-success');
+        document.getElementById('monitor-acc').textContent = (r.model_accuracy * 100).toFixed(1) + '%';
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('monitor-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var fb = document.getElementById('monitor-features-body');
+        fb.innerHTML = '';
+        if (r.feature_drift) {
+            for (var i = 0; i < Math.min(r.feature_drift.length, 15); i++) {
+                var fd = r.feature_drift[i];
+                var sc = fd.severity === 'HIGH' ? 'danger' : fd.severity === 'MEDIUM' ? 'warning' : 'success';
+                fb.innerHTML += '<tr><td>' + fd.feature + '</td><td>' + fd.psi.toFixed(4) + '</td><td><span class="badge bg-' + sc + '">' + fd.severity + '</span></td><td>' + fd.ref_mean.toFixed(3) + '</td><td>' + fd.new_mean.toFixed(3) + '</td><td>' + fd.mean_shift.toFixed(3) + '</td></tr>';
+            }
+        }
+        var cb = document.getElementById('monitor-class-body');
+        cb.innerHTML = '';
+        if (r.class_drift) {
+            for (var i = 0; i < r.class_drift.length; i++) {
+                var cd = r.class_drift[i];
+                var sc = cd.severity === 'HIGH' ? 'danger' : cd.severity === 'MEDIUM' ? 'warning' : 'success';
+                cb.innerHTML += '<tr><td>' + cd.class + '</td><td>' + cd.ref_pct.toFixed(1) + '%</td><td>' + cd.new_pct.toFixed(1) + '%</td><td>' + cd.shift_pct.toFixed(1) + '%</td><td><span class="badge bg-' + sc + '">' + cd.severity + '</span></td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('monitor-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.34.0: Formation Boundaries ────────────────────
+async function runFormationBoundaries() {
+    showLoading('Detecting formation boundaries...');
+    var results = document.getElementById('formation-results');
+    try {
+        var r = await apiPost('/api/analysis/formation-boundaries', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('formation-count').textContent = r.n_boundaries;
+        document.getElementById('formation-segments').textContent = r.n_segments;
+        document.getElementById('formation-depth').textContent = r.depth_range_m.min.toFixed(0) + '-' + r.depth_range_m.max.toFixed(0) + 'm';
+        document.getElementById('formation-fractures').textContent = r.n_fractures;
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('formation-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var bb = document.getElementById('formation-boundaries-body');
+        bb.innerHTML = '';
+        if (r.boundaries) {
+            for (var i = 0; i < r.boundaries.length; i++) {
+                var b = r.boundaries[i];
+                var cc = b.confidence === 'HIGH' ? 'danger' : b.confidence === 'MEDIUM' ? 'warning' : 'secondary';
+                bb.innerHTML += '<tr><td><strong>' + b.depth_m.toFixed(1) + '</strong></td><td><span class="badge bg-' + cc + '">' + b.confidence + '</span></td><td>' + b.z_score.toFixed(1) + '</td><td>' + b.signals_detected.join(', ') + '</td><td>' + b.dip_change_deg.toFixed(1) + '°</td></tr>';
+            }
+        }
+        var sb = document.getElementById('formation-segments-body');
+        sb.innerHTML = '';
+        if (r.segments) {
+            for (var i = 0; i < r.segments.length; i++) {
+                var s = r.segments[i];
+                sb.innerHTML += '<tr><td>' + s.segment + '</td><td>' + s.top_m.toFixed(1) + '</td><td>' + s.bottom_m.toFixed(1) + '</td><td>' + s.thickness_m.toFixed(1) + 'm</td><td>' + s.n_fractures + '</td><td>' + s.mean_dip.toFixed(1) + '°</td><td>' + s.dominant_fracture_type + '</td><td>' + s.fracture_density_per_m.toFixed(1) + '/m</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('formation-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.34.0: Full Report ─────────────────────────────
+async function runFullReport() {
+    showLoading('Generating comprehensive analysis report...');
+    var results = document.getElementById('report-results');
+    try {
+        var r = await apiPost('/api/reports/full-report', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var aCls = r.overall_color === 'GREEN' ? 'text-success' : r.overall_color === 'AMBER' ? 'text-warning' : 'text-danger';
+        document.getElementById('report-assessment').textContent = r.overall_assessment;
+        document.getElementById('report-assessment').className = 'metric-value ' + aCls;
+        document.getElementById('report-model').textContent = r.model_summary.best_model;
+        document.getElementById('report-accuracy').textContent = (r.model_summary.best_balanced_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('report-risks').textContent = r.risks.length;
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('report-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var rb = document.getElementById('report-risks-body');
+        rb.innerHTML = '';
+        if (r.risks) {
+            for (var i = 0; i < r.risks.length; i++) {
+                var risk = r.risks[i];
+                var sc = risk.severity === 'HIGH' ? 'danger' : risk.severity === 'MEDIUM' ? 'warning' : 'secondary';
+                rb.innerHTML += '<tr><td><span class="badge bg-' + sc + '">' + risk.severity + '</span></td><td><strong>' + risk.risk + '</strong></td><td class="small">' + risk.detail + '</td><td class="small">' + risk.mitigation + '</td></tr>';
+            }
+        }
+        var ab = document.getElementById('report-actions-body');
+        ab.innerHTML = '';
+        if (r.recommendations) {
+            for (var i = 0; i < r.recommendations.length; i++) {
+                var act = r.recommendations[i];
+                ab.innerHTML += '<tr><td>' + act.priority + '</td><td><strong>' + act.action + '</strong></td><td class="small">' + act.detail + '</td><td>' + act.timeline + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('report-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
