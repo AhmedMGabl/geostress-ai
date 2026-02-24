@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.35.0 - Fracture Connectivity + Failure Prediction + Batch Analysis)."""
+"""GeoStress AI - FastAPI Web Application (v3.36.0 - Uncertainty Zonation + Aperture-Permeability + Well Correlation)."""
 
 import os
 import io
@@ -26538,4 +26538,708 @@ async def api_batch_analysis(request: Request):
     _audit_record("batch_analysis", {"source": source},
                   {"n_wells": result["n_wells_analyzed"]}, source, "all", elapsed)
     _batch_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# v3.36.0 Caches
+# ────────────────────────────────────────────────────────────────────────
+_zonation_cache: dict = {}
+_aperture_cache: dict = {}
+_correlation_cache: dict = {}
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [117] Uncertainty-Aware Zonation
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/uncertainty-zonation")
+async def api_uncertainty_zonation(request: Request):
+    """Divide the well into confidence zones based on prediction certainty.
+
+    Zones operators can trust (confident), zones needing review (uncertain),
+    and zones to ignore model output (unreliable). Uses ensemble agreement,
+    conformal set size, and prediction entropy.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"zonation:{well}:{source}"
+    if cache_key in _zonation_cache:
+        return _zonation_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from sklearn.ensemble import RandomForestClassifier as _RF, GradientBoostingClassifier as _GBM
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        n_classes = len(le.classes_)
+        class_names = le.classes_.tolist()
+        depths = df_well[DEPTH_COL].values.astype(float) if DEPTH_COL in df_well.columns else np.arange(n, dtype=float)
+
+        # Train ensemble of models for agreement scoring
+        rf = _RF(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
+        rf.fit(X, y)
+        rf_probs = rf.predict_proba(X)
+        rf_preds = rf.predict(X)
+
+        gbm = _GBM(n_estimators=100, max_depth=5, random_state=42)
+        gbm.fit(X, y)
+        gbm_probs = gbm.predict_proba(X)
+        gbm_preds = gbm.predict(X)
+
+        # ── Per-sample uncertainty signals ──
+        confidence = rf_probs.max(axis=1)
+        entropy = -np.sum(rf_probs * np.log(rf_probs + 1e-10), axis=1) / np.log(max(n_classes, 2))
+        agreement = (rf_preds == gbm_preds).astype(float)
+
+        # Average ensemble probability
+        avg_probs = (rf_probs + gbm_probs) / 2
+        avg_confidence = avg_probs.max(axis=1)
+
+        # ── Composite certainty score (0-100) ──
+        certainty = (avg_confidence * 40 + (1 - entropy) * 30 + agreement * 30)
+
+        # ── Zonation: assign each sample to a zone ──
+        zones = []
+        for i in range(n):
+            if certainty[i] >= 70:
+                zone = "CONFIDENT"
+                zone_color = "GREEN"
+            elif certainty[i] >= 40:
+                zone = "UNCERTAIN"
+                zone_color = "AMBER"
+            else:
+                zone = "UNRELIABLE"
+                zone_color = "RED"
+            zones.append(zone)
+
+        # ── Build depth-continuous zones ──
+        sort_idx = np.argsort(depths)
+        sorted_depths = depths[sort_idx]
+        sorted_zones = [zones[i] for i in sort_idx]
+        sorted_certainty = certainty[sort_idx]
+        sorted_preds = rf_preds[sort_idx]
+
+        continuous_zones = []
+        if n > 0:
+            current_zone = sorted_zones[0]
+            zone_start_depth = sorted_depths[0]
+            zone_certs = [sorted_certainty[0]]
+
+            for idx in range(1, n):
+                if sorted_zones[idx] != current_zone:
+                    continuous_zones.append({
+                        "zone": current_zone,
+                        "top_m": round(float(zone_start_depth), 2),
+                        "bottom_m": round(float(sorted_depths[idx - 1]), 2),
+                        "thickness_m": round(float(sorted_depths[idx - 1] - zone_start_depth), 2),
+                        "n_samples": len(zone_certs),
+                        "mean_certainty": round(float(np.mean(zone_certs)), 1),
+                    })
+                    current_zone = sorted_zones[idx]
+                    zone_start_depth = sorted_depths[idx]
+                    zone_certs = [sorted_certainty[idx]]
+                else:
+                    zone_certs.append(sorted_certainty[idx])
+
+            continuous_zones.append({
+                "zone": current_zone,
+                "top_m": round(float(zone_start_depth), 2),
+                "bottom_m": round(float(sorted_depths[-1]), 2),
+                "thickness_m": round(float(sorted_depths[-1] - zone_start_depth), 2),
+                "n_samples": len(zone_certs),
+                "mean_certainty": round(float(np.mean(zone_certs)), 1),
+            })
+
+        # ── Summary stats ──
+        n_confident = sum(1 for z in zones if z == "CONFIDENT")
+        n_uncertain = sum(1 for z in zones if z == "UNCERTAIN")
+        n_unreliable = sum(1 for z in zones if z == "UNRELIABLE")
+
+        # ── Recommendations ──
+        recommendations = []
+        if n_unreliable > n * 0.2:
+            recommendations.append({
+                "priority": "CRITICAL",
+                "category": "Unreliable Zones",
+                "action": f"{n_unreliable}/{n} samples ({n_unreliable/n:.0%}) in unreliable zones. Do NOT use model predictions in these zones.",
+                "impact": "Model has insufficient confidence. Manual interpretation required.",
+            })
+        if n_uncertain > n * 0.3:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Uncertain Zones",
+                "action": f"{n_uncertain}/{n} samples ({n_uncertain/n:.0%}) in uncertain zones. Flag for expert review.",
+                "impact": "Predictions may be correct but lack sufficient confidence for autonomous use.",
+            })
+        if n_confident > n * 0.7:
+            recommendations.append({
+                "priority": "LOW",
+                "category": "Model Coverage",
+                "action": f"{n_confident}/{n} samples ({n_confident/n:.0%}) in confident zones. Good model coverage.",
+                "impact": "Majority of predictions are reliable for operational use.",
+            })
+        else:
+            recommendations.append({
+                "priority": "MEDIUM",
+                "category": "Model Coverage",
+                "action": f"Only {n_confident}/{n} samples ({n_confident/n:.0%}) in confident zones. Model needs improvement.",
+                "impact": "Limited reliable coverage reduces operational utility.",
+            })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 8))
+
+            # Certainty vs depth
+            ax1 = axes[0]
+            zone_colors = {"CONFIDENT": "#4CAF50", "UNCERTAIN": "#FF9800", "UNRELIABLE": "#f44336"}
+            for z in ["CONFIDENT", "UNCERTAIN", "UNRELIABLE"]:
+                mask = np.array([zones[i] == z for i in sort_idx])
+                if mask.any():
+                    ax1.scatter(sorted_certainty[mask], sorted_depths[mask],
+                               c=zone_colors[z], s=15, alpha=0.6, label=z)
+            ax1.axvline(70, color="green", linestyle="--", alpha=0.5)
+            ax1.axvline(40, color="red", linestyle="--", alpha=0.5)
+            ax1.set_xlabel("Certainty Score")
+            ax1.set_ylabel("Depth (m)")
+            ax1.set_title("Certainty vs Depth")
+            ax1.invert_yaxis()
+            ax1.legend(fontsize=8)
+
+            # Zone profile (colored blocks by depth)
+            ax2 = axes[1]
+            for cz in continuous_zones:
+                color = zone_colors.get(cz["zone"], "gray")
+                ax2.fill_between([0, 1], cz["top_m"], cz["bottom_m"],
+                                color=color, alpha=0.6)
+            ax2.set_xlim(0, 1)
+            ax2.set_ylabel("Depth (m)")
+            ax2.set_title("Zone Profile")
+            ax2.invert_yaxis()
+            ax2.set_xticks([])
+
+            # Pie chart
+            ax3 = axes[2]
+            sizes = [n_confident, n_uncertain, n_unreliable]
+            labels = [f"Confident ({n_confident})", f"Uncertain ({n_uncertain})", f"Unreliable ({n_unreliable})"]
+            colors_pie = ["#4CAF50", "#FF9800", "#f44336"]
+            ax3.pie(sizes, labels=labels, colors=colors_pie, autopct="%1.0f%%", startangle=90)
+            ax3.set_title("Zone Distribution")
+
+            fig.suptitle(f"Uncertainty-Aware Zonation — {well}", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Zonation: {n_confident} confident, {n_uncertain} uncertain, {n_unreliable} unreliable. "
+                f"{len(continuous_zones)} depth zones identified."
+            ),
+            "risk_level": "GREEN" if n_confident > n * 0.7 else ("AMBER" if n_confident > n * 0.4 else "RED"),
+            "what_this_means": (
+                "We divided the well into zones based on how confident the model is. "
+                "GREEN zones: trust the model. AMBER zones: review with expert. "
+                "RED zones: ignore model, use manual interpretation."
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "No action needed.",
+        }
+
+        return {
+            "well": well,
+            "n_samples": n,
+            "n_confident": n_confident,
+            "n_uncertain": n_uncertain,
+            "n_unreliable": n_unreliable,
+            "pct_confident": round(n_confident / n * 100, 1),
+            "pct_uncertain": round(n_uncertain / n * 100, 1),
+            "pct_unreliable": round(n_unreliable / n * 100, 1),
+            "mean_certainty": round(float(certainty.mean()), 1),
+            "n_zones": len(continuous_zones),
+            "continuous_zones": continuous_zones,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("uncertainty_zonation", {"well": well},
+                  {"pct_confident": result["pct_confident"]}, source, well, elapsed)
+    _zonation_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [118] Fracture Aperture & Permeability Estimation
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/aperture-permeability")
+async def api_aperture_permeability(request: Request):
+    """Estimate fracture apertures and equivalent permeability.
+
+    Uses empirical relationships between fracture dip, depth, and stress
+    to estimate mechanical apertures, then applies the cubic law to compute
+    equivalent permeability. Critical for reservoir simulation input.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"aperture:{well}:{source}"
+    if cache_key in _aperture_cache:
+        return _aperture_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        class_names = le.classes_.tolist()
+        depths = df_well[DEPTH_COL].values.astype(float) if DEPTH_COL in df_well.columns else np.ones(n) * 100
+        dips = df_well[DIP_COL].values.astype(float) if DIP_COL in df_well.columns else np.ones(n) * 45
+        azimuths = df_well[AZIMUTH_COL].values.astype(float) if AZIMUTH_COL in df_well.columns else np.zeros(n)
+
+        # ── Aperture estimation (empirical model) ──
+        # Based on: aperture decreases with depth (confining stress)
+        # and varies with fracture type (open vs sealed)
+        # Reference: Barton et al. (1995), Laubach (2003)
+
+        # Base aperture model: a = a0 * exp(-k * depth) * dip_factor
+        a0 = 0.5  # mm at surface
+        k = 0.002  # depth decay constant (1/m)
+
+        # Fracture type multipliers (geological basis)
+        type_multipliers = {
+            "Continuous": 1.0,      # Open, through-going
+            "Discontinuous": 0.6,   # Partially open
+            "Boundary": 0.3,        # Bed-bounded, often sealed
+            "Brecciated": 0.8,      # Open but irregular
+            "Vuggy": 1.2,           # Enhanced aperture from dissolution
+        }
+
+        apertures = []
+        permeabilities = []
+        fracture_data = []
+
+        for i in range(n):
+            depth = depths[i]
+            dip = dips[i]
+            frac_type = class_names[y[i]]
+
+            # Depth-dependent aperture
+            base_aperture = a0 * np.exp(-k * depth)
+
+            # Dip factor: steeper fractures tend to be more open
+            dip_factor = 0.5 + 0.5 * np.sin(np.radians(dip))
+
+            # Type multiplier
+            type_mult = type_multipliers.get(frac_type, 0.7)
+
+            # Stress-dependent closure
+            # Normal stress on fracture increases with depth
+            sigma_n = 2.5 * 9.81 / 1000 * depth * np.cos(np.radians(dip))**2  # MPa
+            stress_closure = 1.0 / (1.0 + 0.1 * sigma_n)
+
+            # Final aperture (mm)
+            aperture = base_aperture * dip_factor * type_mult * stress_closure
+            aperture = max(0.001, aperture)  # minimum 1 micron
+            apertures.append(aperture)
+
+            # ── Permeability from cubic law ──
+            # k = (b^2) / 12  where b is aperture in meters
+            # For a single fracture with spacing s:
+            # k_bulk = (b^3) / (12 * s)
+            b_m = aperture / 1000  # convert mm to m
+            k_single = (b_m ** 2) / 12  # m^2 (single fracture)
+            k_darcy = k_single / 9.869e-13  # convert to Darcy
+            permeabilities.append(k_darcy)
+
+            fracture_data.append({
+                "index": int(i),
+                "depth_m": round(float(depth), 2),
+                "dip_deg": round(float(dip), 1),
+                "azimuth_deg": round(float(azimuths[i]), 1),
+                "fracture_type": frac_type,
+                "aperture_mm": round(float(aperture), 4),
+                "permeability_darcy": round(float(k_darcy), 4),
+                "normal_stress_MPa": round(float(sigma_n), 3),
+            })
+
+        apertures = np.array(apertures)
+        permeabilities = np.array(permeabilities)
+
+        # ── Per-class statistics ──
+        per_class_stats = []
+        for c_idx, cname in enumerate(class_names):
+            mask = y == c_idx
+            if mask.sum() > 0:
+                per_class_stats.append({
+                    "class": cname,
+                    "n_fractures": int(mask.sum()),
+                    "mean_aperture_mm": round(float(apertures[mask].mean()), 4),
+                    "std_aperture_mm": round(float(apertures[mask].std()), 4),
+                    "mean_permeability_darcy": round(float(permeabilities[mask].mean()), 4),
+                    "max_permeability_darcy": round(float(permeabilities[mask].max()), 4),
+                    "type_multiplier": type_multipliers.get(cname, 0.7),
+                })
+        per_class_stats.sort(key=lambda x: x["mean_aperture_mm"], reverse=True)
+
+        # ── Bulk properties ──
+        mean_aperture = float(apertures.mean())
+        total_perm = float(permeabilities.sum())  # Total fracture permeability contribution
+
+        # Equivalent bulk fracture permeability (assuming 1m spacing)
+        bulk_spacing = 1.0  # m
+        bulk_perm = sum((a / 1000) ** 3 / (12 * bulk_spacing) for a in apertures) / 9.869e-13  # Darcy
+
+        # ── Recommendations ──
+        recommendations = []
+        if mean_aperture > 0.1:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Fracture Flow",
+                "action": "Significant fracture apertures detected. Include fracture permeability in reservoir model.",
+                "impact": "Fractures contribute meaningful permeability. Dual-porosity modeling recommended.",
+            })
+        else:
+            recommendations.append({
+                "priority": "MEDIUM",
+                "category": "Fracture Flow",
+                "action": "Small fracture apertures. Fracture contribution to flow may be limited at depth.",
+                "impact": "Matrix permeability likely dominates. Single-porosity model may suffice.",
+            })
+        recommendations.append({
+            "priority": "MEDIUM",
+            "category": "Validation",
+            "action": "Validate aperture estimates with core measurements or production data.",
+            "impact": "Empirical aperture models have high uncertainty. Calibration against well tests essential.",
+        })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 6))
+
+            # Aperture vs depth
+            ax1 = axes[0]
+            for c_idx, cname in enumerate(class_names):
+                mask = y == c_idx
+                if mask.sum() > 0:
+                    ax1.scatter(apertures[mask], depths[mask], s=15, alpha=0.5, label=cname[:8])
+            ax1.set_xlabel("Aperture (mm)")
+            ax1.set_ylabel("Depth (m)")
+            ax1.set_title("Fracture Aperture vs Depth")
+            ax1.invert_yaxis()
+            ax1.legend(fontsize=7)
+
+            # Permeability vs depth (log scale)
+            ax2 = axes[1]
+            ax2.scatter(np.log10(permeabilities + 1e-10), depths, c=y, cmap="Set1", s=15, alpha=0.5)
+            ax2.set_xlabel("log10(Permeability, Darcy)")
+            ax2.set_ylabel("Depth (m)")
+            ax2.set_title("Fracture Permeability vs Depth")
+            ax2.invert_yaxis()
+
+            # Per-class bar chart
+            ax3 = axes[2]
+            if per_class_stats:
+                names = [p["class"][:8] for p in per_class_stats]
+                means = [p["mean_aperture_mm"] for p in per_class_stats]
+                ax3.barh(names, means, color=plt.cm.Set2(np.linspace(0, 1, len(names))))
+                ax3.set_xlabel("Mean Aperture (mm)")
+                ax3.set_title("Aperture by Fracture Type")
+
+            fig.suptitle(f"Fracture Aperture & Permeability — {well}", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Mean aperture: {mean_aperture:.3f} mm. "
+                f"Bulk fracture permeability: {bulk_perm:.2f} Darcy."
+            ),
+            "risk_level": "GREEN" if mean_aperture > 0.1 else ("AMBER" if mean_aperture > 0.01 else "RED"),
+            "what_this_means": (
+                "We estimated how 'open' each fracture is and how much fluid can flow through them. "
+                "Larger apertures = more flow. Aperture decreases with depth due to compression. "
+                f"Average opening is {mean_aperture:.3f} mm across {n} fractures."
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "No action needed.",
+        }
+
+        return {
+            "well": well,
+            "n_fractures": n,
+            "mean_aperture_mm": round(mean_aperture, 4),
+            "std_aperture_mm": round(float(apertures.std()), 4),
+            "min_aperture_mm": round(float(apertures.min()), 4),
+            "max_aperture_mm": round(float(apertures.max()), 4),
+            "bulk_permeability_darcy": round(bulk_perm, 4),
+            "per_class_stats": per_class_stats,
+            "fracture_data": fracture_data[:100],  # Cap at 100
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("aperture_permeability", {"well": well},
+                  {"mean_aperture_mm": result["mean_aperture_mm"]}, source, well, elapsed)
+    _aperture_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [119] Well Correlation Analysis
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/well-correlation")
+async def api_well_correlation(request: Request):
+    """Compare fracture patterns between wells for field-wide correlation.
+
+    Measures orientation similarity, type distribution overlap, and depth
+    relationships between wells. Essential for multi-well development planning.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    cache_key = f"correlation:{source}"
+    if cache_key in _correlation_cache:
+        return _correlation_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+
+        wells = df[WELL_COL].unique().tolist() if WELL_COL in df.columns else []
+        if len(wells) < 2:
+            raise HTTPException(400, "Need at least 2 wells for correlation analysis")
+
+        well_data = {}
+        for well in wells:
+            try:
+                X, y, le, features, df_well = get_cached_features(df, well, source)
+                depths = df_well[DEPTH_COL].values.astype(float) if DEPTH_COL in df_well.columns else np.zeros(len(y))
+                azimuths = df_well[AZIMUTH_COL].values.astype(float) if AZIMUTH_COL in df_well.columns else np.zeros(len(y))
+                dips = df_well[DIP_COL].values.astype(float) if DIP_COL in df_well.columns else np.zeros(len(y))
+                class_names = le.classes_.tolist()
+                well_data[well] = {
+                    "X": X, "y": y, "le": le, "depths": depths,
+                    "azimuths": azimuths, "dips": dips, "class_names": class_names,
+                    "n": len(y),
+                }
+            except Exception:
+                continue
+
+        if len(well_data) < 2:
+            raise HTTPException(400, "Could not process at least 2 wells")
+
+        # ── Pairwise well comparison ──
+        well_names = list(well_data.keys())
+        correlations = []
+
+        for i, wa in enumerate(well_names):
+            for j, wb in enumerate(well_names):
+                if i >= j:
+                    continue
+
+                da = well_data[wa]
+                db = well_data[wb]
+
+                # 1. Orientation similarity (circular correlation of azimuths)
+                az_a = np.radians(da["azimuths"])
+                az_b = np.radians(db["azimuths"])
+                mean_sin_a = np.mean(np.sin(az_a))
+                mean_cos_a = np.mean(np.cos(az_a))
+                mean_sin_b = np.mean(np.sin(az_b))
+                mean_cos_b = np.mean(np.cos(az_b))
+                # Angular distance between mean orientations
+                dot_product = mean_sin_a * mean_sin_b + mean_cos_a * mean_cos_b
+                orientation_similarity = max(0, min(1, (dot_product + 1) / 2))
+
+                # 2. Dip distribution similarity (KS-statistic based)
+                sorted_dips_a = np.sort(da["dips"])
+                sorted_dips_b = np.sort(db["dips"])
+                # Simple overlap metric
+                mean_dip_diff = abs(np.mean(da["dips"]) - np.mean(db["dips"]))
+                dip_similarity = max(0, 1 - mean_dip_diff / 45)
+
+                # 3. Type distribution overlap
+                common_classes = set(da["class_names"]) & set(db["class_names"])
+                all_classes = set(da["class_names"]) | set(db["class_names"])
+                type_overlap = len(common_classes) / max(len(all_classes), 1)
+
+                # For common classes, compute distribution similarity
+                if common_classes:
+                    counts_a = np.bincount(da["y"], minlength=len(da["class_names"]))
+                    counts_b = np.bincount(db["y"], minlength=len(db["class_names"]))
+                    dist_a = counts_a / max(counts_a.sum(), 1)
+                    dist_b = counts_b / max(counts_b.sum(), 1)
+                    # Bhattacharyya coefficient
+                    bc = sum(np.sqrt(dist_a[k] * dist_b[k]) for k in range(min(len(dist_a), len(dist_b))))
+                    dist_similarity = float(bc)
+                else:
+                    dist_similarity = 0.0
+
+                # 4. Depth overlap
+                depth_overlap_min = max(da["depths"].min(), db["depths"].min())
+                depth_overlap_max = min(da["depths"].max(), db["depths"].max())
+                total_range = max(da["depths"].max(), db["depths"].max()) - min(da["depths"].min(), db["depths"].min())
+                depth_overlap = max(0, depth_overlap_max - depth_overlap_min) / max(total_range, 0.1)
+
+                # 5. Overall correlation
+                overall = (orientation_similarity * 0.3 + dip_similarity * 0.2 +
+                          dist_similarity * 0.3 + depth_overlap * 0.2)
+
+                correlations.append({
+                    "well_a": wa,
+                    "well_b": wb,
+                    "orientation_similarity": round(float(orientation_similarity), 3),
+                    "dip_similarity": round(float(dip_similarity), 3),
+                    "type_overlap": round(float(type_overlap), 3),
+                    "distribution_similarity": round(float(dist_similarity), 3),
+                    "depth_overlap": round(float(depth_overlap), 3),
+                    "overall_correlation": round(float(overall), 3),
+                    "correlation_level": "HIGH" if overall > 0.7 else ("MODERATE" if overall > 0.4 else "LOW"),
+                    "common_classes": sorted(list(common_classes)),
+                    "n_a": da["n"],
+                    "n_b": db["n"],
+                })
+
+        # ── Per-well summaries ──
+        well_summaries = []
+        for wname, wd in well_data.items():
+            mean_az = float(np.degrees(np.arctan2(
+                np.mean(np.sin(np.radians(wd["azimuths"]))),
+                np.mean(np.cos(np.radians(wd["azimuths"])))
+            )) % 360)
+            well_summaries.append({
+                "well": wname,
+                "n_fractures": wd["n"],
+                "n_classes": len(wd["class_names"]),
+                "class_names": wd["class_names"],
+                "mean_azimuth": round(mean_az, 1),
+                "mean_dip": round(float(wd["dips"].mean()), 1),
+                "depth_range_m": {
+                    "min": round(float(wd["depths"].min()), 2),
+                    "max": round(float(wd["depths"].max()), 2),
+                },
+            })
+
+        # ── Recommendations ──
+        recommendations = []
+        for corr in correlations:
+            if corr["correlation_level"] == "HIGH":
+                recommendations.append({
+                    "priority": "LOW",
+                    "category": "Well Correlation",
+                    "action": f"Wells {corr['well_a']} and {corr['well_b']} show high correlation ({corr['overall_correlation']:.2f}). Cross-well model transfer likely viable.",
+                    "impact": "A model trained on one well should work well on the other.",
+                })
+            elif corr["correlation_level"] == "LOW":
+                recommendations.append({
+                    "priority": "HIGH",
+                    "category": "Well Differences",
+                    "action": f"Wells {corr['well_a']} and {corr['well_b']} show low correlation ({corr['overall_correlation']:.2f}). Well-specific models recommended.",
+                    "impact": "Fracture patterns differ significantly. A single model may not generalize.",
+                })
+            else:  # MODERATE
+                recommendations.append({
+                    "priority": "MEDIUM",
+                    "category": "Well Comparison",
+                    "action": f"Wells {corr['well_a']} and {corr['well_b']} show moderate correlation ({corr['overall_correlation']:.2f}). Cross-well transfer possible with retraining on target well data.",
+                    "impact": "Partial similarity exists. Transfer learning with fine-tuning may improve both models.",
+                })
+
+        if not recommendations:
+            recommendations.append({
+                "priority": "INFO",
+                "category": "General",
+                "action": "Run correlation analysis with additional wells for a more comprehensive field-wide assessment.",
+                "impact": "More well pairs improve confidence in cross-well model transferability.",
+            })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 6))
+
+            # Rose diagrams side by side
+            if len(well_data) >= 2:
+                for idx, (wname, wd) in enumerate(list(well_data.items())[:2]):
+                    ax = fig.add_subplot(1, 3, idx + 1, projection="polar")
+                    az_rad = np.radians(wd["azimuths"])
+                    bins_rose = np.linspace(0, 2 * np.pi, 37)
+                    counts_rose, _ = np.histogram(az_rad, bins=bins_rose)
+                    centers = (bins_rose[:-1] + bins_rose[1:]) / 2
+                    ax.bar(centers, counts_rose, width=bins_rose[1] - bins_rose[0],
+                           alpha=0.7, color="steelblue")
+                    ax.set_theta_zero_location("N")
+                    ax.set_theta_direction(-1)
+                    ax.set_title(f"{wname} (n={wd['n']})", pad=20)
+
+            # Correlation summary
+            ax3 = axes[2]
+            ax3.axis("off")
+            lines = ["Well Correlation Summary\n"]
+            for corr in correlations:
+                lines.append(f"{corr['well_a']} vs {corr['well_b']}:")
+                lines.append(f"  Overall: {corr['overall_correlation']:.2f} ({corr['correlation_level']})")
+                lines.append(f"  Orient: {corr['orientation_similarity']:.2f}  Dip: {corr['dip_similarity']:.2f}")
+                lines.append(f"  Types: {corr['distribution_similarity']:.2f}  Depth: {corr['depth_overlap']:.2f}")
+                lines.append("")
+            ax3.text(0.05, 0.95, "\n".join(lines), ha="left", va="top", fontsize=10,
+                    family="monospace", transform=ax3.transAxes)
+
+            fig.suptitle("Well Correlation Analysis", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        best_corr = max(correlations, key=lambda x: x["overall_correlation"]) if correlations else None
+        stakeholder_brief = {
+            "headline": (
+                f"Analyzed {len(well_data)} wells. "
+                + (f"Best correlation: {best_corr['well_a']}-{best_corr['well_b']} ({best_corr['overall_correlation']:.2f}, {best_corr['correlation_level']})."
+                   if best_corr else "No correlations computed.")
+            ),
+            "risk_level": "GREEN" if best_corr and best_corr["overall_correlation"] > 0.6 else "AMBER",
+            "what_this_means": (
+                "We compared fracture patterns between wells to see if they share similar geology. "
+                "High correlation means patterns are consistent — good for applying models across wells. "
+                "Low correlation means each well has unique fracture character."
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "No action needed.",
+        }
+
+        return {
+            "n_wells": len(well_data),
+            "well_summaries": well_summaries,
+            "correlations": correlations,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("well_correlation", {"source": source},
+                  {"n_wells": result["n_wells"]}, source, "all", elapsed)
+    _correlation_cache[cache_key] = result
     return _sanitize_for_json(result)

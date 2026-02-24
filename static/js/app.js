@@ -11183,3 +11183,93 @@ async function runBatchAnalysis() {
         hideLoading();
     }
 }
+
+// ── v3.36.0: Uncertainty Zonation ─────────────────────
+async function runUncertaintyZonation() {
+    showLoading('Generating uncertainty-aware zonation...');
+    var results = document.getElementById('zone-results');
+    try {
+        var r = await apiPost('/api/analysis/uncertainty-zonation', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('zone-confident').textContent = r.n_confident + ' (' + r.pct_confident + '%)';
+        document.getElementById('zone-uncertain').textContent = r.n_uncertain + ' (' + r.pct_uncertain + '%)';
+        document.getElementById('zone-unreliable').textContent = r.n_unreliable + ' (' + r.pct_unreliable + '%)';
+        document.getElementById('zone-count').textContent = r.n_zones;
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('zone-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        if (r.plot) document.getElementById('zone-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.36.0: Aperture-Permeability ────────────────────
+async function runAperturePermeability() {
+    showLoading('Estimating fracture aperture & permeability...');
+    var results = document.getElementById('aperture-results');
+    try {
+        var r = await apiPost('/api/analysis/aperture-permeability', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('aperture-mean').textContent = r.mean_aperture_mm.toFixed(3) + ' mm';
+        document.getElementById('aperture-perm').textContent = r.bulk_permeability_darcy.toFixed(2) + ' D';
+        document.getElementById('aperture-max').textContent = r.max_aperture_mm.toFixed(3) + ' mm';
+        document.getElementById('aperture-count').textContent = r.n_fractures;
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('aperture-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var ab = document.getElementById('aperture-class-body');
+        ab.innerHTML = '';
+        if (r.per_class_stats) {
+            for (var i = 0; i < r.per_class_stats.length; i++) {
+                var pc = r.per_class_stats[i];
+                ab.innerHTML += '<tr><td>' + pc.class + '</td><td>' + pc.n_fractures + '</td><td>' + pc.mean_aperture_mm.toFixed(4) + ' mm</td><td>' + pc.mean_permeability_darcy.toFixed(4) + '</td><td>' + pc.type_multiplier + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('aperture-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.36.0: Well Correlation ─────────────────────────
+async function runWellCorrelation() {
+    showLoading('Running well correlation analysis...');
+    var results = document.getElementById('corr-results');
+    try {
+        var r = await apiPost('/api/analysis/well-correlation', {source: currentSource()});
+        results.classList.remove('d-none');
+        document.getElementById('corr-wells').textContent = r.n_wells;
+        if (r.correlations && r.correlations.length > 0) {
+            var best = r.correlations[0];
+            for (var i = 1; i < r.correlations.length; i++) {
+                if (r.correlations[i].overall_correlation > best.overall_correlation) best = r.correlations[i];
+            }
+            document.getElementById('corr-best').textContent = best.well_a + '-' + best.well_b + ' (' + best.overall_correlation.toFixed(2) + ')';
+            var lvlCls = best.correlation_level === 'HIGH' ? 'text-success' : best.correlation_level === 'MODERATE' ? 'text-warning' : 'text-danger';
+            document.getElementById('corr-level').textContent = best.correlation_level;
+            document.getElementById('corr-level').className = 'metric-value ' + lvlCls;
+        }
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('corr-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        if (r.plot) document.getElementById('corr-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

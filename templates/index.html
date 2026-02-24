@@ -1791,6 +1791,69 @@
                         </div>
                     </div>
 
+                    <!-- v3.36.0: Uncertainty Zonation -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-map"></i> Uncertainty-Aware Zonation</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runUncertaintyZonation()">
+                                <i class="bi bi-play-fill"></i> Zone
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="zone-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Confident</div><div class="metric-value text-success" id="zone-confident">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Uncertain</div><div class="metric-value text-warning" id="zone-uncertain">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Unreliable</div><div class="metric-value text-danger" id="zone-unreliable">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Depth Zones</div><div class="metric-value" id="zone-count">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="zone-brief"></div>
+                            <div class="text-center"><img id="zone-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.36.0: Aperture-Permeability -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-droplet-half"></i> Fracture Aperture & Permeability</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runAperturePermeability()">
+                                <i class="bi bi-play-fill"></i> Estimate
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="aperture-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Mean Aperture</div><div class="metric-value" id="aperture-mean">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Bulk Perm</div><div class="metric-value" id="aperture-perm">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Max Aperture</div><div class="metric-value" id="aperture-max">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Fractures</div><div class="metric-value" id="aperture-count">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="aperture-brief"></div>
+                            <h6>Aperture by Fracture Type</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Type</th><th>Count</th><th>Mean Aperture</th><th>Mean Perm (D)</th><th>Multiplier</th></tr></thead><tbody id="aperture-class-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="aperture-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.36.0: Well Correlation -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-left-right"></i> Well Correlation Analysis</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runWellCorrelation()">
+                                <i class="bi bi-play-fill"></i> Compare
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="corr-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-4"><div class="metric-card"><div class="metric-label">Wells Compared</div><div class="metric-value" id="corr-wells">-</div></div></div>
+                                <div class="col-md-4"><div class="metric-card"><div class="metric-label">Best Correlation</div><div class="metric-value" id="corr-best">-</div></div></div>
+                                <div class="col-md-4"><div class="metric-card"><div class="metric-label">Correlation Level</div><div class="metric-value" id="corr-level">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="corr-brief"></div>
+                            <div class="text-center"><img id="corr-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
