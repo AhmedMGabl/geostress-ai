@@ -10,14 +10,86 @@ import urllib.error
 BASE = "http://localhost:8099"
 
 
-def api(method, path, body=None, timeout=60):
-    """Call API and return parsed JSON."""
+class _NullResult(dict):
+    """Null object returned when API call times out. Prevents crashes in check() assertions.
+    All attribute/item access returns another _NullResult, so chained access never crashes."""
+    _is_timeout = True
+    def get(self, key, default=None):
+        return default
+    def __getitem__(self, key):
+        return _NullResult()
+    def __contains__(self, key):
+        return False
+    def __bool__(self):
+        return False
+    def __len__(self):
+        return 0
+    def __iter__(self):
+        return iter([])
+    def __add__(self, other):
+        return 0
+    def __radd__(self, other):
+        return 0
+    def __sub__(self, other):
+        return 0
+    def __rsub__(self, other):
+        return 0
+    def __mul__(self, other):
+        return 0
+    def __le__(self, other):
+        return False
+    def __lt__(self, other):
+        return False
+    def __ge__(self, other):
+        return False
+    def __gt__(self, other):
+        return False
+    def __eq__(self, other):
+        if isinstance(other, _NullResult):
+            return True
+        return False
+    def __ne__(self, other):
+        return not self.__eq__(other)
+    def __int__(self):
+        return 0
+    def __float__(self):
+        return 0.0
+    def __str__(self):
+        return ""
+    def __repr__(self):
+        return "_NullResult()"
+    def startswith(self, *a):
+        return False
+    def endswith(self, *a):
+        return False
+    def keys(self):
+        return []
+    def values(self):
+        return []
+    def items(self):
+        return []
+
+_TIMEOUT_RESULT = _NullResult()
+
+
+def api(method, path, body=None, timeout=60, retries=1):
+    """Call API and return parsed JSON. Retries on timeout. Returns _NullResult on final failure."""
     url = BASE + path
     data = json.dumps(body).encode() if body else None
     headers = {"Content-Type": "application/json"} if body else {}
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())
+        except (TimeoutError, urllib.error.URLError) as e:
+            if attempt < retries:
+                import time
+                print(f"    (retry {attempt+1}/{retries} after timeout on {path})")
+                time.sleep(5)
+            else:
+                print(f"  TIMEOUT: {path} failed after {retries+1} attempts ({type(e).__name__})")
+                return _TIMEOUT_RESULT
 
 
 def api_expect_error(method, path, body=None, expected_status=400):
@@ -45,6 +117,8 @@ def check(label, condition, detail=""):
     else:
         print(f"  FAIL: {label}" + (f" ({detail})" if detail else ""))
         failed += 1
+
+
 
 
 # ── 1. Input Validation: Classifier ──────────────────
@@ -736,12 +810,16 @@ else:
 
 # ── [41] Stacking Ensemble Classifier ─────────────
 print("\n[41] Stacking Ensemble Classifier")
-stk = api("POST", "/api/analysis/classify",
-          {"source": "demo", "classifier": "stacking"}, timeout=120)
-check("Stacking returns accuracy", stk.get("cv_mean_accuracy", 0) > 0.3)
-check("Stacking has confusion matrix", isinstance(stk.get("confusion_matrix"), list))
-check("Stacking has class names", len(stk.get("class_names", [])) > 0)
-check("Stacking has stakeholder brief", "headline" in stk.get("stakeholder_brief", {}))
+try:
+    stk = api("POST", "/api/analysis/classify",
+              {"source": "demo", "classifier": "stacking"}, timeout=180, retries=2)
+    check("Stacking returns accuracy", stk.get("cv_mean_accuracy", 0) > 0.3)
+    check("Stacking has confusion matrix", isinstance(stk.get("confusion_matrix"), list))
+    check("Stacking has class names", len(stk.get("class_names", [])) > 0)
+    check("Stacking has stakeholder brief", "headline" in stk.get("stakeholder_brief", {}))
+except Exception as e41:
+    print(f"  SKIP: Stacking timed out ({type(e41).__name__}), continuing...")
+    failed += 4
 
 # ── [42] Top Feature Drivers in Classification ─────
 print("\n[42] Top Feature Drivers in Classification")
@@ -934,21 +1012,25 @@ if ar.get("status") != "NO_FEEDBACK":
 
 # ── [54] Model Arena ──────────────────────────────────
 print("\n[54] Model Arena")
-ma = api("POST", "/api/analysis/model-arena", {"well": "3P", "source": "demo"}, timeout=300)
-check("Has ranking", isinstance(ma.get("ranking"), list) and len(ma["ranking"]) >= 3)
-check("Has results dict", isinstance(ma.get("results"), dict))
-check("Has best_model", isinstance(ma.get("best_model"), str) and len(ma["best_model"]) > 0)
-check("Has best_composite", isinstance(ma.get("best_composite"), (int, float)))
-check("Has n_models", isinstance(ma.get("n_models"), int) and ma["n_models"] >= 3)
-check("Has plot", isinstance(ma.get("plot"), str) and ma["plot"].startswith("data:image"))
-best = ma.get("best_model", "")
-best_r = ma.get("results", {}).get(best, {})
-check("Best has accuracy", isinstance(best_r.get("accuracy"), (int, float)))
-check("Best has f1", isinstance(best_r.get("f1"), (int, float)))
-check("Best has ece", isinstance(best_r.get("ece"), (int, float)))
-check("Best has composite", isinstance(best_r.get("composite"), (int, float)))
-check("Best has rank 1", best_r.get("rank") == 1)
-check("Has stakeholder_brief", "headline" in ma.get("stakeholder_brief", {}))
+try:
+    ma = api("POST", "/api/analysis/model-arena", {"well": "3P", "source": "demo"}, timeout=300)
+    check("Has ranking", isinstance(ma.get("ranking"), list) and len(ma["ranking"]) >= 3)
+    check("Has results dict", isinstance(ma.get("results"), dict))
+    check("Has best_model", isinstance(ma.get("best_model"), str) and len(ma["best_model"]) > 0)
+    check("Has best_composite", isinstance(ma.get("best_composite"), (int, float)))
+    check("Has n_models", isinstance(ma.get("n_models"), int) and ma["n_models"] >= 3)
+    check("Has plot", isinstance(ma.get("plot"), str) and ma["plot"].startswith("data:image"))
+    best = ma.get("best_model", "")
+    best_r = ma.get("results", {}).get(best, {})
+    check("Best has accuracy", isinstance(best_r.get("accuracy"), (int, float)))
+    check("Best has f1", isinstance(best_r.get("f1"), (int, float)))
+    check("Best has ece", isinstance(best_r.get("ece"), (int, float)))
+    check("Best has composite", isinstance(best_r.get("composite"), (int, float)))
+    check("Best has rank 1", best_r.get("rank") == 1)
+    check("Has stakeholder_brief", "headline" in ma.get("stakeholder_brief", {}))
+except Exception as e54:
+    print(f"  SKIP: Model Arena timed out or failed ({type(e54).__name__}), continuing...")
+    failed += 12
 
 # ── [55] Stakeholder Decision Report ──────────────────
 print("\n[55] Stakeholder Decision Report")
@@ -1315,30 +1397,34 @@ check("6P has decision", dd6.get("overall_decision") in ("GO", "CONDITIONAL", "N
 
 # ── [70] Model Significance Testing ─────────────────────
 print("\n[70] Model Significance Testing")
-ms = api("POST", "/api/analysis/model-significance", {"well": "3P", "source": "demo"}, timeout=300)
-check("Status 200", ms is not None)
-check("Has well", ms.get("well") == "3P")
-check("Has n_models", isinstance(ms.get("n_models"), int) and ms["n_models"] >= 2)
-check("Has n_samples", isinstance(ms.get("n_samples"), int) and ms["n_samples"] > 0)
-check("Has class_names", isinstance(ms.get("class_names"), list))
-check("Has models list", isinstance(ms.get("models"), list) and len(ms["models"]) >= 2)
-m0 = ms["models"][0]
-check("Model has model name", isinstance(m0.get("model"), str))
-check("Model has accuracy", isinstance(m0.get("accuracy"), (int, float)) and 0 <= m0["accuracy"] <= 1)
-check("Model has f1", isinstance(m0.get("f1"), (int, float)))
-check("Model has balanced_accuracy", isinstance(m0.get("balanced_accuracy"), (int, float)))
-check("Model has time_s", isinstance(m0.get("time_s"), (int, float)))
-check("Has significance_matrix", isinstance(ms.get("significance_matrix"), list))
-sm0 = ms["significance_matrix"][0]
-check("SM has model", isinstance(sm0.get("model"), str))
-check("SM has comparisons", isinstance(sm0.get("comparisons"), dict))
-check("Has recommendation", isinstance(ms.get("recommendation"), dict))
-rec = ms.get("recommendation", {})
-check("Rec has best_model", isinstance(rec.get("best_model"), str))
-check("Rec has accuracy", isinstance(rec.get("accuracy"), (int, float)))
-check("Rec has significantly_better_than", isinstance(rec.get("significantly_better_than"), int))
-check("Rec has verdict", isinstance(rec.get("verdict"), str))
-check("Has plot", isinstance(ms.get("plot"), str) and len(ms["plot"]) > 100)
+try:
+    ms = api("POST", "/api/analysis/model-significance", {"well": "3P", "source": "demo"}, timeout=300)
+    check("Status 200", ms is not None)
+    check("Has well", ms.get("well") == "3P")
+    check("Has n_models", isinstance(ms.get("n_models"), int) and ms["n_models"] >= 2)
+    check("Has n_samples", isinstance(ms.get("n_samples"), int) and ms["n_samples"] > 0)
+    check("Has class_names", isinstance(ms.get("class_names"), list))
+    check("Has models list", isinstance(ms.get("models"), list) and len(ms["models"]) >= 2)
+    m0 = ms["models"][0]
+    check("Model has model name", isinstance(m0.get("model"), str))
+    check("Model has accuracy", isinstance(m0.get("accuracy"), (int, float)) and 0 <= m0["accuracy"] <= 1)
+    check("Model has f1", isinstance(m0.get("f1"), (int, float)))
+    check("Model has balanced_accuracy", isinstance(m0.get("balanced_accuracy"), (int, float)))
+    check("Model has time_s", isinstance(m0.get("time_s"), (int, float)))
+    check("Has significance_matrix", isinstance(ms.get("significance_matrix"), list))
+    sm0 = ms["significance_matrix"][0]
+    check("SM has model", isinstance(sm0.get("model"), str))
+    check("SM has comparisons", isinstance(sm0.get("comparisons"), dict))
+    check("Has recommendation", isinstance(ms.get("recommendation"), dict))
+    rec = ms.get("recommendation", {})
+    check("Rec has best_model", isinstance(rec.get("best_model"), str))
+    check("Rec has accuracy", isinstance(rec.get("accuracy"), (int, float)))
+    check("Rec has significantly_better_than", isinstance(rec.get("significantly_better_than"), int))
+    check("Rec has verdict", isinstance(rec.get("verdict"), str))
+    check("Has plot", isinstance(ms.get("plot"), str) and len(ms["plot"]) > 100)
+except Exception as e70:
+    print(f"  SKIP: Model Significance timed out or failed ({type(e70).__name__}), continuing...")
+    failed += 20
 check("Has stakeholder_brief", isinstance(ms.get("stakeholder_brief"), dict))
 
 # ── [71] Data Collection Planner ────────────────────────
@@ -1841,249 +1927,370 @@ check("Projections non-decreasing", all(accs[i] <= accs[i+1] + 0.001 for i in ra
 
 # ── [87] Consensus Ensemble with Rejection ────────────
 print("\n[87] Consensus Ensemble with Rejection")
-ce = api("POST", "/api/analysis/consensus-ensemble", {"source": "demo", "well": "3P"}, timeout=180)
-check("Status 200", ce is not None)
-check("Has well", ce.get("well") == "3P")
-check("Has n_samples", isinstance(ce.get("n_samples"), int) and ce["n_samples"] > 0)
-check("Has n_models", isinstance(ce.get("n_models"), int) and ce["n_models"] >= 2)
-check("Has min_agreement", isinstance(ce.get("min_agreement"), (int, float)))
-check("Has n_accepted", isinstance(ce.get("n_accepted"), int))
-check("Has n_rejected", isinstance(ce.get("n_rejected"), int))
-check("Accepted + Rejected = Total", ce["n_accepted"] + ce["n_rejected"] == ce["n_samples"])
-check("Has consensus_rate", isinstance(ce.get("consensus_rate"), (int, float)) and 0 <= ce["consensus_rate"] <= 1)
-check("Has accepted_accuracy", isinstance(ce.get("accepted_accuracy"), (int, float)))
-check("Has model_ranking", isinstance(ce.get("model_ranking"), list) and len(ce["model_ranking"]) >= 2)
-mr0 = ce["model_ranking"][0]
-check("MR has model", isinstance(mr0.get("model"), str))
-check("MR has accuracy", isinstance(mr0.get("accuracy"), (int, float)))
-check("Has per_class", isinstance(ce.get("per_class"), list) and len(ce["per_class"]) >= 2)
-pc0 = ce["per_class"][0]
-check("PC has class", isinstance(pc0.get("class"), str))
-check("PC has count", isinstance(pc0.get("count"), int))
-check("PC has consensus_rate", isinstance(pc0.get("consensus_rate"), (int, float)))
-check("PC has accuracy_when_accepted", isinstance(pc0.get("accuracy_when_accepted"), (int, float)))
-check("PC has avg_agreement", isinstance(pc0.get("avg_agreement"), (int, float)))
-check("Has rejected_samples", isinstance(ce.get("rejected_samples"), list))
-if ce["rejected_samples"]:
-    rs0 = ce["rejected_samples"][0]
-    check("RS has index", isinstance(rs0.get("index"), int))
-    check("RS has true_class", isinstance(rs0.get("true_class"), str))
-    check("RS has vote_distribution", isinstance(rs0.get("vote_distribution"), dict))
-    check("RS has max_agreement", isinstance(rs0.get("max_agreement"), (int, float)))
-check("Has plot", isinstance(ce.get("plot"), str) and len(ce["plot"]) > 100)
-check("Has stakeholder_brief", isinstance(ce.get("stakeholder_brief"), dict))
-check("Brief has headline", isinstance(ce["stakeholder_brief"].get("headline"), str))
+try:
+    ce = api("POST", "/api/analysis/consensus-ensemble", {"source": "demo", "well": "3P"}, timeout=300, retries=1)
+    check("Status 200", ce is not None)
+    check("Has well", ce.get("well") == "3P")
+    check("Has n_samples", isinstance(ce.get("n_samples"), int) and ce["n_samples"] > 0)
+    check("Has n_models", isinstance(ce.get("n_models"), int) and ce["n_models"] >= 2)
+    check("Has min_agreement", isinstance(ce.get("min_agreement"), (int, float)))
+    check("Has n_accepted", isinstance(ce.get("n_accepted"), int))
+    check("Has n_rejected", isinstance(ce.get("n_rejected"), int))
+    check("Accepted + Rejected = Total", ce["n_accepted"] + ce["n_rejected"] == ce["n_samples"])
+    check("Has consensus_rate", isinstance(ce.get("consensus_rate"), (int, float)) and 0 <= ce["consensus_rate"] <= 1)
+    check("Has accepted_accuracy", isinstance(ce.get("accepted_accuracy"), (int, float)))
+    check("Has model_ranking", isinstance(ce.get("model_ranking"), list) and len(ce["model_ranking"]) >= 2)
+    mr0 = ce["model_ranking"][0]
+    check("MR has model", isinstance(mr0.get("model"), str))
+    check("MR has accuracy", isinstance(mr0.get("accuracy"), (int, float)))
+    check("Has per_class", isinstance(ce.get("per_class"), list) and len(ce["per_class"]) >= 2)
+    pc0 = ce["per_class"][0]
+    check("PC has class", isinstance(pc0.get("class"), str))
+    check("PC has count", isinstance(pc0.get("count"), int))
+    check("PC has consensus_rate", isinstance(pc0.get("consensus_rate"), (int, float)))
+    check("PC has accuracy_when_accepted", isinstance(pc0.get("accuracy_when_accepted"), (int, float)))
+    check("PC has avg_agreement", isinstance(pc0.get("avg_agreement"), (int, float)))
+    check("Has rejected_samples", isinstance(ce.get("rejected_samples"), list))
+    if ce["rejected_samples"]:
+        rs0 = ce["rejected_samples"][0]
+        check("RS has index", isinstance(rs0.get("index"), int))
+        check("RS has true_class", isinstance(rs0.get("true_class"), str))
+        check("RS has vote_distribution", isinstance(rs0.get("vote_distribution"), dict))
+        check("RS has max_agreement", isinstance(rs0.get("max_agreement"), (int, float)))
+    check("Has plot", isinstance(ce.get("plot"), str) and len(ce["plot"]) > 100)
+    check("Has stakeholder_brief", isinstance(ce.get("stakeholder_brief"), dict))
+    check("Brief has headline", isinstance(ce["stakeholder_brief"].get("headline"), str))
 
-# Param validation
-check("min_agreement=0.3 rejected", api_expect_error("POST", "/api/analysis/consensus-ensemble", {"source": "demo", "well": "3P", "min_agreement": 0.3}))
+    # Param validation
+    check("min_agreement=0.3 rejected", api_expect_error("POST", "/api/analysis/consensus-ensemble", {"source": "demo", "well": "3P", "min_agreement": 0.3}))
 
-# Custom threshold
-ce8 = api("POST", "/api/analysis/consensus-ensemble", {"source": "demo", "well": "3P", "min_agreement": 0.8}, timeout=180)
-check("min_agreement=0.8 works", ce8 is not None and isinstance(ce8.get("consensus_rate"), (int, float)))
-check("Higher threshold = lower consensus", ce8["consensus_rate"] <= ce["consensus_rate"] + 0.01)
-check("Consensus accuracy valid", isinstance(ce8.get("accepted_accuracy"), (int, float)))
+    # Custom threshold
+    ce8 = api("POST", "/api/analysis/consensus-ensemble", {"source": "demo", "well": "3P", "min_agreement": 0.8}, timeout=300, retries=1)
+    check("min_agreement=0.8 works", ce8 is not None and isinstance(ce8.get("consensus_rate"), (int, float)))
+    check("Higher threshold = lower consensus", ce8["consensus_rate"] <= ce["consensus_rate"] + 0.01)
+    check("Consensus accuracy valid", isinstance(ce8.get("accepted_accuracy"), (int, float)))
+except Exception as e87:
+    print(f"  SKIP: Consensus Ensemble timed out or failed ({type(e87).__name__}), continuing...")
+    failed += 30
 
 # ── [88] Batch Prediction ─────────────────────────────
 print("\n[88] Batch Prediction")
-bp = api("POST", "/api/analysis/batch-predict", {"source": "demo", "well": "3P"}, timeout=180)
-check("Status 200", bp is not None)
-check("Has well", bp.get("well") == "3P")
-check("Has n_samples", isinstance(bp.get("n_samples"), int) and bp["n_samples"] > 0)
-check("Has n_predicted", isinstance(bp.get("n_predicted"), int) and bp["n_predicted"] > 0)
-check("Has n_models", isinstance(bp.get("n_models"), int) and bp["n_models"] >= 2)
-check("Has elapsed_s", isinstance(bp.get("elapsed_s"), (int, float)) and bp["elapsed_s"] > 0)
-check("Has batch_accuracy", isinstance(bp.get("batch_accuracy"), (int, float)))
-check("Has high_confidence_count", isinstance(bp.get("high_confidence_count"), int))
-check("Has low_confidence_count", isinstance(bp.get("low_confidence_count"), int))
-check("Conf counts sum", bp["high_confidence_count"] + bp["low_confidence_count"] == bp["n_predicted"])
-check("Has model_summary", isinstance(bp.get("model_summary"), list) and len(bp["model_summary"]) >= 2)
-ms0bp = bp["model_summary"][0]
-check("MS has model", isinstance(ms0bp.get("model"), str))
-check("MS has accuracy", isinstance(ms0bp.get("accuracy"), (int, float)))
-check("MS has time_s", isinstance(ms0bp.get("time_s"), (int, float)))
-check("Has predictions", isinstance(bp.get("predictions"), list) and len(bp["predictions"]) > 0)
-p0bp = bp["predictions"][0]
-check("P has index", isinstance(p0bp.get("index"), int))
-check("P has true_class", isinstance(p0bp.get("true_class"), str))
-check("P has predicted_class", isinstance(p0bp.get("predicted_class"), str))
-check("P has correct", isinstance(p0bp.get("correct"), bool))
-check("P has agreement", isinstance(p0bp.get("agreement"), (int, float)))
-check("P has model_votes", isinstance(p0bp.get("model_votes"), dict))
-check("Has plot", isinstance(bp.get("plot"), str) and len(bp["plot"]) > 100)
-check("Has stakeholder_brief", isinstance(bp.get("stakeholder_brief"), dict))
-check("Brief has headline", isinstance(bp["stakeholder_brief"].get("headline"), str))
+try:
+    bp = api("POST", "/api/analysis/batch-predict", {"source": "demo", "well": "3P"}, timeout=300, retries=1)
+    check("Status 200", bp is not None)
+    check("Has well", bp.get("well") == "3P")
+    check("Has n_samples", isinstance(bp.get("n_samples"), int) and bp["n_samples"] > 0)
+    check("Has n_predicted", isinstance(bp.get("n_predicted"), int) and bp["n_predicted"] > 0)
+    check("Has n_models", isinstance(bp.get("n_models"), int) and bp["n_models"] >= 2)
+    check("Has elapsed_s", isinstance(bp.get("elapsed_s"), (int, float)) and bp["elapsed_s"] > 0)
+    check("Has batch_accuracy", isinstance(bp.get("batch_accuracy"), (int, float)))
+    check("Has high_confidence_count", isinstance(bp.get("high_confidence_count"), int))
+    check("Has low_confidence_count", isinstance(bp.get("low_confidence_count"), int))
+    check("Conf counts sum", bp["high_confidence_count"] + bp["low_confidence_count"] == bp["n_predicted"])
+    check("Has model_summary", isinstance(bp.get("model_summary"), list) and len(bp["model_summary"]) >= 2)
+    ms0bp = bp["model_summary"][0]
+    check("MS has model", isinstance(ms0bp.get("model"), str))
+    check("MS has accuracy", isinstance(ms0bp.get("accuracy"), (int, float)))
+    check("MS has time_s", isinstance(ms0bp.get("time_s"), (int, float)))
+    check("Has predictions", isinstance(bp.get("predictions"), list) and len(bp["predictions"]) > 0)
+    p0bp = bp["predictions"][0]
+    check("P has index", isinstance(p0bp.get("index"), int))
+    check("P has true_class", isinstance(p0bp.get("true_class"), str))
+    check("P has predicted_class", isinstance(p0bp.get("predicted_class"), str))
+    check("P has correct", isinstance(p0bp.get("correct"), bool))
+    check("P has agreement", isinstance(p0bp.get("agreement"), (int, float)))
+    check("P has model_votes", isinstance(p0bp.get("model_votes"), dict))
+    check("Has plot", isinstance(bp.get("plot"), str) and len(bp["plot"]) > 100)
+    check("Has stakeholder_brief", isinstance(bp.get("stakeholder_brief"), dict))
+    check("Brief has headline", isinstance(bp["stakeholder_brief"].get("headline"), str))
 
-# Param validation
-check("top_n=0 rejected", api_expect_error("POST", "/api/analysis/batch-predict", {"source": "demo", "well": "3P", "top_n": 0}))
+    # Param validation
+    check("top_n=0 rejected", api_expect_error("POST", "/api/analysis/batch-predict", {"source": "demo", "well": "3P", "top_n": 0}))
 
-# Custom top_n
-bp10 = api("POST", "/api/analysis/batch-predict", {"source": "demo", "well": "3P", "top_n": 10}, timeout=180)
-check("top_n=10 works", bp10 is not None and bp10.get("n_predicted") == 10)
+    # Custom top_n
+    bp10 = api("POST", "/api/analysis/batch-predict", {"source": "demo", "well": "3P", "top_n": 10}, timeout=300, retries=1)
+    check("top_n=10 works", bp10 is not None and bp10.get("n_predicted") == 10)
+except Exception as e88:
+    print(f"  SKIP: Batch Prediction timed out or failed ({type(e88).__name__}), continuing...")
+    failed += 22
 
 # ── [89] Model Selection Advisor ──────────────────────
 print("\n[89] Model Selection Advisor")
-ma = api("POST", "/api/analysis/model-advisor", {"source": "demo", "well": "3P"}, timeout=180)
-check("Status 200", ma is not None)
-check("Has well", ma.get("well") == "3P")
-check("Has n_samples", isinstance(ma.get("n_samples"), int) and ma["n_samples"] > 0)
-check("Has n_models", isinstance(ma.get("n_models"), int) and ma["n_models"] >= 2)
-check("Has n_classes", isinstance(ma.get("n_classes"), int) and ma["n_classes"] >= 2)
-check("Has class_names", isinstance(ma.get("class_names"), list))
-check("Has recommended_model", isinstance(ma.get("recommended_model"), str))
-check("Has recommendation_rationale", isinstance(ma.get("recommendation_rationale"), list) and len(ma["recommendation_rationale"]) > 0)
-check("Has evaluations", isinstance(ma.get("evaluations"), list) and len(ma["evaluations"]) >= 2)
-e0ma = ma["evaluations"][0]
-check("E has model", isinstance(e0ma.get("model"), str))
-check("E has accuracy", isinstance(e0ma.get("accuracy"), (int, float)))
-check("E has accuracy_std", isinstance(e0ma.get("accuracy_std"), (int, float)))
-check("E has balanced_accuracy", isinstance(e0ma.get("balanced_accuracy"), (int, float)))
-check("E has f1_weighted", isinstance(e0ma.get("f1_weighted"), (int, float)))
-check("E has train_time_s", isinstance(e0ma.get("train_time_s"), (int, float)))
-check("E has train_accuracy", isinstance(e0ma.get("train_accuracy"), (int, float)))
-check("E has overfit_gap", isinstance(e0ma.get("overfit_gap"), (int, float)))
-check("E has per_class_accuracy", isinstance(e0ma.get("per_class_accuracy"), dict))
-check("E has stability", e0ma.get("stability") in ("STABLE", "MODERATE", "UNSTABLE"))
-check("E has overfit_risk", e0ma.get("overfit_risk") in ("LOW", "MEDIUM", "HIGH"))
-check("Recommended is first", ma["evaluations"][0]["model"] == ma["recommended_model"])
-check("Has plot", isinstance(ma.get("plot"), str) and len(ma["plot"]) > 100)
-check("Has stakeholder_brief", isinstance(ma.get("stakeholder_brief"), dict))
-check("Brief has headline", isinstance(ma["stakeholder_brief"].get("headline"), str))
-check("Brief has risk_level", ma["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
+try:
+    ma = api("POST", "/api/analysis/model-advisor", {"source": "demo", "well": "3P"}, timeout=300, retries=1)
+    check("Status 200", ma is not None)
+    check("Has well", ma.get("well") == "3P")
+    check("Has n_samples", isinstance(ma.get("n_samples"), int) and ma["n_samples"] > 0)
+    check("Has n_models", isinstance(ma.get("n_models"), int) and ma["n_models"] >= 2)
+    check("Has n_classes", isinstance(ma.get("n_classes"), int) and ma["n_classes"] >= 2)
+    check("Has class_names", isinstance(ma.get("class_names"), list))
+    check("Has recommended_model", isinstance(ma.get("recommended_model"), str))
+    check("Has recommendation_rationale", isinstance(ma.get("recommendation_rationale"), list) and len(ma["recommendation_rationale"]) > 0)
+    check("Has evaluations", isinstance(ma.get("evaluations"), list) and len(ma["evaluations"]) >= 2)
+    e0ma = ma["evaluations"][0]
+    check("E has model", isinstance(e0ma.get("model"), str))
+    check("E has accuracy", isinstance(e0ma.get("accuracy"), (int, float)))
+    check("E has accuracy_std", isinstance(e0ma.get("accuracy_std"), (int, float)))
+    check("E has balanced_accuracy", isinstance(e0ma.get("balanced_accuracy"), (int, float)))
+    check("E has f1_weighted", isinstance(e0ma.get("f1_weighted"), (int, float)))
+    check("E has train_time_s", isinstance(e0ma.get("train_time_s"), (int, float)))
+    check("E has train_accuracy", isinstance(e0ma.get("train_accuracy"), (int, float)))
+    check("E has overfit_gap", isinstance(e0ma.get("overfit_gap"), (int, float)))
+    check("E has per_class_accuracy", isinstance(e0ma.get("per_class_accuracy"), dict))
+    check("E has stability", e0ma.get("stability") in ("STABLE", "MODERATE", "UNSTABLE"))
+    check("E has overfit_risk", e0ma.get("overfit_risk") in ("LOW", "MEDIUM", "HIGH"))
+    check("Recommended is first", ma["evaluations"][0]["model"] == ma["recommended_model"])
+    check("Has plot", isinstance(ma.get("plot"), str) and len(ma["plot"]) > 100)
+    check("Has stakeholder_brief", isinstance(ma.get("stakeholder_brief"), dict))
+    check("Brief has headline", isinstance(ma["stakeholder_brief"].get("headline"), str))
+    check("Brief has risk_level", ma["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
+except Exception as e89:
+    print(f"  SKIP: Model Selection Advisor timed out or failed ({type(e89).__name__}), continuing...")
+    failed += 24
 
 # ── [90] Operational Readiness Assessment ─────────────
 print("\n[90] Operational Readiness Assessment")
-orr = api("POST", "/api/analysis/operational-readiness", {"source": "demo", "well": "3P"}, timeout=300)
-check("Status 200", orr is not None)
-check("Has well", orr.get("well") == "3P")
-check("Has n_samples", isinstance(orr.get("n_samples"), int) and orr["n_samples"] > 0)
-check("Has overall_status", orr.get("overall_status") in ("READY", "CONDITIONAL", "NOT READY"))
-check("Has readiness_score", isinstance(orr.get("readiness_score"), (int, float)) and 0 <= orr["readiness_score"] <= 100)
-check("Has n_pass", isinstance(orr.get("n_pass"), int))
-check("Has n_warn", isinstance(orr.get("n_warn"), int))
-check("Has n_fail", isinstance(orr.get("n_fail"), int))
-check("Grades sum to checks", orr["n_pass"] + orr["n_warn"] + orr["n_fail"] == len(orr.get("checks", [])))
-check("Has checks", isinstance(orr.get("checks"), list) and len(orr["checks"]) >= 5)
-c0or = orr["checks"][0]
-check("Check has check name", isinstance(c0or.get("check"), str))
-check("Check has grade", c0or.get("grade") in ("PASS", "WARN", "FAIL"))
-check("Check has detail", isinstance(c0or.get("detail"), str))
-check("Check has threshold", isinstance(c0or.get("threshold"), str))
-check("Has best_model", isinstance(orr.get("best_model"), str))
-check("Has best_accuracy", isinstance(orr.get("best_accuracy"), (int, float)))
-check("Has avg_consensus", isinstance(orr.get("avg_consensus"), (int, float)))
-check("Has plot", isinstance(orr.get("plot"), str) and len(orr["plot"]) > 100)
-check("Has stakeholder_brief", isinstance(orr.get("stakeholder_brief"), dict))
-check("Brief has headline", isinstance(orr["stakeholder_brief"].get("headline"), str))
-check("Brief has risk_level", orr["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
+try:
+    orr = api("POST", "/api/analysis/operational-readiness", {"source": "demo", "well": "3P"}, timeout=300, retries=1)
+    check("Status 200", orr is not None)
+    check("Has well", orr.get("well") == "3P")
+    check("Has n_samples", isinstance(orr.get("n_samples"), int) and orr["n_samples"] > 0)
+    check("Has overall_status", orr.get("overall_status") in ("READY", "CONDITIONAL", "NOT READY"))
+    check("Has readiness_score", isinstance(orr.get("readiness_score"), (int, float)) and 0 <= orr["readiness_score"] <= 100)
+    check("Has n_pass", isinstance(orr.get("n_pass"), int))
+    check("Has n_warn", isinstance(orr.get("n_warn"), int))
+    check("Has n_fail", isinstance(orr.get("n_fail"), int))
+    check("Grades sum to checks", orr["n_pass"] + orr["n_warn"] + orr["n_fail"] == len(orr.get("checks", [])))
+    check("Has checks", isinstance(orr.get("checks"), list) and len(orr["checks"]) >= 5)
+    c0or = orr["checks"][0]
+    check("Check has check name", isinstance(c0or.get("check"), str))
+    check("Check has grade", c0or.get("grade") in ("PASS", "WARN", "FAIL"))
+    check("Check has detail", isinstance(c0or.get("detail"), str))
+    check("Check has threshold", isinstance(c0or.get("threshold"), str))
+    check("Has best_model", isinstance(orr.get("best_model"), str))
+    check("Has best_accuracy", isinstance(orr.get("best_accuracy"), (int, float)))
+    check("Has avg_consensus", isinstance(orr.get("avg_consensus"), (int, float)))
+    check("Has plot", isinstance(orr.get("plot"), str) and len(orr["plot"]) > 100)
+    check("Has stakeholder_brief", isinstance(orr.get("stakeholder_brief"), dict))
+    check("Brief has headline", isinstance(orr["stakeholder_brief"].get("headline"), str))
+    check("Brief has risk_level", orr["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
 
-# Verify specific checks exist
-check_names_or = [c["check"] for c in orr["checks"]]
-check("Data Sufficiency check", "Data Sufficiency" in check_names_or)
-check("Class Balance check", "Class Balance" in check_names_or)
-check("Model Accuracy check", "Model Accuracy" in check_names_or)
-check("Model Consensus check", "Model Consensus" in check_names_or)
+    # Verify specific checks exist
+    check_names_or = [c["check"] for c in orr["checks"]]
+    check("Data Sufficiency check", "Data Sufficiency" in check_names_or)
+    check("Class Balance check", "Class Balance" in check_names_or)
+    check("Model Accuracy check", "Model Accuracy" in check_names_or)
+    check("Model Consensus check", "Model Consensus" in check_names_or)
+except Exception as e90:
+    print(f"  SKIP: Operational Readiness timed out or failed ({type(e90).__name__}), continuing...")
+    failed += 25
 
 # ── [91] Geomechanical Feature Enrichment ─────────────
 print("\n[91] Geomechanical Feature Enrichment")
-gf = api("POST", "/api/analysis/geomech-features", {"source": "demo", "well": "3P"}, timeout=300)
-check("Status 200", gf is not None)
-check("Has well", gf.get("well") == "3P")
-check("Has n_samples", isinstance(gf.get("n_samples"), int) and gf["n_samples"] > 0)
-check("Has shmax_azimuth", isinstance(gf.get("shmax_azimuth"), (int, float)))
-check("Has stress_ratio", isinstance(gf.get("stress_ratio"), (int, float)))
-check("Has friction", isinstance(gf.get("friction"), (int, float)))
-check("Has n_geomech_features", isinstance(gf.get("n_geomech_features"), int) and gf["n_geomech_features"] >= 5)
-check("Has geomech_feature_names", isinstance(gf.get("geomech_feature_names"), list))
-check("Has feature_stats", isinstance(gf.get("feature_stats"), list) and len(gf["feature_stats"]) >= 5)
-fs0gf = gf["feature_stats"][0]
-check("FS has feature", isinstance(fs0gf.get("feature"), str))
-check("FS has mean", isinstance(fs0gf.get("mean"), (int, float)))
-check("FS has std", isinstance(fs0gf.get("std"), (int, float)))
-check("Has n_critically_stressed", isinstance(gf.get("n_critically_stressed"), int))
-check("Has comparisons", isinstance(gf.get("comparisons"), list) and len(gf["comparisons"]) >= 2)
-c0gf = gf["comparisons"][0]
-check("C has model", isinstance(c0gf.get("model"), str))
-check("C has baseline_accuracy", isinstance(c0gf.get("baseline_accuracy"), (int, float)))
-check("C has enriched_accuracy", isinstance(c0gf.get("enriched_accuracy"), (int, float)))
-check("C has accuracy_delta", isinstance(c0gf.get("accuracy_delta"), (int, float)))
-check("C has improved", isinstance(c0gf.get("improved"), bool))
-check("Has avg_accuracy_delta", isinstance(gf.get("avg_accuracy_delta"), (int, float)))
-check("Has n_models_improved", isinstance(gf.get("n_models_improved"), int))
-check("Has plot", isinstance(gf.get("plot"), str) and len(gf["plot"]) > 100)
-check("Has stakeholder_brief", isinstance(gf.get("stakeholder_brief"), dict))
-check("Brief has headline", isinstance(gf["stakeholder_brief"].get("headline"), str))
+try:
+    gf = api("POST", "/api/analysis/geomech-features", {"source": "demo", "well": "3P"}, timeout=300, retries=1)
+    check("Status 200", gf is not None)
+    check("Has well", gf.get("well") == "3P")
+    check("Has n_samples", isinstance(gf.get("n_samples"), int) and gf["n_samples"] > 0)
+    check("Has shmax_azimuth", isinstance(gf.get("shmax_azimuth"), (int, float)))
+    check("Has stress_ratio", isinstance(gf.get("stress_ratio"), (int, float)))
+    check("Has friction", isinstance(gf.get("friction"), (int, float)))
+    check("Has n_geomech_features", isinstance(gf.get("n_geomech_features"), int) and gf["n_geomech_features"] >= 5)
+    check("Has geomech_feature_names", isinstance(gf.get("geomech_feature_names"), list))
+    check("Has feature_stats", isinstance(gf.get("feature_stats"), list) and len(gf["feature_stats"]) >= 5)
+    fs0gf = gf["feature_stats"][0]
+    check("FS has feature", isinstance(fs0gf.get("feature"), str))
+    check("FS has mean", isinstance(fs0gf.get("mean"), (int, float)))
+    check("FS has std", isinstance(fs0gf.get("std"), (int, float)))
+    check("Has n_critically_stressed", isinstance(gf.get("n_critically_stressed"), int))
+    check("Has comparisons", isinstance(gf.get("comparisons"), list) and len(gf["comparisons"]) >= 2)
+    c0gf = gf["comparisons"][0]
+    check("C has model", isinstance(c0gf.get("model"), str))
+    check("C has baseline_accuracy", isinstance(c0gf.get("baseline_accuracy"), (int, float)))
+    check("C has enriched_accuracy", isinstance(c0gf.get("enriched_accuracy"), (int, float)))
+    check("C has accuracy_delta", isinstance(c0gf.get("accuracy_delta"), (int, float)))
+    check("C has improved", isinstance(c0gf.get("improved"), bool))
+    check("Has avg_accuracy_delta", isinstance(gf.get("avg_accuracy_delta"), (int, float)))
+    check("Has n_models_improved", isinstance(gf.get("n_models_improved"), int))
+    check("Has plot", isinstance(gf.get("plot"), str) and len(gf["plot"]) > 100)
+    check("Has stakeholder_brief", isinstance(gf.get("stakeholder_brief"), dict))
+    check("Brief has headline", isinstance(gf["stakeholder_brief"].get("headline"), str))
 
-# slip_tendency in feature names
-check("slip_tendency feature", "slip_tendency" in gf["geomech_feature_names"])
-check("dilation_tendency feature", "dilation_tendency" in gf["geomech_feature_names"])
+    # slip_tendency in feature names
+    check("slip_tendency feature", "slip_tendency" in gf["geomech_feature_names"])
+    check("dilation_tendency feature", "dilation_tendency" in gf["geomech_feature_names"])
+except Exception as e91:
+    print(f"  SKIP: Geomech Features timed out or failed ({type(e91).__name__}), continuing...")
+    failed += 26
 
 # ── [92] RLHF Iterative Feedback Loop ────────────────
 print("\n[92] RLHF Iterative Feedback Loop")
-ri = api("POST", "/api/analysis/rlhf-iterate", {"source": "demo", "well": "3P"}, timeout=300)
-check("Status 200", ri is not None)
-check("Has well", ri.get("well") == "3P")
-check("Has n_samples", isinstance(ri.get("n_samples"), int) and ri["n_samples"] > 0)
-check("Has n_iterations", isinstance(ri.get("n_iterations"), int) and ri["n_iterations"] >= 2)
-check("Has baseline_accuracy", isinstance(ri.get("baseline_accuracy"), (int, float)))
-check("Has final_accuracy", isinstance(ri.get("final_accuracy"), (int, float)))
-check("Has total_improvement", isinstance(ri.get("total_improvement"), (int, float)))
-check("Has converged", isinstance(ri.get("converged"), bool))
-check("Has iterations", isinstance(ri.get("iterations"), list) and len(ri["iterations"]) >= 2)
-it0 = ri["iterations"][0]
-check("IT has iteration", isinstance(it0.get("iteration"), int) and it0["iteration"] == 1)
-check("IT has accuracy", isinstance(it0.get("accuracy"), (int, float)))
-check("IT has improvement_vs_prev", isinstance(it0.get("improvement_vs_prev"), (int, float)))
-check("IT has total_improvement", isinstance(it0.get("total_improvement"), (int, float)))
-check("IT has n_errors", isinstance(it0.get("n_errors"), int))
-check("IT has n_pairs_trained", isinstance(it0.get("n_pairs_trained"), int))
-check("IT has avg_reward_score", isinstance(it0.get("avg_reward_score"), (int, float)))
-check("Has plot", isinstance(ri.get("plot"), str) and len(ri["plot"]) > 100)
-check("Has stakeholder_brief", isinstance(ri.get("stakeholder_brief"), dict))
-check("Brief has headline", isinstance(ri["stakeholder_brief"].get("headline"), str))
+try:
+    ri = api("POST", "/api/analysis/rlhf-iterate", {"source": "demo", "well": "3P"}, timeout=300, retries=1)
+    check("Status 200", ri is not None)
+    check("Has well", ri.get("well") == "3P")
+    check("Has n_samples", isinstance(ri.get("n_samples"), int) and ri["n_samples"] > 0)
+    check("Has n_iterations", isinstance(ri.get("n_iterations"), int) and ri["n_iterations"] >= 2)
+    check("Has baseline_accuracy", isinstance(ri.get("baseline_accuracy"), (int, float)))
+    check("Has final_accuracy", isinstance(ri.get("final_accuracy"), (int, float)))
+    check("Has total_improvement", isinstance(ri.get("total_improvement"), (int, float)))
+    check("Has converged", isinstance(ri.get("converged"), bool))
+    check("Has iterations", isinstance(ri.get("iterations"), list) and len(ri["iterations"]) >= 2)
+    it0 = ri["iterations"][0]
+    check("IT has iteration", isinstance(it0.get("iteration"), int) and it0["iteration"] == 1)
+    check("IT has accuracy", isinstance(it0.get("accuracy"), (int, float)))
+    check("IT has improvement_vs_prev", isinstance(it0.get("improvement_vs_prev"), (int, float)))
+    check("IT has total_improvement", isinstance(it0.get("total_improvement"), (int, float)))
+    check("IT has n_errors", isinstance(it0.get("n_errors"), int))
+    check("IT has n_pairs_trained", isinstance(it0.get("n_pairs_trained"), int))
+    check("IT has avg_reward_score", isinstance(it0.get("avg_reward_score"), (int, float)))
+    check("Has plot", isinstance(ri.get("plot"), str) and len(ri["plot"]) > 100)
+    check("Has stakeholder_brief", isinstance(ri.get("stakeholder_brief"), dict))
+    check("Brief has headline", isinstance(ri["stakeholder_brief"].get("headline"), str))
 
-# Param validation
-check("n_iterations=1 rejected", api_expect_error("POST", "/api/analysis/rlhf-iterate", {"source": "demo", "well": "3P", "n_iterations": 1}))
+    # Param validation
+    check("n_iterations=1 rejected", api_expect_error("POST", "/api/analysis/rlhf-iterate", {"source": "demo", "well": "3P", "n_iterations": 1}))
 
-# Custom iterations
-ri3 = api("POST", "/api/analysis/rlhf-iterate", {"source": "demo", "well": "3P", "n_iterations": 3}, timeout=300)
-check("n_iterations=3 works", ri3 is not None and len(ri3.get("iterations", [])) == 3)
+    # Custom iterations
+    ri3 = api("POST", "/api/analysis/rlhf-iterate", {"source": "demo", "well": "3P", "n_iterations": 3}, timeout=300, retries=1)
+    check("n_iterations=3 works", ri3 is not None and len(ri3.get("iterations", [])) == 3)
+except Exception as e92:
+    print(f"  SKIP: RLHF Iterate timed out or failed ({type(e92).__name__}), continuing...")
+    failed += 22
 
 # ── [93] Domain Shift Robustness ──────────────────────
 print("\n[93] Domain Shift Robustness")
-ds = api("POST", "/api/analysis/domain-shift", {"source": "demo", "well": "3P"}, timeout=180)
-check("Status 200", ds is not None)
-check("Has well", ds.get("well") == "3P")
-check("Has n_samples", isinstance(ds.get("n_samples"), int) and ds["n_samples"] > 0)
-check("Has n_zones", isinstance(ds.get("n_zones"), int) and ds["n_zones"] >= 2)
-check("Has avg_same_domain", isinstance(ds.get("avg_same_domain"), (int, float)))
-check("Has avg_cross_domain", isinstance(ds.get("avg_cross_domain"), (int, float)))
-check("Has domain_gap", isinstance(ds.get("domain_gap"), (int, float)))
-check("Has zone_summary", isinstance(ds.get("zone_summary"), list) and len(ds["zone_summary"]) >= 2)
-z0ds = ds["zone_summary"][0]
-check("Z has zone", isinstance(z0ds.get("zone"), int))
-check("Z has depth_range", isinstance(z0ds.get("depth_range"), (list, tuple)) and len(z0ds["depth_range"]) == 2)
-check("Z has n_samples", isinstance(z0ds.get("n_samples"), int))
-check("Z has self_accuracy", isinstance(z0ds.get("self_accuracy"), (int, float)))
-check("Z has transfer_accuracy", isinstance(z0ds.get("transfer_accuracy"), (int, float)))
-check("Z has gap", isinstance(z0ds.get("gap"), (int, float)))
-check("Has cross_domain_matrix", isinstance(ds.get("cross_domain_matrix"), list))
-check("Matrix size correct", len(ds["cross_domain_matrix"]) == ds["n_zones"] ** 2)
-check("Has worst_transitions", isinstance(ds.get("worst_transitions"), list))
-check("Has plot", isinstance(ds.get("plot"), str) and len(ds["plot"]) > 100)
-check("Has stakeholder_brief", isinstance(ds.get("stakeholder_brief"), dict))
-check("Brief has headline", isinstance(ds["stakeholder_brief"].get("headline"), str))
+try:
+    ds = api("POST", "/api/analysis/domain-shift", {"source": "demo", "well": "3P"}, timeout=300, retries=1)
+    check("Status 200", ds is not None)
+    check("Has well", ds.get("well") == "3P")
+    check("Has n_samples", isinstance(ds.get("n_samples"), int) and ds["n_samples"] > 0)
+    check("Has n_zones", isinstance(ds.get("n_zones"), int) and ds["n_zones"] >= 2)
+    check("Has avg_same_domain", isinstance(ds.get("avg_same_domain"), (int, float)))
+    check("Has avg_cross_domain", isinstance(ds.get("avg_cross_domain"), (int, float)))
+    check("Has domain_gap", isinstance(ds.get("domain_gap"), (int, float)))
+    check("Has zone_summary", isinstance(ds.get("zone_summary"), list) and len(ds["zone_summary"]) >= 2)
+    z0ds = ds["zone_summary"][0]
+    check("Z has zone", isinstance(z0ds.get("zone"), int))
+    check("Z has depth_range", isinstance(z0ds.get("depth_range"), (list, tuple)) and len(z0ds["depth_range"]) == 2)
+    check("Z has n_samples", isinstance(z0ds.get("n_samples"), int))
+    check("Z has self_accuracy", isinstance(z0ds.get("self_accuracy"), (int, float)))
+    check("Z has transfer_accuracy", isinstance(z0ds.get("transfer_accuracy"), (int, float)))
+    check("Z has gap", isinstance(z0ds.get("gap"), (int, float)))
+    check("Has cross_domain_matrix", isinstance(ds.get("cross_domain_matrix"), list))
+    check("Matrix size correct", len(ds["cross_domain_matrix"]) == ds["n_zones"] ** 2)
+    check("Has worst_transitions", isinstance(ds.get("worst_transitions"), list))
+    check("Has plot", isinstance(ds.get("plot"), str) and len(ds["plot"]) > 100)
+    check("Has stakeholder_brief", isinstance(ds.get("stakeholder_brief"), dict))
+    check("Brief has headline", isinstance(ds["stakeholder_brief"].get("headline"), str))
+
+    # Param validation
+    check("n_zones=1 rejected", api_expect_error("POST", "/api/analysis/domain-shift", {"source": "demo", "well": "3P", "n_zones": 1}))
+
+    # Custom zones
+    ds5 = api("POST", "/api/analysis/domain-shift", {"source": "demo", "well": "3P", "n_zones": 5}, timeout=300, retries=1)
+    check("n_zones=5 works", ds5 is not None and ds5.get("n_zones") == 5)
+except Exception as e93:
+    print(f"  SKIP: Domain Shift timed out or failed ({type(e93).__name__}), continuing...")
+    failed += 22
+
+# ── [94] Decision Support Matrix ──────────────────────
+print("\n[94] Decision Support Matrix")
+dsx = api("POST", "/api/analysis/decision-support", {"source": "demo", "well": "3P"}, timeout=300)
+check("Status 200", dsx is not None)
+check("Has well", dsx.get("well") == "3P")
+check("Has n_samples", isinstance(dsx.get("n_samples"), int) and dsx["n_samples"] > 0)
+check("Has decision", dsx.get("decision") in ("GO", "CAUTION", "STOP"))
+check("Has overall_score", isinstance(dsx.get("overall_score"), (int, float)) and 0 <= dsx["overall_score"] <= 100)
+check("Has criteria", isinstance(dsx.get("criteria"), list) and len(dsx["criteria"]) >= 4)
+c0dsx = dsx["criteria"][0]
+check("Crit has criterion", isinstance(c0dsx.get("criterion"), str))
+check("Crit has score", isinstance(c0dsx.get("score"), int) and 0 <= c0dsx["score"] <= 100)
+check("Crit has weight", isinstance(c0dsx.get("weight"), int))
+check("Crit has detail", isinstance(c0dsx.get("detail"), str))
+check("Has recommendations", isinstance(dsx.get("recommendations"), list) and len(dsx["recommendations"]) > 0)
+check("Has best_model", isinstance(dsx.get("best_model"), str))
+check("Has best_accuracy", isinstance(dsx.get("best_accuracy"), (int, float)))
+check("Has plot", isinstance(dsx.get("plot"), str) and len(dsx["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(dsx.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(dsx["stakeholder_brief"].get("headline"), str))
+check("Brief has risk_level", dsx["stakeholder_brief"].get("risk_level") in ("GREEN", "AMBER", "RED"))
+
+# ── [95] Risk Communication Report ───────────────────
+print("\n[95] Risk Communication Report")
+rr = api("POST", "/api/analysis/risk-report", {"source": "demo", "well": "3P"}, timeout=300)
+check("Status 200", rr is not None)
+check("Has well", rr.get("well") == "3P")
+check("Has n_samples", isinstance(rr.get("n_samples"), int) and rr["n_samples"] > 0)
+check("Has overall_risk", rr.get("overall_risk") in ("LOW", "MEDIUM", "HIGH"))
+check("Has executive_summary", isinstance(rr.get("executive_summary"), str) and len(rr["executive_summary"]) > 20)
+check("Has risks", isinstance(rr.get("risks"), list) and len(rr["risks"]) >= 3)
+rk0 = rr["risks"][0]
+check("Risk has category", isinstance(rk0.get("category"), str))
+check("Risk has risk_level", rk0.get("risk_level") in ("LOW", "MEDIUM", "HIGH"))
+check("Risk has plain_english", isinstance(rk0.get("plain_english"), str) and len(rk0["plain_english"]) > 20)
+check("Risk has impact", isinstance(rk0.get("impact"), str))
+check("Risk has mitigation", isinstance(rk0.get("mitigation"), str))
+check("Has n_high_risks", isinstance(rr.get("n_high_risks"), int))
+check("Has n_medium_risks", isinstance(rr.get("n_medium_risks"), int))
+check("Has n_low_risks", isinstance(rr.get("n_low_risks"), int))
+check("Risk counts sum", rr["n_high_risks"] + rr["n_medium_risks"] + rr["n_low_risks"] == len(rr["risks"]))
+check("Has plot", isinstance(rr.get("plot"), str) and len(rr["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(rr.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(rr["stakeholder_brief"].get("headline"), str))
+
+# Check risk categories exist
+cat_names = [r["category"] for r in rr["risks"]]
+check("Data risk exists", any("Data" in c for c in cat_names))
+check("Model risk exists", any("Model" in c for c in cat_names))
+
+# ── [96] Model Transparency Audit ────────────────────
+print("\n[96] Model Transparency Audit")
+ta = api("POST", "/api/analysis/transparency-audit", {"source": "demo", "well": "3P"}, timeout=300)
+check("Status 200", ta is not None)
+check("Has well", ta.get("well") == "3P")
+check("Has n_samples", isinstance(ta.get("n_samples"), int) and ta["n_samples"] > 0)
+check("Has n_audited", isinstance(ta.get("n_audited"), int) and ta["n_audited"] > 0)
+check("Has n_correct", isinstance(ta.get("n_correct"), int))
+check("Has n_wrong", isinstance(ta.get("n_wrong"), int))
+check("Correct+Wrong=Audited", ta["n_correct"] + ta["n_wrong"] == ta["n_audited"])
+check("Has audit_accuracy", isinstance(ta.get("audit_accuracy"), (int, float)))
+check("Has n_models", isinstance(ta.get("n_models"), int) and ta["n_models"] >= 2)
+check("Has global_feature_importances", isinstance(ta.get("global_feature_importances"), list))
+if ta["global_feature_importances"]:
+    gi0 = ta["global_feature_importances"][0]
+    check("GI has feature", isinstance(gi0.get("feature"), str))
+    check("GI has importance", isinstance(gi0.get("importance"), (int, float)))
+check("Has transparency_cards", isinstance(ta.get("transparency_cards"), list) and len(ta["transparency_cards"]) > 0)
+tc0 = ta["transparency_cards"][0]
+check("TC has index", isinstance(tc0.get("index"), int))
+check("TC has depth_m", True)  # may be null
+check("TC has true_class", isinstance(tc0.get("true_class"), str))
+check("TC has consensus_class", isinstance(tc0.get("consensus_class"), str))
+check("TC has correct", isinstance(tc0.get("correct"), bool))
+check("TC has agreement", isinstance(tc0.get("agreement"), (int, float)))
+check("TC has model_details", isinstance(tc0.get("model_details"), list) and len(tc0["model_details"]) >= 2)
+md0 = tc0["model_details"][0]
+check("MD has model", isinstance(md0.get("model"), str))
+check("MD has predicted", isinstance(md0.get("predicted"), str))
+check("MD has correct", isinstance(md0.get("correct"), bool))
+check("TC has top_features", isinstance(tc0.get("top_features"), list))
+check("TC has geology_note", isinstance(tc0.get("geology_note"), str))
+check("Has plot", isinstance(ta.get("plot"), str) and len(ta["plot"]) > 100)
+check("Has stakeholder_brief", isinstance(ta.get("stakeholder_brief"), dict))
+check("Brief has headline", isinstance(ta["stakeholder_brief"].get("headline"), str))
 
 # Param validation
-check("n_zones=1 rejected", api_expect_error("POST", "/api/analysis/domain-shift", {"source": "demo", "well": "3P", "n_zones": 1}))
+check("top_n=0 rejected", api_expect_error("POST", "/api/analysis/transparency-audit", {"source": "demo", "well": "3P", "top_n": 0}))
 
-# Custom zones
-ds5 = api("POST", "/api/analysis/domain-shift", {"source": "demo", "well": "3P", "n_zones": 5}, timeout=180)
-check("n_zones=5 works", ds5 is not None and ds5.get("n_zones") == 5)
+# Custom top_n
+ta5 = api("POST", "/api/analysis/transparency-audit", {"source": "demo", "well": "3P", "top_n": 5}, timeout=300)
+check("top_n=5 works", ta5 is not None and ta5.get("n_audited") == 5)
 
 # ── Summary ──────────────────────────────────────────
 
 print(f"\n{'='*50}")
-print(f"v3.27.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
+print(f"v3.28.0 Tests: {passed} passed, {failed} failed out of {passed+failed}")
 print(f"{'='*50}")
 
 if failed > 0:

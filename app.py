@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.27.0 - Geomech Features + RLHF Iterate + Domain Shift)."""
+"""GeoStress AI - FastAPI Web Application (v3.28.0 - Decision Support + Risk Report + Transparency Audit)."""
 
 import os
 import io
@@ -1004,7 +1004,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoStress AI", version="3.27.0", lifespan=lifespan)
+app = FastAPI(title="GeoStress AI", version="3.28.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -18031,6 +18031,661 @@ async def domain_shift(request: Request):
     return result
 
 
+# ── Shared Model Evaluation (used by decision-support, risk-report, transparency-audit) ──
+
+_model_eval_cache = BoundedCache(10)
+
+
+def _evaluate_all_models(X, y, well, source):
+    """Train all models via CV and return results dict. Cached per well+source.
+
+    Returns dict per model with: preds, probs, accuracy, balanced_accuracy,
+    feature_importances (if available).
+    """
+    cache_key = f"modeleval:{well}:{source}"
+    if cache_key in _model_eval_cache:
+        return _model_eval_cache[cache_key]
+
+    import numpy as np
+    import warnings
+    from src.enhanced_analysis import _get_models
+    from sklearn.base import clone
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
+    all_models = _get_models()
+    n = len(y)
+    n_classes = len(np.unique(y))
+    min_count = min(np.bincount(y))
+    n_splits = min(5, max(2, min_count))
+
+    results = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for mname, mtemplate in all_models.items():
+            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            preds = np.zeros(n, dtype=int)
+            probs = np.zeros((n, n_classes))
+            last_model = None
+            for train_idx, val_idx in cv.split(X, y):
+                try:
+                    m = clone(mtemplate)
+                    m.fit(X[train_idx], y[train_idx])
+                    preds[val_idx] = m.predict(X[val_idx])
+                    if hasattr(m, "predict_proba"):
+                        p = m.predict_proba(X[val_idx])
+                        if p.shape[1] == n_classes:
+                            probs[val_idx] = p
+                    last_model = m
+                except Exception:
+                    pass
+            feat_imp = None
+            if last_model and hasattr(last_model, "feature_importances_"):
+                feat_imp = last_model.feature_importances_.tolist()
+            results[mname] = {
+                "preds": preds,
+                "probs": probs,
+                "accuracy": accuracy_score(y, preds),
+                "balanced_accuracy": balanced_accuracy_score(y, preds),
+                "feature_importances": feat_imp,
+            }
+
+    _model_eval_cache[cache_key] = results
+    return results
+
+
+# ── Decision Support Matrix ──────────────────────────────────────────
+
+_decision_support_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/decision-support")
+async def decision_support(request: Request):
+    """Combined decision matrix from all critical analyses.
+
+    Runs data quality, model accuracy, class balance, consensus, and domain
+    shift checks in one call, then produces a GO/CAUTION/STOP signal with
+    per-criterion scores. Designed for the field engineer who needs ONE
+    answer: can I trust this AI for my well?
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"decsup:{well}:{source}"
+    if cache_key in _decision_support_cache:
+        return _decision_support_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+
+        # Use shared model evaluation cache
+        model_results = _evaluate_all_models(X, y, well, source)
+
+        criteria = []
+
+        # 1. Data volume
+        score_data = min(100, int(n / 2))  # 200 samples = 100%
+        criteria.append({"criterion": "Data Volume", "score": score_data,
+                        "detail": f"{n} samples ({n_classes} classes)",
+                        "weight": 15})
+
+        # 2. Class balance
+        counts = np.bincount(y, minlength=n_classes)
+        imbalance = float(counts.max() / max(counts.min(), 1))
+        score_balance = max(0, 100 - int(imbalance * 5))
+        criteria.append({"criterion": "Class Balance", "score": score_balance,
+                        "detail": f"Imbalance ratio {imbalance:.1f}:1",
+                        "weight": 15})
+
+        # 3. Best model accuracy (from shared cache)
+        best_acc = 0
+        best_name = ""
+        for mname, mres in model_results.items():
+            if mres["balanced_accuracy"] > best_acc:
+                best_acc = mres["balanced_accuracy"]
+                best_name = mname
+
+        score_accuracy = int(best_acc * 100)
+        criteria.append({"criterion": "Model Accuracy", "score": score_accuracy,
+                        "detail": f"{best_name}: {best_acc:.1%} balanced",
+                        "weight": 25})
+
+        # 4. Model consensus (from shared cache)
+        n_models = len(model_results)
+        all_preds = np.column_stack([mres["preds"] for mres in model_results.values()])
+
+        agreements = []
+        for i in range(n):
+            vc = np.bincount(all_preds[i], minlength=n_classes)
+            agreements.append(float(vc.max() / n_models))
+        avg_agree = float(np.mean(agreements))
+        score_consensus = int(avg_agree * 100)
+        criteria.append({"criterion": "Model Consensus", "score": score_consensus,
+                        "detail": f"{avg_agree:.0%} avg agreement ({n_models} models)",
+                        "weight": 20})
+
+        # 5. Data quality (quick check)
+        dips = df_well[DIP_COL].values if DIP_COL in df_well.columns else np.zeros(n)
+        azimuths = df_well[AZIMUTH_COL].values if AZIMUTH_COL in df_well.columns else np.zeros(n)
+        bad_vals = int(np.sum((dips < 0) | (dips > 90))) + int(np.sum((azimuths < 0) | (azimuths > 360)))
+        score_quality = max(0, 100 - bad_vals * 20)
+        criteria.append({"criterion": "Data Quality", "score": score_quality,
+                        "detail": f"{bad_vals} invalid measurements",
+                        "weight": 15})
+
+        # 6. Feature informativeness
+        feature_stds = np.std(X, axis=0)
+        zero_var_pct = float(np.sum(feature_stds < 1e-10) / X.shape[1]) * 100
+        score_features = max(0, int(100 - zero_var_pct * 2))
+        criteria.append({"criterion": "Feature Quality", "score": score_features,
+                        "detail": f"{zero_var_pct:.0f}% zero-variance features",
+                        "weight": 10})
+
+        # Weighted overall score
+        total_weight = sum(c["weight"] for c in criteria)
+        overall_score = sum(c["score"] * c["weight"] for c in criteria) / total_weight
+
+        if overall_score >= 70:
+            decision = "GO"
+            decision_color = "GREEN"
+        elif overall_score >= 45:
+            decision = "CAUTION"
+            decision_color = "AMBER"
+        else:
+            decision = "STOP"
+            decision_color = "RED"
+
+        # Recommendations
+        recommendations = []
+        for c in criteria:
+            if c["score"] < 50:
+                recommendations.append(f"CRITICAL: {c['criterion']} scored {c['score']}% - {c['detail']}")
+            elif c["score"] < 70:
+                recommendations.append(f"WARNING: {c['criterion']} scored {c['score']}% - {c['detail']}")
+
+        if not recommendations:
+            recommendations.append("All criteria meet minimum thresholds. System is ready for deployment.")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+            ax1 = axes[0]
+            crit_names = [c["criterion"][:15] for c in criteria]
+            crit_scores = [c["score"] for c in criteria]
+            crit_colors = ["#28a745" if s >= 70 else "#ffc107" if s >= 45 else "#dc3545" for s in crit_scores]
+            ax1.barh(crit_names[::-1], crit_scores[::-1], color=crit_colors[::-1])
+            ax1.set_xlabel("Score (%)")
+            ax1.set_title(f"Decision: {decision} ({overall_score:.0f}%)")
+            ax1.set_xlim(0, 110)
+            ax1.axvline(x=70, color="green", linestyle="--", alpha=0.3, label="GO threshold")
+            ax1.axvline(x=45, color="red", linestyle="--", alpha=0.3, label="STOP threshold")
+            ax1.legend(fontsize=7)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            angles = np.linspace(0, 2 * np.pi, len(criteria), endpoint=False).tolist()
+            angles.append(angles[0])
+            vals = crit_scores + [crit_scores[0]]
+            ax2.plot(angles, vals, "o-", color="#4a90d9", linewidth=2)
+            ax2.fill(angles, vals, alpha=0.15, color="#4a90d9")
+            ax2.set_xticks(angles[:-1])
+            ax2.set_xticklabels(crit_names, fontsize=7)
+            ax2.set_ylim(0, 100)
+            ax2.set_title(f"Radar: {decision}")
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "decision": decision,
+            "overall_score": round(overall_score, 1),
+            "criteria": criteria,
+            "recommendations": recommendations,
+            "best_model": best_name,
+            "best_accuracy": round(best_acc, 4),
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Decision: {decision} ({overall_score:.0f}% confidence) for well {well}",
+                "risk_level": decision_color,
+                "confidence_sentence": (
+                    f"Evaluated {len(criteria)} criteria. Overall score: {overall_score:.0f}%. "
+                    f"Best model: {best_name} at {best_acc:.1%}. "
+                    f"Consensus: {avg_agree:.0%}."
+                ),
+                "action": recommendations[0] if recommendations else "Proceed with deployment.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _decision_support_cache[cache_key] = result
+    return result
+
+
+# ── Risk Communication Report ────────────────────────────────────────
+
+_risk_report_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/risk-report")
+async def risk_report(request: Request):
+    """Plain-English risk assessment for non-technical stakeholders.
+
+    Translates all technical metrics into business language with a
+    traffic-light system. Covers data risks, model risks, deployment
+    risks, and mitigation strategies. Written at a level that a
+    field manager with no ML background can understand and act on.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"riskrep:{well}:{source}"
+    if cache_key in _risk_report_cache:
+        return _risk_report_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+
+        # Use shared model evaluation cache
+        model_results = _evaluate_all_models(X, y, well, source)
+        counts = np.bincount(y, minlength=n_classes)
+        imbalance = float(counts.max() / max(counts.min(), 1))
+
+        # Best model accuracy (from shared cache)
+        best_acc = 0
+        best_name = ""
+        for mname, mres in model_results.items():
+            if mres["accuracy"] > best_acc:
+                best_acc = mres["accuracy"]
+                best_name = mname
+
+        error_rate = 1 - best_acc
+        n_errors_expected = int(n * error_rate)
+
+        # Build risk sections
+        risks = []
+
+        # Data risks
+        data_risk = "LOW" if n >= 200 and imbalance < 5 else ("MEDIUM" if n >= 50 else "HIGH")
+        risks.append({
+            "category": "Data Quantity & Quality",
+            "risk_level": data_risk,
+            "plain_english": (
+                f"We have {n} fracture measurements from well {well}. "
+                + (f"This is a good amount of data. " if n >= 200 else
+                   f"This is limited data - ideally we need 200+ measurements. ")
+                + f"There are {n_classes} fracture types, "
+                + (f"but they are unevenly distributed ({imbalance:.0f}:1 ratio). "
+                   f"The rarest type has only {int(counts.min())} examples."
+                   if imbalance > 5 else
+                   "and they are reasonably well-balanced.")
+            ),
+            "impact": f"With {n} samples, model reliability is {'good' if n >= 200 else 'limited'}.",
+            "mitigation": (
+                "Collect more measurements, especially for rare fracture types."
+                if data_risk != "LOW" else
+                "Current data volume is adequate."
+            ),
+        })
+
+        # Model risks
+        model_risk = "LOW" if best_acc > 0.8 else ("MEDIUM" if best_acc > 0.6 else "HIGH")
+        risks.append({
+            "category": "Model Accuracy",
+            "risk_level": model_risk,
+            "plain_english": (
+                f"The best AI model ({best_name}) correctly classifies {best_acc:.0%} of fractures. "
+                f"That means roughly {n_errors_expected} out of {n} fractures may be misclassified. "
+                + ("This is good performance for geological data. " if best_acc > 0.7 else
+                   "This means about 1 in 3 predictions could be wrong. ")
+            ),
+            "impact": f"Expect ~{n_errors_expected} misclassifications per {n} predictions.",
+            "mitigation": (
+                "Review low-confidence predictions with domain experts."
+                if model_risk != "HIGH" else
+                "Model accuracy is too low for automated decisions. Use as advisory only."
+            ),
+        })
+
+        # Class imbalance risks
+        rare_class = class_names[int(np.argmin(counts))]
+        rare_count = int(counts.min())
+        imb_risk = "LOW" if imbalance < 5 else ("MEDIUM" if imbalance < 15 else "HIGH")
+        risks.append({
+            "category": "Rare Fracture Types",
+            "risk_level": imb_risk,
+            "plain_english": (
+                f"The rarest fracture type ({rare_class}) has only {rare_count} examples. "
+                + (f"This is too few for reliable classification - the AI may miss {rare_class} fractures. "
+                   if rare_count < 10 else
+                   f"This provides a reasonable number of training examples. ")
+                + f"The most common type has {int(counts.max())} examples ({imbalance:.0f}x more)."
+            ),
+            "impact": f"AI is {'likely to miss' if rare_count < 10 else 'less accurate for'} {rare_class} fractures.",
+            "mitigation": (
+                f"Collect more {rare_class} examples. Flag all {rare_class} predictions for expert review."
+                if imb_risk != "LOW" else
+                "Class distribution is acceptable."
+            ),
+        })
+
+        # Deployment risks
+        deploy_risk = "LOW" if best_acc > 0.7 and n >= 100 else ("MEDIUM" if best_acc > 0.5 else "HIGH")
+        risks.append({
+            "category": "Deployment Readiness",
+            "risk_level": deploy_risk,
+            "plain_english": (
+                f"Overall, the system is "
+                + ("ready for deployment with expert oversight. " if deploy_risk == "LOW" else
+                   "usable with caution - double-check critical decisions. " if deploy_risk == "MEDIUM" else
+                   "NOT recommended for production use yet. ")
+                + "All predictions should be treated as suggestions, not final answers."
+            ),
+            "impact": "Automated fracture classification with human oversight.",
+            "mitigation": (
+                "Use consensus-only predictions and reject uncertain ones."
+                if deploy_risk != "HIGH" else
+                "Improve model accuracy before deployment. Collect more training data."
+            ),
+        })
+
+        # Overall risk
+        risk_levels = [r["risk_level"] for r in risks]
+        n_high = risk_levels.count("HIGH")
+        n_medium = risk_levels.count("MEDIUM")
+        overall_risk = "HIGH" if n_high > 0 else ("MEDIUM" if n_medium > 1 else "LOW")
+
+        # Executive summary
+        executive_summary = (
+            f"This report assesses the AI fracture classification system for well {well}. "
+            f"We analyzed {n} fracture measurements across {n_classes} types. "
+            f"The best model achieves {best_acc:.0%} accuracy. "
+            f"Overall risk level: {overall_risk}. "
+            + (f"The system is ready for production with {n_high} high and {n_medium} medium risks identified."
+               if overall_risk == "LOW" else
+               f"Address {n_high} high-risk and {n_medium} medium-risk items before full deployment."
+               if overall_risk == "MEDIUM" else
+               f"STOP: {n_high} critical risks must be resolved. The system is not ready for production.")
+        )
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+            ax1 = axes[0]
+            risk_cats = [r["category"][:18] for r in risks]
+            risk_scores = [100 if r["risk_level"] == "LOW" else 50 if r["risk_level"] == "MEDIUM" else 10 for r in risks]
+            risk_colors = ["#28a745" if r["risk_level"] == "LOW" else "#ffc107" if r["risk_level"] == "MEDIUM" else "#dc3545" for r in risks]
+            ax1.barh(risk_cats[::-1], risk_scores[::-1], color=risk_colors[::-1])
+            ax1.set_xlabel("Safety Score")
+            ax1.set_title(f"Risk Assessment: {overall_risk}")
+            ax1.set_xlim(0, 110)
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            labels = ["LOW", "MEDIUM", "HIGH"]
+            counts_r = [risk_levels.count(l) for l in labels]
+            pie_colors = ["#28a745", "#ffc107", "#dc3545"]
+            ax2.pie([c for c in counts_r if c > 0],
+                   labels=[l for l, c in zip(labels, counts_r) if c > 0],
+                   colors=[co for co, c in zip(pie_colors, counts_r) if c > 0],
+                   autopct="%1.0f%%", startangle=90, textprops={"fontsize": 10})
+            ax2.set_title(f"Risk Distribution ({len(risks)} categories)")
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n,
+            "overall_risk": overall_risk,
+            "executive_summary": executive_summary,
+            "risks": risks,
+            "best_model": best_name,
+            "best_accuracy": round(best_acc, 4),
+            "n_high_risks": n_high,
+            "n_medium_risks": n_medium,
+            "n_low_risks": risk_levels.count("LOW"),
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Risk report: {overall_risk} overall risk ({n_high} high, {n_medium} medium)",
+                "risk_level": "GREEN" if overall_risk == "LOW" else ("AMBER" if overall_risk == "MEDIUM" else "RED"),
+                "confidence_sentence": executive_summary,
+                "action": risks[-1]["mitigation"],
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _risk_report_cache[cache_key] = result
+    return result
+
+
+# ── Model Transparency Audit ─────────────────────────────────────────
+
+_transparency_cache = BoundedCache(10)
+
+
+@app.post("/api/analysis/transparency-audit")
+async def transparency_audit(request: Request):
+    """Per-sample transparency cards showing why each prediction was made.
+
+    For each sample: shows feature values, which features mattered most,
+    how each model voted, and physical geology interpretation. Enables
+    expert review of suspicious predictions and builds trust in the AI.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    top_n = int(body.get("top_n", 20))
+
+    if top_n < 1 or top_n > 100:
+        raise HTTPException(400, "top_n must be between 1 and 100")
+
+    cache_key = f"transp:{well}:{source}:{top_n}"
+    if cache_key in _transparency_cache:
+        return _transparency_cache[cache_key]
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from src.enhanced_analysis import _get_models
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        class_names = le.classes_.tolist()
+        n = len(y)
+        n_classes = len(class_names)
+        feature_names = list(features.columns) if hasattr(features, "columns") else [f"f{i}" for i in range(X.shape[1])]
+
+        # Use shared model evaluation cache
+        model_results = _evaluate_all_models(X, y, well, source)
+        model_names = list(model_results.keys())
+        n_models = len(model_names)
+
+        # Reconstruct arrays from cache
+        all_preds = np.column_stack([model_results[m]["preds"] for m in model_names]).astype(int)
+        all_probs = np.stack([model_results[m]["probs"] for m in model_names], axis=1)
+        feature_importances = {}
+        for m in model_names:
+            fi = model_results[m]["feature_importances"]
+            if fi is not None:
+                feature_importances[m] = fi
+
+        # Get column data
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.zeros(n)
+        azimuths = df_well[AZIMUTH_COL].values if AZIMUTH_COL in df_well.columns else np.zeros(n)
+        dips = df_well[DIP_COL].values if DIP_COL in df_well.columns else np.zeros(n)
+
+        # Build transparency cards
+        cards = []
+        for i in range(min(n, top_n)):
+            votes = all_preds[i]
+            vote_counts = np.bincount(votes, minlength=n_classes)
+            consensus_class = int(np.argmax(vote_counts))
+            agreement = float(vote_counts.max() / n_models)
+            correct = bool(consensus_class == y[i])
+
+            # Per-model breakdown
+            model_details = []
+            for mi, mname in enumerate(model_names):
+                pred_class = class_names[int(votes[mi])]
+                conf = float(all_probs[i, mi].max()) if all_probs[i, mi].max() > 0 else None
+                model_details.append({
+                    "model": mname,
+                    "predicted": pred_class,
+                    "correct": bool(votes[mi] == y[i]),
+                    "confidence": round(conf, 3) if conf else None,
+                })
+
+            # Top features for this sample (using mean importances * feature values)
+            top_features = []
+            if feature_importances:
+                avg_imp = np.mean([feature_importances[m] for m in feature_importances], axis=0)
+                feat_contributions = avg_imp * np.abs(X[i])
+                top_idx = np.argsort(feat_contributions)[::-1][:5]
+                for fi in top_idx:
+                    fname = feature_names[fi] if fi < len(feature_names) else f"feature_{fi}"
+                    top_features.append({
+                        "feature": fname,
+                        "value": round(float(X[i, fi]), 3),
+                        "importance": round(float(avg_imp[fi]), 4),
+                        "contribution": round(float(feat_contributions[fi]), 4),
+                    })
+
+            # Physical interpretation
+            az_val = float(azimuths[i])
+            dip_val = float(dips[i])
+            if dip_val > 70:
+                geology_note = f"Sub-vertical fracture (dip {dip_val:.0f}deg) - likely tectonic origin"
+            elif dip_val < 20:
+                geology_note = f"Sub-horizontal fracture (dip {dip_val:.0f}deg) - may be bedding-parallel"
+            else:
+                geology_note = f"Moderate dip ({dip_val:.0f}deg) at azimuth {az_val:.0f}deg"
+
+            cards.append({
+                "index": int(i),
+                "depth_m": round(float(depths[i]), 1),
+                "azimuth_deg": round(az_val, 1),
+                "dip_deg": round(dip_val, 1),
+                "true_class": class_names[y[i]],
+                "consensus_class": class_names[consensus_class],
+                "correct": correct,
+                "agreement": round(agreement, 3),
+                "model_details": model_details,
+                "top_features": top_features,
+                "geology_note": geology_note,
+            })
+
+        # Aggregate feature importance
+        global_importances = []
+        if feature_importances:
+            avg_imp = np.mean([feature_importances[m] for m in feature_importances], axis=0)
+            top_global = np.argsort(avg_imp)[::-1][:10]
+            for fi in top_global:
+                fname = feature_names[fi] if fi < len(feature_names) else f"feature_{fi}"
+                global_importances.append({
+                    "feature": fname,
+                    "importance": round(float(avg_imp[fi]), 4),
+                })
+
+        n_correct = sum(1 for c in cards if c["correct"])
+        n_wrong = len(cards) - n_correct
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            ax1 = axes[0]
+            if global_importances:
+                gi_names = [g["feature"][:15] for g in global_importances[:8]]
+                gi_vals = [g["importance"] for g in global_importances[:8]]
+                ax1.barh(gi_names[::-1], gi_vals[::-1], color="#4a90d9")
+                ax1.set_xlabel("Importance")
+                ax1.set_title("Top Features (Global)")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            ax2 = axes[1]
+            agrees = [c["agreement"] for c in cards]
+            colors = ["#28a745" if c["correct"] else "#dc3545" for c in cards]
+            ax2.scatter(range(len(cards)), agrees, c=colors, s=20, alpha=0.7)
+            ax2.set_xlabel("Sample Index")
+            ax2.set_ylabel("Model Agreement")
+            ax2.set_title(f"Predictions: {n_correct} correct, {n_wrong} wrong")
+            ax2.axhline(y=0.6, color="red", linestyle="--", alpha=0.3)
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            ax3 = axes[2]
+            model_accs_t = []
+            for mi, mname in enumerate(model_names):
+                correct_count = sum(1 for c in cards for md in c["model_details"] if md["model"] == mname and md["correct"])
+                model_accs_t.append(correct_count / max(len(cards), 1))
+            ax3.barh([m[:12] for m in model_names[::-1]], model_accs_t[::-1], color="#6c757d")
+            ax3.set_xlabel("Accuracy on Sample Set")
+            ax3.set_title("Per-Model Performance")
+            ax3.spines["top"].set_visible(False)
+            ax3.spines["right"].set_visible(False)
+
+            plt.tight_layout()
+            plot_img = fig_to_base64(fig)
+
+        return {
+            "well": well, "n_samples": n, "n_audited": len(cards),
+            "n_correct": n_correct, "n_wrong": n_wrong,
+            "audit_accuracy": round(n_correct / max(len(cards), 1), 4),
+            "n_models": n_models,
+            "global_feature_importances": global_importances,
+            "transparency_cards": cards,
+            "plot": plot_img,
+            "stakeholder_brief": {
+                "headline": f"Transparency audit: {n_correct}/{len(cards)} correct ({n_models} models, {len(global_importances)} key features)",
+                "risk_level": "GREEN" if n_wrong < len(cards) * 0.3 else ("AMBER" if n_wrong < len(cards) * 0.5 else "RED"),
+                "confidence_sentence": (
+                    f"Audited {len(cards)} samples with {n_models} models. "
+                    f"{n_correct} correct, {n_wrong} incorrect. "
+                    f"Top feature: {global_importances[0]['feature']}." if global_importances else
+                    f"Audited {len(cards)} samples."
+                ),
+                "action": (
+                    f"Review {n_wrong} incorrect predictions for expert override."
+                    if n_wrong > 0 else
+                    "All audited predictions are correct."
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result = _sanitize_for_json(result)
+    _transparency_cache[cache_key] = result
+    return result
+
+
 # ── Auto-Retrain from Accumulated Feedback ─────────────────────────────
 
 @app.post("/api/analysis/auto-retrain")
@@ -19122,7 +19777,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.27.0",
+        "app_version": "3.28.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

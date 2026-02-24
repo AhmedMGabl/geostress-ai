@@ -1222,6 +1222,82 @@
                         </div>
                     </div>
 
+                    <!-- v3.28.0: Decision Support Matrix -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-signpost-2-fill"></i> Decision Support Matrix (GO/CAUTION/STOP)</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runDecisionSupport()">
+                                <i class="bi bi-play-fill"></i> Decide
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="dsx-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Decision</div><div class="metric-value" id="dsx-decision">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Score</div><div class="metric-value" id="dsx-score">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Model</div><div class="metric-value" id="dsx-model">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Accuracy</div><div class="metric-value" id="dsx-acc">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="dsx-brief"></div>
+                            <h6>Criteria Scores</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Criterion</th><th>Score</th><th>Weight</th><th>Detail</th></tr></thead><tbody id="dsx-crit-body"></tbody></table>
+                            </div>
+                            <h6>Recommendations</h6>
+                            <ul id="dsx-recs" class="small"></ul>
+                            <div class="text-center"><img id="dsx-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.28.0: Risk Communication Report -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-diamond-fill"></i> Risk Communication Report (Plain English)</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runRiskReport()">
+                                <i class="bi bi-play-fill"></i> Generate Report
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="rr-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Overall Risk</div><div class="metric-value" id="rr-risk">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">High Risks</div><div class="metric-value text-danger" id="rr-high">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Medium Risks</div><div class="metric-value text-warning" id="rr-med">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Low Risks</div><div class="metric-value text-success" id="rr-low">-</div></div></div>
+                            </div>
+                            <div class="alert alert-info border" id="rr-exec"></div>
+                            <div id="rr-risks"></div>
+                            <div class="text-center"><img id="rr-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.28.0: Model Transparency Audit -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-eye-fill"></i> Model Transparency Audit</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runTransparencyAudit()">
+                                <i class="bi bi-play-fill"></i> Audit
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="ta-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Audited</div><div class="metric-value" id="ta-n">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Correct</div><div class="metric-value text-success" id="ta-correct">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Wrong</div><div class="metric-value text-danger" id="ta-wrong">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Accuracy</div><div class="metric-value" id="ta-acc">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Models</div><div class="metric-value" id="ta-models">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="ta-brief"></div>
+                            <h6>Top Global Features</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Feature</th><th>Importance</th></tr></thead><tbody id="ta-feat-body"></tbody></table>
+                            </div>
+                            <h6>Sample Transparency Cards</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>#</th><th>Depth</th><th>True</th><th>Predicted</th><th>Agreement</th><th>Geology</th></tr></thead><tbody id="ta-card-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="ta-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

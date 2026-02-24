@@ -10313,3 +10313,115 @@ async function runDomainShift() {
         hideLoading();
     }
 }
+
+// ── Decision Support Matrix ──────────────────────────────────────────
+async function runDecisionSupport() {
+    showLoading('Computing decision matrix...');
+    var results = document.getElementById('dsx-results');
+    try {
+        var r = await apiPost('/api/analysis/decision-support', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var dc = r.decision === 'GO' ? 'success' : (r.decision === 'CAUTION' ? 'warning' : 'danger');
+        document.getElementById('dsx-decision').innerHTML = '<span class="badge bg-' + dc + ' fs-5">' + r.decision + '</span>';
+        document.getElementById('dsx-score').textContent = r.overall_score + '%';
+        document.getElementById('dsx-model').textContent = r.best_model;
+        document.getElementById('dsx-acc').textContent = (r.best_accuracy * 100).toFixed(1) + '%';
+        if (r.stakeholder_brief) {
+            document.getElementById('dsx-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var cb = document.getElementById('dsx-crit-body');
+        cb.innerHTML = '';
+        if (r.criteria) {
+            for (var i = 0; i < r.criteria.length; i++) {
+                var c = r.criteria[i];
+                var sc = c.score >= 70 ? 'success' : (c.score >= 45 ? 'warning' : 'danger');
+                cb.innerHTML += '<tr><td>' + c.criterion + '</td><td><span class="badge bg-' + sc + '">' + c.score + '%</span></td><td>' + c.weight + '</td><td>' + c.detail + '</td></tr>';
+            }
+        }
+        var rl = document.getElementById('dsx-recs');
+        rl.innerHTML = '';
+        if (r.recommendations) {
+            for (var i = 0; i < r.recommendations.length; i++) {
+                rl.innerHTML += '<li>' + r.recommendations[i] + '</li>';
+            }
+        }
+        if (r.plot) document.getElementById('dsx-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Risk Communication Report ────────────────────────────────────────
+async function runRiskReport() {
+    showLoading('Generating risk report...');
+    var results = document.getElementById('rr-results');
+    try {
+        var r = await apiPost('/api/analysis/risk-report', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var rc = r.overall_risk === 'LOW' ? 'success' : (r.overall_risk === 'MEDIUM' ? 'warning' : 'danger');
+        document.getElementById('rr-risk').innerHTML = '<span class="badge bg-' + rc + '">' + r.overall_risk + '</span>';
+        document.getElementById('rr-high').textContent = r.n_high_risks;
+        document.getElementById('rr-med').textContent = r.n_medium_risks;
+        document.getElementById('rr-low').textContent = r.n_low_risks;
+        document.getElementById('rr-exec').innerHTML = '<i class="bi bi-info-circle"></i> ' + r.executive_summary;
+        var rd = document.getElementById('rr-risks');
+        rd.innerHTML = '';
+        if (r.risks) {
+            for (var i = 0; i < r.risks.length; i++) {
+                var rk = r.risks[i];
+                var rkc = rk.risk_level === 'LOW' ? 'success' : (rk.risk_level === 'MEDIUM' ? 'warning' : 'danger');
+                rd.innerHTML += '<div class="card mb-2 border-' + rkc + '"><div class="card-body py-2"><h6><span class="badge bg-' + rkc + '">' + rk.risk_level + '</span> ' + rk.category + '</h6><p class="small mb-1">' + rk.plain_english + '</p><p class="small mb-1"><strong>Impact:</strong> ' + rk.impact + '</p><p class="small mb-0"><strong>Mitigation:</strong> ' + rk.mitigation + '</p></div></div>';
+            }
+        }
+        if (r.plot) document.getElementById('rr-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Model Transparency Audit ─────────────────────────────────────────
+async function runTransparencyAudit() {
+    showLoading('Running transparency audit...');
+    var results = document.getElementById('ta-results');
+    try {
+        var r = await apiPost('/api/analysis/transparency-audit', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('ta-n').textContent = r.n_audited;
+        document.getElementById('ta-correct').textContent = r.n_correct;
+        document.getElementById('ta-wrong').textContent = r.n_wrong;
+        document.getElementById('ta-acc').textContent = (r.audit_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('ta-models').textContent = r.n_models;
+        if (r.stakeholder_brief) {
+            document.getElementById('ta-brief').innerHTML = '<strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.confidence_sentence + '<br><em>' + r.stakeholder_brief.action + '</em>';
+        }
+        var fb = document.getElementById('ta-feat-body');
+        fb.innerHTML = '';
+        if (r.global_feature_importances) {
+            for (var i = 0; i < r.global_feature_importances.length; i++) {
+                var f = r.global_feature_importances[i];
+                fb.innerHTML += '<tr><td>' + f.feature + '</td><td>' + (f.importance * 100).toFixed(2) + '%</td></tr>';
+            }
+        }
+        var cb = document.getElementById('ta-card-body');
+        cb.innerHTML = '';
+        if (r.transparency_cards) {
+            for (var i = 0; i < Math.min(r.transparency_cards.length, 20); i++) {
+                var c = r.transparency_cards[i];
+                var cc = c.correct ? 'table-success' : 'table-danger';
+                cb.innerHTML += '<tr class="' + cc + '"><td>' + c.index + '</td><td>' + c.depth_m + '</td><td>' + c.true_class + '</td><td>' + c.consensus_class + '</td><td>' + (c.agreement * 100).toFixed(0) + '%</td><td class="small">' + c.geology_note + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('ta-plot').src = 'data:image/png;base64,' + r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
