@@ -11082,3 +11082,104 @@ async function runFullReport() {
         hideLoading();
     }
 }
+
+// ── v3.35.0: Fracture Connectivity ────────────────────
+async function runFractureConnectivity() {
+    showLoading('Analyzing fracture network connectivity...');
+    var results = document.getElementById('conn-results');
+    try {
+        var r = await apiPost('/api/analysis/fracture-connectivity', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var nqCls = r.network_color === 'GREEN' ? 'text-success' : r.network_color === 'AMBER' ? 'text-warning' : 'text-danger';
+        document.getElementById('conn-quality').textContent = r.network_quality;
+        document.getElementById('conn-quality').className = 'metric-value ' + nqCls;
+        document.getElementById('conn-sets').textContent = r.n_sets;
+        document.getElementById('conn-flow').textContent = r.dominant_flow_azimuth.toFixed(0) + '\u00B0';
+        document.getElementById('conn-aniso').textContent = r.anisotropy_ratio.toFixed(2);
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('conn-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var sb = document.getElementById('conn-sets-body');
+        sb.innerHTML = '';
+        if (r.fracture_sets) {
+            for (var i = 0; i < r.fracture_sets.length; i++) {
+                var fs = r.fracture_sets[i];
+                sb.innerHTML += '<tr><td>Set ' + fs.set_id + '</td><td>' + fs.n_fractures + '</td><td>' + fs.pct_of_total + '%</td><td>' + fs.mean_azimuth.toFixed(0) + '\u00B0</td><td>' + fs.mean_dip.toFixed(0) + '\u00B0</td><td>' + fs.mean_spacing_m.toFixed(1) + 'm</td><td>' + fs.dominant_type + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('conn-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.35.0: Failure Prediction ───────────────────────
+async function runFailurePrediction() {
+    showLoading('Predicting wellbore failure zones...');
+    var results = document.getElementById('failure-results');
+    try {
+        var r = await apiPost('/api/analysis/failure-prediction', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('failure-high').textContent = r.n_high_risk;
+        document.getElementById('failure-med').textContent = r.n_medium_risk;
+        var mwCls = r.mud_weight_window.status === 'SAFE' ? 'text-success' : r.mud_weight_window.status === 'NARROW' ? 'text-warning' : 'text-danger';
+        document.getElementById('failure-mw').textContent = r.mud_weight_window.status + ' (' + r.mud_weight_window.window_MPa.toFixed(1) + ' MPa)';
+        document.getElementById('failure-mw').className = 'metric-value ' + mwCls;
+        document.getElementById('failure-zones').textContent = r.n_risk_zones;
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('failure-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        if (r.plot) document.getElementById('failure-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.35.0: Batch Analysis ──────────────────────────
+async function runBatchAnalysis() {
+    showLoading('Running batch multi-well analysis...');
+    var results = document.getElementById('batch-results');
+    try {
+        var r = await apiPost('/api/analysis/batch-analysis', {source: currentSource()});
+        results.classList.remove('d-none');
+        document.getElementById('batch-wells').textContent = r.n_wells_analyzed;
+        document.getElementById('batch-samples').textContent = r.field_summary.total_samples;
+        document.getElementById('batch-avg').textContent = (r.field_summary.avg_balanced_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('batch-best').textContent = r.field_summary.best_well + ' (' + (r.field_summary.best_accuracy * 100).toFixed(1) + '%)';
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('batch-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var wb = document.getElementById('batch-wells-body');
+        wb.innerHTML = '';
+        if (r.well_results) {
+            for (var i = 0; i < r.well_results.length; i++) {
+                var wr = r.well_results[i];
+                if (wr.error) {
+                    wb.innerHTML += '<tr class="table-danger"><td>' + wr.well + '</td><td colspan="5">Error: ' + wr.error + '</td></tr>';
+                } else {
+                    var dqc = wr.data_quality === 'GOOD' ? 'success' : wr.data_quality === 'FAIR' ? 'warning' : 'danger';
+                    var mqc = wr.model_quality === 'GOOD' ? 'success' : wr.model_quality === 'FAIR' ? 'warning' : 'danger';
+                    wb.innerHTML += '<tr><td><strong>' + wr.well + '</strong></td><td>' + wr.n_samples + '</td><td>' + wr.best_model + '</td><td>' + (wr.best_balanced_accuracy * 100).toFixed(1) + '%</td><td><span class="badge bg-' + dqc + '">' + wr.data_quality + '</span></td><td><span class="badge bg-' + mqc + '">' + wr.model_quality + '</span></td></tr>';
+                }
+            }
+        }
+        if (r.plot) document.getElementById('batch-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

@@ -1723,6 +1723,74 @@
                         </div>
                     </div>
 
+                    <!-- v3.35.0: Fracture Connectivity -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-diagram-3"></i> Fracture Network Connectivity</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runFractureConnectivity()">
+                                <i class="bi bi-play-fill"></i> Analyze
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="conn-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Network Quality</div><div class="metric-value" id="conn-quality">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Fracture Sets</div><div class="metric-value" id="conn-sets">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Flow Azimuth</div><div class="metric-value" id="conn-flow">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Anisotropy</div><div class="metric-value" id="conn-aniso">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="conn-brief"></div>
+                            <h6>Fracture Sets</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Set</th><th>Count</th><th>%</th><th>Azimuth</th><th>Dip</th><th>Spacing</th><th>Dominant Type</th></tr></thead><tbody id="conn-sets-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="conn-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.35.0: Failure Prediction -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-triangle"></i> Wellbore Failure Prediction</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runFailurePrediction()">
+                                <i class="bi bi-play-fill"></i> Predict
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="failure-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">High Risk Zones</div><div class="metric-value text-danger" id="failure-high">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Medium Risk</div><div class="metric-value text-warning" id="failure-med">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">MW Window</div><div class="metric-value" id="failure-mw">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Risk Zones</div><div class="metric-value" id="failure-zones">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="failure-brief"></div>
+                            <div class="text-center"><img id="failure-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.35.0: Batch Analysis -->
+                    <div class="card mb-4 border-dark">
+                        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-collection"></i> Batch Multi-Well Analysis</span>
+                            <button class="btn btn-sm btn-outline-light" onclick="runBatchAnalysis()">
+                                <i class="bi bi-play-fill"></i> Run All Wells
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="batch-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Wells Analyzed</div><div class="metric-value" id="batch-wells">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Total Samples</div><div class="metric-value" id="batch-samples">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Avg Accuracy</div><div class="metric-value" id="batch-avg">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Well</div><div class="metric-value" id="batch-best">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="batch-brief"></div>
+                            <h6>Well Comparison</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Well</th><th>Samples</th><th>Best Model</th><th>Accuracy</th><th>Data Quality</th><th>Model Quality</th></tr></thead><tbody id="batch-wells-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="batch-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

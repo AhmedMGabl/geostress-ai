@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.34.0 - Model Monitoring + Formation Boundaries + Report Generation)."""
+"""GeoStress AI - FastAPI Web Application (v3.35.0 - Fracture Connectivity + Failure Prediction + Batch Analysis)."""
 
 import os
 import io
@@ -25761,4 +25761,781 @@ async def api_full_report(request: Request):
     _audit_record("full_report", {"well": well},
                   {"overall": result["overall_assessment"]}, source, well, elapsed)
     _report_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# v3.35.0 Caches
+# ────────────────────────────────────────────────────────────────────────
+_connectivity_cache: dict = {}
+_failure_pred_cache: dict = {}
+_batch_cache: dict = {}
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [114] Fracture Network Connectivity Analysis
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/fracture-connectivity")
+async def api_fracture_connectivity(request: Request):
+    """Analyze fracture set connectivity for reservoir flow assessment.
+
+    Clusters fractures by orientation, estimates connectivity between sets,
+    and determines dominant flow pathways and permeability anisotropy.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"connectivity:{well}:{source}"
+    if cache_key in _connectivity_cache:
+        return _connectivity_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from sklearn.cluster import KMeans
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+
+        azimuths = df_well[AZIMUTH_COL].values.astype(float) if AZIMUTH_COL in df_well.columns else np.zeros(n)
+        dips = df_well[DIP_COL].values.astype(float) if DIP_COL in df_well.columns else np.zeros(n)
+        depths = df_well[DEPTH_COL].values.astype(float) if DEPTH_COL in df_well.columns else np.zeros(n)
+
+        # ── Fracture Set Identification (orientation clustering) ──
+        # Convert to pole normal vectors for clustering
+        az_rad = np.radians(azimuths)
+        dip_rad = np.radians(dips)
+        # Pole to plane (normal vector)
+        nx = np.sin(dip_rad) * np.sin(az_rad)
+        ny = np.sin(dip_rad) * np.cos(az_rad)
+        nz = np.cos(dip_rad)
+        normals = np.column_stack([nx, ny, nz])
+
+        # Determine optimal k (2-5 sets)
+        best_k = 2
+        best_score = -1
+        for k in range(2, min(6, n)):
+            km = KMeans(n_clusters=k, n_init=10, random_state=42)
+            labels = km.fit_predict(normals)
+            # Simple within-cluster variance metric
+            score = 0
+            for c in range(k):
+                mask = labels == c
+                if mask.sum() > 1:
+                    center = normals[mask].mean(axis=0)
+                    dists = np.linalg.norm(normals[mask] - center, axis=1)
+                    score += mask.sum() * (1.0 / (1.0 + np.mean(dists)))
+            if score > best_score:
+                best_score = score
+                best_k = k
+
+        km = KMeans(n_clusters=best_k, n_init=10, random_state=42)
+        set_labels = km.fit_predict(normals)
+
+        # ── Characterize each fracture set ──
+        fracture_sets = []
+        for s in range(best_k):
+            mask = set_labels == s
+            set_n = int(mask.sum())
+            if set_n == 0:
+                continue
+            set_az = azimuths[mask]
+            set_dip = dips[mask]
+            set_depths = depths[mask]
+
+            # Circular mean azimuth
+            mean_az = float(np.degrees(np.arctan2(
+                np.mean(np.sin(np.radians(set_az))),
+                np.mean(np.cos(np.radians(set_az)))
+            )) % 360)
+            mean_dip = float(np.mean(set_dip))
+
+            # Fracture type distribution in this set
+            set_types = y[mask]
+            type_dist = {}
+            for c_idx in range(len(le.classes_)):
+                count = int((set_types == c_idx).sum())
+                if count > 0:
+                    type_dist[le.classes_[c_idx]] = count
+
+            # Spatial extent
+            depth_range = float(set_depths.max() - set_depths.min()) if set_n > 1 else 0
+            spacing = depth_range / max(set_n - 1, 1)
+
+            fracture_sets.append({
+                "set_id": s + 1,
+                "n_fractures": set_n,
+                "pct_of_total": round(set_n / n * 100, 1),
+                "mean_azimuth": round(mean_az, 1),
+                "mean_dip": round(mean_dip, 1),
+                "azimuth_std": round(float(np.std(set_az)), 1),
+                "dip_std": round(float(np.std(set_dip)), 1),
+                "depth_range_m": {"min": round(float(set_depths.min()), 2), "max": round(float(set_depths.max()), 2)},
+                "mean_spacing_m": round(spacing, 2),
+                "fracture_types": type_dist,
+                "dominant_type": max(type_dist, key=type_dist.get) if type_dist else "Unknown",
+            })
+
+        fracture_sets.sort(key=lambda x: x["n_fractures"], reverse=True)
+
+        # ── Connectivity Analysis ──
+        # Connectivity between sets: based on angular relationship and spatial overlap
+        connectivity_matrix = []
+        for i, seti in enumerate(fracture_sets):
+            for j, setj in enumerate(fracture_sets):
+                if i >= j:
+                    continue
+                # Angular relationship
+                angle_diff = abs(seti["mean_azimuth"] - setj["mean_azimuth"])
+                if angle_diff > 180:
+                    angle_diff = 360 - angle_diff
+                # Sets ~60-90° apart are most likely to form connected networks
+                connectivity_score = 0.0
+                if 50 <= angle_diff <= 100:
+                    connectivity_score += 0.5  # Favorable intersection angle
+                elif 30 <= angle_diff <= 50 or 100 <= angle_diff <= 120:
+                    connectivity_score += 0.3
+                else:
+                    connectivity_score += 0.1
+
+                # Spatial overlap
+                depth_overlap = max(0, min(seti["depth_range_m"]["max"], setj["depth_range_m"]["max"]) -
+                                    max(seti["depth_range_m"]["min"], setj["depth_range_m"]["min"]))
+                max_range = max(seti["depth_range_m"]["max"] - seti["depth_range_m"]["min"],
+                               setj["depth_range_m"]["max"] - setj["depth_range_m"]["min"], 1)
+                spatial_overlap = depth_overlap / max_range
+                connectivity_score += 0.3 * spatial_overlap
+
+                # Both sets having many fractures increases connectivity
+                size_factor = min(seti["n_fractures"], setj["n_fractures"]) / max(seti["n_fractures"], setj["n_fractures"])
+                connectivity_score += 0.2 * size_factor
+
+                connectivity_score = min(1.0, connectivity_score)
+
+                connectivity_matrix.append({
+                    "set_a": seti["set_id"],
+                    "set_b": setj["set_id"],
+                    "intersection_angle": round(angle_diff, 1),
+                    "connectivity_score": round(connectivity_score, 3),
+                    "connectivity_level": "HIGH" if connectivity_score > 0.6 else ("MEDIUM" if connectivity_score > 0.3 else "LOW"),
+                    "spatial_overlap_m": round(depth_overlap, 1),
+                })
+
+        # ── Permeability anisotropy ──
+        # Dominant flow direction: weighted average of set orientations
+        total_fracs = sum(s["n_fractures"] for s in fracture_sets)
+        weighted_sin = sum(s["n_fractures"] * np.sin(np.radians(s["mean_azimuth"])) for s in fracture_sets)
+        weighted_cos = sum(s["n_fractures"] * np.cos(np.radians(s["mean_azimuth"])) for s in fracture_sets)
+        dominant_flow_azimuth = float(np.degrees(np.arctan2(weighted_sin / total_fracs, weighted_cos / total_fracs)) % 360)
+
+        # Anisotropy ratio (how strongly directional)
+        R = np.sqrt(weighted_sin**2 + weighted_cos**2) / total_fracs
+        anisotropy_ratio = round(float(R), 3)
+
+        # ── Network assessment ──
+        max_conn = max((c["connectivity_score"] for c in connectivity_matrix), default=0)
+        if max_conn > 0.6 and best_k >= 2:
+            network_quality = "WELL-CONNECTED"
+            network_color = "GREEN"
+        elif max_conn > 0.3:
+            network_quality = "MODERATELY-CONNECTED"
+            network_color = "AMBER"
+        else:
+            network_quality = "POORLY-CONNECTED"
+            network_color = "RED"
+
+        # ── Recommendations ──
+        recommendations = []
+        if network_quality == "WELL-CONNECTED":
+            recommendations.append({
+                "priority": "LOW",
+                "category": "Network Quality",
+                "action": f"Fracture network is well-connected ({best_k} sets with favorable intersection angles).",
+                "impact": "Good permeability expected. Fractures can serve as flow conduits.",
+            })
+        else:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Network Quality",
+                "action": f"Fracture network has limited connectivity. {network_quality.lower().replace('-', ' ')}.",
+                "impact": "Low connectivity means fracture-enhanced permeability will be limited and directional.",
+            })
+        recommendations.append({
+            "priority": "MEDIUM",
+            "category": "Flow Direction",
+            "action": f"Dominant flow azimuth: {dominant_flow_azimuth:.0f}° (anisotropy R={anisotropy_ratio:.2f}).",
+            "impact": "Well placement and injection patterns should account for this preferred flow direction.",
+        })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 6))
+
+            # Rose diagram of fracture sets
+            ax1 = fig.add_subplot(131, projection="polar")
+            colors_sets = plt.cm.Set1(np.linspace(0, 1, best_k))
+            for s_idx, fset in enumerate(fracture_sets):
+                mask = set_labels == (fset["set_id"] - 1)
+                set_az_rad = np.radians(azimuths[mask])
+                bins_rose = np.linspace(0, 2 * np.pi, 37)
+                counts_rose, _ = np.histogram(set_az_rad, bins=bins_rose)
+                centers = (bins_rose[:-1] + bins_rose[1:]) / 2
+                ax1.bar(centers, counts_rose, width=bins_rose[1] - bins_rose[0],
+                        alpha=0.6, color=colors_sets[s_idx], label=f"Set {fset['set_id']}")
+            ax1.set_theta_zero_location("N")
+            ax1.set_theta_direction(-1)
+            ax1.set_title("Fracture Sets (Rose)", pad=20)
+            ax1.legend(loc="lower left", fontsize=7)
+
+            # Connectivity matrix heatmap
+            ax2 = axes[1]
+            if connectivity_matrix:
+                n_sets = len(fracture_sets)
+                conn_grid = np.zeros((n_sets, n_sets))
+                for cm in connectivity_matrix:
+                    i = cm["set_a"] - 1
+                    j = cm["set_b"] - 1
+                    conn_grid[i][j] = cm["connectivity_score"]
+                    conn_grid[j][i] = cm["connectivity_score"]
+                np.fill_diagonal(conn_grid, 1.0)
+                im = ax2.imshow(conn_grid, cmap="RdYlGn", vmin=0, vmax=1)
+                ax2.set_xticks(range(n_sets))
+                ax2.set_yticks(range(n_sets))
+                ax2.set_xticklabels([f"Set {s['set_id']}" for s in fracture_sets])
+                ax2.set_yticklabels([f"Set {s['set_id']}" for s in fracture_sets])
+                for i_c in range(n_sets):
+                    for j_c in range(n_sets):
+                        ax2.text(j_c, i_c, f"{conn_grid[i_c][j_c]:.2f}", ha="center", va="center", fontsize=9)
+                fig.colorbar(im, ax=ax2, shrink=0.8)
+                ax2.set_title("Set Connectivity")
+            else:
+                ax2.text(0.5, 0.5, "Single set", ha="center", va="center", transform=ax2.transAxes)
+                ax2.set_title("Set Connectivity")
+
+            # Depth distribution by set
+            ax3 = axes[2]
+            for s_idx, fset in enumerate(fracture_sets):
+                mask = set_labels == (fset["set_id"] - 1)
+                ax3.scatter(azimuths[mask], depths[mask], s=15, alpha=0.5,
+                           color=colors_sets[s_idx], label=f"Set {fset['set_id']}")
+            ax3.set_xlabel("Azimuth (°)")
+            ax3.set_ylabel("Depth (m)")
+            ax3.invert_yaxis()
+            ax3.set_title("Sets by Depth")
+            ax3.legend(fontsize=7)
+
+            fig.suptitle(f"Fracture Network Connectivity — {well}", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Network: {network_quality}. {best_k} fracture sets identified. "
+                f"Dominant flow azimuth: {dominant_flow_azimuth:.0f}°."
+            ),
+            "risk_level": network_color,
+            "what_this_means": (
+                f"We identified {best_k} distinct fracture orientations (sets) and analyzed how they connect. "
+                + ("Well-connected networks provide good permeability. " if network_quality == "WELL-CONNECTED"
+                   else "Limited connectivity means flow will be directionally biased. ")
+                + f"The dominant flow direction is {dominant_flow_azimuth:.0f}° from North."
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "No action needed.",
+        }
+
+        return {
+            "well": well,
+            "n_fractures": n,
+            "n_sets": best_k,
+            "fracture_sets": fracture_sets,
+            "connectivity_matrix": connectivity_matrix,
+            "network_quality": network_quality,
+            "network_color": network_color,
+            "dominant_flow_azimuth": round(dominant_flow_azimuth, 1),
+            "anisotropy_ratio": anisotropy_ratio,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("fracture_connectivity", {"well": well},
+                  {"network_quality": result["network_quality"]}, source, well, elapsed)
+    _connectivity_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [115] Wellbore Failure Prediction
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/failure-prediction")
+async def api_failure_prediction(request: Request):
+    """Predict zones at risk of wellbore failure along the depth profile.
+
+    Combines geomechanical stress analysis with fracture observations to
+    identify breakout and tensile fracture risk zones.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    mud_weight_ppg = body.get("mud_weight_ppg", 10.0)
+
+    if mud_weight_ppg < 5.0 or mud_weight_ppg > 20.0:
+        raise HTTPException(400, "mud_weight_ppg must be between 5.0 and 20.0")
+
+    cache_key = f"failure:{well}:{source}:{mud_weight_ppg}"
+    if cache_key in _failure_pred_cache:
+        return _failure_pred_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        class_names = le.classes_.tolist()
+
+        depths = df_well[DEPTH_COL].values.astype(float) if DEPTH_COL in df_well.columns else np.zeros(n)
+        dips = df_well[DIP_COL].values.astype(float) if DIP_COL in df_well.columns else np.zeros(n)
+        azimuths = df_well[AZIMUTH_COL].values.astype(float) if AZIMUTH_COL in df_well.columns else np.zeros(n)
+
+        depth_min = float(depths.min())
+        depth_max = float(depths.max())
+        mean_depth = float(depths.mean())
+
+        # ── Geomechanical Parameters ──
+        density = 2.5  # g/cc average rock density
+        g = 9.81 / 1000  # MPa/m
+        Sv_gradient = density * g  # ~0.0245 MPa/m
+
+        # Pore pressure gradient (hydrostatic)
+        Pp_gradient = 1.0 * g  # MPa/m
+
+        # Horizontal stress ratios (typical for sedimentary basins)
+        SH_ratio = 0.9  # SH/Sv
+        Sh_ratio = 0.7  # Sh/Sv
+
+        # ── Depth-based failure prediction ──
+        # Create regular depth intervals
+        depth_intervals = np.linspace(depth_min, depth_max, min(50, n))
+        failure_profile = []
+
+        for d in depth_intervals:
+            Sv = d * Sv_gradient
+            Pp = d * Pp_gradient
+            SH = Sv * SH_ratio
+            Sh = Sv * Sh_ratio
+
+            # Convert mud weight to pressure
+            mud_pressure = mud_weight_ppg * 0.052 * d * 3.281  # ppg to psi to MPa (approx)
+            mud_pressure_mpa = mud_pressure * 0.00689476  # psi to MPa
+
+            # Breakout pressure (Kirsch equation for shear failure)
+            UCS_estimate = max(30, 20 + 0.01 * d)  # Simple depth-dependent UCS
+            breakout_pressure = (3 * SH - Sh - UCS_estimate + Pp)
+            # Tensile fracture pressure
+            tensile_strength = UCS_estimate / 12  # Typical ratio
+            fracture_pressure = (3 * Sh - SH + tensile_strength - Pp)
+
+            # Risk assessment
+            effective_mud = mud_pressure_mpa
+            breakout_risk = max(0, min(1, (breakout_pressure - effective_mud) / max(abs(breakout_pressure), 0.1)))
+            tensile_risk = max(0, min(1, (effective_mud - fracture_pressure) / max(abs(fracture_pressure), 0.1)))
+
+            overall_risk = max(breakout_risk, tensile_risk)
+            risk_level = "HIGH" if overall_risk > 0.6 else ("MEDIUM" if overall_risk > 0.3 else "LOW")
+            failure_type = "BREAKOUT" if breakout_risk > tensile_risk else "TENSILE"
+
+            # Count nearby fractures
+            nearby_mask = np.abs(depths - d) < (depth_max - depth_min) / 20
+            fracture_density = int(nearby_mask.sum())
+
+            failure_profile.append({
+                "depth_m": round(float(d), 2),
+                "Sv_MPa": round(float(Sv), 2),
+                "SH_MPa": round(float(SH), 2),
+                "Sh_MPa": round(float(Sh), 2),
+                "Pp_MPa": round(float(Pp), 2),
+                "breakout_pressure_MPa": round(float(breakout_pressure), 2),
+                "fracture_pressure_MPa": round(float(fracture_pressure), 2),
+                "breakout_risk": round(float(breakout_risk), 3),
+                "tensile_risk": round(float(tensile_risk), 3),
+                "overall_risk": round(float(overall_risk), 3),
+                "risk_level": risk_level,
+                "dominant_failure_type": failure_type,
+                "nearby_fracture_count": fracture_density,
+            })
+
+        # ── Risk zones ──
+        high_risk = [f for f in failure_profile if f["risk_level"] == "HIGH"]
+        medium_risk = [f for f in failure_profile if f["risk_level"] == "MEDIUM"]
+        low_risk = [f for f in failure_profile if f["risk_level"] == "LOW"]
+
+        # Identify continuous high-risk zones
+        risk_zones = []
+        zone_start = None
+        for fp in failure_profile:
+            if fp["risk_level"] in ("HIGH", "MEDIUM"):
+                if zone_start is None:
+                    zone_start = fp
+            else:
+                if zone_start is not None:
+                    risk_zones.append({
+                        "top_m": zone_start["depth_m"],
+                        "bottom_m": failure_profile[failure_profile.index(fp) - 1]["depth_m"] if failure_profile.index(fp) > 0 else zone_start["depth_m"],
+                        "max_risk": max(f["overall_risk"] for f in failure_profile
+                                       if zone_start["depth_m"] <= f["depth_m"] <= fp["depth_m"]),
+                        "dominant_failure": zone_start["dominant_failure_type"],
+                    })
+                    zone_start = None
+        if zone_start is not None:
+            risk_zones.append({
+                "top_m": zone_start["depth_m"],
+                "bottom_m": failure_profile[-1]["depth_m"],
+                "max_risk": max(f["overall_risk"] for f in failure_profile if f["depth_m"] >= zone_start["depth_m"]),
+                "dominant_failure": zone_start["dominant_failure_type"],
+            })
+
+        # ── Mud weight window ──
+        all_breakout = [f["breakout_pressure_MPa"] for f in failure_profile]
+        all_fracture = [f["fracture_pressure_MPa"] for f in failure_profile]
+        min_mw_pressure = max(all_breakout) if all_breakout else 0
+        max_mw_pressure = min(all_fracture) if all_fracture else 100
+        mw_window = max_mw_pressure - min_mw_pressure
+
+        mud_weight_window = {
+            "min_safe_MPa": round(float(min_mw_pressure), 2),
+            "max_safe_MPa": round(float(max_mw_pressure), 2),
+            "window_MPa": round(float(mw_window), 2),
+            "status": "SAFE" if mw_window > 5 else ("NARROW" if mw_window > 0 else "CRITICAL"),
+        }
+
+        # ── Recommendations ──
+        recommendations = []
+        if high_risk:
+            recommendations.append({
+                "priority": "CRITICAL",
+                "category": "Wellbore Stability",
+                "action": f"{len(high_risk)} depth intervals have HIGH failure risk. Review mud weight program.",
+                "impact": "High risk of wellbore instability. May require casing point adjustment or mud weight optimization.",
+            })
+        if risk_zones:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Risk Zones",
+                "action": f"{len(risk_zones)} continuous risk zones identified. Consider preventive measures.",
+                "impact": "Continuous risk zones need careful drilling parameter management.",
+            })
+        if mud_weight_window["status"] == "NARROW":
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Mud Weight",
+                "action": f"Narrow mud weight window ({mw_window:.1f} MPa). Precise ECD management required.",
+                "impact": "Small margin between breakout and fracture pressure limits operational flexibility.",
+            })
+        recommendations.append({
+            "priority": "MEDIUM",
+            "category": "Monitoring",
+            "action": "Install real-time annular pressure monitoring for early failure detection.",
+            "impact": "Early detection allows corrective action before significant wellbore damage.",
+        })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 8))
+
+            # Stress profile with mud weight window
+            ax1 = axes[0]
+            prof_depths = [f["depth_m"] for f in failure_profile]
+            ax1.plot([f["Sv_MPa"] for f in failure_profile], prof_depths, 'k-', label="Sv", linewidth=2)
+            ax1.plot([f["SH_MPa"] for f in failure_profile], prof_depths, 'r-', label="SH", linewidth=2)
+            ax1.plot([f["Sh_MPa"] for f in failure_profile], prof_depths, 'b-', label="Sh", linewidth=2)
+            ax1.plot([f["Pp_MPa"] for f in failure_profile], prof_depths, 'g--', label="Pp", linewidth=1)
+            ax1.fill_betweenx(prof_depths,
+                             [f["breakout_pressure_MPa"] for f in failure_profile],
+                             [f["fracture_pressure_MPa"] for f in failure_profile],
+                             alpha=0.2, color="green", label="Safe window")
+            ax1.set_xlabel("Stress (MPa)")
+            ax1.set_ylabel("Depth (m)")
+            ax1.set_title("Stress Profile & Mud Window")
+            ax1.invert_yaxis()
+            ax1.legend(fontsize=7, loc="lower left")
+
+            # Risk profile
+            ax2 = axes[1]
+            risk_vals = [f["overall_risk"] for f in failure_profile]
+            colors_risk = ["#f44336" if r > 0.6 else "#FF9800" if r > 0.3 else "#4CAF50" for r in risk_vals]
+            ax2.barh(prof_depths, risk_vals, height=(depth_max - depth_min) / len(failure_profile) * 0.8,
+                    color=colors_risk, alpha=0.7)
+            ax2.axvline(0.3, color="orange", linestyle="--", alpha=0.5)
+            ax2.axvline(0.6, color="red", linestyle="--", alpha=0.5)
+            ax2.set_xlabel("Risk Score")
+            ax2.set_title("Failure Risk Profile")
+            ax2.invert_yaxis()
+            ax2.set_xlim(0, 1)
+
+            # Summary
+            ax3 = axes[2]
+            ax3.axis("off")
+            summary_text = (
+                f"Mud Weight: {mud_weight_ppg} ppg\n\n"
+                f"High Risk Zones: {len(high_risk)}\n"
+                f"Medium Risk Zones: {len(medium_risk)}\n"
+                f"Low Risk Zones: {len(low_risk)}\n\n"
+                f"MW Window: {mud_weight_window['status']}\n"
+                f"({mud_weight_window['window_MPa']:.1f} MPa)\n\n"
+                f"Risk Zones: {len(risk_zones)}"
+            )
+            ax3.text(0.1, 0.9, summary_text, ha="left", va="top", fontsize=12,
+                    family="monospace", transform=ax3.transAxes)
+            ax3.set_title("Summary")
+
+            fig.suptitle(f"Wellbore Failure Prediction — {well} (MW={mud_weight_ppg} ppg)", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"{len(high_risk)} high-risk, {len(medium_risk)} medium-risk zones. "
+                f"Mud weight window: {mud_weight_window['status']} ({mw_window:.1f} MPa)."
+            ),
+            "risk_level": "RED" if high_risk else ("AMBER" if medium_risk else "GREEN"),
+            "what_this_means": (
+                "We predicted where the wellbore is most likely to fail based on rock strength, "
+                "stress conditions, and your mud weight. "
+                + (f"There are {len(high_risk)} zones needing immediate attention." if high_risk
+                   else "No high-risk zones detected at current mud weight.")
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "No significant failure risk detected.",
+        }
+
+        return {
+            "well": well,
+            "mud_weight_ppg": mud_weight_ppg,
+            "depth_range_m": {"min": round(depth_min, 2), "max": round(depth_max, 2)},
+            "n_depth_intervals": len(failure_profile),
+            "n_high_risk": len(high_risk),
+            "n_medium_risk": len(medium_risk),
+            "n_low_risk": len(low_risk),
+            "n_risk_zones": len(risk_zones),
+            "risk_zones": risk_zones,
+            "mud_weight_window": mud_weight_window,
+            "failure_profile": failure_profile[:50],  # Cap at 50 for response size
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("failure_prediction", {"well": well, "mud_weight_ppg": mud_weight_ppg},
+                  {"n_high_risk": result["n_high_risk"]}, source, well, elapsed)
+    _failure_pred_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [116] Batch Multi-Well Analysis
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/batch-analysis")
+async def api_batch_analysis(request: Request):
+    """Run key analyses across all available wells for field-wide comparison.
+
+    Produces a side-by-side comparison of model performance, data quality,
+    and risk assessment across all wells in the dataset.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+
+    cache_key = f"batch:{source}"
+    if cache_key in _batch_cache:
+        return _batch_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from collections import Counter
+
+        wells = df[WELL_COL].unique().tolist() if WELL_COL in df.columns else ["all"]
+        well_results = []
+
+        for well in wells:
+            try:
+                X, y, le, features, df_well = get_cached_features(df, well, source)
+                n = len(y)
+                n_classes = len(le.classes_)
+                class_names = le.classes_.tolist()
+
+                depths = df_well[DEPTH_COL].values.astype(float) if DEPTH_COL in df_well.columns else np.zeros(n)
+
+                # Model performance
+                model_results = _evaluate_all_models(X, y, well, source)
+                best_name = max(model_results, key=lambda m: model_results[m]["balanced_accuracy"])
+                best_ba = float(model_results[best_name]["balanced_accuracy"])
+                best_acc = float(model_results[best_name]["accuracy"])
+
+                # Class distribution
+                class_counts = Counter(le.inverse_transform(y))
+                imbalance = max(np.bincount(y)) / max(min(np.bincount(y)), 1)
+
+                # Depth range
+                depth_min = float(depths.min()) if len(depths) > 0 else 0
+                depth_max = float(depths.max()) if len(depths) > 0 else 0
+
+                well_results.append({
+                    "well": well,
+                    "n_samples": n,
+                    "n_classes": n_classes,
+                    "class_names": class_names,
+                    "class_distribution": {k: int(v) for k, v in class_counts.items()},
+                    "depth_range_m": {"min": round(depth_min, 2), "max": round(depth_max, 2)},
+                    "best_model": best_name,
+                    "best_balanced_accuracy": round(best_ba, 4),
+                    "best_accuracy": round(best_acc, 4),
+                    "n_models": len(model_results),
+                    "imbalance_ratio": round(float(imbalance), 1),
+                    "data_quality": "GOOD" if n >= 200 and imbalance < 3 else ("FAIR" if n >= 50 else "POOR"),
+                    "model_quality": "GOOD" if best_ba >= 0.80 else ("FAIR" if best_ba >= 0.65 else "POOR"),
+                })
+            except Exception as e:
+                well_results.append({
+                    "well": well,
+                    "error": str(e),
+                    "n_samples": 0,
+                })
+
+        # ── Field-wide summary ──
+        valid_results = [wr for wr in well_results if "error" not in wr]
+        if not valid_results:
+            raise HTTPException(500, "No wells could be analyzed")
+
+        total_samples = sum(wr["n_samples"] for wr in valid_results)
+        avg_accuracy = sum(wr["best_balanced_accuracy"] for wr in valid_results) / len(valid_results)
+        best_overall = max(valid_results, key=lambda x: x["best_balanced_accuracy"])
+        worst_overall = min(valid_results, key=lambda x: x["best_balanced_accuracy"])
+
+        field_summary = {
+            "n_wells": len(wells),
+            "n_wells_analyzed": len(valid_results),
+            "total_samples": total_samples,
+            "avg_balanced_accuracy": round(avg_accuracy, 4),
+            "best_well": best_overall["well"],
+            "best_accuracy": best_overall["best_balanced_accuracy"],
+            "worst_well": worst_overall["well"],
+            "worst_accuracy": worst_overall["best_balanced_accuracy"],
+            "accuracy_spread": round(best_overall["best_balanced_accuracy"] - worst_overall["best_balanced_accuracy"], 4),
+        }
+
+        # ── Recommendations ──
+        recommendations = []
+        if field_summary["accuracy_spread"] > 0.15:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Well Consistency",
+                "action": f"Large accuracy spread ({field_summary['accuracy_spread']:.1%}) between best and worst wells.",
+                "impact": "Model performance varies significantly. Consider well-specific models or additional data for underperforming wells.",
+            })
+        for wr in valid_results:
+            if wr.get("model_quality") == "POOR":
+                recommendations.append({
+                    "priority": "HIGH",
+                    "category": f"Well {wr['well']}",
+                    "action": f"Poor model accuracy ({wr['best_balanced_accuracy']:.1%}). Needs more data or feature engineering.",
+                    "impact": f"Well {wr['well']} predictions unreliable for operational use.",
+                })
+        if not recommendations:
+            recommendations.append({
+                "priority": "LOW",
+                "category": "Field Assessment",
+                "action": "All wells show acceptable model performance.",
+                "impact": "Field-wide predictions can be used with standard monitoring.",
+            })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 6))
+
+            # Accuracy comparison
+            ax1 = axes[0]
+            wnames = [wr["well"] for wr in valid_results]
+            accs = [wr["best_balanced_accuracy"] for wr in valid_results]
+            colors_acc = ["#4CAF50" if a >= 0.8 else "#FF9800" if a >= 0.65 else "#f44336" for a in accs]
+            ax1.barh(wnames, accs, color=colors_acc)
+            ax1.set_xlabel("Balanced Accuracy")
+            ax1.set_title("Model Performance by Well")
+            ax1.set_xlim(0, 1)
+            ax1.axvline(0.8, color="green", linestyle="--", alpha=0.3)
+            ax1.axvline(0.65, color="red", linestyle="--", alpha=0.3)
+
+            # Sample counts
+            ax2 = axes[1]
+            counts = [wr["n_samples"] for wr in valid_results]
+            ax2.barh(wnames, counts, color="#2196F3")
+            ax2.set_xlabel("Number of Samples")
+            ax2.set_title("Data Size by Well")
+
+            # Quality matrix
+            ax3 = axes[2]
+            ax3.axis("off")
+            header = f"{'Well':<8} {'Data':>8} {'Model':>8} {'Acc':>8}"
+            lines = [header, "-" * 36]
+            for wr in valid_results:
+                dq = wr.get("data_quality", "?")
+                mq = wr.get("model_quality", "?")
+                lines.append(f"{wr['well']:<8} {dq:>8} {mq:>8} {wr['best_balanced_accuracy']:.1%}")
+            ax3.text(0.1, 0.95, "\n".join(lines), ha="left", va="top", fontsize=11,
+                    family="monospace", transform=ax3.transAxes)
+            ax3.set_title("Quality Summary")
+
+            fig.suptitle("Field-Wide Batch Analysis", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Analyzed {len(valid_results)} wells ({total_samples} total samples). "
+                f"Avg accuracy: {avg_accuracy:.1%}. Best: {best_overall['well']} ({best_overall['best_balanced_accuracy']:.1%})."
+            ),
+            "risk_level": "GREEN" if avg_accuracy >= 0.75 else ("AMBER" if avg_accuracy >= 0.60 else "RED"),
+            "what_this_means": (
+                f"We ran the full analysis pipeline on all {len(valid_results)} wells. "
+                + (f"Performance is consistent across wells (spread: {field_summary['accuracy_spread']:.1%})."
+                   if field_summary["accuracy_spread"] < 0.10
+                   else f"Performance varies significantly between wells (spread: {field_summary['accuracy_spread']:.1%}).")
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "No action needed.",
+        }
+
+        return {
+            "n_wells": len(wells),
+            "n_wells_analyzed": len(valid_results),
+            "well_results": well_results,
+            "field_summary": field_summary,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("batch_analysis", {"source": source},
+                  {"n_wells": result["n_wells_analyzed"]}, source, "all", elapsed)
+    _batch_cache[cache_key] = result
     return _sanitize_for_json(result)
