@@ -1373,6 +1373,54 @@
                         </div>
                     </div>
 
+                    <!-- v3.30.0: Model Leaderboard -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-trophy-fill"></i> Model Performance Leaderboard</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runModelLeaderboard()">
+                                <i class="bi bi-play-fill"></i> Compare
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="lb-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Model</div><div class="metric-value" id="lb-best">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Accuracy</div><div class="metric-value text-success" id="lb-acc">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Models Tested</div><div class="metric-value" id="lb-count">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Weak Class</div><div class="metric-value text-warning" id="lb-weak">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="lb-brief"></div>
+                            <h6>Leaderboard</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>#</th><th>Model</th><th>Bal. Accuracy</th><th>Mean F1</th><th>Worst Class</th><th>Worst F1</th></tr></thead><tbody id="lb-table-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="lb-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.30.0: Data Augmentation Advisor -->
+                    <div class="card mb-4 border-dark">
+                        <div class="card-header bg-dark bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-database-fill-gear"></i> Data Augmentation Advisor</span>
+                            <button class="btn btn-sm btn-outline-dark" onclick="runAugmentationAdvisor()">
+                                <i class="bi bi-play-fill"></i> Analyze
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="da-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Undersampled</div><div class="metric-value text-danger" id="da-under">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Depth Gaps</div><div class="metric-value text-warning" id="da-gaps">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">SMOTE Gain</div><div class="metric-value" id="da-smote">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Actions</div><div class="metric-value" id="da-actions">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="da-brief"></div>
+                            <h6>Recommendations</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Priority</th><th>Category</th><th>Action</th><th>Impact</th></tr></thead><tbody id="da-rec-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="da-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

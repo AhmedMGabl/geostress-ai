@@ -10539,3 +10539,78 @@ async function runActiveLearning() {
         hideLoading();
     }
 }
+
+// ── v3.30.0: Model Leaderboard ──
+
+async function runModelLeaderboard() {
+    showLoading('Comparing all models (parallel training)...');
+    var results = document.getElementById('lb-results');
+    try {
+        var r = await apiPost('/api/analysis/model-leaderboard', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        if (r.leaderboard && r.leaderboard.length > 0) {
+            var best = r.leaderboard[0];
+            document.getElementById('lb-best').textContent = best.model;
+            document.getElementById('lb-acc').textContent = (best.balanced_accuracy * 100).toFixed(1) + '%';
+            document.getElementById('lb-count').textContent = r.n_models;
+            document.getElementById('lb-weak').textContent = best.worst_class + ' (' + (best.worst_f1 * 100).toFixed(0) + '%)';
+        }
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('lb-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var tb = document.getElementById('lb-table-body');
+        tb.innerHTML = '';
+        for (var i = 0; i < r.leaderboard.length; i++) {
+            var m = r.leaderboard[i];
+            var rc = i === 0 ? 'table-success' : (i < 3 ? 'table-info' : '');
+            tb.innerHTML += '<tr class="' + rc + '"><td>' + m.rank + '</td><td><strong>' + m.model + '</strong></td><td>' + (m.balanced_accuracy * 100).toFixed(1) + '%</td><td>' + (m.mean_f1 * 100).toFixed(1) + '%</td><td>' + m.worst_class + '</td><td>' + (m.worst_f1 * 100).toFixed(1) + '%</td></tr>';
+        }
+        if (r.plot) document.getElementById('lb-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.30.0: Data Augmentation Advisor ──
+
+async function runAugmentationAdvisor() {
+    showLoading('Analyzing data gaps and augmentation strategies...');
+    var results = document.getElementById('da-results');
+    try {
+        var r = await apiPost('/api/analysis/data-augmentation-advisor', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('da-under').textContent = r.n_undersampled;
+        document.getElementById('da-gaps').textContent = (r.depth_gaps || []).length;
+        if (r.smote_analysis && r.smote_analysis.improvement !== undefined) {
+            document.getElementById('da-smote').textContent = (r.smote_analysis.improvement > 0 ? '+' : '') + (r.smote_analysis.improvement * 100).toFixed(1) + '%';
+        } else {
+            document.getElementById('da-smote').textContent = 'N/A';
+        }
+        document.getElementById('da-actions').textContent = (r.recommendations || []).length;
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('da-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var rb = document.getElementById('da-rec-body');
+        rb.innerHTML = '';
+        if (r.recommendations) {
+            for (var i = 0; i < r.recommendations.length; i++) {
+                var rec = r.recommendations[i];
+                var pc = rec.priority === 'CRITICAL' ? 'table-danger' : rec.priority === 'HIGH' ? 'table-warning' : '';
+                rb.innerHTML += '<tr class="' + pc + '"><td><span class="badge bg-' + (rec.priority === 'CRITICAL' ? 'danger' : rec.priority === 'HIGH' ? 'warning' : 'secondary') + '">' + rec.priority + '</span></td><td>' + rec.category + '</td><td class="small">' + rec.action + '</td><td>' + rec.impact + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('da-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
