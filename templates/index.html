@@ -1298,6 +1298,81 @@
                         </div>
                     </div>
 
+                    <!-- v3.29.0: Conformal Prediction -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-shield-check"></i> Conformal Prediction (Calibrated Uncertainty)</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runConformalPredict()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="cp-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Target</div><div class="metric-value" id="cp-target">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Coverage</div><div class="metric-value text-success" id="cp-coverage">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Avg Set Size</div><div class="metric-value" id="cp-setsize">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Singletons</div><div class="metric-value text-info" id="cp-singletons">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Model</div><div class="metric-value" id="cp-model">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="cp-brief"></div>
+                            <h6>Prediction Sets (Test Samples)</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>#</th><th>Depth</th><th>True</th><th>Point Prediction</th><th>Conformal Set</th><th>Size</th><th>Covered?</th></tr></thead><tbody id="cp-table-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="cp-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.29.0: Physics-Consistency Validation -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-gear-wide-connected"></i> Physics-Consistency Validation</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runPhysicsConsistency()">
+                                <i class="bi bi-play-fill"></i> Validate
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="pc-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Consistency</div><div class="metric-value" id="pc-level">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Score</div><div class="metric-value" id="pc-score">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Violations</div><div class="metric-value text-danger" id="pc-violations">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">SHmax</div><div class="metric-value" id="pc-shmax">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">CS Rate</div><div class="metric-value" id="pc-csrate">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="pc-brief"></div>
+                            <h6>Physics Checks</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Check</th><th>Score</th><th>Detail</th></tr></thead><tbody id="pc-check-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="pc-plot" class="img-fluid" style="max-width:800px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.29.0: Active Learning Strategy -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-up-arrow"></i> Active Learning Strategy</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runActiveLearning()">
+                                <i class="bi bi-play-fill"></i> Analyze
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="al-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Suggested</div><div class="metric-value" id="al-n">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Current Acc</div><div class="metric-value" id="al-acc">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Projected Gain</div><div class="metric-value text-success" id="al-gain">-</div></div></div>
+                                <div class="col-md-2"><div class="metric-card"><div class="metric-label">Worth It?</div><div class="metric-value" id="al-worth">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Strategy</div><div class="metric-value" id="al-strategy">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="al-brief"></div>
+                            <h6>Priority Samples for Expert Labeling</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>#</th><th>Depth</th><th>Prediction</th><th>Confidence</th><th>Disagreement</th><th>Why Selected</th></tr></thead><tbody id="al-table-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="al-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

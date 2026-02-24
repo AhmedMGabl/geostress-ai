@@ -10425,3 +10425,117 @@ async function runTransparencyAudit() {
         hideLoading();
     }
 }
+
+// ── v3.29.0: Conformal Prediction ──
+
+async function runConformalPredict() {
+    showLoading('Running conformal prediction (calibrated uncertainty)...');
+    var results = document.getElementById('cp-results');
+    try {
+        var r = await apiPost('/api/analysis/conformal-predict', {source: currentSource(), well: currentWell(), alpha: 0.1});
+        results.classList.remove('d-none');
+        document.getElementById('cp-target').textContent = (r.target_coverage * 100).toFixed(0) + '%';
+        document.getElementById('cp-coverage').textContent = (r.empirical_coverage * 100).toFixed(1) + '%';
+        document.getElementById('cp-setsize').textContent = r.avg_set_size.toFixed(1);
+        document.getElementById('cp-singletons').textContent = (r.singleton_rate * 100).toFixed(0) + '%';
+        document.getElementById('cp-model').textContent = r.model_used || '-';
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('cp-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means + '<br><em>' + r.stakeholder_brief.recommendation + '</em>';
+        }
+        var tb = document.getElementById('cp-table-body');
+        tb.innerHTML = '';
+        if (r.test_predictions) {
+            for (var i = 0; i < Math.min(r.test_predictions.length, 30); i++) {
+                var p = r.test_predictions[i];
+                var covClass = p.covered ? 'table-success' : 'table-danger';
+                tb.innerHTML += '<tr class="' + covClass + '"><td>' + p.index + '</td><td>' + (p.depth_m || '-') + '</td><td>' + p.true_class + '</td><td>' + p.point_prediction + ' (' + (p.point_confidence * 100).toFixed(0) + '%)</td><td>' + p.conformal_set.join(', ') + '</td><td>' + p.set_size + '</td><td>' + (p.covered ? 'Yes' : 'No') + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('cp-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.29.0: Physics-Consistency Validation ──
+
+async function runPhysicsConsistency() {
+    showLoading('Running physics-consistency validation...');
+    var results = document.getElementById('pc-results');
+    try {
+        var r = await apiPost('/api/analysis/physics-consistency', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var lc = r.consistency_level === 'HIGH' ? 'text-success' : r.consistency_level === 'MODERATE' ? 'text-warning' : 'text-danger';
+        document.getElementById('pc-level').className = 'metric-value ' + lc;
+        document.getElementById('pc-level').textContent = r.consistency_level;
+        document.getElementById('pc-score').textContent = r.overall_score + '%';
+        document.getElementById('pc-violations').textContent = r.n_violations;
+        if (r.stress_summary) {
+            document.getElementById('pc-shmax').textContent = r.stress_summary.shmax_azimuth_deg + '°';
+            document.getElementById('pc-csrate').textContent = r.stress_summary.pct_critically_stressed + '%';
+        }
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('pc-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means + '<br><em>' + r.stakeholder_brief.recommendation + '</em>';
+        }
+        var cb = document.getElementById('pc-check-body');
+        cb.innerHTML = '';
+        if (r.checks) {
+            for (var i = 0; i < r.checks.length; i++) {
+                var c = r.checks[i];
+                var sc = c.score >= 80 ? 'table-success' : c.score >= 60 ? 'table-warning' : 'table-danger';
+                cb.innerHTML += '<tr class="' + sc + '"><td>' + c.check + '</td><td>' + c.score + '%</td><td class="small">' + c.detail + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('pc-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.29.0: Active Learning Strategy ──
+
+async function runActiveLearning() {
+    showLoading('Computing active learning strategy...');
+    var results = document.getElementById('al-results');
+    try {
+        var r = await apiPost('/api/analysis/active-learning-strategy', {source: currentSource(), well: currentWell(), strategy: 'hybrid'});
+        results.classList.remove('d-none');
+        document.getElementById('al-n').textContent = r.n_suggest;
+        document.getElementById('al-acc').textContent = (r.current_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('al-strategy').textContent = r.strategy;
+        if (r.marginal_gain) {
+            document.getElementById('al-gain').textContent = '+' + (r.marginal_gain.expected_improvement * 100).toFixed(2) + '%';
+            document.getElementById('al-worth').textContent = r.marginal_gain.worth_collecting ? 'Yes' : 'Plateau';
+            document.getElementById('al-worth').className = 'metric-value ' + (r.marginal_gain.worth_collecting ? 'text-success' : 'text-warning');
+        }
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('al-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means + '<br><em>' + r.stakeholder_brief.cost_benefit + '</em>';
+        }
+        var tb = document.getElementById('al-table-body');
+        tb.innerHTML = '';
+        if (r.suggestions) {
+            for (var i = 0; i < Math.min(r.suggestions.length, 20); i++) {
+                var s = r.suggestions[i];
+                tb.innerHTML += '<tr><td>' + s.index + '</td><td>' + (s.depth_m || '-') + '</td><td>' + s.current_prediction + '</td><td>' + (s.confidence * 100).toFixed(0) + '%</td><td>' + (s.model_disagreement * 100).toFixed(0) + '%</td><td class="small">' + s.why_selected.join('; ') + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('al-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

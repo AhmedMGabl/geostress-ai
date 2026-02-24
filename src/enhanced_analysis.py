@@ -67,12 +67,12 @@ except ImportError:
 try:
     from data_loader import (
         DEPTH_COL, AZIMUTH_COL, DIP_COL, WELL_COL, FRACTURE_TYPE_COL,
-        fracture_plane_normal,
+        fracture_plane_normal, circular_mean_deg, circular_std_deg,
     )
 except ImportError:
     from .data_loader import (
         DEPTH_COL, AZIMUTH_COL, DIP_COL, WELL_COL, FRACTURE_TYPE_COL,
-        fracture_plane_normal,
+        fracture_plane_normal, circular_mean_deg, circular_std_deg,
     )
 
 
@@ -1972,9 +1972,9 @@ def _compute_cluster_stats(df, labels, n_clusters):
         stats.append({
             "cluster": c,
             "count": int(mask.sum()),
-            "mean_azimuth": round(float(df.loc[mask, AZIMUTH_COL].mean()), 1),
+            "mean_azimuth": round(circular_mean_deg(df.loc[mask, AZIMUTH_COL].values), 1),
             "mean_dip": round(float(df.loc[mask, DIP_COL].mean()), 1),
-            "std_azimuth": round(float(df.loc[mask, AZIMUTH_COL].std()), 1),
+            "std_azimuth": round(circular_std_deg(df.loc[mask, AZIMUTH_COL].values), 1),
             "std_dip": round(float(df.loc[mask, DIP_COL].std()), 1),
         })
     return stats
@@ -3608,9 +3608,9 @@ def compare_wells(
             "n_fractures": len(wdf),
             "fracture_types": wdf[FRACTURE_TYPE_COL].value_counts().to_dict()
                 if FRACTURE_TYPE_COL in wdf.columns else {},
-            "mean_azimuth": round(float(wdf[AZIMUTH_COL].mean()), 1),
+            "mean_azimuth": round(circular_mean_deg(wdf[AZIMUTH_COL].values), 1),
             "mean_dip": round(float(wdf[DIP_COL].mean()), 1),
-            "std_azimuth": round(float(wdf[AZIMUTH_COL].std()), 1),
+            "std_azimuth": round(circular_std_deg(wdf[AZIMUTH_COL].values), 1),
             "std_dip": round(float(wdf[DIP_COL].std()), 1),
             "data_quality_score": quality["score"],
             "data_quality_grade": quality["grade"],

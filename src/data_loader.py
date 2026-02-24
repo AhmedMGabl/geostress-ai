@@ -236,6 +236,36 @@ def qc_fracture_data(df: pd.DataFrame,
     }
 
 
+# ── Circular statistics for azimuth data ──────────────────────
+# Azimuths are circular (0° ≈ 360°). Arithmetic mean/std are WRONG.
+# E.g. mean([10°, 350°]) = 180° (wrong); circular mean = 0° (correct).
+
+
+def circular_mean_deg(angles):
+    """Circular mean for directional data in degrees [0, 360).
+
+    Uses vector averaging: atan2(mean(sin θ), mean(cos θ)).
+    """
+    if len(angles) == 0:
+        return 0.0
+    rad = np.radians(np.asarray(angles, dtype=float))
+    return float(np.degrees(np.arctan2(np.sin(rad).mean(), np.cos(rad).mean())) % 360)
+
+
+def circular_std_deg(angles):
+    """Circular standard deviation for directional data in degrees.
+
+    Based on resultant length R: σ = √(-2 ln R), converted to degrees.
+    Returns 0-inf; well-concentrated data gives small values.
+    """
+    if len(angles) < 2:
+        return 0.0
+    rad = np.radians(np.asarray(angles, dtype=float))
+    R = np.sqrt(np.sin(rad).mean() ** 2 + np.cos(rad).mean() ** 2)
+    R = np.clip(R, 1e-10, 1.0)
+    return float(np.degrees(np.sqrt(-2.0 * np.log(R))))
+
+
 if __name__ == "__main__":
     # Quick test
     df = load_all_fractures()

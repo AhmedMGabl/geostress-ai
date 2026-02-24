@@ -16,12 +16,12 @@ from sklearn.cluster import KMeans, DBSCAN
 try:
     from data_loader import (
         DEPTH_COL, AZIMUTH_COL, DIP_COL, WELL_COL, FRACTURE_TYPE_COL,
-        fracture_plane_normal,
+        fracture_plane_normal, circular_mean_deg, circular_std_deg,
     )
 except ImportError:
     from .data_loader import (
         DEPTH_COL, AZIMUTH_COL, DIP_COL, WELL_COL, FRACTURE_TYPE_COL,
-        fracture_plane_normal,
+        fracture_plane_normal, circular_mean_deg, circular_std_deg,
     )
 
 
@@ -163,9 +163,9 @@ def cluster_fracture_sets(
         cluster_stats.append({
             "cluster": c,
             "count": mask.sum(),
-            "mean_azimuth": df.loc[mask, AZIMUTH_COL].mean(),
+            "mean_azimuth": circular_mean_deg(df.loc[mask, AZIMUTH_COL].values),
             "mean_dip": df.loc[mask, DIP_COL].mean(),
-            "std_azimuth": df.loc[mask, AZIMUTH_COL].std(),
+            "std_azimuth": circular_std_deg(df.loc[mask, AZIMUTH_COL].values),
             "std_dip": df.loc[mask, DIP_COL].std(),
         })
 
