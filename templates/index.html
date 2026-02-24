@@ -1421,6 +1421,108 @@
                         </div>
                     </div>
 
+                    <!-- v3.31.0: BMA Ensemble -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-layers-fill"></i> Bayesian Model Averaging</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runBMAEnsemble()">
+                                <i class="bi bi-play-fill"></i> Run BMA
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="bma-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">BMA Accuracy</div><div class="metric-value text-info" id="bma-acc">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Single</div><div class="metric-value text-secondary" id="bma-best">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Improvement</div><div class="metric-value" id="bma-improvement">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Calibration (ECE)</div><div class="metric-value" id="bma-ece">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="bma-brief"></div>
+                            <h6>Model Weights</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Model</th><th>Weight</th><th>Accuracy</th><th>Contribution</th></tr></thead><tbody id="bma-weights-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="bma-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.31.0: Misclassification Analysis -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bug-fill"></i> Misclassification Analysis</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runMisclassAnalysis()">
+                                <i class="bi bi-play-fill"></i> Analyze Errors
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="misclass-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Misclassified</div><div class="metric-value text-danger" id="misclass-count">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Error Rate</div><div class="metric-value text-warning" id="misclass-rate">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Confident Errors</div><div class="metric-value text-danger" id="misclass-confident">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Worst Class</div><div class="metric-value" id="misclass-worst">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="misclass-brief"></div>
+                            <h6>Confusion Pairs</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>True</th><th>Predicted As</th><th>Count</th><th>Rate</th><th>Severity</th></tr></thead><tbody id="misclass-pairs-body"></tbody></table>
+                            </div>
+                            <h6>Per-Class Error Analysis</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Class</th><th>Samples</th><th>Errors</th><th>Error Rate</th><th>Status</th><th>Geological Reason</th></tr></thead><tbody id="misclass-class-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="misclass-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.31.0: Expert Feedback Loop -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-person-check-fill"></i> Expert Feedback Loop (RLHF)</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runExpertRetrain()">
+                                <i class="bi bi-arrow-repeat"></i> Retrain
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="feedback-results">
+                            <div class="mb-3">
+                                <p class="small text-muted">Submit expert corrections as JSON: <code>[{"index": 0, "corrected_class": "Continuous", "reason": "Visible on image log"}]</code></p>
+                                <textarea class="form-control font-monospace small mb-2" id="feedback-input" rows="3" placeholder='[{"index": 0, "corrected_class": "Continuous", "reason": "Expert review"}]'></textarea>
+                                <button class="btn btn-sm btn-success" onclick="submitFeedback()"><i class="bi bi-send-fill"></i> Submit Corrections</button>
+                                <span class="small text-muted ms-2" id="feedback-status"></span>
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Original Accuracy</div><div class="metric-value text-secondary" id="fb-orig">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Corrected Accuracy</div><div class="metric-value text-success" id="fb-corr">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Improvement</div><div class="metric-value" id="fb-improvement">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Corrections Applied</div><div class="metric-value" id="fb-applied">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="fb-brief"></div>
+                            <div class="text-center"><img id="fb-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.31.0: Wellbore Stability -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-cone-striped"></i> Wellbore Stability Assessment</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runWellboreStability()">
+                                <i class="bi bi-play-fill"></i> Assess
+                            </button>
+                        </div>
+                        <div class="card-body d-none" id="wb-results">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Mud Weight Window</div><div class="metric-value" id="wb-window">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Stress Regime</div><div class="metric-value" id="wb-regime">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Critical Fractures</div><div class="metric-value text-danger" id="wb-critical">-</div></div></div>
+                                <div class="col-md-3"><div class="metric-card"><div class="metric-label">Window Status</div><div class="metric-value" id="wb-status">-</div></div></div>
+                            </div>
+                            <div class="alert alert-light border small" id="wb-brief"></div>
+                            <h6>Recommendations</h6>
+                            <div class="table-responsive mb-2">
+                                <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Priority</th><th>Category</th><th>Action</th><th>Impact</th></tr></thead><tbody id="wb-rec-body"></tbody></table>
+                            </div>
+                            <div class="text-center"><img id="wb-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

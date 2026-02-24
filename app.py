@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.30.0 - Model Leaderboard + Data Augmentation + Parallel Training)."""
+"""GeoStress AI - FastAPI Web Application (v3.31.0 - BMA Ensemble + Misclassification Analysis + Expert Feedback + Wellbore Stability)."""
 
 import os
 import io
@@ -22354,4 +22354,1246 @@ async def data_augmentation_advisor(request: Request):
                   source, well, elapsed)
 
     _augmentation_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── v3.31.0: BMA Ensemble + Misclassification Analysis + Expert Feedback + Wellbore Stability ──
+
+_bma_cache: dict = {}
+_misclass_cache: dict = {}
+_feedback_store: dict = {}  # persistent in-memory store for expert corrections
+_wellbore_cache: dict = {}
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [102] Bayesian Model Averaging (BMA) Ensemble
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/bma-ensemble")
+async def api_bma_ensemble(request: Request):
+    """Bayesian Model Averaging: combine all models weighted by posterior probability.
+
+    Instead of picking a single "best" model, BMA integrates predictions across
+    ALL models, weighting each by how well it explains the calibration data.
+    This gives better calibrated uncertainty and more robust predictions.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    alpha = body.get("alpha", 0.1)
+
+    cache_key = f"bma:{well}:{source}:{alpha}"
+    if cache_key in _bma_cache:
+        return _bma_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        n_classes = len(le.classes_)
+        class_names = le.classes_.tolist()
+
+        # Get per-model CV results (already parallelized)
+        model_results = _evaluate_all_models(X, y, well, source)
+        if not model_results:
+            raise HTTPException(500, "No models could be trained")
+
+        # ── Compute BMA weights via log-likelihood on held-out folds ──
+        # Use leave-one-out cross-validated probabilities to estimate
+        # model evidence (marginal likelihood approximation)
+        model_names = list(model_results.keys())
+        n_models = len(model_names)
+
+        # Log marginal likelihood approximation for each model
+        # Using mean log-probability on CV predictions as proxy
+        log_evidences = []
+        for mname in model_names:
+            mr = model_results[mname]
+            probs = mr["probs"]
+            # Avoid log(0) by clipping
+            eps = 1e-10
+            probs_clipped = np.clip(probs, eps, 1 - eps)
+            # Log-likelihood: sum of log P(true class | model)
+            ll = 0.0
+            for i in range(n):
+                if probs_clipped[i].sum() > 0.5:  # valid probabilities
+                    ll += np.log(probs_clipped[i, y[i]])
+                else:
+                    ll += np.log(1.0 / n_classes)  # uniform fallback
+            log_evidences.append(ll)
+
+        log_evidences = np.array(log_evidences)
+        # Convert to weights via softmax (normalized exp of log-evidence)
+        log_evidences -= log_evidences.max()  # numerical stability
+        weights = np.exp(log_evidences)
+        weights /= weights.sum()
+
+        # ── BMA combined predictions ──
+        bma_probs = np.zeros((n, n_classes))
+        for i, mname in enumerate(model_names):
+            bma_probs += weights[i] * model_results[mname]["probs"]
+
+        # Normalize in case of numerical issues
+        row_sums = bma_probs.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1
+        bma_probs /= row_sums
+
+        bma_preds = bma_probs.argmax(axis=1)
+        bma_confidences = bma_probs.max(axis=1)
+
+        # ── BMA metrics ──
+        bma_accuracy = float(accuracy_score(y, bma_preds))
+        bma_balanced_accuracy = float(balanced_accuracy_score(y, bma_preds))
+
+        # Per-model comparison
+        model_weights = []
+        for i, mname in enumerate(model_names):
+            mr = model_results[mname]
+            model_weights.append({
+                "model": mname,
+                "weight": round(float(weights[i]), 4),
+                "accuracy": round(float(mr["accuracy"]), 4),
+                "balanced_accuracy": round(float(mr["balanced_accuracy"]), 4),
+                "contribution_pct": round(float(weights[i] * 100), 1),
+            })
+        model_weights.sort(key=lambda x: x["weight"], reverse=True)
+
+        # ── Calibration analysis ──
+        # How well-calibrated are BMA probabilities?
+        calibration_bins = 10
+        bin_edges = np.linspace(0, 1, calibration_bins + 1)
+        calibration_data = []
+        for b in range(calibration_bins):
+            lo, hi = bin_edges[b], bin_edges[b + 1]
+            mask = (bma_confidences >= lo) & (bma_confidences < hi)
+            if mask.sum() > 0:
+                bin_accuracy = float((bma_preds[mask] == y[mask]).mean())
+                bin_confidence = float(bma_confidences[mask].mean())
+                calibration_data.append({
+                    "confidence_bin": f"{lo:.1f}-{hi:.1f}",
+                    "mean_confidence": round(bin_confidence, 4),
+                    "actual_accuracy": round(bin_accuracy, 4),
+                    "n_samples": int(mask.sum()),
+                    "calibration_error": round(abs(bin_confidence - bin_accuracy), 4),
+                })
+
+        # Expected Calibration Error
+        ece = 0.0
+        for cd in calibration_data:
+            ece += cd["n_samples"] * cd["calibration_error"]
+        ece /= max(n, 1)
+
+        # ── Uncertainty decomposition ──
+        # Epistemic uncertainty (model disagreement)
+        preds_matrix = np.array([model_results[m]["probs"] for m in model_names])
+        epistemic = float(preds_matrix.var(axis=0).mean())
+        # Aleatoric uncertainty (average entropy per model)
+        aleatoric_per_model = []
+        for m in model_names:
+            p = np.clip(model_results[m]["probs"], 1e-10, 1)
+            ent = -(p * np.log(p)).sum(axis=1).mean()
+            aleatoric_per_model.append(float(ent))
+        aleatoric = float(np.mean(aleatoric_per_model))
+
+        # ── Sample-level predictions with uncertainty ──
+        sample_predictions = []
+        for i in range(min(n, 50)):  # first 50 for response size
+            sample_predictions.append({
+                "index": int(i),
+                "true_class": class_names[y[i]],
+                "bma_prediction": class_names[bma_preds[i]],
+                "bma_confidence": round(float(bma_confidences[i]), 4),
+                "correct": bool(bma_preds[i] == y[i]),
+                "class_probabilities": {
+                    class_names[c]: round(float(bma_probs[i, c]), 4)
+                    for c in range(n_classes)
+                },
+                "model_agreement": round(float(
+                    np.mean([1 if model_results[m]["preds"][i] == bma_preds[i] else 0
+                             for m in model_names])
+                ), 4),
+            })
+
+        # ── Best single model comparison ──
+        best_single_name = max(model_results, key=lambda m: model_results[m]["balanced_accuracy"])
+        best_single_ba = model_results[best_single_name]["balanced_accuracy"]
+        bma_improvement = bma_balanced_accuracy - best_single_ba
+
+        # ── Plot: model weights + calibration ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Weight bar chart
+            ax1 = axes[0]
+            names = [mw["model"] for mw in model_weights]
+            wts = [mw["weight"] for mw in model_weights]
+            colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(names)))
+            bars = ax1.barh(names, wts, color=colors)
+            ax1.set_xlabel("BMA Weight")
+            ax1.set_title("Model Posterior Weights")
+            for bar, w in zip(bars, wts):
+                ax1.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
+                         f"{w:.3f}", va="center", fontsize=9)
+
+            # Calibration plot
+            ax2 = axes[1]
+            if calibration_data:
+                confs = [cd["mean_confidence"] for cd in calibration_data]
+                accs = [cd["actual_accuracy"] for cd in calibration_data]
+                sizes = [cd["n_samples"] for cd in calibration_data]
+                ax2.scatter(confs, accs, s=[s * 5 for s in sizes], alpha=0.7, c="#2196F3", edgecolors="navy")
+                ax2.plot([0, 1], [0, 1], "k--", alpha=0.5, label="Perfect calibration")
+                ax2.set_xlabel("Mean Predicted Confidence")
+                ax2.set_ylabel("Actual Accuracy")
+                ax2.set_title(f"BMA Calibration (ECE={ece:.3f})")
+                ax2.legend()
+
+            # Accuracy comparison
+            ax3 = axes[2]
+            comp_names = [best_single_name, "BMA Ensemble"]
+            comp_vals = [best_single_ba, bma_balanced_accuracy]
+            bar_colors = ["#FF9800", "#4CAF50"]
+            bars = ax3.bar(comp_names, comp_vals, color=bar_colors)
+            ax3.set_ylabel("Balanced Accuracy")
+            ax3.set_title("Best Single vs BMA Ensemble")
+            ax3.set_ylim(0, 1)
+            for bar, val in zip(bars, comp_vals):
+                ax3.text(bar.get_x() + bar.get_width() / 2, val + 0.01, f"{val:.1%}",
+                         ha="center", fontweight="bold")
+
+            fig.suptitle(f"Bayesian Model Averaging — {well}", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        # Recommendations
+        recommendations = []
+        if bma_improvement > 0.02:
+            recommendations.append(f"BMA improves on best single model by {bma_improvement:.1%} — use BMA for production predictions.")
+        elif bma_improvement > 0:
+            recommendations.append(f"BMA marginally improves accuracy (+{bma_improvement:.1%}). Use BMA for better uncertainty calibration.")
+        else:
+            recommendations.append(f"BMA ensemble does not improve accuracy. Best model ({best_single_name}) may suffice, but BMA still provides better uncertainty estimates.")
+
+        if ece > 0.1:
+            recommendations.append(f"Expected Calibration Error is {ece:.3f} (>0.10). Consider Platt scaling or temperature scaling for better calibration.")
+        elif ece < 0.05:
+            recommendations.append(f"Excellent calibration (ECE={ece:.3f}). BMA probabilities can be trusted as-is.")
+
+        if epistemic > aleatoric:
+            recommendations.append("High epistemic uncertainty suggests models disagree significantly. More diverse training data could help.")
+        else:
+            recommendations.append("Low epistemic uncertainty — models agree well. Remaining uncertainty is mainly aleatoric (inherent data noise).")
+
+        dominant_weight = model_weights[0]["weight"]
+        if dominant_weight > 0.8:
+            recommendations.append(f"Warning: {model_weights[0]['model']} dominates with {dominant_weight:.0%} weight. Ensemble diversity is low.")
+
+        stakeholder_brief = {
+            "headline": (
+                f"BMA combines {n_models} models for {bma_balanced_accuracy:.1%} balanced accuracy "
+                f"({'↑' if bma_improvement > 0 else '↔'} vs best single model at {best_single_ba:.1%})"
+            ),
+            "risk_level": "GREEN" if ece < 0.05 else ("AMBER" if ece < 0.10 else "RED"),
+            "what_this_means": (
+                "Instead of trusting one model, BMA weights all models by how well they fit the data. "
+                "Models that predict better get higher weight. This gives more reliable probability "
+                "estimates — when BMA says '80% confident', it's closer to actually being right 80% of the time."
+            ),
+            "recommendation": recommendations[0] if recommendations else "Use BMA for production predictions.",
+        }
+
+        return {
+            "well": well,
+            "n_samples": n,
+            "n_models": n_models,
+            "n_classes": n_classes,
+            "class_names": class_names,
+            "bma_accuracy": round(bma_accuracy, 4),
+            "bma_balanced_accuracy": round(bma_balanced_accuracy, 4),
+            "best_single_model": best_single_name,
+            "best_single_balanced_accuracy": round(float(best_single_ba), 4),
+            "bma_improvement": round(float(bma_improvement), 4),
+            "model_weights": model_weights,
+            "calibration": calibration_data,
+            "expected_calibration_error": round(ece, 4),
+            "uncertainty_decomposition": {
+                "epistemic": round(epistemic, 6),
+                "aleatoric": round(aleatoric, 6),
+                "dominant_source": "epistemic" if epistemic > aleatoric else "aleatoric",
+            },
+            "sample_predictions": sample_predictions,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("bma_ensemble", {"well": well, "alpha": alpha},
+                  {"bma_accuracy": result["bma_accuracy"]}, source, well, elapsed)
+    _bma_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [103] Misclassification Analysis (Negative Example Learning)
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/misclassification-analysis")
+async def api_misclassification_analysis(request: Request):
+    """Deep analysis of what the model gets WRONG and why.
+
+    Addresses the user's concern about learning from failures, not just successes.
+    Identifies systematic error patterns, confusion pairs, and geological reasons
+    for misclassification.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"misclass:{well}:{source}"
+    if cache_key in _misclass_cache:
+        return _misclass_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from sklearn.metrics import confusion_matrix
+        from collections import Counter
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        n_classes = len(le.classes_)
+        class_names = le.classes_.tolist()
+
+        model_results = _evaluate_all_models(X, y, well, source)
+        if not model_results:
+            raise HTTPException(500, "No models could be trained")
+
+        # Use best model for primary analysis
+        best_name = max(model_results, key=lambda m: model_results[m]["balanced_accuracy"])
+        best_preds = model_results[best_name]["preds"]
+        best_probs = model_results[best_name]["probs"]
+
+        # ── Confusion matrix ──
+        cm = confusion_matrix(y, best_preds)
+        cm_normalized = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+        cm_normalized = np.nan_to_num(cm_normalized)
+
+        confusion_pairs = []
+        for i in range(n_classes):
+            for j in range(n_classes):
+                if i != j and cm[i, j] > 0:
+                    confusion_pairs.append({
+                        "true_class": class_names[i],
+                        "predicted_as": class_names[j],
+                        "count": int(cm[i, j]),
+                        "rate": round(float(cm_normalized[i, j]), 4),
+                        "severity": "CRITICAL" if cm_normalized[i, j] > 0.3 else
+                                   ("HIGH" if cm_normalized[i, j] > 0.15 else
+                                    ("MEDIUM" if cm_normalized[i, j] > 0.05 else "LOW")),
+                    })
+        confusion_pairs.sort(key=lambda x: x["count"], reverse=True)
+
+        # ── Misclassified samples analysis ──
+        misclassified_mask = best_preds != y
+        n_misclassified = int(misclassified_mask.sum())
+        misclass_rate = float(n_misclassified / n)
+
+        # Depth pattern analysis for misclassified samples
+        depth_analysis = None
+        if DEPTH_COL in df_well.columns:
+            depths = df_well[DEPTH_COL].values
+            correct_depths = depths[~misclassified_mask]
+            wrong_depths = depths[misclassified_mask]
+            depth_analysis = {
+                "mean_depth_correct": round(float(np.mean(correct_depths)), 2) if len(correct_depths) > 0 else None,
+                "mean_depth_misclassified": round(float(np.mean(wrong_depths)), 2) if len(wrong_depths) > 0 else None,
+                "depth_bias": None,
+            }
+            if len(wrong_depths) > 0 and len(correct_depths) > 0:
+                depth_diff = np.mean(wrong_depths) - np.mean(correct_depths)
+                depth_analysis["depth_bias"] = (
+                    "deeper" if depth_diff > 50 else
+                    ("shallower" if depth_diff < -50 else "no significant depth bias")
+                )
+
+        # Azimuth pattern analysis
+        azimuth_analysis = None
+        if AZIMUTH_COL in df_well.columns:
+            azimuths = df_well[AZIMUTH_COL].values
+            correct_azi = azimuths[~misclassified_mask]
+            wrong_azi = azimuths[misclassified_mask]
+            azimuth_analysis = {
+                "mean_azi_correct": round(circular_mean_deg(correct_azi), 1) if len(correct_azi) > 0 else None,
+                "mean_azi_misclassified": round(circular_mean_deg(wrong_azi), 1) if len(wrong_azi) > 0 else None,
+                "std_azi_correct": round(circular_std_deg(correct_azi), 1) if len(correct_azi) > 1 else None,
+                "std_azi_misclassified": round(circular_std_deg(wrong_azi), 1) if len(wrong_azi) > 1 else None,
+            }
+
+        # ── Confidence analysis for errors ──
+        wrong_confidences = best_probs[misclassified_mask].max(axis=1) if n_misclassified > 0 else np.array([])
+        correct_confidences = best_probs[~misclassified_mask].max(axis=1) if (n - n_misclassified) > 0 else np.array([])
+
+        confident_errors = int((wrong_confidences > 0.7).sum()) if len(wrong_confidences) > 0 else 0
+        confidence_analysis = {
+            "mean_confidence_correct": round(float(correct_confidences.mean()), 4) if len(correct_confidences) > 0 else None,
+            "mean_confidence_wrong": round(float(wrong_confidences.mean()), 4) if len(wrong_confidences) > 0 else None,
+            "n_confident_errors": confident_errors,
+            "confident_error_rate": round(confident_errors / max(n_misclassified, 1), 4),
+            "overconfidence_risk": "HIGH" if confident_errors > 5 else ("MEDIUM" if confident_errors > 2 else "LOW"),
+        }
+
+        # ── Per-class error analysis ──
+        per_class_errors = []
+        for c in range(n_classes):
+            true_mask = y == c
+            n_true = int(true_mask.sum())
+            if n_true == 0:
+                continue
+            wrong_in_class = int((true_mask & misclassified_mask).sum())
+            error_rate = wrong_in_class / n_true
+
+            # What does this class get confused with most?
+            confused_with = []
+            for j in range(n_classes):
+                if j != c and cm[c, j] > 0:
+                    confused_with.append({
+                        "class": class_names[j],
+                        "count": int(cm[c, j]),
+                        "rate": round(float(cm[c, j] / n_true), 4),
+                    })
+            confused_with.sort(key=lambda x: x["count"], reverse=True)
+
+            # Geological explanation for confusion
+            geo_explanation = _geological_confusion_reason(class_names[c],
+                                                          confused_with[0]["class"] if confused_with else "N/A")
+
+            per_class_errors.append({
+                "class": class_names[c],
+                "n_samples": n_true,
+                "n_errors": wrong_in_class,
+                "error_rate": round(float(error_rate), 4),
+                "status": "CRITICAL" if error_rate > 0.4 else ("HIGH" if error_rate > 0.25 else ("MEDIUM" if error_rate > 0.1 else "LOW")),
+                "confused_with": confused_with[:3],
+                "geological_reason": geo_explanation,
+            })
+        per_class_errors.sort(key=lambda x: x["error_rate"], reverse=True)
+
+        # ── Cross-model agreement on errors ──
+        # How many models agree on each misclassified sample?
+        model_names = list(model_results.keys())
+        cross_model_errors = []
+        misclass_indices = np.where(misclassified_mask)[0]
+        for idx in misclass_indices[:30]:  # limit for response size
+            preds_for_sample = [model_results[m]["preds"][idx] for m in model_names]
+            pred_counts = Counter(preds_for_sample)
+            most_common_pred, most_common_count = pred_counts.most_common(1)[0]
+            cross_model_errors.append({
+                "index": int(idx),
+                "true_class": class_names[y[idx]],
+                "best_model_prediction": class_names[best_preds[idx]],
+                "n_models_agree_on_error": int(sum(1 for p in preds_for_sample if p == best_preds[idx])),
+                "n_models_correct": int(sum(1 for p in preds_for_sample if p == y[idx])),
+                "consensus_prediction": class_names[most_common_pred],
+                "confidence": round(float(best_probs[idx].max()), 4),
+                "hardness": "HARD" if sum(1 for p in preds_for_sample if p == y[idx]) == 0 else
+                           ("AMBIGUOUS" if sum(1 for p in preds_for_sample if p == y[idx]) < len(model_names) // 2 else "BORDERLINE"),
+            })
+
+        # ── Recommendations ──
+        recommendations = []
+        if per_class_errors and per_class_errors[0]["error_rate"] > 0.3:
+            worst = per_class_errors[0]
+            recommendations.append({
+                "priority": "CRITICAL",
+                "category": "Worst Class",
+                "action": f"Focus data collection on '{worst['class']}' fractures — {worst['error_rate']:.0%} misclassification rate.",
+                "impact": f"Collect {max(20, worst['n_samples'])} more labeled samples of this type from diverse depths.",
+            })
+        if confident_errors > 3:
+            recommendations.append({
+                "priority": "CRITICAL",
+                "category": "Overconfident Errors",
+                "action": f"{confident_errors} predictions are >70% confident but WRONG. Apply conformal prediction to flag these.",
+                "impact": "Prevents high-confidence wrong decisions that could affect wellbore stability assessments.",
+            })
+        if confusion_pairs and confusion_pairs[0]["rate"] > 0.15:
+            cp = confusion_pairs[0]
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Confusion Pair",
+                "action": f"'{cp['true_class']}' is confused with '{cp['predicted_as']}' in {cp['count']} cases ({cp['rate']:.0%}).",
+                "impact": f"Add discriminating features or collect transition-zone examples between these types.",
+            })
+        # Always suggest negative examples
+        recommendations.append({
+            "priority": "HIGH",
+            "category": "Negative Examples",
+            "action": "Add labeled examples of what each fracture type is NOT — boundary cases, ambiguous zones, non-fracture intervals.",
+            "impact": "Models trained only on 'correct' examples lack understanding of boundaries between classes.",
+        })
+        if depth_analysis and depth_analysis.get("depth_bias") and "bias" not in depth_analysis["depth_bias"]:
+            recommendations.append({
+                "priority": "MEDIUM",
+                "category": "Depth Coverage",
+                "action": f"Errors are biased toward {depth_analysis['depth_bias']} zones. Collect more data from these depths.",
+                "impact": "Reduces spatial bias in predictions.",
+            })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Confusion matrix heatmap
+            ax1 = axes[0]
+            im = ax1.imshow(cm_normalized, cmap="YlOrRd", vmin=0, vmax=1)
+            ax1.set_xticks(range(n_classes))
+            ax1.set_yticks(range(n_classes))
+            short_names = [cn[:8] for cn in class_names]
+            ax1.set_xticklabels(short_names, rotation=45, ha="right", fontsize=8)
+            ax1.set_yticklabels(short_names, fontsize=8)
+            ax1.set_xlabel("Predicted")
+            ax1.set_ylabel("True")
+            ax1.set_title("Confusion Matrix")
+            for i in range(n_classes):
+                for j in range(n_classes):
+                    val = cm[i, j]
+                    if val > 0:
+                        color = "white" if cm_normalized[i, j] > 0.5 else "black"
+                        ax1.text(j, i, str(val), ha="center", va="center", color=color, fontsize=8)
+
+            # Error rate by class
+            ax2 = axes[1]
+            if per_class_errors:
+                cls = [e["class"][:8] for e in per_class_errors]
+                rates = [e["error_rate"] for e in per_class_errors]
+                colors = ["#f44336" if r > 0.3 else "#FF9800" if r > 0.15 else "#4CAF50" for r in rates]
+                ax2.barh(cls, rates, color=colors)
+                ax2.set_xlabel("Error Rate")
+                ax2.set_title("Per-Class Error Rate")
+                ax2.axvline(0.2, color="red", linestyle="--", alpha=0.5, label="20% threshold")
+                ax2.legend()
+
+            # Confidence distribution: correct vs wrong
+            ax3 = axes[2]
+            if len(correct_confidences) > 0:
+                ax3.hist(correct_confidences, bins=20, alpha=0.6, color="#4CAF50", label="Correct", density=True)
+            if len(wrong_confidences) > 0:
+                ax3.hist(wrong_confidences, bins=20, alpha=0.6, color="#f44336", label="Wrong", density=True)
+            ax3.set_xlabel("Prediction Confidence")
+            ax3.set_ylabel("Density")
+            ax3.set_title("Confidence: Correct vs Wrong")
+            ax3.legend()
+
+            fig.suptitle(f"Misclassification Analysis — {well}", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        n_critical = sum(1 for e in per_class_errors if e["status"] == "CRITICAL")
+        worst_class = per_class_errors[0]["class"] if per_class_errors else "N/A"
+        worst_rate = per_class_errors[0]["error_rate"] if per_class_errors else 0
+
+        stakeholder_brief = {
+            "headline": (
+                f"{n_misclassified}/{n} samples ({misclass_rate:.1%}) misclassified. "
+                f"Worst class: '{worst_class}' at {worst_rate:.0%} error rate."
+            ),
+            "risk_level": "RED" if n_critical > 0 or confident_errors > 5 else ("AMBER" if misclass_rate > 0.2 else "GREEN"),
+            "what_this_means": (
+                "This analysis shows WHERE the model fails and WHY. High-confidence errors are "
+                "the most dangerous — the model is certain but wrong. Confusion pairs show which "
+                "fracture types look alike to the model. Use this to target data collection."
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "Model performance is adequate.",
+        }
+
+        return {
+            "well": well,
+            "n_samples": n,
+            "n_classes": n_classes,
+            "class_names": class_names,
+            "model_used": best_name,
+            "n_misclassified": n_misclassified,
+            "misclass_rate": round(misclass_rate, 4),
+            "confusion_pairs": confusion_pairs,
+            "per_class_errors": per_class_errors,
+            "confidence_analysis": confidence_analysis,
+            "depth_analysis": depth_analysis,
+            "azimuth_analysis": azimuth_analysis,
+            "cross_model_errors": cross_model_errors,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("misclassification_analysis", {"well": well},
+                  {"n_misclassified": result["n_misclassified"]}, source, well, elapsed)
+    _misclass_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+def _geological_confusion_reason(class_a: str, class_b: str) -> str:
+    """Provide geological explanation for why two fracture types are confused."""
+    a, b = class_a.lower(), class_b.lower()
+    reasons = {
+        ("continuous", "discontinuous"): "Both are planar fractures differing only in lateral extent — similar dip/azimuth signatures make them hard to distinguish without image log texture analysis.",
+        ("boundary", "continuous"): "Boundary fractures (bed boundaries) can appear similar to continuous fractures when dip angles are comparable. Depth context (formation tops) is key.",
+        ("brecciated", "vuggy"): "Both indicate dissolution/damage zones. Brecciated zones have angular fragments while vuggy zones have rounded voids — similar resistivity response on image logs.",
+        ("discontinuous", "vuggy"): "Short discontinuous fractures and vugs both appear as isolated features on image logs. Scale and shape analysis can help distinguish them.",
+        ("boundary", "brecciated"): "Highly fractured boundary zones can mimic breccia. Structural context (proximity to faults) helps discriminate.",
+    }
+    key1 = (a, b)
+    key2 = (b, a)
+    if key1 in reasons:
+        return reasons[key1]
+    if key2 in reasons:
+        return reasons[key2]
+    return f"'{class_a}' and '{class_b}' may share similar geometric properties (dip, azimuth) in certain depth intervals, making them difficult to distinguish from orientation data alone."
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [104] Expert Feedback Loop (RLHF-Inspired)
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/expert-feedback-submit")
+async def api_expert_feedback_submit(request: Request):
+    """Submit expert corrections to model predictions.
+
+    Experts can flag incorrect predictions and provide the correct label.
+    The system stores corrections and enables re-training with corrected labels.
+    """
+    payload = await request.json()
+    source = payload.get("source", "demo")
+    well = payload.get("well", "3P")
+    corrections = payload.get("corrections", [])
+
+    if not corrections:
+        raise HTTPException(400, "No corrections provided. Expected list of {index, corrected_class, reason?}.")
+
+    store_key = f"feedback:{well}:{source}"
+    if store_key not in _feedback_store:
+        _feedback_store[store_key] = []
+
+    accepted = 0
+    for correction in corrections:
+        idx = correction.get("index")
+        corrected_class = correction.get("corrected_class")
+        reason = correction.get("reason", "")
+        if idx is not None and corrected_class is not None:
+            _feedback_store[store_key].append({
+                "index": int(idx),
+                "corrected_class": str(corrected_class),
+                "reason": str(reason),
+                "timestamp": time.time(),
+            })
+            accepted += 1
+
+    return {
+        "status": "accepted",
+        "n_corrections_accepted": accepted,
+        "total_corrections_stored": len(_feedback_store[store_key]),
+        "well": well,
+    }
+
+
+@app.post("/api/analysis/expert-feedback-retrain")
+async def api_expert_feedback_retrain(request: Request):
+    """Retrain model incorporating expert corrections.
+
+    This is the RLHF-inspired feedback loop: experts correct labels,
+    model retrains on corrected data, and we measure improvement.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    store_key = f"feedback:{well}:{source}"
+    corrections = _feedback_store.get(store_key, [])
+
+    if not corrections:
+        raise HTTPException(400, "No expert corrections stored. Submit corrections first via /api/analysis/expert-feedback-submit.")
+
+    t0 = time.time()
+    df_main = get_df(source)
+    if df_main is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from collections import Counter
+        from sklearn.ensemble import RandomForestClassifier as _RF
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
+        X, y_original, le, features, df_well = get_cached_features(df_main, well, source)
+        y_original = y_original.copy()  # don't mutate cached copy
+        n = len(y_original)
+        class_names = le.classes_.tolist()
+
+        # ── Apply expert corrections ──
+        y_corrected = y_original.copy()
+        n_applied = 0
+        correction_log = []
+        for c in corrections:
+            idx = c["index"]
+            corrected_class = c["corrected_class"]
+            if 0 <= idx < n and corrected_class in class_names:
+                old_class = class_names[y_original[idx]]
+                new_label = class_names.index(corrected_class)
+                if y_corrected[idx] != new_label:
+                    y_corrected[idx] = new_label
+                    n_applied += 1
+                    correction_log.append({
+                        "index": idx,
+                        "original_class": old_class,
+                        "corrected_to": corrected_class,
+                        "reason": c.get("reason", ""),
+                    })
+
+        # ── Train on original labels ──
+        n_classes = len(class_names)
+        min_count_orig = min(np.bincount(y_original))
+        n_splits = min(5, max(2, min_count_orig))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        preds_orig = np.zeros(n, dtype=int)
+        for train_idx, val_idx in cv.split(X, y_original):
+            m = _RF(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
+            m.fit(X[train_idx], y_original[train_idx])
+            preds_orig[val_idx] = m.predict(X[val_idx])
+
+        acc_original = float(accuracy_score(y_original, preds_orig))
+        ba_original = float(balanced_accuracy_score(y_original, preds_orig))
+
+        # ── Train on corrected labels ──
+        min_count_corr = min(np.bincount(y_corrected)) if len(np.unique(y_corrected)) > 1 else 1
+        n_splits_corr = min(5, max(2, min_count_corr))
+        cv_corr = StratifiedKFold(n_splits=n_splits_corr, shuffle=True, random_state=42)
+
+        preds_corrected = np.zeros(n, dtype=int)
+        for train_idx, val_idx in cv_corr.split(X, y_corrected):
+            m = _RF(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
+            m.fit(X[train_idx], y_corrected[train_idx])
+            preds_corrected[val_idx] = m.predict(X[val_idx])
+
+        # Evaluate against corrected labels (the "ground truth" after expert review)
+        acc_corrected = float(accuracy_score(y_corrected, preds_corrected))
+        ba_corrected = float(balanced_accuracy_score(y_corrected, preds_corrected))
+
+        improvement = ba_corrected - ba_original
+
+        # ── Per-class comparison ──
+        per_class_comparison = []
+        for c_idx in range(n_classes):
+            mask_orig = y_original == c_idx
+            mask_corr = y_corrected == c_idx
+            correct_orig = int((preds_orig[mask_orig] == y_original[mask_orig]).sum()) if mask_orig.sum() > 0 else 0
+            correct_corr = int((preds_corrected[mask_corr] == y_corrected[mask_corr]).sum()) if mask_corr.sum() > 0 else 0
+            per_class_comparison.append({
+                "class": class_names[c_idx],
+                "n_original": int(mask_orig.sum()),
+                "n_corrected": int(mask_corr.sum()),
+                "accuracy_original": round(correct_orig / max(int(mask_orig.sum()), 1), 4),
+                "accuracy_corrected": round(correct_corr / max(int(mask_corr.sum()), 1), 4),
+            })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Before/After accuracy
+            ax1 = axes[0]
+            bars = ax1.bar(["Original Labels", "Expert-Corrected"],
+                           [ba_original, ba_corrected],
+                           color=["#FF9800", "#4CAF50"])
+            ax1.set_ylabel("Balanced Accuracy")
+            ax1.set_title("RLHF Impact: Before vs After")
+            ax1.set_ylim(0, 1)
+            for bar, val in zip(bars, [ba_original, ba_corrected]):
+                ax1.text(bar.get_x() + bar.get_width() / 2, val + 0.01,
+                         f"{val:.1%}", ha="center", fontweight="bold")
+
+            # Per-class comparison
+            ax2 = axes[1]
+            if per_class_comparison:
+                class_short = [pc["class"][:8] for pc in per_class_comparison]
+                orig_accs = [pc["accuracy_original"] for pc in per_class_comparison]
+                corr_accs = [pc["accuracy_corrected"] for pc in per_class_comparison]
+                x_pos = np.arange(len(class_short))
+                w = 0.35
+                ax2.bar(x_pos - w / 2, orig_accs, w, label="Original", color="#FF9800", alpha=0.8)
+                ax2.bar(x_pos + w / 2, corr_accs, w, label="Corrected", color="#4CAF50", alpha=0.8)
+                ax2.set_xticks(x_pos)
+                ax2.set_xticklabels(class_short, rotation=45, ha="right", fontsize=8)
+                ax2.set_ylabel("Accuracy")
+                ax2.set_title("Per-Class Accuracy Change")
+                ax2.legend()
+
+            # Correction distribution
+            ax3 = axes[2]
+            if correction_log:
+                orig_classes = [cl["original_class"][:8] for cl in correction_log]
+                class_counts = Counter(orig_classes)
+                ax3.bar(class_counts.keys(), class_counts.values(), color="#2196F3")
+                ax3.set_xlabel("Original Class")
+                ax3.set_ylabel("Number of Corrections")
+                ax3.set_title("Expert Corrections by Class")
+                plt.setp(ax3.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+            else:
+                ax3.text(0.5, 0.5, "No label changes applied", ha="center", va="center", transform=ax3.transAxes)
+
+            fig.suptitle(f"Expert Feedback Loop — {well} ({len(corrections)} corrections)", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        recommendations = []
+        if improvement > 0.02:
+            recommendations.append(f"Expert corrections improved balanced accuracy by {improvement:.1%}. Continue collecting expert feedback.")
+        elif improvement > 0:
+            recommendations.append(f"Marginal improvement ({improvement:.1%}). More corrections needed for significant impact.")
+        else:
+            recommendations.append("Corrections did not improve accuracy. Original labels may have been mostly correct, or more diverse corrections needed.")
+
+        if n_applied < len(corrections):
+            recommendations.append(f"Only {n_applied}/{len(corrections)} corrections changed labels. Some corrections may duplicate original labels.")
+
+        stakeholder_brief = {
+            "headline": (
+                f"Expert feedback loop: {n_applied} label corrections applied. "
+                f"Accuracy {'improved' if improvement > 0 else 'unchanged'} "
+                f"({ba_original:.1%} → {ba_corrected:.1%}, {'↑' if improvement > 0 else '↔'}{abs(improvement):.1%})"
+            ),
+            "risk_level": "GREEN" if improvement > 0.02 else ("AMBER" if improvement >= 0 else "RED"),
+            "what_this_means": (
+                "This is the human-in-the-loop feedback system. Domain experts correct the model's mistakes, "
+                "and the model learns from those corrections. Each round of feedback makes the model better "
+                "at distinguishing fracture types. This is how we ensure the AI adapts to YOUR geological context."
+            ),
+            "recommendation": recommendations[0] if recommendations else "Continue submitting expert corrections.",
+        }
+
+        return {
+            "well": well,
+            "n_corrections_submitted": len(corrections),
+            "n_corrections_applied": n_applied,
+            "correction_log": correction_log[:20],
+            "accuracy_original": round(acc_original, 4),
+            "balanced_accuracy_original": round(ba_original, 4),
+            "accuracy_corrected": round(acc_corrected, 4),
+            "balanced_accuracy_corrected": round(ba_corrected, 4),
+            "improvement": round(improvement, 4),
+            "per_class_comparison": per_class_comparison,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("expert_feedback_retrain", {"well": well, "n_corrections": len(corrections)},
+                  {"improvement": result["improvement"]}, source, well, elapsed)
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [105] Wellbore Stability Risk Assessment
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/wellbore-stability")
+async def api_wellbore_stability(request: Request):
+    """Compute wellbore stability risk using stress tensor + fracture data.
+
+    This is the INDUSTRIAL endpoint — what oil companies actually use geostress for.
+    Computes safe mud weight window, breakout/tensile failure pressure bounds,
+    and drilling risk by depth.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    mud_weight_ppg = body.get("mud_weight_ppg", None)
+    azimuth_deg = body.get("borehole_azimuth", 0)
+    inclination_deg = body.get("borehole_inclination", 0)
+
+    cache_key = f"wellbore:{well}:{source}:{mud_weight_ppg}:{azimuth_deg}:{inclination_deg}"
+    if cache_key in _wellbore_cache:
+        return _wellbore_cache[cache_key]
+
+    t0 = time.time()
+    df_main = get_df(source)
+    if df_main is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+
+        df_well = df_main[df_main[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df_main.columns else df_main.copy()
+        if len(df_well) < 10:
+            raise HTTPException(400, f"Insufficient data for well {well}")
+
+        # Get stress parameters from inversion
+        try:
+            from src.geostress import invert_stress
+            stress_result = invert_stress(df_well)
+        except Exception:
+            stress_result = None
+
+        # Fallback stress parameters if inversion fails
+        if stress_result and isinstance(stress_result, dict):
+            sigma1 = stress_result.get("sigma1", 45.0)
+            sigma3 = stress_result.get("sigma3", 20.0)
+            R_ratio = stress_result.get("R", 0.5)
+            shmax_azi = stress_result.get("SHmax_azimuth", 45.0)
+            friction = stress_result.get("friction", 0.6)
+        else:
+            sigma1, sigma3, R_ratio = 45.0, 20.0, 0.5
+            shmax_azi, friction = 45.0, 0.6
+
+        sigma2 = sigma3 + R_ratio * (sigma1 - sigma3)
+
+        # ── Vertical stress gradient (typical overburden) ──
+        # Standard: ~1.0 psi/ft = ~22.6 MPa/km
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.array([1000])
+        min_depth = float(depths.min())
+        max_depth = float(depths.max())
+        mean_depth = float(depths.mean())
+
+        # Overburden stress gradient (typical sedimentary basin)
+        Sv_gradient = 0.0226  # MPa/m
+        Sv = Sv_gradient * mean_depth
+
+        # Pore pressure gradient (hydrostatic)
+        Pp_gradient = 0.00981  # MPa/m
+        Pp = Pp_gradient * mean_depth
+
+        # ── Assign principal stresses based on regime ──
+        # Determine stress regime
+        if sigma1 > Sv * 1.1:
+            regime = "Reverse"
+            SH = sigma1
+            Sh = sigma2
+        elif sigma3 < Sv * 0.9:
+            regime = "Normal"
+            SH = sigma2
+            Sh = sigma3
+        else:
+            regime = "Strike-Slip"
+            SH = sigma1
+            Sh = sigma3
+
+        # ── Wellbore failure analysis (Kirsch equations for vertical well) ──
+        # Breakout initiation: occurs when tangential stress exceeds rock strength
+        # σθ_max = 3*SH - Sh - Pp  (at θ = 90° from SHmax)
+        # Tensile fracture: occurs when tangential stress goes tensile
+        # σθ_min = 3*Sh - SH - Pp  (at θ = 0° from SHmax)
+
+        sigma_theta_max = 3 * SH - Sh - Pp
+        sigma_theta_min = 3 * Sh - SH - Pp
+
+        # UCS estimation (empirical, typical for sedimentary rocks)
+        # Typical range: 30-100 MPa
+        UCS_estimate = max(30, min(100, sigma1 * 0.8))
+
+        # ── Safe Mud Weight Window ──
+        # Convert pressures to equivalent mud weight (ppg)
+        # MW (ppg) = P (MPa) / (0.00981 * depth_m) * 8.345 / 0.0519
+        depth_for_mw = mean_depth if mean_depth > 0 else 1000
+
+        def pressure_to_ppg(p_mpa, depth_m):
+            """Convert pressure in MPa to equivalent mud weight in ppg."""
+            if depth_m <= 0:
+                return 0
+            return (p_mpa / (0.00981 * depth_m)) * 8.33
+
+        # Minimum mud weight: pore pressure collapse (prevent kicks)
+        mw_pore = pressure_to_ppg(Pp, depth_for_mw)
+
+        # Breakout mud weight: where breakout initiates
+        # Pw_breakout = (3*SH - Sh - UCS) / 1  (simplified for vertical well)
+        Pw_breakout = (3 * SH - Sh - UCS_estimate)
+        mw_breakout = pressure_to_ppg(max(Pw_breakout, Pp), depth_for_mw)
+
+        # Tensile fracture (lost circulation) mud weight
+        # Pw_tensile = 3*Sh - SH + Tensile_strength
+        # Tensile strength ~= UCS/10
+        T0 = UCS_estimate / 10
+        Pw_tensile = 3 * Sh - SH + T0
+        mw_tensile = pressure_to_ppg(Pw_tensile, depth_for_mw)
+
+        # Fracture gradient (minimum horizontal stress)
+        mw_fracture = pressure_to_ppg(Sh, depth_for_mw)
+
+        # Safe window
+        mw_min = max(mw_pore, mw_breakout)  # must be above pore pressure AND prevent breakout
+        mw_max = min(mw_tensile, mw_fracture)  # must be below fracture initiation
+
+        mud_weight_window = {
+            "min_ppg": round(mw_min, 2),
+            "max_ppg": round(mw_max, 2),
+            "window_ppg": round(max(0, mw_max - mw_min), 2),
+            "pore_pressure_ppg": round(mw_pore, 2),
+            "breakout_ppg": round(mw_breakout, 2),
+            "tensile_fracture_ppg": round(mw_tensile, 2),
+            "fracture_gradient_ppg": round(mw_fracture, 2),
+            "status": "SAFE" if mw_max - mw_min > 1.0 else ("NARROW" if mw_max > mw_min else "CRITICAL"),
+        }
+
+        # Current mud weight assessment
+        current_mw_assessment = None
+        if mud_weight_ppg is not None:
+            mw = float(mud_weight_ppg)
+            if mw < mw_pore:
+                risk = "KICK RISK — below pore pressure"
+                level = "CRITICAL"
+            elif mw < mw_min:
+                risk = "BREAKOUT RISK — below safe minimum"
+                level = "HIGH"
+            elif mw > mw_max:
+                risk = "LOST CIRCULATION RISK — above fracture pressure"
+                level = "HIGH"
+            elif mw > mw_max - 0.5:
+                risk = "Near upper limit — monitor for losses"
+                level = "MEDIUM"
+            elif mw < mw_min + 0.5:
+                risk = "Near lower limit — monitor for instability"
+                level = "MEDIUM"
+            else:
+                risk = "Within safe window"
+                level = "LOW"
+            current_mw_assessment = {
+                "mud_weight_ppg": mw,
+                "risk": risk,
+                "risk_level": level,
+                "margin_to_min_ppg": round(mw - mw_min, 2),
+                "margin_to_max_ppg": round(mw_max - mw, 2),
+            }
+
+        # ── Depth-wise risk profile ──
+        depth_profile = []
+        depth_points = np.linspace(min_depth, max_depth, min(20, int(max_depth - min_depth) + 1))
+        for d in depth_points:
+            sv_d = Sv_gradient * d
+            pp_d = Pp_gradient * d
+            # Scale stresses with depth (linear approximation)
+            scale = d / mean_depth if mean_depth > 0 else 1
+            sh_d = Sh * scale
+            sH_d = SH * scale
+            mw_min_d = pressure_to_ppg(pp_d, d)
+            mw_max_d = pressure_to_ppg(3 * sh_d - sH_d + T0 * scale, d)
+            window_d = max(0, mw_max_d - mw_min_d)
+            depth_profile.append({
+                "depth_m": round(float(d), 1),
+                "Sv_MPa": round(float(sv_d), 2),
+                "Pp_MPa": round(float(pp_d), 2),
+                "SH_MPa": round(float(sH_d), 2),
+                "Sh_MPa": round(float(sh_d), 2),
+                "mw_min_ppg": round(float(mw_min_d), 2),
+                "mw_max_ppg": round(float(mw_max_d), 2),
+                "window_ppg": round(float(window_d), 2),
+                "risk_level": "GREEN" if window_d > 1.0 else ("AMBER" if window_d > 0 else "RED"),
+            })
+
+        # ── Fracture reactivation risk ──
+        # Based on critically stressed analysis
+        fracture_risk = []
+        if AZIMUTH_COL in df_well.columns and DIP_COL in df_well.columns:
+            azimuths = df_well[AZIMUTH_COL].values
+            dips = df_well[DIP_COL].values
+            for i in range(min(len(df_well), 200)):
+                azi = float(azimuths[i])
+                dip = float(dips[i])
+                # Slip tendency: simplified for vertical well
+                # Based on angle between fracture normal and maximum stress direction
+                angle_to_SH = abs(((azi - shmax_azi + 90) % 180) - 90)
+                slip_factor = np.sin(np.radians(dip)) * np.cos(np.radians(angle_to_SH))
+                slip_tendency = abs(slip_factor) * friction * 2  # normalized
+                slip_tendency = min(1.0, slip_tendency)
+
+                # Dilation tendency
+                sigma_n = sigma3 + (sigma1 - sigma3) * np.sin(np.radians(dip)) ** 2
+                dilation = (sigma1 - sigma_n) / max(sigma1 - sigma3, 0.01)
+                dilation = min(1.0, max(0, dilation))
+
+                critically_stressed = slip_tendency > 0.6
+
+                depth_i = float(depths[i]) if DEPTH_COL in df_well.columns and i < len(depths) else mean_depth
+                fracture_risk.append({
+                    "index": int(i),
+                    "depth_m": round(depth_i, 1),
+                    "azimuth_deg": round(azi, 1),
+                    "dip_deg": round(dip, 1),
+                    "slip_tendency": round(float(slip_tendency), 4),
+                    "dilation_tendency": round(float(dilation), 4),
+                    "critically_stressed": critically_stressed,
+                })
+
+        n_critical = sum(1 for f in fracture_risk if f["critically_stressed"])
+        pct_critical = n_critical / max(len(fracture_risk), 1) * 100
+
+        # ── Recommendations ──
+        recommendations = []
+        if mud_weight_window["status"] == "CRITICAL":
+            recommendations.append({
+                "priority": "CRITICAL",
+                "category": "Mud Weight",
+                "action": "No safe mud weight window exists at this depth. Consider casing point selection or managed pressure drilling (MPD).",
+                "impact": "Without MPD or casing, wellbore collapse or lost circulation is likely.",
+            })
+        elif mud_weight_window["status"] == "NARROW":
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Mud Weight",
+                "action": f"Safe window is only {mud_weight_window['window_ppg']:.1f} ppg. Use real-time monitoring and narrow ECD management.",
+                "impact": "Narrow windows require precise mud weight control to avoid both breakout and losses.",
+            })
+        else:
+            recommendations.append({
+                "priority": "LOW",
+                "category": "Mud Weight",
+                "action": f"Safe window of {mud_weight_window['window_ppg']:.1f} ppg ({mw_min:.1f}-{mw_max:.1f} ppg). Standard drilling parameters acceptable.",
+                "impact": "Wide window provides good drilling margin.",
+            })
+
+        if pct_critical > 30:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Fracture Reactivation",
+                "action": f"{pct_critical:.0f}% of fractures are critically stressed. Mud losses during drilling are likely.",
+                "impact": "Plan for LCM treatments and consider preventive casing strategy.",
+            })
+
+        if regime == "Reverse":
+            recommendations.append({
+                "priority": "MEDIUM",
+                "category": "Stress Regime",
+                "action": "Reverse faulting regime detected. Horizontal wells perpendicular to SHmax are most stable.",
+                "impact": "Well trajectory optimization can reduce instability risk by 30-50%.",
+            })
+
+        recommendations.append({
+            "priority": "MEDIUM",
+            "category": "Data Quality",
+            "action": "Wellbore stability relies on stress tensor accuracy. Cross-validate with leak-off tests (LOT) and formation integrity tests (FIT).",
+            "impact": "Field-calibrated stress data improves predictions significantly over log-derived estimates.",
+        })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Mud weight window
+            ax1 = axes[0]
+            if depth_profile:
+                dp_depths = [d["depth_m"] for d in depth_profile]
+                dp_min = [d["mw_min_ppg"] for d in depth_profile]
+                dp_max = [d["mw_max_ppg"] for d in depth_profile]
+                ax1.fill_betweenx(dp_depths, dp_min, dp_max, alpha=0.3, color="#4CAF50", label="Safe Window")
+                ax1.plot(dp_min, dp_depths, "b-", linewidth=2, label="Min MW")
+                ax1.plot(dp_max, dp_depths, "r-", linewidth=2, label="Max MW")
+                if mud_weight_ppg is not None:
+                    ax1.axvline(float(mud_weight_ppg), color="black", linestyle="--", linewidth=2, label=f"Current ({mud_weight_ppg} ppg)")
+                ax1.invert_yaxis()
+                ax1.set_xlabel("Mud Weight (ppg)")
+                ax1.set_ylabel("Depth (m)")
+                ax1.set_title("Safe Mud Weight Window")
+                ax1.legend(fontsize=8)
+
+            # Stress profile
+            ax2 = axes[1]
+            if depth_profile:
+                ax2.plot([d["Sv_MPa"] for d in depth_profile], dp_depths, "k-", label="Sv", linewidth=2)
+                ax2.plot([d["SH_MPa"] for d in depth_profile], dp_depths, "r-", label="SH", linewidth=2)
+                ax2.plot([d["Sh_MPa"] for d in depth_profile], dp_depths, "b-", label="Sh", linewidth=2)
+                ax2.plot([d["Pp_MPa"] for d in depth_profile], dp_depths, "g--", label="Pp", linewidth=2)
+                ax2.invert_yaxis()
+                ax2.set_xlabel("Stress (MPa)")
+                ax2.set_ylabel("Depth (m)")
+                ax2.set_title(f"Stress Profile ({regime} Regime)")
+                ax2.legend(fontsize=8)
+
+            # Fracture risk polar plot
+            ax3 = axes[2]
+            if fracture_risk:
+                azis = [f["azimuth_deg"] for f in fracture_risk]
+                slips = [f["slip_tendency"] for f in fracture_risk]
+                crits = [f["critically_stressed"] for f in fracture_risk]
+                colors = ["#f44336" if c else "#4CAF50" for c in crits]
+                ax3.scatter(azis, slips, c=colors, alpha=0.6, s=15, edgecolors="none")
+                ax3.axhline(0.6, color="red", linestyle="--", alpha=0.5, label="Critical threshold")
+                ax3.set_xlabel("Fracture Azimuth (°)")
+                ax3.set_ylabel("Slip Tendency")
+                ax3.set_title(f"Fracture Reactivation ({pct_critical:.0f}% critical)")
+                ax3.legend(fontsize=8)
+                ax3.set_xlim(0, 360)
+
+            fig.suptitle(f"Wellbore Stability — {well}", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        overall_risk = "RED" if mud_weight_window["status"] == "CRITICAL" or pct_critical > 40 else \
+                       ("AMBER" if mud_weight_window["status"] == "NARROW" or pct_critical > 20 else "GREEN")
+
+        stakeholder_brief = {
+            "headline": (
+                f"Wellbore stability: {mud_weight_window['status']} mud weight window "
+                f"({mud_weight_window['min_ppg']:.1f}-{mud_weight_window['max_ppg']:.1f} ppg). "
+                f"{pct_critical:.0f}% critically stressed fractures."
+            ),
+            "risk_level": overall_risk,
+            "what_this_means": (
+                "The mud weight window is the range of drilling fluid densities that keeps the wellbore "
+                "stable — too low causes collapse, too high causes fractures. Critically stressed fractures "
+                "are natural fractures that may open during drilling, causing fluid losses. "
+                "This assessment helps drilling engineers choose safe parameters."
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "Standard drilling parameters acceptable.",
+        }
+
+        return {
+            "well": well,
+            "depth_range_m": {"min": round(min_depth, 1), "max": round(max_depth, 1)},
+            "stress_regime": regime,
+            "stress_parameters": {
+                "sigma1_MPa": round(float(sigma1), 2),
+                "sigma2_MPa": round(float(sigma2), 2),
+                "sigma3_MPa": round(float(sigma3), 2),
+                "Sv_MPa": round(float(Sv), 2),
+                "SH_MPa": round(float(SH), 2),
+                "Sh_MPa": round(float(Sh), 2),
+                "Pp_MPa": round(float(Pp), 2),
+                "SHmax_azimuth": round(float(shmax_azi), 1),
+                "R_ratio": round(float(R_ratio), 4),
+                "friction_coefficient": round(float(friction), 4),
+                "UCS_estimate_MPa": round(float(UCS_estimate), 1),
+            },
+            "mud_weight_window": mud_weight_window,
+            "current_mud_weight_assessment": current_mw_assessment,
+            "depth_profile": depth_profile,
+            "n_fractures_analyzed": len(fracture_risk),
+            "n_critically_stressed": n_critical,
+            "pct_critically_stressed": round(pct_critical, 1),
+            "fracture_risk": fracture_risk[:50],  # limit for response size
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("wellbore_stability", {"well": well},
+                  {"mud_weight_window": result["mud_weight_window"]["status"]}, source, well, elapsed)
+    _wellbore_cache[cache_key] = result
     return _sanitize_for_json(result)

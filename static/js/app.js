@@ -10614,3 +10614,163 @@ async function runAugmentationAdvisor() {
         hideLoading();
     }
 }
+
+/* ── v3.31.0: BMA Ensemble ────────────────────────────────────────── */
+async function runBMAEnsemble() {
+    showLoading('Computing Bayesian Model Averaging...');
+    var results = document.getElementById('bma-results');
+    try {
+        var r = await apiPost('/api/analysis/bma-ensemble', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('bma-acc').textContent = (r.bma_balanced_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('bma-best').textContent = r.best_single_model + ' ' + (r.best_single_balanced_accuracy * 100).toFixed(1) + '%';
+        var imp = r.bma_improvement;
+        document.getElementById('bma-improvement').textContent = (imp >= 0 ? '+' : '') + (imp * 100).toFixed(1) + '%';
+        document.getElementById('bma-improvement').className = 'metric-value ' + (imp > 0 ? 'text-success' : 'text-secondary');
+        document.getElementById('bma-ece').textContent = r.expected_calibration_error.toFixed(3);
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('bma-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var wb = document.getElementById('bma-weights-body');
+        wb.innerHTML = '';
+        if (r.model_weights) {
+            for (var i = 0; i < r.model_weights.length; i++) {
+                var mw = r.model_weights[i];
+                wb.innerHTML += '<tr><td>' + mw.model + '</td><td>' + mw.weight.toFixed(4) + '</td><td>' + (mw.balanced_accuracy * 100).toFixed(1) + '%</td><td>' + mw.contribution_pct.toFixed(1) + '%</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('bma-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+/* ── v3.31.0: Misclassification Analysis ──────────────────────────── */
+async function runMisclassAnalysis() {
+    showLoading('Analyzing misclassification patterns...');
+    var results = document.getElementById('misclass-results');
+    try {
+        var r = await apiPost('/api/analysis/misclassification-analysis', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('misclass-count').textContent = r.n_misclassified + '/' + r.n_samples;
+        document.getElementById('misclass-rate').textContent = (r.misclass_rate * 100).toFixed(1) + '%';
+        document.getElementById('misclass-confident').textContent = r.confidence_analysis.n_confident_errors;
+        var wc = r.per_class_errors && r.per_class_errors.length > 0 ? r.per_class_errors[0].class : '-';
+        document.getElementById('misclass-worst').textContent = wc;
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('misclass-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        // Confusion pairs table
+        var pb = document.getElementById('misclass-pairs-body');
+        pb.innerHTML = '';
+        if (r.confusion_pairs) {
+            for (var i = 0; i < Math.min(r.confusion_pairs.length, 10); i++) {
+                var cp = r.confusion_pairs[i];
+                var sc = cp.severity === 'CRITICAL' ? 'danger' : cp.severity === 'HIGH' ? 'warning' : 'secondary';
+                pb.innerHTML += '<tr><td>' + cp.true_class + '</td><td>' + cp.predicted_as + '</td><td>' + cp.count + '</td><td>' + (cp.rate * 100).toFixed(1) + '%</td><td><span class="badge bg-' + sc + '">' + cp.severity + '</span></td></tr>';
+            }
+        }
+        // Per-class error table
+        var cb = document.getElementById('misclass-class-body');
+        cb.innerHTML = '';
+        if (r.per_class_errors) {
+            for (var i = 0; i < r.per_class_errors.length; i++) {
+                var pe = r.per_class_errors[i];
+                var sc = pe.status === 'CRITICAL' ? 'danger' : pe.status === 'HIGH' ? 'warning' : 'secondary';
+                cb.innerHTML += '<tr><td>' + pe.class + '</td><td>' + pe.n_samples + '</td><td>' + pe.n_errors + '</td><td>' + (pe.error_rate * 100).toFixed(1) + '%</td><td><span class="badge bg-' + sc + '">' + pe.status + '</span></td><td class="small">' + (pe.geological_reason || '') + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('misclass-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+/* ── v3.31.0: Expert Feedback (RLHF) ─────────────────────────────── */
+async function submitFeedback() {
+    var input = document.getElementById('feedback-input').value.trim();
+    var status = document.getElementById('feedback-status');
+    if (!input) { status.textContent = 'Enter corrections JSON'; return; }
+    try {
+        var corrections = JSON.parse(input);
+        var r = await apiPost('/api/analysis/expert-feedback-submit', {source: currentSource(), well: currentWell(), corrections: corrections});
+        status.textContent = r.n_corrections_accepted + ' corrections accepted (' + r.total_corrections_stored + ' total stored)';
+        status.className = 'small text-success ms-2';
+    } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        status.className = 'small text-danger ms-2';
+    }
+}
+
+async function runExpertRetrain() {
+    showLoading('Retraining model with expert corrections...');
+    var results = document.getElementById('feedback-results');
+    try {
+        var r = await apiPost('/api/analysis/expert-feedback-retrain', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('fb-orig').textContent = (r.balanced_accuracy_original * 100).toFixed(1) + '%';
+        document.getElementById('fb-corr').textContent = (r.balanced_accuracy_corrected * 100).toFixed(1) + '%';
+        var imp = r.improvement;
+        document.getElementById('fb-improvement').textContent = (imp >= 0 ? '+' : '') + (imp * 100).toFixed(1) + '%';
+        document.getElementById('fb-improvement').className = 'metric-value ' + (imp > 0 ? 'text-success' : imp < 0 ? 'text-danger' : 'text-secondary');
+        document.getElementById('fb-applied').textContent = r.n_corrections_applied;
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('fb-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        if (r.plot) document.getElementById('fb-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+/* ── v3.31.0: Wellbore Stability ──────────────────────────────────── */
+async function runWellboreStability() {
+    showLoading('Computing wellbore stability...');
+    var results = document.getElementById('wb-results');
+    try {
+        var r = await apiPost('/api/analysis/wellbore-stability', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var mw = r.mud_weight_window;
+        document.getElementById('wb-window').textContent = mw.min_ppg.toFixed(1) + '-' + mw.max_ppg.toFixed(1) + ' ppg';
+        document.getElementById('wb-regime').textContent = r.stress_regime;
+        document.getElementById('wb-critical').textContent = r.pct_critically_stressed.toFixed(0) + '%';
+        var stCls = mw.status === 'SAFE' ? 'text-success' : mw.status === 'NARROW' ? 'text-warning' : 'text-danger';
+        document.getElementById('wb-status').textContent = mw.status;
+        document.getElementById('wb-status').className = 'metric-value ' + stCls;
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('wb-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var rb = document.getElementById('wb-rec-body');
+        rb.innerHTML = '';
+        if (r.recommendations) {
+            for (var i = 0; i < r.recommendations.length; i++) {
+                var rec = r.recommendations[i];
+                var pc = rec.priority === 'CRITICAL' ? 'table-danger' : rec.priority === 'HIGH' ? 'table-warning' : '';
+                rb.innerHTML += '<tr class="' + pc + '"><td><span class="badge bg-' + (rec.priority === 'CRITICAL' ? 'danger' : rec.priority === 'HIGH' ? 'warning' : 'secondary') + '">' + rec.priority + '</span></td><td>' + rec.category + '</td><td class="small">' + rec.action + '</td><td class="small">' + rec.impact + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('wb-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
