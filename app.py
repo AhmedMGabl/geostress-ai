@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.32.0 - Cross-Well Transfer + Reliability Scoring + Executive Dashboard)."""
+"""GeoStress AI - FastAPI Web Application (v3.33.0 - Deployment Readiness + Sensitivity Analysis)."""
 
 import os
 import io
@@ -24419,4 +24419,543 @@ async def api_executive_dashboard(request: Request):
     _audit_record("executive_dashboard", {"well": well},
                   {"overall_confidence": result["overall_confidence"]}, source, well, elapsed)
     _executive_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── v3.33.0: Deployment Readiness + Sensitivity Analysis ──
+
+_readiness_cache: dict = {}
+_sensitivity_cache: dict = {}
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [109] Field Deployment Readiness Checklist
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/deployment-readiness")
+async def api_deployment_readiness(request: Request):
+    """GO/NO-GO checklist for field deployment of predictions.
+
+    Checks every prerequisite for operational use: data quality, model accuracy,
+    calibration, expert review status, cross-validation, and more.
+    Returns structured pass/fail with overall decision.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"readiness:{well}:{source}"
+    if cache_key in _readiness_cache:
+        return _readiness_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        n_classes = len(le.classes_)
+        class_names = le.classes_.tolist()
+
+        model_results = _evaluate_all_models(X, y, well, source)
+        if not model_results:
+            raise HTTPException(500, "No models could be trained")
+
+        best_name = max(model_results, key=lambda m: model_results[m]["balanced_accuracy"])
+        best_ba = float(model_results[best_name]["balanced_accuracy"])
+        best_preds = model_results[best_name]["preds"]
+        best_probs = model_results[best_name]["probs"]
+
+        # ── Run all checks ──
+        checks = []
+
+        # Check 1: Minimum sample size
+        min_samples = 50
+        checks.append({
+            "check": "Minimum Sample Size",
+            "requirement": f">= {min_samples} samples",
+            "actual": f"{n} samples",
+            "pass": n >= min_samples,
+            "category": "Data",
+            "detail": f"{'Adequate' if n >= min_samples else 'Insufficient'} data for reliable training. Need at least {min_samples} labeled fractures.",
+        })
+
+        # Check 2: Class representation
+        min_per_class = 10
+        min_count = min(np.bincount(y))
+        checks.append({
+            "check": "Class Representation",
+            "requirement": f">= {min_per_class} samples per class",
+            "actual": f"min={min_count} ({class_names[np.argmin(np.bincount(y))]})",
+            "pass": min_count >= min_per_class,
+            "category": "Data",
+            "detail": "Each fracture type needs enough examples for the model to learn from.",
+        })
+
+        # Check 3: Class imbalance
+        max_ratio = 5.0
+        imbalance = max(np.bincount(y)) / max(min(np.bincount(y)), 1)
+        checks.append({
+            "check": "Class Imbalance",
+            "requirement": f"Imbalance ratio < {max_ratio}:1",
+            "actual": f"{imbalance:.1f}:1",
+            "pass": imbalance <= max_ratio,
+            "category": "Data",
+            "detail": "Severe imbalance means the model may ignore rare fracture types.",
+        })
+
+        # Check 4: Model accuracy threshold
+        min_accuracy = 0.65
+        checks.append({
+            "check": "Model Accuracy",
+            "requirement": f"Balanced accuracy >= {min_accuracy:.0%}",
+            "actual": f"{best_ba:.1%} ({best_name})",
+            "pass": best_ba >= min_accuracy,
+            "category": "Model",
+            "detail": "Below this threshold, predictions are not reliable enough for operational use.",
+        })
+
+        # Check 5: Multi-model consistency
+        model_accuracies = [model_results[m]["balanced_accuracy"] for m in model_results]
+        std_accuracy = float(np.std(model_accuracies))
+        checks.append({
+            "check": "Model Consistency",
+            "requirement": "Std of model accuracies < 0.10",
+            "actual": f"σ = {std_accuracy:.3f}",
+            "pass": std_accuracy < 0.10,
+            "category": "Model",
+            "detail": "High variation between models suggests data issues or overfitting.",
+        })
+
+        # Check 6: No class completely failed
+        per_class_acc = []
+        for c in range(n_classes):
+            mask = y == c
+            if mask.sum() > 0:
+                class_acc = float((best_preds[mask] == y[mask]).mean())
+                per_class_acc.append((class_names[c], class_acc))
+        worst_class = min(per_class_acc, key=lambda x: x[1]) if per_class_acc else ("N/A", 0)
+        checks.append({
+            "check": "No Failed Class",
+            "requirement": "All classes > 20% accuracy",
+            "actual": f"Worst: {worst_class[0]} at {worst_class[1]:.0%}",
+            "pass": worst_class[1] > 0.20,
+            "category": "Model",
+            "detail": "If any class is completely missed, those fractures will be misidentified in the field.",
+        })
+
+        # Check 7: Confidence calibration
+        mean_conf = float(best_probs.max(axis=1).mean())
+        gap = abs(mean_conf - best_ba)
+        checks.append({
+            "check": "Confidence Calibration",
+            "requirement": "Confidence-accuracy gap < 0.15",
+            "actual": f"Gap = {gap:.3f} (conf={mean_conf:.2f}, acc={best_ba:.2f})",
+            "pass": gap < 0.15,
+            "category": "Model",
+            "detail": "When confidence doesn't match accuracy, the model is overconfident — dangerous for decisions.",
+        })
+
+        # Check 8: Feature quality
+        n_features = X.shape[1]
+        feature_ratio = n / max(n_features, 1)
+        checks.append({
+            "check": "Feature-Sample Ratio",
+            "requirement": "Samples/features > 5",
+            "actual": f"{feature_ratio:.1f} ({n} samples / {n_features} features)",
+            "pass": feature_ratio > 5,
+            "category": "Data",
+            "detail": "Too many features relative to samples causes overfitting.",
+        })
+
+        # Check 9: Expert feedback loop active?
+        store_key = f"feedback:{well}:{source}"
+        n_corrections = len(_feedback_store.get(store_key, []))
+        checks.append({
+            "check": "Expert Review",
+            "requirement": "Expert corrections submitted",
+            "actual": f"{n_corrections} corrections on record",
+            "pass": n_corrections > 0,
+            "category": "Process",
+            "detail": "Domain expert validation is essential before operational deployment. Submit corrections via Expert Feedback Loop.",
+        })
+
+        # Check 10: Multiple wells available
+        available_wells = df[WELL_COL].unique().tolist() if WELL_COL in df.columns else []
+        checks.append({
+            "check": "Cross-Well Data",
+            "requirement": "Data from >= 2 wells",
+            "actual": f"{len(available_wells)} wells ({', '.join(available_wells)})",
+            "pass": len(available_wells) >= 2,
+            "category": "Data",
+            "detail": "Cross-well validation requires data from multiple wells to test generalization.",
+        })
+
+        # ── Overall Decision ──
+        n_passed = sum(1 for c in checks if c["pass"])
+        n_checks = len(checks)
+        n_critical_fail = sum(1 for c in checks if not c["pass"] and c["category"] in ("Model", "Data") and c["check"] in ("Model Accuracy", "Minimum Sample Size", "No Failed Class"))
+
+        if n_critical_fail > 0:
+            decision = "NO-GO"
+            decision_color = "RED"
+        elif n_passed >= n_checks * 0.8:
+            decision = "GO"
+            decision_color = "GREEN"
+        elif n_passed >= n_checks * 0.6:
+            decision = "CONDITIONAL GO"
+            decision_color = "AMBER"
+        else:
+            decision = "NO-GO"
+            decision_color = "RED"
+
+        failed_checks = [c for c in checks if not c["pass"]]
+        passed_checks = [c for c in checks if c["pass"]]
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Checklist visual
+            ax1 = axes[0]
+            check_names = [c["check"] for c in checks]
+            check_passed = [1 if c["pass"] else 0 for c in checks]
+            colors = ["#4CAF50" if p else "#f44336" for p in check_passed]
+            y_pos = range(len(check_names))
+            ax1.barh(y_pos, check_passed, color=colors, height=0.6)
+            ax1.set_yticks(y_pos)
+            ax1.set_yticklabels(check_names, fontsize=9)
+            ax1.set_xlim(-0.1, 1.5)
+            ax1.set_xticks([0, 1])
+            ax1.set_xticklabels(["FAIL", "PASS"])
+            for i, (name, p) in enumerate(zip(check_names, check_passed)):
+                symbol = "✓" if p else "✗"
+                ax1.text(1.1, i, symbol, ha="center", va="center",
+                         fontsize=14, color="green" if p else "red", fontweight="bold")
+            ax1.set_title(f"Deployment Checklist: {n_passed}/{n_checks} passed")
+
+            # Decision gauge
+            ax2 = axes[1]
+            ax2.axis("off")
+            decision_colors = {"GO": "#4CAF50", "CONDITIONAL GO": "#FF9800", "NO-GO": "#f44336"}
+            ax2.text(0.5, 0.6, decision, ha="center", va="center", fontsize=48,
+                     fontweight="bold", color=decision_colors.get(decision, "gray"),
+                     transform=ax2.transAxes)
+            ax2.text(0.5, 0.4, f"{n_passed}/{n_checks} checks passed", ha="center", va="center",
+                     fontsize=18, transform=ax2.transAxes)
+            if failed_checks:
+                fail_text = "Failed: " + ", ".join(c["check"] for c in failed_checks[:3])
+                ax2.text(0.5, 0.2, fail_text, ha="center", va="center", fontsize=11,
+                         color="#f44336", transform=ax2.transAxes)
+
+            fig.suptitle(f"Field Deployment Readiness — {well}", fontweight="bold", fontsize=14)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Deployment decision: {decision}. "
+                f"{n_passed}/{n_checks} checks passed. "
+                + (f"Critical failures: {', '.join(c['check'] for c in failed_checks[:2])}." if failed_checks else "All checks passed.")
+            ),
+            "risk_level": decision_color,
+            "what_this_means": (
+                f"This is your GO/NO-GO checklist for using these predictions in the field. "
+                + ("All critical requirements are met — predictions can be used operationally with standard monitoring." if decision == "GO"
+                   else "Some requirements are not met. Address the failed checks before using predictions for operational decisions." if decision == "CONDITIONAL GO"
+                   else "Critical requirements are not met. DO NOT use these predictions for operational decisions until issues are resolved.")
+            ),
+            "recommendation": (
+                failed_checks[0]["detail"] if failed_checks else "All checks passed. Proceed with standard operational monitoring."
+            ),
+        }
+
+        return {
+            "well": well,
+            "decision": decision,
+            "decision_color": decision_color,
+            "n_checks": n_checks,
+            "n_passed": n_passed,
+            "n_failed": n_checks - n_passed,
+            "checks": checks,
+            "failed_checks": [c["check"] for c in failed_checks],
+            "recommendations": [c["detail"] for c in failed_checks] if failed_checks else ["All checks passed. Ready for deployment."],
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("deployment_readiness", {"well": well},
+                  {"decision": result["decision"]}, source, well, elapsed)
+    _readiness_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [110] Sensitivity Analysis
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/sensitivity-analysis")
+async def api_sensitivity_analysis(request: Request):
+    """Analyze how sensitive predictions are to input perturbations.
+
+    Perturbs azimuth/dip/depth by realistic measurement uncertainties and
+    measures prediction stability. Critical for industrial use where
+    measurement error is always present.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_perturbations = body.get("n_perturbations", 50)
+
+    if n_perturbations < 10 or n_perturbations > 200:
+        raise HTTPException(400, "n_perturbations must be between 10 and 200")
+
+    cache_key = f"sensitivity:{well}:{source}:{n_perturbations}"
+    if cache_key in _sensitivity_cache:
+        return _sensitivity_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.ensemble import RandomForestClassifier as _RF
+        from src.enhanced_analysis import engineer_enhanced_features
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 10:
+            raise HTTPException(400, f"Insufficient data for well {well}")
+
+        X, y, le, features, _ = get_cached_features(df, well, source)
+        n = len(y)
+        n_classes = len(le.classes_)
+        class_names = le.classes_.tolist()
+
+        # Train a model on all data for sensitivity testing
+        model = _RF(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
+        model.fit(X, y)
+        base_preds = model.predict(X)
+        base_probs = model.predict_proba(X)
+
+        # ── Measurement uncertainty ranges (realistic for borehole image logs) ──
+        uncertainties = {
+            "azimuth_deg": 5.0,   # ±5° typical for dip azimuth
+            "dip_deg": 3.0,       # ±3° typical for dip angle
+            "depth_m": 0.5,       # ±0.5m typical for depth
+        }
+
+        # ── Perturb raw data and re-predict ──
+        rng = np.random.RandomState(42)
+        flip_counts = np.zeros(n)  # how many times each sample flips prediction
+        max_prob_changes = np.zeros(n)
+        all_perturb_preds = []
+
+        scaler = StandardScaler()
+        scaler.fit(features.values)
+
+        for trial in range(n_perturbations):
+            # Perturb the raw dataframe
+            df_perturbed = df_well.copy()
+
+            if AZIMUTH_COL in df_perturbed.columns:
+                noise = rng.normal(0, uncertainties["azimuth_deg"], len(df_perturbed))
+                df_perturbed[AZIMUTH_COL] = (df_perturbed[AZIMUTH_COL] + noise) % 360
+
+            if DIP_COL in df_perturbed.columns:
+                noise = rng.normal(0, uncertainties["dip_deg"], len(df_perturbed))
+                df_perturbed[DIP_COL] = np.clip(df_perturbed[DIP_COL] + noise, 0, 90)
+
+            if DEPTH_COL in df_perturbed.columns:
+                noise = rng.normal(0, uncertainties["depth_m"], len(df_perturbed))
+                df_perturbed[DEPTH_COL] = df_perturbed[DEPTH_COL] + noise
+
+            # Re-engineer features and predict
+            try:
+                feat_perturbed = engineer_enhanced_features(df_perturbed)
+                common_cols = [c for c in features.columns if c in feat_perturbed.columns]
+                X_perturbed = scaler.transform(feat_perturbed[common_cols].values)
+                if X_perturbed.shape[1] == X.shape[1]:
+                    perturbed_preds = model.predict(X_perturbed)
+                    perturbed_probs = model.predict_proba(X_perturbed)
+
+                    flips = (perturbed_preds != base_preds)
+                    flip_counts += flips.astype(float)
+
+                    prob_changes = np.abs(perturbed_probs - base_probs).max(axis=1)
+                    max_prob_changes = np.maximum(max_prob_changes, prob_changes)
+                    all_perturb_preds.append(perturbed_preds)
+            except Exception:
+                continue
+
+        actual_trials = len(all_perturb_preds)
+        if actual_trials == 0:
+            raise HTTPException(500, "Sensitivity analysis failed — no successful perturbations")
+
+        flip_rates = flip_counts / actual_trials
+        mean_flip_rate = float(flip_rates.mean())
+
+        # ── Per-sample sensitivity ──
+        sample_sensitivity = []
+        for i in range(min(n, 100)):
+            stability = 1.0 - flip_rates[i]
+            sample_sensitivity.append({
+                "index": int(i),
+                "true_class": class_names[y[i]],
+                "base_prediction": class_names[base_preds[i]],
+                "flip_rate": round(float(flip_rates[i]), 4),
+                "stability": round(float(stability), 4),
+                "max_prob_change": round(float(max_prob_changes[i]), 4),
+                "sensitivity_level": "HIGH" if flip_rates[i] > 0.3 else ("MEDIUM" if flip_rates[i] > 0.1 else "LOW"),
+            })
+
+        # ── Per-class sensitivity ──
+        per_class_sensitivity = []
+        for c in range(n_classes):
+            mask = base_preds == c
+            if mask.sum() > 0:
+                class_flip_rate = float(flip_rates[mask].mean())
+                per_class_sensitivity.append({
+                    "class": class_names[c],
+                    "n_predicted": int(mask.sum()),
+                    "mean_flip_rate": round(class_flip_rate, 4),
+                    "stability": round(1.0 - class_flip_rate, 4),
+                    "n_highly_sensitive": int((flip_rates[mask] > 0.3).sum()),
+                    "sensitivity_level": "HIGH" if class_flip_rate > 0.3 else ("MEDIUM" if class_flip_rate > 0.1 else "LOW"),
+                })
+        per_class_sensitivity.sort(key=lambda x: x["mean_flip_rate"], reverse=True)
+
+        # ── Feature sensitivity (which perturbation matters most) ──
+        feature_sensitivity = []
+        for feat_name, uncertainty in uncertainties.items():
+            feature_sensitivity.append({
+                "feature": feat_name,
+                "uncertainty": uncertainty,
+                "unit": "°" if "deg" in feat_name else "m",
+                "impact": "Measured by prediction flip rate under perturbation",
+            })
+
+        # ── Overall stability ──
+        n_highly_sensitive = int((flip_rates > 0.3).sum())
+        n_moderate = int(((flip_rates > 0.1) & (flip_rates <= 0.3)).sum())
+        n_stable = int((flip_rates <= 0.1).sum())
+
+        # ── Recommendations ──
+        recommendations = []
+        if n_highly_sensitive > n * 0.2:
+            recommendations.append({
+                "priority": "CRITICAL",
+                "category": "Prediction Stability",
+                "action": f"{n_highly_sensitive}/{n} predictions ({n_highly_sensitive/n:.0%}) are highly sensitive to measurement noise. These should be flagged for expert review.",
+                "impact": "Measurement uncertainty could flip these predictions. Use conformal prediction sets instead of point predictions.",
+            })
+        if per_class_sensitivity and per_class_sensitivity[0]["mean_flip_rate"] > 0.25:
+            worst = per_class_sensitivity[0]
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Class Sensitivity",
+                "action": f"'{worst['class']}' predictions are most sensitive (flip rate {worst['mean_flip_rate']:.0%}). Collect more data for this type.",
+                "impact": "High sensitivity means the model is uncertain about this fracture type — predictions near decision boundaries.",
+            })
+        if mean_flip_rate < 0.1:
+            recommendations.append({
+                "priority": "LOW",
+                "category": "Overall Stability",
+                "action": f"Predictions are stable (mean flip rate {mean_flip_rate:.1%}). Model is robust to typical measurement uncertainties.",
+                "impact": "Good robustness to input noise. Predictions can be trusted within stated uncertainties.",
+            })
+        else:
+            recommendations.append({
+                "priority": "MEDIUM",
+                "category": "Overall Stability",
+                "action": f"Mean flip rate is {mean_flip_rate:.1%}. Use confidence thresholds to filter uncertain predictions.",
+                "impact": "Some predictions change under measurement noise. Apply reliability scoring to identify trustworthy ones.",
+            })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Flip rate distribution
+            ax1 = axes[0]
+            ax1.hist(flip_rates, bins=20, color="#2196F3", alpha=0.7, edgecolor="navy")
+            ax1.axvline(0.1, color="green", linestyle="--", linewidth=2, label="Stable (<10%)")
+            ax1.axvline(0.3, color="red", linestyle="--", linewidth=2, label="Sensitive (>30%)")
+            ax1.set_xlabel("Prediction Flip Rate")
+            ax1.set_ylabel("Count")
+            ax1.set_title("Sensitivity Distribution")
+            ax1.legend(fontsize=8)
+
+            # Stability pie chart
+            ax2 = axes[1]
+            sizes = [n_stable, n_moderate, n_highly_sensitive]
+            labels = [f"Stable ({n_stable})", f"Moderate ({n_moderate})", f"Sensitive ({n_highly_sensitive})"]
+            colors_pie = ["#4CAF50", "#FF9800", "#f44336"]
+            ax2.pie(sizes, labels=labels, colors=colors_pie, autopct="%1.0f%%", startangle=90)
+            ax2.set_title("Prediction Stability")
+
+            # Per-class sensitivity
+            ax3 = axes[2]
+            if per_class_sensitivity:
+                cls = [pc["class"][:8] for pc in per_class_sensitivity]
+                rates = [pc["mean_flip_rate"] for pc in per_class_sensitivity]
+                colors_bar = ["#f44336" if r > 0.3 else "#FF9800" if r > 0.1 else "#4CAF50" for r in rates]
+                ax3.barh(cls, rates, color=colors_bar)
+                ax3.set_xlabel("Mean Flip Rate")
+                ax3.set_title("Per-Class Sensitivity")
+                ax3.axvline(0.1, color="green", linestyle="--", alpha=0.5)
+                ax3.axvline(0.3, color="red", linestyle="--", alpha=0.5)
+
+            fig.suptitle(f"Sensitivity Analysis — {well} ({actual_trials} perturbations)", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Stability: {n_stable} stable, {n_moderate} moderate, {n_highly_sensitive} sensitive "
+                f"(mean flip rate {mean_flip_rate:.1%})"
+            ),
+            "risk_level": "GREEN" if n_highly_sensitive < n * 0.1 else ("AMBER" if n_highly_sensitive < n * 0.25 else "RED"),
+            "what_this_means": (
+                "We tested how predictions change when input measurements have typical noise "
+                f"(±{uncertainties['azimuth_deg']}° azimuth, ±{uncertainties['dip_deg']}° dip, ±{uncertainties['depth_m']}m depth). "
+                "STABLE predictions don't change even with noise — highly reliable. "
+                "SENSITIVE predictions flip easily — treat these as uncertain."
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "Sensitivity analysis complete.",
+        }
+
+        return {
+            "well": well,
+            "n_samples": n,
+            "n_perturbations": actual_trials,
+            "uncertainties": uncertainties,
+            "mean_flip_rate": round(mean_flip_rate, 4),
+            "n_stable": n_stable,
+            "n_moderate": n_moderate,
+            "n_highly_sensitive": n_highly_sensitive,
+            "pct_stable": round(n_stable / n * 100, 1),
+            "pct_sensitive": round(n_highly_sensitive / n * 100, 1),
+            "per_class_sensitivity": per_class_sensitivity,
+            "sample_sensitivity": sample_sensitivity,
+            "feature_sensitivity": feature_sensitivity,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("sensitivity_analysis", {"well": well, "n_perturbations": n_perturbations},
+                  {"mean_flip_rate": result["mean_flip_rate"]}, source, well, elapsed)
+    _sensitivity_cache[cache_key] = result
     return _sanitize_for_json(result)

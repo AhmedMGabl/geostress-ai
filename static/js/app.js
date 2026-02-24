@@ -10876,3 +10876,77 @@ async function runExecutiveDashboard() {
         hideLoading();
     }
 }
+
+// ── v3.33.0: Deployment Readiness ────────────────────
+async function runDeploymentReadiness() {
+    showLoading('Running deployment readiness checklist...');
+    var results = document.getElementById('deploy-results');
+    try {
+        var r = await apiPost('/api/analysis/deployment-readiness', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var dcCls = r.decision_color === 'GREEN' ? 'text-success' : r.decision_color === 'AMBER' ? 'text-warning' : 'text-danger';
+        document.getElementById('deploy-decision').textContent = r.decision;
+        document.getElementById('deploy-decision').className = 'metric-value ' + dcCls;
+        document.getElementById('deploy-passed').textContent = r.n_passed;
+        document.getElementById('deploy-passed').className = 'metric-value text-success';
+        document.getElementById('deploy-failed').textContent = r.n_failed;
+        document.getElementById('deploy-failed').className = 'metric-value ' + (r.n_failed > 0 ? 'text-danger' : 'text-success');
+        document.getElementById('deploy-total').textContent = r.n_checks;
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('deploy-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var cb = document.getElementById('deploy-checks-body');
+        cb.innerHTML = '';
+        if (r.checks) {
+            for (var i = 0; i < r.checks.length; i++) {
+                var chk = r.checks[i];
+                var icon = chk.pass ? '<span class="text-success">&#10003;</span>' : '<span class="text-danger">&#10007;</span>';
+                cb.innerHTML += '<tr><td>' + icon + '</td><td><strong>' + chk.check + '</strong><br><small class="text-muted">' + chk.detail + '</small></td><td>' + chk.requirement + '</td><td>' + chk.actual + '</td><td>' + chk.category + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('deploy-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.33.0: Sensitivity Analysis ────────────────────
+async function runSensitivityAnalysis() {
+    showLoading('Running sensitivity analysis (Monte Carlo perturbation)...');
+    var results = document.getElementById('sens-results');
+    try {
+        var r = await apiPost('/api/analysis/sensitivity-analysis', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var flipCls = r.mean_flip_rate < 0.1 ? 'text-success' : r.mean_flip_rate < 0.3 ? 'text-warning' : 'text-danger';
+        document.getElementById('sens-flip-rate').textContent = (r.mean_flip_rate * 100).toFixed(1) + '%';
+        document.getElementById('sens-flip-rate').className = 'metric-value ' + flipCls;
+        document.getElementById('sens-stable').textContent = r.n_stable + ' (' + r.pct_stable + '%)';
+        document.getElementById('sens-moderate').textContent = r.n_moderate;
+        document.getElementById('sens-sensitive').textContent = r.n_highly_sensitive + ' (' + r.pct_sensitive + '%)';
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('sens-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var sb = document.getElementById('sens-class-body');
+        sb.innerHTML = '';
+        if (r.per_class_sensitivity) {
+            for (var i = 0; i < r.per_class_sensitivity.length; i++) {
+                var pc = r.per_class_sensitivity[i];
+                var sc = pc.sensitivity_level === 'HIGH' ? 'danger' : pc.sensitivity_level === 'MEDIUM' ? 'warning' : 'success';
+                sb.innerHTML += '<tr><td>' + pc.class + '</td><td>' + pc.n_predicted + '</td><td>' + (pc.mean_flip_rate * 100).toFixed(1) + '%</td><td>' + (pc.stability * 100).toFixed(1) + '%</td><td>' + pc.n_highly_sensitive + '</td><td><span class="badge bg-' + sc + '">' + pc.sensitivity_level + '</span></td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('sens-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
