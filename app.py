@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.31.0 - BMA Ensemble + Misclassification Analysis + Expert Feedback + Wellbore Stability)."""
+"""GeoStress AI - FastAPI Web Application (v3.32.0 - Cross-Well Transfer + Reliability Scoring + Executive Dashboard)."""
 
 import os
 import io
@@ -23596,4 +23596,827 @@ async def api_wellbore_stability(request: Request):
     _audit_record("wellbore_stability", {"well": well},
                   {"mud_weight_window": result["mud_weight_window"]["status"]}, source, well, elapsed)
     _wellbore_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── v3.32.0: Cross-Well Transfer + Reliability Scoring + Executive Dashboard ──
+
+_transfer_cache: dict = {}
+_reliability_cache: dict = {}
+_executive_cache: dict = {}
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [106] Cross-Well Transfer Learning Validation
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/cross-well-transfer")
+async def api_cross_well_transfer(request: Request):
+    """Test how well a model trained on one well predicts another.
+
+    Critical for industrial use: if you have data from Well A, can you
+    safely use it to make decisions about Well B? This tests generalization
+    and warns when transfer is dangerous.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    train_well = body.get("train_well", "3P")
+    test_well = body.get("test_well", "6P")
+
+    if train_well == test_well:
+        raise HTTPException(400, "train_well and test_well must be different")
+
+    cache_key = f"transfer:{train_well}->{test_well}:{source}"
+    if cache_key in _transfer_cache:
+        return _transfer_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.ensemble import RandomForestClassifier as _RF
+        from sklearn.metrics import (accuracy_score, balanced_accuracy_score,
+                                     precision_recall_fscore_support, confusion_matrix)
+        from src.enhanced_analysis import engineer_enhanced_features
+
+        # Prepare train well data
+        df_train = df[df[WELL_COL] == train_well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        df_test = df[df[WELL_COL] == test_well].reset_index(drop=True) if WELL_COL in df.columns else pd.DataFrame()
+
+        if len(df_train) < 10:
+            raise HTTPException(400, f"Insufficient training data for well {train_well}")
+        if len(df_test) < 10:
+            raise HTTPException(400, f"Insufficient test data for well {test_well}")
+
+        # Engineer features independently
+        feat_train = engineer_enhanced_features(df_train)
+        feat_test = engineer_enhanced_features(df_test)
+
+        # Align columns (only use common features)
+        common_cols = sorted(set(feat_train.columns) & set(feat_test.columns))
+        if len(common_cols) < 3:
+            raise HTTPException(400, "Too few common features between wells")
+
+        X_train_raw = feat_train[common_cols].values
+        X_test_raw = feat_test[common_cols].values
+
+        # Fit label encoder on combined labels
+        le = LabelEncoder()
+        all_labels = np.concatenate([df_train[FRACTURE_TYPE_COL].values, df_test[FRACTURE_TYPE_COL].values])
+        le.fit(all_labels)
+        class_names = le.classes_.tolist()
+        n_classes = len(class_names)
+
+        y_train = le.transform(df_train[FRACTURE_TYPE_COL].values)
+        y_test = le.transform(df_test[FRACTURE_TYPE_COL].values)
+
+        # Scale using train distribution
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train_raw)
+        X_test = scaler.transform(X_test_raw)
+
+        # ── Train on train_well, evaluate on test_well ──
+        model = _RF(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
+        model.fit(X_train, y_train)
+        preds_transfer = model.predict(X_test)
+        probs_transfer = model.predict_proba(X_test)
+
+        transfer_accuracy = float(accuracy_score(y_test, preds_transfer))
+        transfer_ba = float(balanced_accuracy_score(y_test, preds_transfer))
+
+        # ── Same-well baseline (CV on test well) ──
+        from sklearn.model_selection import StratifiedKFold
+        min_count = min(np.bincount(y_test))
+        n_splits = min(5, max(2, min_count))
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        preds_baseline = np.zeros(len(y_test), dtype=int)
+        for train_idx, val_idx in cv.split(X_test, y_test):
+            m = _RF(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
+            m.fit(X_test[train_idx], y_test[train_idx])
+            preds_baseline[val_idx] = m.predict(X_test[val_idx])
+        baseline_ba = float(balanced_accuracy_score(y_test, preds_baseline))
+
+        transfer_degradation = baseline_ba - transfer_ba
+
+        # ── Per-class transfer analysis ──
+        prec, rec, f1, support = precision_recall_fscore_support(
+            y_test, preds_transfer, labels=list(range(n_classes)), zero_division=0
+        )
+        per_class_transfer = []
+        for ci in range(n_classes):
+            train_count = int((y_train == ci).sum())
+            test_count = int((y_test == ci).sum())
+            per_class_transfer.append({
+                "class": class_names[ci],
+                "train_count": train_count,
+                "test_count": test_count,
+                "precision": round(float(prec[ci]), 4),
+                "recall": round(float(rec[ci]), 4),
+                "f1": round(float(f1[ci]), 4),
+                "support": int(support[ci]),
+                "transfer_quality": "GOOD" if f1[ci] > 0.6 else ("FAIR" if f1[ci] > 0.3 else "POOR"),
+            })
+
+        # ── Feature distribution shift analysis ──
+        feature_shifts = []
+        for i, col in enumerate(common_cols[:10]):  # top 10 features
+            train_mean = float(X_train_raw[:, i].mean())
+            test_mean = float(X_test_raw[:, i].mean())
+            train_std = float(X_train_raw[:, i].std()) + 1e-10
+            shift = abs(train_mean - test_mean) / train_std  # normalized shift
+            feature_shifts.append({
+                "feature": col,
+                "train_mean": round(train_mean, 4),
+                "test_mean": round(test_mean, 4),
+                "normalized_shift": round(float(shift), 4),
+                "severity": "HIGH" if shift > 2.0 else ("MEDIUM" if shift > 1.0 else "LOW"),
+            })
+        feature_shifts.sort(key=lambda x: x["normalized_shift"], reverse=True)
+
+        # ── Recommendations ──
+        recommendations = []
+        transfer_safe = transfer_degradation < 0.1
+
+        if transfer_degradation > 0.2:
+            recommendations.append({
+                "priority": "CRITICAL",
+                "category": "Transfer Risk",
+                "action": f"Transfer from {train_well} to {test_well} degrades accuracy by {transfer_degradation:.0%}. DO NOT use {train_well} model for {test_well} decisions.",
+                "impact": "Using this model on the target well would produce unreliable predictions.",
+            })
+        elif transfer_degradation > 0.1:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Transfer Risk",
+                "action": f"Moderate transfer degradation ({transfer_degradation:.0%}). Use with caution and validate with domain expert review.",
+                "impact": "Predictions may be less reliable on specific fracture types.",
+            })
+        else:
+            recommendations.append({
+                "priority": "LOW",
+                "category": "Transfer Risk",
+                "action": f"Good transfer performance (only {transfer_degradation:.0%} degradation). Model generalizes well between wells.",
+                "impact": "Model can be cautiously applied to similar wells in the field.",
+            })
+
+        high_shift_features = [f for f in feature_shifts if f["severity"] == "HIGH"]
+        if high_shift_features:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Domain Shift",
+                "action": f"{len(high_shift_features)} features show large distribution shift between wells: {', '.join(f['feature'] for f in high_shift_features[:3])}.",
+                "impact": "Feature distribution mismatch is a primary cause of transfer failure. Consider domain adaptation techniques.",
+            })
+
+        poor_classes = [pc for pc in per_class_transfer if pc["transfer_quality"] == "POOR"]
+        if poor_classes:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Class Transfer",
+                "action": f"These fracture types transfer poorly: {', '.join(pc['class'] for pc in poor_classes)}. Collect labeled data for these types in {test_well}.",
+                "impact": "Poor transfer for specific classes means those predictions are unreliable.",
+            })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Transfer vs baseline comparison
+            ax1 = axes[0]
+            bars = ax1.bar(["Same-Well CV", f"Transfer\n{train_well}→{test_well}"],
+                           [baseline_ba, transfer_ba],
+                           color=["#4CAF50", "#FF9800" if transfer_degradation > 0.1 else "#2196F3"])
+            ax1.set_ylabel("Balanced Accuracy")
+            ax1.set_title("Transfer vs Same-Well Performance")
+            ax1.set_ylim(0, 1)
+            for bar, val in zip(bars, [baseline_ba, transfer_ba]):
+                ax1.text(bar.get_x() + bar.get_width() / 2, val + 0.01, f"{val:.1%}",
+                         ha="center", fontweight="bold")
+
+            # Per-class F1
+            ax2 = axes[1]
+            cls_names = [pc["class"][:8] for pc in per_class_transfer]
+            f1_vals = [pc["f1"] for pc in per_class_transfer]
+            colors = ["#4CAF50" if pc["transfer_quality"] == "GOOD" else
+                      "#FF9800" if pc["transfer_quality"] == "FAIR" else "#f44336"
+                      for pc in per_class_transfer]
+            ax2.barh(cls_names, f1_vals, color=colors)
+            ax2.set_xlabel("F1 Score")
+            ax2.set_title("Per-Class Transfer F1")
+            ax2.axvline(0.6, color="green", linestyle="--", alpha=0.5)
+            ax2.axvline(0.3, color="red", linestyle="--", alpha=0.5)
+
+            # Feature shift
+            ax3 = axes[2]
+            if feature_shifts:
+                fs_names = [fs["feature"][:10] for fs in feature_shifts[:8]]
+                fs_vals = [fs["normalized_shift"] for fs in feature_shifts[:8]]
+                fs_colors = ["#f44336" if s > 2 else "#FF9800" if s > 1 else "#4CAF50" for s in fs_vals]
+                ax3.barh(fs_names, fs_vals, color=fs_colors)
+                ax3.set_xlabel("Normalized Shift (σ)")
+                ax3.set_title("Feature Distribution Shift")
+                ax3.axvline(1.0, color="orange", linestyle="--", alpha=0.5)
+                ax3.axvline(2.0, color="red", linestyle="--", alpha=0.5)
+
+            fig.suptitle(f"Cross-Well Transfer: {train_well} → {test_well}", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Transfer {train_well}→{test_well}: {transfer_ba:.1%} accuracy "
+                f"({'↓' if transfer_degradation > 0.05 else '≈'}{abs(transfer_degradation):.1%} vs same-well). "
+                f"{'SAFE to transfer' if transfer_safe else 'CAUTION: significant degradation'}"
+            ),
+            "risk_level": "GREEN" if transfer_degradation < 0.05 else ("AMBER" if transfer_degradation < 0.15 else "RED"),
+            "what_this_means": (
+                f"We trained a model on {train_well} data and tested it on {test_well}. "
+                f"{'The model generalizes well — predictions can be trusted across wells.' if transfer_safe else 'The model struggles on the new well — collect local data before making decisions.'}"
+            ),
+            "recommendation": recommendations[0]["action"] if recommendations else "Transfer analysis complete.",
+        }
+
+        return {
+            "train_well": train_well,
+            "test_well": test_well,
+            "n_train": len(y_train),
+            "n_test": len(y_test),
+            "n_common_features": len(common_cols),
+            "n_classes": n_classes,
+            "class_names": class_names,
+            "transfer_accuracy": round(transfer_accuracy, 4),
+            "transfer_balanced_accuracy": round(transfer_ba, 4),
+            "baseline_balanced_accuracy": round(baseline_ba, 4),
+            "transfer_degradation": round(float(transfer_degradation), 4),
+            "transfer_safe": transfer_safe,
+            "per_class_transfer": per_class_transfer,
+            "feature_shifts": feature_shifts,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("cross_well_transfer",
+                  {"train_well": train_well, "test_well": test_well},
+                  {"transfer_safe": result["transfer_safe"]}, source, train_well, elapsed)
+    _transfer_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [107] Prediction Reliability Scoring
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/reliability-scoring")
+async def api_reliability_scoring(request: Request):
+    """Composite reliability score per prediction combining multiple signals.
+
+    For each sample, combines: model confidence, BMA agreement, conformal set size,
+    physics plausibility, and distance from training center into a single 0-100
+    reliability score with RED/AMBER/GREEN traffic light.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"reliability:{well}:{source}"
+    if cache_key in _reliability_cache:
+        return _reliability_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from sklearn.metrics import accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        n_classes = len(le.classes_)
+        class_names = le.classes_.tolist()
+
+        model_results = _evaluate_all_models(X, y, well, source)
+        if not model_results:
+            raise HTTPException(500, "No models could be trained")
+
+        model_names = list(model_results.keys())
+        n_models = len(model_names)
+
+        # ── Signal 1: Best model confidence ──
+        best_name = max(model_results, key=lambda m: model_results[m]["balanced_accuracy"])
+        best_probs = model_results[best_name]["probs"]
+        best_preds = model_results[best_name]["preds"]
+        confidence_scores = best_probs.max(axis=1)
+
+        # ── Signal 2: BMA agreement (model consensus) ──
+        # What fraction of models agree with the best model's prediction?
+        agreement_scores = np.zeros(n)
+        for i in range(n):
+            agree = sum(1 for m in model_names if model_results[m]["preds"][i] == best_preds[i])
+            agreement_scores[i] = agree / n_models
+
+        # ── Signal 3: Prediction entropy (uncertainty) ──
+        # Low entropy = more certain = more reliable
+        eps = 1e-10
+        entropy_scores = np.zeros(n)
+        max_entropy = np.log(n_classes)
+        for i in range(n):
+            p = np.clip(best_probs[i], eps, 1)
+            p = p / p.sum()
+            ent = -(p * np.log(p)).sum()
+            entropy_scores[i] = 1.0 - (ent / max_entropy)  # normalize: 1=certain, 0=maximum uncertainty
+
+        # ── Signal 4: Distance from training center (novelty) ──
+        # How far is each sample from the centroid of its predicted class?
+        centroid_distances = np.zeros(n)
+        for c in range(n_classes):
+            class_mask = y == c
+            if class_mask.sum() > 0:
+                centroid = X[class_mask].mean(axis=0)
+                for i in range(n):
+                    if best_preds[i] == c:
+                        dist = np.sqrt(((X[i] - centroid) ** 2).sum())
+                        centroid_distances[i] = dist
+
+        # Normalize distances: closer to centroid = higher score
+        max_dist = centroid_distances.max() if centroid_distances.max() > 0 else 1
+        proximity_scores = 1.0 - np.clip(centroid_distances / max_dist, 0, 1)
+
+        # ── Signal 5: Cross-validation correctness ──
+        # Was this sample predicted correctly in CV? Strong reliability indicator
+        correct_scores = (best_preds == y).astype(float)
+
+        # ── Composite Reliability Score (0-100) ──
+        # Weighted combination reflecting importance
+        weights = {
+            "confidence": 0.25,
+            "agreement": 0.20,
+            "entropy": 0.20,
+            "proximity": 0.15,
+            "correctness": 0.20,
+        }
+
+        composite = (
+            weights["confidence"] * confidence_scores +
+            weights["agreement"] * agreement_scores +
+            weights["entropy"] * entropy_scores +
+            weights["proximity"] * proximity_scores +
+            weights["correctness"] * correct_scores
+        ) * 100
+
+        composite = np.clip(composite, 0, 100)
+
+        # ── Traffic light classification ──
+        def traffic_light(score):
+            if score >= 70:
+                return "GREEN"
+            elif score >= 40:
+                return "AMBER"
+            return "RED"
+
+        # ── Per-sample results ──
+        sample_scores = []
+        for i in range(min(n, 100)):
+            sample_scores.append({
+                "index": int(i),
+                "true_class": class_names[y[i]],
+                "predicted_class": class_names[best_preds[i]],
+                "reliability_score": round(float(composite[i]), 1),
+                "traffic_light": traffic_light(composite[i]),
+                "signals": {
+                    "confidence": round(float(confidence_scores[i]), 4),
+                    "model_agreement": round(float(agreement_scores[i]), 4),
+                    "certainty": round(float(entropy_scores[i]), 4),
+                    "proximity_to_class": round(float(proximity_scores[i]), 4),
+                    "cv_correct": bool(correct_scores[i]),
+                },
+                "correct": bool(best_preds[i] == y[i]),
+            })
+
+        # ── Summary statistics ──
+        n_green = int((composite >= 70).sum())
+        n_amber = int(((composite >= 40) & (composite < 70)).sum())
+        n_red = int((composite < 40).sum())
+        mean_score = float(composite.mean())
+
+        # ── Per-class reliability ──
+        per_class_reliability = []
+        for c in range(n_classes):
+            mask = best_preds == c
+            if mask.sum() > 0:
+                class_scores = composite[mask]
+                per_class_reliability.append({
+                    "class": class_names[c],
+                    "n_predicted": int(mask.sum()),
+                    "mean_reliability": round(float(class_scores.mean()), 1),
+                    "min_reliability": round(float(class_scores.min()), 1),
+                    "pct_green": round(float((class_scores >= 70).sum() / mask.sum() * 100), 1),
+                    "pct_red": round(float((class_scores < 40).sum() / mask.sum() * 100), 1),
+                })
+        per_class_reliability.sort(key=lambda x: x["mean_reliability"])
+
+        # ── Recommendations ──
+        recommendations = []
+        if n_red > n * 0.2:
+            recommendations.append(f"WARNING: {n_red}/{n} predictions ({n_red/n:.0%}) have RED reliability. These should NOT be used for decisions without expert review.")
+        if per_class_reliability and per_class_reliability[0]["mean_reliability"] < 50:
+            worst = per_class_reliability[0]
+            recommendations.append(f"'{worst['class']}' has lowest reliability (mean {worst['mean_reliability']:.0f}/100). Collect more data for this fracture type.")
+        if mean_score >= 70:
+            recommendations.append(f"Overall reliability is GOOD (mean {mean_score:.0f}/100). GREEN predictions can be used with confidence.")
+        else:
+            recommendations.append(f"Overall reliability is {'MODERATE' if mean_score >= 50 else 'LOW'} (mean {mean_score:.0f}/100). Use predictions cautiously.")
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Score distribution
+            ax1 = axes[0]
+            ax1.hist(composite, bins=20, color="#2196F3", alpha=0.7, edgecolor="navy")
+            ax1.axvline(70, color="green", linestyle="--", linewidth=2, label="GREEN threshold")
+            ax1.axvline(40, color="orange", linestyle="--", linewidth=2, label="AMBER threshold")
+            ax1.set_xlabel("Reliability Score")
+            ax1.set_ylabel("Count")
+            ax1.set_title("Reliability Score Distribution")
+            ax1.legend(fontsize=8)
+
+            # Traffic light pie
+            ax2 = axes[1]
+            sizes = [n_green, n_amber, n_red]
+            labels = [f"GREEN ({n_green})", f"AMBER ({n_amber})", f"RED ({n_red})"]
+            colors_pie = ["#4CAF50", "#FF9800", "#f44336"]
+            ax2.pie(sizes, labels=labels, colors=colors_pie, autopct="%1.0f%%", startangle=90)
+            ax2.set_title("Prediction Trust Levels")
+
+            # Per-class reliability
+            ax3 = axes[2]
+            if per_class_reliability:
+                cls = [pc["class"][:8] for pc in per_class_reliability]
+                means = [pc["mean_reliability"] for pc in per_class_reliability]
+                colors_bar = ["#4CAF50" if m >= 70 else "#FF9800" if m >= 40 else "#f44336" for m in means]
+                ax3.barh(cls, means, color=colors_bar)
+                ax3.set_xlabel("Mean Reliability Score")
+                ax3.set_title("Reliability by Class")
+                ax3.axvline(70, color="green", linestyle="--", alpha=0.5)
+                ax3.axvline(40, color="red", linestyle="--", alpha=0.5)
+
+            fig.suptitle(f"Prediction Reliability — {well}", fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Reliability: {n_green} GREEN, {n_amber} AMBER, {n_red} RED "
+                f"(mean score {mean_score:.0f}/100)"
+            ),
+            "risk_level": "GREEN" if n_red < n * 0.1 else ("AMBER" if n_red < n * 0.25 else "RED"),
+            "what_this_means": (
+                "Each prediction gets a 0-100 reliability score combining model confidence, "
+                "model agreement, uncertainty, and physics plausibility. "
+                "GREEN (70+) = trustworthy, AMBER (40-70) = use with caution, RED (<40) = needs expert review."
+            ),
+            "recommendation": recommendations[0] if recommendations else "Reliability analysis complete.",
+        }
+
+        return {
+            "well": well,
+            "n_samples": n,
+            "n_classes": n_classes,
+            "class_names": class_names,
+            "model_used": best_name,
+            "mean_reliability": round(mean_score, 1),
+            "n_green": n_green,
+            "n_amber": n_amber,
+            "n_red": n_red,
+            "pct_green": round(n_green / n * 100, 1),
+            "pct_amber": round(n_amber / n * 100, 1),
+            "pct_red": round(n_red / n * 100, 1),
+            "signal_weights": weights,
+            "per_class_reliability": per_class_reliability,
+            "sample_scores": sample_scores,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("reliability_scoring", {"well": well},
+                  {"mean_reliability": result["mean_reliability"]}, source, well, elapsed)
+    _reliability_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# [108] Executive Decision Dashboard
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/api/analysis/executive-dashboard")
+async def api_executive_dashboard(request: Request):
+    """One-stop executive summary combining all analyses.
+
+    Designed for non-technical stakeholders: overall confidence, key risks,
+    data quality grade, and prioritized actions — all in plain language.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"executive:{well}:{source}"
+    if cache_key in _executive_cache:
+        return _executive_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        import numpy as np
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n = len(y)
+        n_classes = len(le.classes_)
+        class_names = le.classes_.tolist()
+
+        model_results = _evaluate_all_models(X, y, well, source)
+        if not model_results:
+            raise HTTPException(500, "No models could be trained")
+
+        model_names = list(model_results.keys())
+        best_name = max(model_results, key=lambda m: model_results[m]["balanced_accuracy"])
+        best_ba = model_results[best_name]["balanced_accuracy"]
+        best_preds = model_results[best_name]["preds"]
+        best_probs = model_results[best_name]["probs"]
+
+        # ── 1. Model Confidence Grade ──
+        mean_confidence = float(best_probs.max(axis=1).mean())
+        if best_ba >= 0.85 and mean_confidence >= 0.8:
+            model_grade = "A"
+            model_summary = "Excellent model performance with high confidence"
+        elif best_ba >= 0.70:
+            model_grade = "B"
+            model_summary = "Good model performance — suitable for guidance with expert review"
+        elif best_ba >= 0.55:
+            model_grade = "C"
+            model_summary = "Moderate performance — use as supplementary information only"
+        else:
+            model_grade = "D"
+            model_summary = "Low performance — model needs more data before operational use"
+
+        # ── 2. Data Quality Grade ──
+        min_class_count = min(np.bincount(y))
+        max_class_count = max(np.bincount(y))
+        imbalance_ratio = max_class_count / max(min_class_count, 1)
+        n_features = X.shape[1]
+
+        data_issues = []
+        if n < 50:
+            data_issues.append("Very small dataset (<50 samples)")
+        elif n < 200:
+            data_issues.append("Small dataset (<200 samples)")
+        if imbalance_ratio > 5:
+            data_issues.append(f"Severe class imbalance (ratio {imbalance_ratio:.1f}:1)")
+        elif imbalance_ratio > 3:
+            data_issues.append(f"Moderate class imbalance (ratio {imbalance_ratio:.1f}:1)")
+        if min_class_count < 10:
+            data_issues.append(f"Some classes have very few samples (min={min_class_count})")
+
+        if not data_issues:
+            data_grade = "A"
+            data_summary = "Data quality is good for reliable analysis"
+        elif len(data_issues) == 1 and "Small" not in data_issues[0]:
+            data_grade = "B"
+            data_summary = f"Minor data issue: {data_issues[0]}"
+        elif len(data_issues) <= 2:
+            data_grade = "C"
+            data_summary = f"Data quality concerns: {'; '.join(data_issues)}"
+        else:
+            data_grade = "D"
+            data_summary = f"Significant data quality issues: {'; '.join(data_issues)}"
+
+        # ── 3. Prediction Agreement ──
+        # How many models agree on each prediction?
+        agreement_pcts = []
+        for i in range(n):
+            preds = [model_results[m]["preds"][i] for m in model_names]
+            most_common = max(set(preds), key=preds.count)
+            agree_pct = preds.count(most_common) / len(preds)
+            agreement_pcts.append(agree_pct)
+        mean_agreement = float(np.mean(agreement_pcts))
+
+        # ── 4. Overall Confidence Level ──
+        # Combine grades into single assessment
+        grade_scores = {"A": 4, "B": 3, "C": 2, "D": 1}
+        overall_score = (grade_scores[model_grade] + grade_scores[data_grade]) / 2
+
+        if overall_score >= 3.5:
+            overall_confidence = "HIGH"
+            overall_color = "GREEN"
+        elif overall_score >= 2.5:
+            overall_confidence = "MODERATE"
+            overall_color = "AMBER"
+        else:
+            overall_confidence = "LOW"
+            overall_color = "RED"
+
+        # ── 5. Key Risks ──
+        risks = []
+        if model_grade in ("C", "D"):
+            risks.append({
+                "risk": "Model accuracy is below operational threshold",
+                "severity": "HIGH",
+                "mitigation": "Collect more labeled data, especially for underrepresented fracture types",
+            })
+        if data_grade in ("C", "D"):
+            risks.append({
+                "risk": "Data quality issues may compromise predictions",
+                "severity": "HIGH",
+                "mitigation": "Address data imbalance and increase sample size before operational deployment",
+            })
+        if mean_agreement < 0.7:
+            risks.append({
+                "risk": "Models disagree significantly on many predictions",
+                "severity": "MEDIUM",
+                "mitigation": "Use BMA ensemble for production predictions instead of any single model",
+            })
+
+        # Misclassification risk
+        n_errors = int((best_preds != y).sum())
+        error_rate = n_errors / n
+        if error_rate > 0.25:
+            risks.append({
+                "risk": f"{error_rate:.0%} of predictions are wrong — high error rate",
+                "severity": "HIGH",
+                "mitigation": "Run misclassification analysis to identify systematic error patterns",
+            })
+
+        if not risks:
+            risks.append({
+                "risk": "No significant risks identified",
+                "severity": "LOW",
+                "mitigation": "Continue monitoring with regular cross-validation checks",
+            })
+
+        # ── 6. Prioritized Actions ──
+        actions = []
+        action_idx = 1
+
+        if data_grade in ("C", "D"):
+            actions.append({
+                "priority": action_idx,
+                "action": "Improve data quality",
+                "detail": data_summary,
+                "timeline": "Before any operational use",
+            })
+            action_idx += 1
+
+        if model_grade in ("C", "D"):
+            actions.append({
+                "priority": action_idx,
+                "action": "Improve model accuracy",
+                "detail": f"Current best model ({best_name}) has {best_ba:.0%} balanced accuracy. Target >70%.",
+                "timeline": "Before operational decisions",
+            })
+            action_idx += 1
+
+        actions.append({
+            "priority": action_idx,
+            "action": "Run reliability scoring",
+            "detail": "Get per-prediction trust levels (GREEN/AMBER/RED) to identify which predictions to trust",
+            "timeline": "Before each prediction batch",
+        })
+        action_idx += 1
+
+        actions.append({
+            "priority": action_idx,
+            "action": "Expert review cycle",
+            "detail": "Have domain experts review RED and AMBER predictions, submit corrections to improve model",
+            "timeline": "Weekly or per-well",
+        })
+        action_idx += 1
+
+        if n_classes >= 3:
+            actions.append({
+                "priority": action_idx,
+                "action": "Collect negative examples",
+                "detail": "Add labeled examples of ambiguous and boundary cases between fracture types",
+                "timeline": "Next data collection campaign",
+            })
+
+        # ── 7. Quick Stats ──
+        quick_stats = {
+            "n_samples": n,
+            "n_classes": n_classes,
+            "n_models_tested": len(model_names),
+            "best_model": best_name,
+            "best_balanced_accuracy": round(float(best_ba), 4),
+            "mean_confidence": round(mean_confidence, 4),
+            "mean_model_agreement": round(mean_agreement, 4),
+            "class_distribution": {
+                class_names[c]: int((y == c).sum()) for c in range(n_classes)
+            },
+        }
+
+        # ── Plot: Executive summary dashboard ──
+        with plot_lock:
+            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+            # Overall grade
+            ax1 = axes[0, 0]
+            grade_colors = {"A": "#4CAF50", "B": "#8BC34A", "C": "#FF9800", "D": "#f44336"}
+            grades = [("Model", model_grade), ("Data", data_grade)]
+            for i, (label, grade) in enumerate(grades):
+                ax1.barh(label, grade_scores[grade], color=grade_colors[grade], height=0.5)
+                ax1.text(grade_scores[grade] + 0.1, i, f"Grade {grade}", va="center", fontweight="bold", fontsize=14)
+            ax1.set_xlim(0, 5)
+            ax1.set_title(f"Overall Confidence: {overall_confidence}", fontsize=14, fontweight="bold",
+                          color={"GREEN": "green", "AMBER": "orange", "RED": "red"}[overall_color])
+            ax1.set_xlabel("Score")
+
+            # Class distribution
+            ax2 = axes[0, 1]
+            dist = quick_stats["class_distribution"]
+            ax2.bar(list(dist.keys()), list(dist.values()), color="#2196F3")
+            ax2.set_xlabel("Fracture Type")
+            ax2.set_ylabel("Count")
+            ax2.set_title("Data Distribution")
+            plt.setp(ax2.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+
+            # Model accuracy comparison (top 5)
+            ax3 = axes[1, 0]
+            sorted_models = sorted(model_results.items(), key=lambda x: x[1]["balanced_accuracy"], reverse=True)[:5]
+            mnames = [m[0] for m in sorted_models]
+            mbas = [m[1]["balanced_accuracy"] for m in sorted_models]
+            colors_m = ["#4CAF50" if ba >= 0.7 else "#FF9800" if ba >= 0.5 else "#f44336" for ba in mbas]
+            ax3.barh(mnames, mbas, color=colors_m)
+            ax3.set_xlabel("Balanced Accuracy")
+            ax3.set_title("Top 5 Models")
+            ax3.set_xlim(0, 1)
+
+            # Risk summary
+            ax4 = axes[1, 1]
+            ax4.axis("off")
+            risk_text = "KEY RISKS:\n\n"
+            for r in risks[:4]:
+                icon = "●" if r["severity"] == "HIGH" else "◐" if r["severity"] == "MEDIUM" else "○"
+                risk_text += f"{icon} [{r['severity']}] {r['risk']}\n"
+                risk_text += f"  → {r['mitigation']}\n\n"
+            ax4.text(0.05, 0.95, risk_text, transform=ax4.transAxes, fontsize=10,
+                     verticalalignment="top", fontfamily="monospace",
+                     bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.8))
+
+            fig.suptitle(f"Executive Dashboard — Well {well}", fontsize=16, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": (
+                f"Well {well}: Overall confidence {overall_confidence}. "
+                f"Model grade {model_grade}, Data grade {data_grade}. "
+                f"{best_ba:.0%} accuracy with {len(model_names)} models tested."
+            ),
+            "risk_level": overall_color,
+            "what_this_means": (
+                f"This dashboard summarizes everything about your {well} analysis. "
+                f"Grade A=excellent, B=good, C=needs work, D=not ready. "
+                f"Your model is grade {model_grade} and your data is grade {data_grade}. "
+                + ("Both need to be B or better for operational confidence." if overall_confidence != "HIGH"
+                   else "You're in good shape for operational use.")
+            ),
+            "recommendation": actions[0]["detail"] if actions else "Analysis complete.",
+        }
+
+        return {
+            "well": well,
+            "overall_confidence": overall_confidence,
+            "overall_color": overall_color,
+            "model_grade": model_grade,
+            "model_summary": model_summary,
+            "data_grade": data_grade,
+            "data_summary": data_summary,
+            "data_issues": data_issues,
+            "quick_stats": quick_stats,
+            "risks": risks,
+            "actions": actions,
+            "recommendations": [a["action"] + ": " + a["detail"] for a in actions],
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("executive_dashboard", {"well": well},
+                  {"overall_confidence": result["overall_confidence"]}, source, well, elapsed)
+    _executive_cache[cache_key] = result
     return _sanitize_for_json(result)

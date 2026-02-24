@@ -10774,3 +10774,105 @@ async function runWellboreStability() {
         hideLoading();
     }
 }
+
+/* ── v3.32.0: Cross-Well Transfer ─────────────────────────────────── */
+async function runCrossWellTransfer() {
+    showLoading('Testing cross-well transfer learning...');
+    var results = document.getElementById('transfer-results');
+    try {
+        var currentW = currentWell();
+        var otherW = currentW === '3P' ? '6P' : '3P';
+        var r = await apiPost('/api/analysis/cross-well-transfer', {source: currentSource(), train_well: currentW, test_well: otherW});
+        results.classList.remove('d-none');
+        document.getElementById('xfer-acc').textContent = (r.transfer_balanced_accuracy * 100).toFixed(1) + '%';
+        document.getElementById('xfer-base').textContent = (r.baseline_balanced_accuracy * 100).toFixed(1) + '%';
+        var deg = r.transfer_degradation;
+        document.getElementById('xfer-degrad').textContent = (deg * 100).toFixed(1) + '%';
+        document.getElementById('xfer-degrad').className = 'metric-value ' + (deg > 0.15 ? 'text-danger' : deg > 0.05 ? 'text-warning' : 'text-success');
+        document.getElementById('xfer-safe').textContent = r.transfer_safe ? 'YES' : 'NO';
+        document.getElementById('xfer-safe').className = 'metric-value ' + (r.transfer_safe ? 'text-success' : 'text-danger');
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('xfer-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        if (r.plot) document.getElementById('xfer-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+/* ── v3.32.0: Reliability Scoring ─────────────────────────────────── */
+async function runReliabilityScoring() {
+    showLoading('Computing prediction reliability scores...');
+    var results = document.getElementById('reliability-results');
+    try {
+        var r = await apiPost('/api/analysis/reliability-scoring', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        document.getElementById('rel-mean').textContent = r.mean_reliability.toFixed(0) + '/100';
+        document.getElementById('rel-green').textContent = r.n_green + ' (' + r.pct_green.toFixed(0) + '%)';
+        document.getElementById('rel-amber').textContent = r.n_amber + ' (' + r.pct_amber.toFixed(0) + '%)';
+        document.getElementById('rel-red').textContent = r.n_red + ' (' + r.pct_red.toFixed(0) + '%)';
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('rel-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        if (r.plot) document.getElementById('rel-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+/* ── v3.32.0: Executive Dashboard ─────────────────────────────────── */
+async function runExecutiveDashboard() {
+    showLoading('Generating executive decision dashboard...');
+    var results = document.getElementById('exec-results');
+    try {
+        var r = await apiPost('/api/analysis/executive-dashboard', {source: currentSource(), well: currentWell()});
+        results.classList.remove('d-none');
+        var confCls = r.overall_color === 'GREEN' ? 'text-success' : r.overall_color === 'AMBER' ? 'text-warning' : 'text-danger';
+        document.getElementById('exec-confidence').textContent = r.overall_confidence;
+        document.getElementById('exec-confidence').className = 'metric-value ' + confCls;
+        var gradeColor = function(g) { return g === 'A' ? 'text-success' : g === 'B' ? 'text-primary' : g === 'C' ? 'text-warning' : 'text-danger'; };
+        document.getElementById('exec-model-grade').textContent = r.model_grade;
+        document.getElementById('exec-model-grade').className = 'metric-value ' + gradeColor(r.model_grade);
+        document.getElementById('exec-data-grade').textContent = r.data_grade;
+        document.getElementById('exec-data-grade').className = 'metric-value ' + gradeColor(r.data_grade);
+        document.getElementById('exec-best-acc').textContent = (r.quick_stats.best_balanced_accuracy * 100).toFixed(1) + '%';
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('exec-brief').innerHTML = '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.what_this_means;
+        }
+        var rb = document.getElementById('exec-risks-body');
+        rb.innerHTML = '';
+        if (r.risks) {
+            for (var i = 0; i < r.risks.length; i++) {
+                var risk = r.risks[i];
+                var sc = risk.severity === 'HIGH' ? 'danger' : risk.severity === 'MEDIUM' ? 'warning' : 'secondary';
+                rb.innerHTML += '<tr><td><span class="badge bg-' + sc + '">' + risk.severity + '</span></td><td>' + risk.risk + '</td><td class="small">' + risk.mitigation + '</td></tr>';
+            }
+        }
+        var ab = document.getElementById('exec-actions-body');
+        ab.innerHTML = '';
+        if (r.actions) {
+            for (var i = 0; i < r.actions.length; i++) {
+                var act = r.actions[i];
+                ab.innerHTML += '<tr><td>' + act.priority + '</td><td><strong>' + act.action + '</strong></td><td class="small">' + act.detail + '</td><td>' + act.timeline + '</td></tr>';
+            }
+        }
+        if (r.plot) document.getElementById('exec-plot').src = r.plot;
+    } catch (e) {
+        results.classList.remove('d-none');
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
