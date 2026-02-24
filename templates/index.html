@@ -1854,6 +1854,91 @@
                         </div>
                     </div>
 
+                    <!-- v3.37.0: Terzaghi Correction -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bullseye"></i> Terzaghi Sampling Bias Correction</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runTerzaghiCorrection()">
+                                <i class="bi bi-play-fill"></i> Analyze Bias
+                            </button>
+                        </div>
+                        <div class="card-body" id="terzaghi-results" style="display:none">
+                            <div class="row mb-2" id="terzaghi-metrics"></div>
+                            <div class="alert alert-light border small" id="terzaghi-brief"></div>
+                            <div class="text-center"><img id="terzaghi-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.37.0: Effective Stress Profile -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-down-up"></i> Effective Stress Profile (Biot)</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runEffectiveStress()">
+                                <i class="bi bi-play-fill"></i> Compute Profile
+                            </button>
+                        </div>
+                        <div class="card-body" id="effstress-results" style="display:none">
+                            <div class="row mb-2" id="effstress-metrics"></div>
+                            <div class="alert alert-light border small" id="effstress-brief"></div>
+                            <div class="text-center"><img id="effstress-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.37.0: Decision Intelligence -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-shield-check"></i> Decision Intelligence Dashboard</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runDecisionIntelligence()">
+                                <i class="bi bi-play-fill"></i> Generate Report
+                            </button>
+                        </div>
+                        <div class="card-body" id="decintel-results" style="display:none">
+                            <div class="row mb-2" id="decintel-metrics"></div>
+                            <div id="decintel-risk-matrix"></div>
+                            <div id="decintel-glossary" style="display:none"></div>
+                            <div class="alert alert-light border small" id="decintel-brief"></div>
+                            <div class="text-center"><img id="decintel-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.37.0: Accuracy Feedback Loop -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-repeat"></i> Accuracy Feedback Loop</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="loadAccuracyTrend()">
+                                <i class="bi bi-graph-up"></i> View Trend
+                            </button>
+                        </div>
+                        <div class="card-body" id="feedback-results" style="display:none">
+                            <div class="row mb-2" id="feedback-metrics"></div>
+                            <div id="feedback-form" class="mb-3">
+                                <h6>Submit Field Outcome</h6>
+                                <div class="row g-2">
+                                    <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="fb-depth" placeholder="Depth (m)" /></div>
+                                    <div class="col-md-3"><input type="text" class="form-control form-control-sm" id="fb-predicted" placeholder="Predicted type" /></div>
+                                    <div class="col-md-3"><input type="text" class="form-control form-control-sm" id="fb-actual" placeholder="Actual type" /></div>
+                                    <div class="col-md-3"><button class="btn btn-sm btn-warning w-100" onclick="submitOutcome()">Submit</button></div>
+                                </div>
+                            </div>
+                            <div class="alert alert-light border small" id="feedback-brief"></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.37.0: Failure-Aware Classification -->
+                    <div class="card mb-4 border-dark">
+                        <div class="card-header bg-dark bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-diamond-fill"></i> Failure-Aware Classification</span>
+                            <button class="btn btn-sm btn-outline-dark" onclick="runFailureAwareClassification()">
+                                <i class="bi bi-play-fill"></i> Run Analysis
+                            </button>
+                        </div>
+                        <div class="card-body" id="failaware-results" style="display:none">
+                            <div class="row mb-2" id="failaware-metrics"></div>
+                            <div class="alert alert-light border small" id="failaware-brief"></div>
+                            <div class="text-center"><img id="failaware-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

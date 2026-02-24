@@ -11273,3 +11273,234 @@ async function runWellCorrelation() {
         hideLoading();
     }
 }
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// v3.37.0 — Terzaghi Correction + Effective Stress + Decision Intelligence
+//            + Accuracy Feedback Loop + Failure-Aware Classification
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── [120] Terzaghi Correction ──
+async function runTerzaghiCorrection() {
+    showLoading();
+    var results = document.getElementById('terzaghi-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/terzaghi-corrected', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well})
+        });
+        results.style.display = '';
+        var m = document.getElementById('terzaghi-metrics');
+        m.innerHTML =
+            metricCard('Bias Severity', r.bias_severity, r.bias_severity === 'HIGH' ? 'danger' : r.bias_severity === 'MODERATE' ? 'warning' : 'success') +
+            metricCard('Azimuth Shift', r.azimuth_shift_deg.toFixed(1) + '°') +
+            metricCard('Dip Shift', r.dip_shift_deg.toFixed(1) + '°') +
+            metricCard('Blind Zone', r.pct_blind_zone.toFixed(1) + '%') +
+            metricCard('Effective N', r.effective_sample_size.toFixed(0)) +
+            metricCard('Max Weight', r.max_weight.toFixed(2)) +
+            metricCard('Time', r.elapsed_s + 's');
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('terzaghi-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' +
+                r.stakeholder_brief.what_this_means + '<br><br><em>' + r.stakeholder_brief.for_non_experts + '</em>';
+        }
+        if (r.plot) document.getElementById('terzaghi-plot').src = r.plot;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [121] Effective Stress Profile ──
+async function runEffectiveStress() {
+    showLoading();
+    var results = document.getElementById('effstress-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/effective-stress-profile', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well})
+        });
+        results.style.display = '';
+        var m = document.getElementById('effstress-metrics');
+        m.innerHTML =
+            metricCard('Biot α', r.biot_coefficient) +
+            metricCard('Depth Range', r.depth_range_m.min.toFixed(0) + '-' + r.depth_range_m.max.toFixed(0) + 'm') +
+            metricCard('Narrow Zones', r.n_narrow_zones, r.n_narrow_zones > 5 ? 'warning' : 'info') +
+            metricCard('Critical Zones', r.n_critical_zones, r.n_critical_zones > 0 ? 'danger' : 'success') +
+            metricCard('Profile Points', r.n_profile_points) +
+            metricCard('Time', r.elapsed_s + 's');
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('effstress-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' +
+                r.stakeholder_brief.what_this_means + '<br><br><em>' + r.stakeholder_brief.for_non_experts + '</em>';
+        }
+        if (r.plot) document.getElementById('effstress-plot').src = r.plot;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [122] Decision Intelligence ──
+async function runDecisionIntelligence() {
+    showLoading();
+    var results = document.getElementById('decintel-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/decision-intelligence', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well})
+        });
+        results.style.display = '';
+        var m = document.getElementById('decintel-metrics');
+        var riskCls = r.overall_risk === 'GREEN' ? 'success' : r.overall_risk === 'AMBER' ? 'warning' : 'danger';
+        m.innerHTML =
+            metricCard('Overall Risk', r.overall_risk, riskCls) +
+            metricCard('Red Items', r.n_red, r.n_red > 0 ? 'danger' : 'success') +
+            metricCard('Amber Items', r.n_amber, r.n_amber > 0 ? 'warning' : 'success') +
+            metricCard('Green Items', r.n_green, 'success') +
+            metricCard('Model Accuracy', (r.model_balanced_accuracy * 100).toFixed(1) + '%') +
+            metricCard('Data Quality', r.data_quality) +
+            metricCard('Time', r.elapsed_s + 's');
+
+        // Risk matrix
+        var rmDiv = document.getElementById('decintel-risk-matrix');
+        var rmHtml = '<h6 class="mt-3">Risk Assessment Matrix</h6><div class="table-responsive"><table class="table table-sm table-bordered"><thead><tr><th>Category</th><th>Risk</th><th>Finding</th><th>Action</th></tr></thead><tbody>';
+        for (var i = 0; i < r.risk_matrix.length; i++) {
+            var ri = r.risk_matrix[i];
+            var rCls = ri.risk_level === 'GREEN' ? 'success' : ri.risk_level === 'AMBER' ? 'warning' : 'danger';
+            rmHtml += '<tr><td><strong>' + ri.category + '</strong></td><td><span class="badge bg-' + rCls + '">' + ri.risk_level + '</span></td><td>' + ri.plain_english + '</td><td>' + ri.recommended_action + '</td></tr>';
+        }
+        rmHtml += '</tbody></table></div>';
+
+        // Glossary toggle
+        rmHtml += '<button class="btn btn-sm btn-outline-secondary mb-2" onclick="document.getElementById(\'decintel-glossary\').style.display = document.getElementById(\'decintel-glossary\').style.display === \'none\' ? \'\' : \'none\'">Toggle Glossary</button>';
+        rmDiv.innerHTML = rmHtml;
+
+        // Glossary content
+        var gDiv = document.getElementById('decintel-glossary');
+        var gHtml = '<div class="table-responsive"><table class="table table-sm"><thead><tr><th>Term</th><th>Definition</th></tr></thead><tbody>';
+        for (var g = 0; g < r.glossary.length; g++) {
+            gHtml += '<tr><td><strong>' + r.glossary[g].term + '</strong></td><td>' + r.glossary[g].definition + '</td></tr>';
+        }
+        gHtml += '</tbody></table></div>';
+        gDiv.innerHTML = gHtml;
+
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('decintel-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' +
+                r.stakeholder_brief.what_this_means + '<br><br><em>' + r.stakeholder_brief.for_non_experts + '</em>';
+        }
+        if (r.plot) document.getElementById('decintel-plot').src = r.plot;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [123] Accuracy Feedback Loop ──
+async function loadAccuracyTrend() {
+    showLoading();
+    var results = document.getElementById('feedback-results');
+    try {
+        var r = await apiFetch('/api/feedback/accuracy-trend');
+        results.style.display = '';
+        var m = document.getElementById('feedback-metrics');
+        m.innerHTML =
+            metricCard('Total Outcomes', r.n_outcomes) +
+            metricCard('Correct', r.n_correct || 0) +
+            metricCard('Accuracy', r.n_outcomes > 0 ? (r.rolling_accuracy * 100).toFixed(1) + '%' : 'N/A') +
+            (r.n_outcomes === 0 ? '<div class="col-12"><div class="alert alert-info">No outcomes submitted yet. Use the form below to submit field observations.</div></div>' : '');
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('feedback-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' +
+                r.stakeholder_brief.what_this_means;
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+async function submitOutcome() {
+    showLoading();
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var depth = parseFloat(document.getElementById('fb-depth').value) || 0;
+        var predicted = document.getElementById('fb-predicted').value.trim();
+        var actual = document.getElementById('fb-actual').value.trim();
+        if (!predicted || !actual) { alert('Please enter both predicted and actual types.'); hideLoading(); return; }
+        var r = await apiFetch('/api/feedback/submit-outcome', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({well: well, depth_m: depth, predicted_type: predicted, actual_type: actual})
+        });
+        alert(r.message);
+        document.getElementById('fb-depth').value = '';
+        document.getElementById('fb-predicted').value = '';
+        document.getElementById('fb-actual').value = '';
+        loadAccuracyTrend();
+    } catch (e) {
+        alert('Error: ' + e.message);
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [124] Failure-Aware Classification ──
+async function runFailureAwareClassification() {
+    showLoading();
+    var results = document.getElementById('failaware-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/failure-aware-classification', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well})
+        });
+        results.style.display = '';
+        var m = document.getElementById('failaware-metrics');
+        m.innerHTML =
+            metricCard('Cost Reduction', r.cost_reduction_pct.toFixed(1) + '%', r.cost_reduction_pct > 10 ? 'success' : 'info') +
+            metricCard('Std Accuracy', (r.standard_model.balanced_accuracy * 100).toFixed(1) + '%') +
+            metricCard('Fail-Aware Accuracy', (r.failure_aware_model.balanced_accuracy * 100).toFixed(1) + '%') +
+            metricCard('High-Cost Errors (Std)', r.standard_model.n_high_cost_errors, 'danger') +
+            metricCard('High-Cost Errors (FA)', r.failure_aware_model.n_high_cost_errors, r.failure_aware_model.n_high_cost_errors < r.standard_model.n_high_cost_errors ? 'success' : 'warning') +
+            metricCard('Failure Boosts', r.n_failure_boosts) +
+            metricCard('Time', r.elapsed_s + 's');
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('failaware-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' +
+                r.stakeholder_brief.what_this_means + '<br><br><em>' + r.stakeholder_brief.for_non_experts + '</em>';
+        }
+        if (r.plot) document.getElementById('failaware-plot').src = r.plot;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

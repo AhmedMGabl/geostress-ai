@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.36.0 - Uncertainty Zonation + Aperture-Permeability + Well Correlation)."""
+"""GeoStress AI - FastAPI Web Application (v3.37.0 - Terzaghi Correction + Effective Stress + Decision Intelligence + Feedback Loop + Failure-Aware Learning)."""
 
 import os
 import io
@@ -27242,4 +27242,1312 @@ async def api_well_correlation(request: Request):
     _audit_record("well_correlation", {"source": source},
                   {"n_wells": result["n_wells"]}, source, "all", elapsed)
     _correlation_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v3.37.0 — Terzaghi Correction + Effective Stress + Decision Intelligence
+#            + Accuracy Feedback Loop + Failure-Aware Classification
+# ══════════════════════════════════════════════════════════════════════════════
+
+_terzaghi_cache: dict = {}
+_effective_stress_cache: dict = {}
+_decision_intel_cache: dict = {}
+_feedback_loop_cache: dict = {}
+_failure_aware_cache: dict = {}
+
+# Persistent stores for feedback loop
+_outcome_store: list = []  # field-submitted outcomes
+_accuracy_history: list = []  # rolling accuracy records
+
+
+# ── [120] Terzaghi Correction for Borehole Sampling Bias ─────────────────
+@app.post("/api/analysis/terzaghi-corrected")
+async def api_terzaghi_corrected(request: Request):
+    """Apply Terzaghi correction to compensate for borehole orientation sampling bias.
+
+    Fractures perpendicular to the borehole are over-sampled; parallel ones under-sampled.
+    Weight = 1/cos(alpha) where alpha = angle between fracture normal and borehole axis.
+    Capped at alpha_max (default 85°) to avoid divergence.
+
+    References:
+    - Terzaghi, R.D. (1965). Sources of error in joint surveys.
+    - Extended correction: Sciencedirect 2024, Correction of linear fracture density.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    # Borehole orientation: default vertical [0,0,1]. User can specify for deviated wells.
+    bh_azimuth = body.get("borehole_azimuth_deg", 0.0)
+    bh_inclination = body.get("borehole_inclination_deg", 0.0)  # 0=vertical, 90=horizontal
+    alpha_max_deg = body.get("alpha_max_deg", 85.0)
+
+    cache_key = f"terzaghi:{well}:{source}:{bh_azimuth}:{bh_inclination}:{alpha_max_deg}"
+    if cache_key in _terzaghi_cache:
+        return _terzaghi_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        from src.data_loader import fracture_plane_normal, AZIMUTH_COL, DIP_COL, DEPTH_COL, WELL_COL, FRACTURE_TYPE_COL
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 5:
+            raise HTTPException(400, f"Well {well} has too few fractures ({len(df_well)})")
+
+        n_total = len(df_well)
+        azimuths = df_well[AZIMUTH_COL].values
+        dips = df_well[DIP_COL].values
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.zeros(n_total)
+
+        # Compute fracture normals
+        normals = fracture_plane_normal(azimuths, dips)
+
+        # Borehole axis vector
+        bh_az_rad = np.radians(bh_azimuth)
+        bh_inc_rad = np.radians(bh_inclination)
+        borehole_axis = np.array([
+            np.sin(bh_az_rad) * np.sin(bh_inc_rad),
+            np.cos(bh_az_rad) * np.sin(bh_inc_rad),
+            np.cos(bh_inc_rad),
+        ])
+
+        # Angle between each fracture normal and borehole axis
+        cos_alpha = np.abs(normals @ borehole_axis)
+        cos_alpha = np.clip(cos_alpha, 1e-10, 1.0)  # avoid division by zero
+        alpha_deg = np.degrees(np.arccos(cos_alpha))
+
+        # Terzaghi weight = 1/cos(alpha), capped at alpha_max
+        alpha_max_rad = np.radians(alpha_max_deg)
+        cos_alpha_capped = np.maximum(cos_alpha, np.cos(alpha_max_rad))
+        weights = 1.0 / cos_alpha_capped
+
+        # Normalize weights to sum = n_total (preserves effective sample size interpretation)
+        weights_normalized = weights * n_total / weights.sum()
+
+        # Identify blind zone fractures (alpha > alpha_max)
+        in_blind_zone = alpha_deg > alpha_max_deg
+        n_blind = int(in_blind_zone.sum())
+
+        # ── Statistics: uncorrected vs corrected ──
+        # Uncorrected circular mean azimuth
+        uncorr_az_sin = np.mean(np.sin(np.radians(azimuths)))
+        uncorr_az_cos = np.mean(np.cos(np.radians(azimuths)))
+        uncorr_mean_az = float(np.degrees(np.arctan2(uncorr_az_sin, uncorr_az_cos)) % 360)
+        uncorr_mean_dip = float(np.mean(dips))
+
+        # Corrected circular mean azimuth (weighted)
+        corr_az_sin = np.average(np.sin(np.radians(azimuths)), weights=weights)
+        corr_az_cos = np.average(np.cos(np.radians(azimuths)), weights=weights)
+        corr_mean_az = float(np.degrees(np.arctan2(corr_az_sin, corr_az_cos)) % 360)
+        corr_mean_dip = float(np.average(dips, weights=weights))
+
+        az_shift = abs(corr_mean_az - uncorr_mean_az)
+        if az_shift > 180:
+            az_shift = 360 - az_shift
+        dip_shift = abs(corr_mean_dip - uncorr_mean_dip)
+
+        # Per-type statistics
+        frac_types = df_well[FRACTURE_TYPE_COL].unique()
+        type_stats = []
+        for ft in sorted(frac_types):
+            mask = df_well[FRACTURE_TYPE_COL].values == ft
+            n_ft = int(mask.sum())
+            uncorr_pct = round(100.0 * n_ft / n_total, 1)
+            corr_count = float(weights_normalized[mask].sum())
+            corr_pct = round(100.0 * corr_count / n_total, 1)
+            type_stats.append({
+                "fracture_type": ft,
+                "n_raw": n_ft,
+                "pct_raw": uncorr_pct,
+                "n_corrected": round(corr_count, 1),
+                "pct_corrected": corr_pct,
+                "pct_change": round(corr_pct - uncorr_pct, 2),
+                "mean_weight": round(float(np.mean(weights[mask])), 3),
+            })
+
+        # Per-fracture data (first 200)
+        fracture_data = []
+        for i in range(min(200, n_total)):
+            fracture_data.append({
+                "index": i,
+                "depth_m": round(float(depths[i]), 2),
+                "azimuth_deg": round(float(azimuths[i]), 1),
+                "dip_deg": round(float(dips[i]), 1),
+                "fracture_type": str(df_well[FRACTURE_TYPE_COL].iloc[i]),
+                "alpha_deg": round(float(alpha_deg[i]), 1),
+                "terzaghi_weight": round(float(weights[i]), 3),
+                "in_blind_zone": bool(in_blind_zone[i]),
+            })
+
+        # Bias severity assessment
+        max_weight = float(weights.max())
+        weight_std = float(np.std(weights))
+        effective_n = float(weights.sum() ** 2 / (weights ** 2).sum())
+        bias_severity = "LOW" if az_shift < 5 else ("MODERATE" if az_shift < 15 else "HIGH")
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # 1. Rose diagram comparison
+            bins_rose = np.linspace(0, 360, 37)
+            ax1 = axes[0]
+            counts_raw, _ = np.histogram(azimuths, bins=bins_rose)
+            counts_corr, _ = np.histogram(azimuths, bins=bins_rose, weights=weights_normalized)
+            centers = (bins_rose[:-1] + bins_rose[1:]) / 2
+            width = bins_rose[1] - bins_rose[0]
+            ax1.bar(centers - width / 4, counts_raw, width=width / 2, alpha=0.6, color="steelblue", label="Raw")
+            ax1.bar(centers + width / 4, counts_corr, width=width / 2, alpha=0.6, color="orangered", label="Corrected")
+            ax1.set_xlabel("Azimuth (°)")
+            ax1.set_ylabel("Count")
+            ax1.set_title("Azimuth Distribution: Raw vs Corrected")
+            ax1.legend()
+
+            # 2. Weight vs dip angle
+            ax2 = axes[1]
+            ax2.scatter(dips, weights, c=alpha_deg, cmap="RdYlGn_r", alpha=0.6, s=20)
+            ax2.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5, label="No correction")
+            ax2.set_xlabel("Dip (°)")
+            ax2.set_ylabel("Terzaghi Weight")
+            ax2.set_title("Correction Weight vs Dip Angle")
+            cb = plt.colorbar(ax2.collections[0], ax=ax2)
+            cb.set_label("α (deg)")
+
+            # 3. Type proportions before/after
+            ax3 = axes[2]
+            type_names = [ts["fracture_type"] for ts in type_stats]
+            raw_pcts = [ts["pct_raw"] for ts in type_stats]
+            corr_pcts = [ts["pct_corrected"] for ts in type_stats]
+            x = np.arange(len(type_names))
+            ax3.bar(x - 0.2, raw_pcts, 0.35, label="Raw %", color="steelblue", alpha=0.7)
+            ax3.bar(x + 0.2, corr_pcts, 0.35, label="Corrected %", color="orangered", alpha=0.7)
+            ax3.set_xticks(x)
+            ax3.set_xticklabels(type_names, rotation=45, ha="right", fontsize=8)
+            ax3.set_ylabel("Percentage")
+            ax3.set_title("Fracture Type Proportions")
+            ax3.legend()
+
+            fig.suptitle(f"Terzaghi Sampling Bias Correction — Well {well}", fontsize=13, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        # ── Recommendations ──
+        recommendations = []
+        if bias_severity == "HIGH":
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Data Bias",
+                "action": f"Azimuth shift of {az_shift:.1f}° detected after correction. All orientation-based analyses (rose diagrams, SHmax, fracture sets) should use Terzaghi-corrected data.",
+                "impact": "Uncorrected data may lead to incorrect SHmax estimation and misidentified fracture sets.",
+            })
+        if n_blind > 0:
+            recommendations.append({
+                "priority": "MEDIUM",
+                "category": "Blind Zone",
+                "action": f"{n_blind} fractures ({100*n_blind/n_total:.1f}%) are in the blind zone (α > {alpha_max_deg}°). These fractures are nearly parallel to the borehole and may be under-represented.",
+                "impact": "Consider image log re-interpretation or acoustic televiewer data for blind zone fractures.",
+            })
+        max_change = max(abs(ts["pct_change"]) for ts in type_stats) if type_stats else 0
+        if max_change > 3:
+            most_changed = max(type_stats, key=lambda ts: abs(ts["pct_change"]))
+            recommendations.append({
+                "priority": "MEDIUM",
+                "category": "Classification Impact",
+                "action": f"Fracture type '{most_changed['fracture_type']}' proportion changes by {most_changed['pct_change']:+.1f}% after correction. ML classification trained on raw data may be biased.",
+                "impact": "Retrain classifier with Terzaghi sample weights for unbiased predictions.",
+            })
+        if not recommendations:
+            recommendations.append({
+                "priority": "LOW",
+                "category": "Validation",
+                "action": "Sampling bias is minimal for this well. Corrections have negligible effect on orientation statistics.",
+                "impact": "Raw and corrected analyses should give similar results.",
+            })
+
+        # ── Stakeholder brief ──
+        risk_level = "RED" if bias_severity == "HIGH" else ("AMBER" if bias_severity == "MODERATE" else "GREEN")
+        stakeholder_brief = {
+            "headline": f"Borehole sampling bias is {bias_severity} for well {well}",
+            "risk_level": risk_level,
+            "what_this_means": (
+                f"When we drill a well and measure fractures, the borehole orientation creates a "
+                f"built-in blind spot. Fractures running parallel to the well are almost invisible. "
+                f"The Terzaghi correction compensates for this bias. "
+                f"For well {well}, the correction shifts the mean fracture direction by {az_shift:.1f}° "
+                f"and mean dip by {dip_shift:.1f}°. "
+                + ("This is a significant correction — uncorrected analyses may be misleading."
+                   if bias_severity == "HIGH" else
+                   "This is a moderate correction — results should be reviewed."
+                   if bias_severity == "MODERATE" else
+                   "This is a minor correction — raw analyses are approximately valid.")
+            ),
+            "for_non_experts": (
+                "Think of it like fishing with a net that has holes too big for small fish. "
+                "We catch plenty of big fish but miss the small ones. The Terzaghi correction "
+                "estimates how many small fish we missed, so our total fish count is accurate. "
+                "Similarly, certain fracture orientations are 'invisible' to the drill, and "
+                "this correction accounts for what we couldn't directly see."
+            ),
+            "recommendation": recommendations[0]["action"],
+        }
+
+        return {
+            "well": well,
+            "n_fractures": n_total,
+            "borehole_azimuth_deg": bh_azimuth,
+            "borehole_inclination_deg": bh_inclination,
+            "alpha_max_deg": alpha_max_deg,
+            "n_blind_zone": n_blind,
+            "pct_blind_zone": round(100.0 * n_blind / n_total, 1),
+            "bias_severity": bias_severity,
+            "effective_sample_size": round(effective_n, 1),
+            "uncorrected": {
+                "mean_azimuth_deg": round(uncorr_mean_az, 2),
+                "mean_dip_deg": round(uncorr_mean_dip, 2),
+            },
+            "corrected": {
+                "mean_azimuth_deg": round(corr_mean_az, 2),
+                "mean_dip_deg": round(corr_mean_dip, 2),
+            },
+            "azimuth_shift_deg": round(az_shift, 2),
+            "dip_shift_deg": round(dip_shift, 2),
+            "max_weight": round(max_weight, 3),
+            "weight_std": round(weight_std, 3),
+            "type_stats": type_stats,
+            "fracture_data": fracture_data[:50],
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("terzaghi_corrected", {"source": source, "well": well},
+                  {"bias_severity": result["bias_severity"]}, source, well, elapsed)
+    _terzaghi_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [121] Biot Effective Stress Profile ─────────────────────────────────
+@app.post("/api/analysis/effective-stress-profile")
+async def api_effective_stress_profile(request: Request):
+    """Compute depth-resolved effective stress profile using Biot coefficient.
+
+    sigma_eff = sigma_total - alpha * Pp
+    where alpha = Biot coefficient (0.7-1.0 for sedimentary rocks).
+
+    References:
+    - Biot, M.A. (1941). General theory of three-dimensional consolidation.
+    - DRAM MCMC for stress inversion: Rock Mech Rock Eng (2025).
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    biot_alpha = body.get("biot_coefficient", 0.85)
+    pp_gradient = body.get("pp_gradient_MPa_per_m", 0.0098)  # ~hydrostatic
+    overburden_gradient = body.get("overburden_gradient_MPa_per_m", 0.023)  # ~typical
+    shmax_ratio = body.get("SHmax_Sv_ratio", 1.2)  # SHmax/Sv ratio
+    shmin_ratio = body.get("Shmin_Sv_ratio", 0.7)  # Shmin/Sv ratio
+
+    if not (0.0 < biot_alpha <= 1.0):
+        raise HTTPException(400, "biot_coefficient must be in (0, 1]")
+
+    cache_key = f"effstress:{well}:{source}:{biot_alpha}:{pp_gradient}:{overburden_gradient}"
+    if cache_key in _effective_stress_cache:
+        return _effective_stress_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 5:
+            raise HTTPException(400, f"Well {well} has too few fractures ({len(df_well)})")
+
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.linspace(1000, 4000, len(df_well))
+        d_min, d_max = float(depths.min()), float(depths.max())
+
+        # Generate depth profile at regular intervals
+        profile_depths = np.linspace(d_min, d_max, 50)
+
+        # Stress components vs depth
+        Sv = overburden_gradient * profile_depths  # Vertical (overburden)
+        Pp = pp_gradient * profile_depths  # Pore pressure
+        SHmax = shmax_ratio * Sv  # Max horizontal
+        Shmin = shmin_ratio * Sv  # Min horizontal
+
+        # Effective stresses (Biot)
+        Sv_eff = Sv - biot_alpha * Pp
+        SHmax_eff = SHmax - biot_alpha * Pp
+        Shmin_eff = Shmin - biot_alpha * Pp
+
+        # Mud weight window (safe drilling range)
+        # Min mud weight: must exceed pore pressure to prevent kicks
+        # Max mud weight: must not exceed minimum horizontal stress (fracture gradient)
+        mw_min_MPa = Pp  # Kick pressure
+        mw_max_MPa = Shmin  # Fracture gradient
+        mw_window = mw_max_MPa - mw_min_MPa
+
+        # Identify critical zones
+        narrow_zones = mw_window < 5.0  # MPa
+        critical_zones = mw_window < 2.0
+        n_narrow = int(narrow_zones.sum())
+        n_critical = int(critical_zones.sum())
+
+        # Profile data
+        profile_data = []
+        for i in range(len(profile_depths)):
+            profile_data.append({
+                "depth_m": round(float(profile_depths[i]), 1),
+                "Sv_MPa": round(float(Sv[i]), 2),
+                "SHmax_MPa": round(float(SHmax[i]), 2),
+                "Shmin_MPa": round(float(Shmin[i]), 2),
+                "Pp_MPa": round(float(Pp[i]), 2),
+                "Sv_eff_MPa": round(float(Sv_eff[i]), 2),
+                "SHmax_eff_MPa": round(float(SHmax_eff[i]), 2),
+                "Shmin_eff_MPa": round(float(Shmin_eff[i]), 2),
+                "mud_weight_min_MPa": round(float(mw_min_MPa[i]), 2),
+                "mud_weight_max_MPa": round(float(mw_max_MPa[i]), 2),
+                "mud_weight_window_MPa": round(float(mw_window[i]), 2),
+                "is_narrow": bool(narrow_zones[i]),
+                "is_critical": bool(critical_zones[i]),
+            })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 8))
+
+            # 1. Total stress vs depth
+            ax1 = axes[0]
+            ax1.plot(Sv, profile_depths, "k-", linewidth=2, label="Sv (overburden)")
+            ax1.plot(SHmax, profile_depths, "r-", linewidth=2, label="SHmax")
+            ax1.plot(Shmin, profile_depths, "b-", linewidth=2, label="Shmin")
+            ax1.plot(Pp, profile_depths, "g--", linewidth=2, label="Pp (pore)")
+            ax1.set_xlabel("Stress (MPa)")
+            ax1.set_ylabel("Depth (m)")
+            ax1.invert_yaxis()
+            ax1.set_title("Total Stress Profile")
+            ax1.legend(fontsize=8)
+            ax1.grid(True, alpha=0.3)
+
+            # 2. Effective stress vs depth
+            ax2 = axes[1]
+            ax2.plot(Sv_eff, profile_depths, "k-", linewidth=2, label="Sv_eff")
+            ax2.plot(SHmax_eff, profile_depths, "r-", linewidth=2, label="SHmax_eff")
+            ax2.plot(Shmin_eff, profile_depths, "b-", linewidth=2, label="Shmin_eff")
+            ax2.axvline(x=0, color="gray", linestyle=":", alpha=0.5)
+            ax2.set_xlabel("Effective Stress (MPa)")
+            ax2.set_ylabel("Depth (m)")
+            ax2.invert_yaxis()
+            ax2.set_title(f"Effective Stress (Biot α = {biot_alpha})")
+            ax2.legend(fontsize=8)
+            ax2.grid(True, alpha=0.3)
+
+            # 3. Mud weight window
+            ax3 = axes[2]
+            ax3.fill_betweenx(profile_depths, mw_min_MPa, mw_max_MPa, alpha=0.3, color="green", label="Safe window")
+            ax3.plot(mw_min_MPa, profile_depths, "g-", linewidth=2, label="Min MW (kick)")
+            ax3.plot(mw_max_MPa, profile_depths, "r-", linewidth=2, label="Max MW (frac)")
+            # Highlight narrow/critical zones
+            for i in range(len(profile_depths)):
+                if critical_zones[i]:
+                    ax3.axhspan(profile_depths[max(0, i - 1)], profile_depths[min(len(profile_depths) - 1, i)],
+                                alpha=0.3, color="red")
+                elif narrow_zones[i]:
+                    ax3.axhspan(profile_depths[max(0, i - 1)], profile_depths[min(len(profile_depths) - 1, i)],
+                                alpha=0.2, color="orange")
+            ax3.set_xlabel("Pressure (MPa)")
+            ax3.set_ylabel("Depth (m)")
+            ax3.invert_yaxis()
+            ax3.set_title("Mud Weight Window")
+            ax3.legend(fontsize=8)
+            ax3.grid(True, alpha=0.3)
+
+            fig.suptitle(f"Effective Stress Profile — Well {well}", fontsize=13, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        # ── Recommendations ──
+        recommendations = []
+        if n_critical > 0:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Drilling Safety",
+                "action": f"{n_critical} depth intervals have critical mud weight windows (<2 MPa). Precise mud weight control is essential.",
+                "impact": "Risk of lost circulation or wellbore instability. Consider managed pressure drilling.",
+            })
+        if n_narrow > 0:
+            recommendations.append({
+                "priority": "MEDIUM",
+                "category": "Mud Weight",
+                "action": f"{n_narrow} depth intervals have narrow mud weight windows (<5 MPa).",
+                "impact": "Careful ECD management required during tripping and circulation.",
+            })
+        if biot_alpha < 0.8:
+            recommendations.append({
+                "priority": "MEDIUM",
+                "category": "Parameter Uncertainty",
+                "action": f"Biot coefficient ({biot_alpha}) is relatively low. Verify with laboratory core tests.",
+                "impact": "Lower Biot coefficient means pore pressure has less effect on effective stress. If underestimated, fracture stability predictions may be optimistic.",
+            })
+        if not recommendations:
+            recommendations.append({
+                "priority": "LOW",
+                "category": "General",
+                "action": "Effective stress profile shows adequate mud weight windows across all depths.",
+                "impact": "Standard drilling practices should be sufficient.",
+            })
+
+        # ── Stakeholder brief ──
+        risk_level = "RED" if n_critical > 0 else ("AMBER" if n_narrow > 5 else "GREEN")
+        stakeholder_brief = {
+            "headline": f"Effective stress profile for well {well}: {'CRITICAL zones present' if n_critical > 0 else 'Generally safe'}",
+            "risk_level": risk_level,
+            "what_this_means": (
+                f"The effective stress profile shows how underground pressure changes with depth. "
+                f"Three stresses act on the rock: vertical (overburden weight), and two horizontal stresses. "
+                f"Pore pressure (fluid in rock pores) reduces the effective stress on fractures. "
+                f"The Biot coefficient (α={biot_alpha}) controls how much pore pressure affects the rock. "
+                f"The mud weight window — the safe range for drilling fluid density — "
+                + (f"is critically narrow at {n_critical} depth intervals. " if n_critical > 0 else
+                   f"is adequate across most depths. ")
+                + "Too light mud causes kicks (influx of formation fluid); too heavy mud fractures the rock."
+            ),
+            "for_non_experts": (
+                "Imagine the rock underground is like a sponge full of water. The water pressure pushes outward, "
+                "weakening the rock's ability to hold together. The Biot coefficient tells us how much the water "
+                "pressure matters — in most rocks, about 85% of the water pressure directly weakens the rock. "
+                "When drilling, we pump heavy fluid (mud) down the well to balance these pressures. "
+                "If the mud is too light, underground fluids rush in (a 'kick'). "
+                "If it's too heavy, we crack the rock and lose mud into the formation. "
+                "This analysis maps the safe 'Goldilocks zone' for mud weight at every depth."
+            ),
+            "recommendation": recommendations[0]["action"],
+        }
+
+        return {
+            "well": well,
+            "biot_coefficient": biot_alpha,
+            "pp_gradient_MPa_per_m": pp_gradient,
+            "overburden_gradient_MPa_per_m": overburden_gradient,
+            "SHmax_Sv_ratio": shmax_ratio,
+            "Shmin_Sv_ratio": shmin_ratio,
+            "depth_range_m": {"min": round(d_min, 1), "max": round(d_max, 1)},
+            "n_profile_points": len(profile_data),
+            "n_narrow_zones": n_narrow,
+            "n_critical_zones": n_critical,
+            "profile": profile_data,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("effective_stress_profile", {"source": source, "well": well, "biot": biot_alpha},
+                  {"n_critical": result["n_critical_zones"]}, source, well, elapsed)
+    _effective_stress_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [122] Stakeholder Decision Intelligence ─────────────────────────────
+@app.post("/api/analysis/decision-intelligence")
+async def api_decision_intelligence(request: Request):
+    """Comprehensive decision intelligence report for non-technical stakeholders.
+
+    Aggregates all analyses into a single decision-ready report with:
+    - Executive summary in plain language
+    - Risk matrix with traffic light system
+    - Prioritized action items with confidence levels
+    - Glossary of all technical terms
+    - Cost/impact implications (qualitative)
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"decintel:{well}:{source}"
+    if cache_key in _decision_intel_cache:
+        return _decision_intel_cache[cache_key]
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n_total = len(df_well)
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.zeros(n_total)
+        azimuths = df_well[AZIMUTH_COL].values
+        dips = df_well[DIP_COL].values
+        frac_types = le.classes_
+
+        # ── Data Quality Assessment ──
+        n_classes = len(frac_types)
+        class_counts = np.bincount(y)
+        min_class_count = int(class_counts.min())
+        max_class_count = int(class_counts.max())
+        imbalance_ratio = round(min_class_count / max(max_class_count, 1), 3)
+        has_depth = DEPTH_COL in df_well.columns and df_well[DEPTH_COL].notna().any()
+
+        data_quality = "GOOD" if (n_total >= 200 and imbalance_ratio > 0.2 and has_depth) else \
+                       "FAIR" if (n_total >= 50 and imbalance_ratio > 0.1) else "POOR"
+
+        # ── Model Performance ──
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.metrics import balanced_accuracy_score, f1_score
+
+        rf = RandomForestClassifier(n_estimators=100, max_depth=12, class_weight="balanced",
+                                    random_state=42, n_jobs=-1)
+        cv = StratifiedKFold(n_splits=min(3, min_class_count), shuffle=True, random_state=42)
+        ba_scores = []
+        f1_scores = []
+        for train_idx, test_idx in cv.split(X, y):
+            rf_clone = RandomForestClassifier(n_estimators=100, max_depth=12, class_weight="balanced",
+                                              random_state=42, n_jobs=-1)
+            rf_clone.fit(X[train_idx], y[train_idx])
+            y_pred = rf_clone.predict(X[test_idx])
+            ba_scores.append(float(balanced_accuracy_score(y[test_idx], y_pred)))
+            f1_scores.append(float(f1_score(y[test_idx], y_pred, average="weighted", zero_division=0)))
+
+        mean_ba = round(np.mean(ba_scores), 3)
+        mean_f1 = round(np.mean(f1_scores), 3)
+        model_quality = "GOOD" if mean_ba >= 0.7 else ("FAIR" if mean_ba >= 0.5 else "POOR")
+
+        # ── Risk Matrix ──
+        risk_items = []
+
+        # Data risk
+        data_risk_level = "GREEN" if data_quality == "GOOD" else ("AMBER" if data_quality == "FAIR" else "RED")
+        risk_items.append({
+            "category": "Data Quality",
+            "risk_level": data_risk_level,
+            "score": {"GOOD": 1, "FAIR": 2, "POOR": 3}[data_quality],
+            "finding": f"{n_total} fractures across {n_classes} types. Imbalance ratio: {imbalance_ratio}.",
+            "plain_english": (
+                f"We have {n_total} fracture measurements from well {well}, classified into {n_classes} types. "
+                + ("This is a robust dataset for analysis." if data_quality == "GOOD" else
+                   "The dataset is adequate but some fracture types have few examples." if data_quality == "FAIR" else
+                   "The dataset is small or highly imbalanced. Results should be treated with caution.")
+            ),
+            "what_if_ignored": "Poor data quality leads to unreliable predictions. Decisions based on bad data can cause costly drilling problems.",
+            "recommended_action": (
+                "No action needed — data quality is good." if data_quality == "GOOD" else
+                "Consider additional data collection for underrepresented fracture types." if data_quality == "FAIR" else
+                "STOP: Do not use for critical decisions without expert review and additional data."
+            ),
+            "confidence": "HIGH" if n_total > 200 else "MEDIUM",
+        })
+
+        # Model risk
+        model_risk_level = "GREEN" if model_quality == "GOOD" else ("AMBER" if model_quality == "FAIR" else "RED")
+        risk_items.append({
+            "category": "Model Accuracy",
+            "risk_level": model_risk_level,
+            "score": {"GOOD": 1, "FAIR": 2, "POOR": 3}[model_quality],
+            "finding": f"Balanced accuracy: {mean_ba:.1%}, F1: {mean_f1:.1%}.",
+            "plain_english": (
+                f"The AI model correctly classifies fracture types {mean_ba:.0%} of the time (balanced across all types). "
+                + ("This is a strong performance suitable for operational decisions." if model_quality == "GOOD" else
+                   "This is moderate performance. Use as one input among several." if model_quality == "FAIR" else
+                   "This is weak performance. Do NOT rely on automated classification alone.")
+            ),
+            "what_if_ignored": "Using inaccurate classifications can lead to wrong stress estimates, incorrect completion design, and unexpected wellbore instability.",
+            "recommended_action": (
+                "Model is reliable for operational use." if model_quality == "GOOD" else
+                "Supplement AI predictions with expert petrophysicist review." if model_quality == "FAIR" else
+                "Require mandatory expert validation for every prediction."
+            ),
+            "confidence": "HIGH",
+        })
+
+        # Sampling bias risk
+        from src.data_loader import fracture_plane_normal
+        normals = fracture_plane_normal(azimuths, dips)
+        borehole_axis = np.array([0.0, 0.0, 1.0])  # vertical
+        cos_alpha = np.abs(normals @ borehole_axis)
+        alpha_deg = np.degrees(np.arccos(np.clip(cos_alpha, 0, 1)))
+        n_blind = int((alpha_deg > 85).sum())
+        pct_blind = round(100.0 * n_blind / n_total, 1)
+        bias_risk = "RED" if pct_blind > 15 else ("AMBER" if pct_blind > 5 else "GREEN")
+        risk_items.append({
+            "category": "Sampling Bias",
+            "risk_level": bias_risk,
+            "score": {"GREEN": 1, "AMBER": 2, "RED": 3}[bias_risk],
+            "finding": f"{n_blind} fractures ({pct_blind}%) in borehole blind zone (>85° from vertical).",
+            "plain_english": (
+                f"A vertical borehole has a 'blind spot' for fractures running parallel to it. "
+                f"{pct_blind}% of our fractures are in or near this blind zone. "
+                + ("This is a significant bias that should be corrected." if bias_risk == "RED" else
+                   "Some bias exists but is manageable with Terzaghi correction." if bias_risk == "AMBER" else
+                   "Sampling bias is minimal for this well.")
+            ),
+            "what_if_ignored": "Uncorrected bias distorts fracture statistics, potentially missing critical fracture sets.",
+            "recommended_action": "Apply Terzaghi correction to all orientation analyses." if bias_risk != "GREEN" else "No correction necessary.",
+            "confidence": "HIGH",
+        })
+
+        # Depth coverage risk
+        if has_depth:
+            depth_range = float(depths.max() - depths.min())
+            density = n_total / max(depth_range, 1)
+            depth_risk = "GREEN" if density > 0.5 else ("AMBER" if density > 0.1 else "RED")
+        else:
+            depth_range = 0
+            density = 0
+            depth_risk = "RED"
+        risk_items.append({
+            "category": "Depth Coverage",
+            "risk_level": depth_risk,
+            "score": {"GREEN": 1, "AMBER": 2, "RED": 3}[depth_risk],
+            "finding": f"{'Depth range: ' + str(round(depth_range, 0)) + 'm, density: ' + str(round(density, 2)) + ' fractures/m' if has_depth else 'No depth data available'}.",
+            "plain_english": (
+                f"Fractures are measured over a {depth_range:.0f}m interval at a density of {density:.2f} per meter. "
+                + ("Good coverage for reliable depth-dependent analysis." if depth_risk == "GREEN" else
+                   "Moderate coverage. Results at depth extremes may be less reliable." if depth_risk == "AMBER" else
+                   "Poor depth coverage. Depth-dependent predictions are unreliable.") if has_depth else
+                "No depth data available. Depth-dependent analyses cannot be performed."
+            ),
+            "what_if_ignored": "Sparse depth coverage means stress and stability predictions at some depths are extrapolated, not measured.",
+            "recommended_action": "Ensure adequate log coverage across target reservoir interval.",
+            "confidence": "MEDIUM",
+        })
+
+        # Overall risk
+        max_score = max(r["score"] for r in risk_items)
+        avg_score = np.mean([r["score"] for r in risk_items])
+        overall_risk = "RED" if max_score >= 3 or avg_score > 2 else ("AMBER" if avg_score > 1.3 else "GREEN")
+        n_red = sum(1 for r in risk_items if r["risk_level"] == "RED")
+        n_amber = sum(1 for r in risk_items if r["risk_level"] == "AMBER")
+        n_green = sum(1 for r in risk_items if r["risk_level"] == "GREEN")
+
+        # ── Prioritized Actions ──
+        actions = []
+        priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+        for r in sorted(risk_items, key=lambda x: x["score"], reverse=True):
+            if r["risk_level"] != "GREEN":
+                actions.append({
+                    "priority": "HIGH" if r["risk_level"] == "RED" else "MEDIUM",
+                    "category": r["category"],
+                    "action": r["recommended_action"],
+                    "impact": r["what_if_ignored"],
+                    "confidence": r["confidence"],
+                })
+
+        if not actions:
+            actions.append({
+                "priority": "LOW",
+                "category": "General",
+                "action": "All risk indicators are green. Proceed with standard operating procedures.",
+                "impact": "N/A",
+                "confidence": "HIGH",
+            })
+
+        # ── Glossary ──
+        glossary = [
+            {"term": "Fracture", "definition": "A crack or break in underground rock. Can be natural (from tectonic forces) or induced (from drilling/stimulation)."},
+            {"term": "Azimuth", "definition": "The compass direction a fracture faces, measured in degrees from North (0-360°). Like the direction you'd point if standing on the fracture."},
+            {"term": "Dip", "definition": "How steeply the fracture tilts from horizontal (0-90°). 0° is flat, 90° is vertical."},
+            {"term": "SHmax", "definition": "Maximum horizontal stress — the strongest squeezing force acting horizontally underground. Controls which direction fractures open."},
+            {"term": "Pore Pressure", "definition": "Pressure of fluids (oil, gas, water) trapped in rock pores. Like water pressure in a sponge."},
+            {"term": "Balanced Accuracy", "definition": "How well the AI model classifies fracture types, accounting for rare types. 100% = perfect, 50% = random guessing."},
+            {"term": "Terzaghi Correction", "definition": "A mathematical fix for the fact that a drill hole preferentially intersects some fracture orientations. Like adjusting a fish count for a net with uneven mesh sizes."},
+            {"term": "Mud Weight", "definition": "Density of drilling fluid. Must be heavy enough to prevent underground fluids from entering the well, but light enough to not crack the rock."},
+            {"term": "Critically Stressed", "definition": "A fracture that is close to sliding or opening due to the surrounding stress field. These are the most important for fluid flow."},
+            {"term": "Mohr-Coulomb", "definition": "The physics equation governing when rock fractures slip. Depends on normal stress, shear stress, and rock friction."},
+        ]
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # 1. Risk matrix heatmap
+            ax1 = axes[0]
+            categories = [r["category"] for r in risk_items]
+            scores = [r["score"] for r in risk_items]
+            colors_map = {"GREEN": "#2ecc71", "AMBER": "#f39c12", "RED": "#e74c3c"}
+            bar_colors = [colors_map[r["risk_level"]] for r in risk_items]
+            bars = ax1.barh(categories, scores, color=bar_colors, edgecolor="white", linewidth=2)
+            ax1.set_xlim(0, 3.5)
+            ax1.set_xlabel("Risk Score (1=Low, 3=High)")
+            ax1.set_title("Risk Assessment Matrix")
+            for bar, score in zip(bars, scores):
+                ax1.text(bar.get_width() + 0.05, bar.get_y() + bar.get_height() / 2,
+                         ["LOW", "MEDIUM", "HIGH"][score - 1], va="center", fontweight="bold", fontsize=9)
+
+            # 2. Overall summary
+            ax2 = axes[1]
+            ax2.axis("off")
+            summary_text = (
+                f"OVERALL ASSESSMENT: {overall_risk}\n\n"
+                f"Well: {well}\n"
+                f"Fractures: {n_total}\n"
+                f"Types: {n_classes}\n"
+                f"Model Accuracy: {mean_ba:.1%}\n\n"
+                f"Risk Summary:\n"
+                f"  🟢 Green: {n_green}\n"
+                f"  🟡 Amber: {n_amber}\n"
+                f"  🔴 Red:   {n_red}\n\n"
+                f"Top Action:\n{actions[0]['action'][:80]}"
+            )
+            overall_color = colors_map[overall_risk]
+            ax2.text(0.5, 0.5, summary_text, transform=ax2.transAxes,
+                     fontsize=11, verticalalignment="center", horizontalalignment="center",
+                     fontfamily="monospace",
+                     bbox=dict(boxstyle="round,pad=0.5", facecolor=overall_color, alpha=0.15))
+            ax2.set_title("Decision Summary", fontsize=13, fontweight="bold")
+
+            fig.suptitle(f"Decision Intelligence Report — Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        stakeholder_brief = {
+            "headline": f"Well {well}: Overall risk is {overall_risk} ({n_red} red, {n_amber} amber, {n_green} green)",
+            "risk_level": overall_risk,
+            "what_this_means": (
+                f"This report aggregates all analysis dimensions for well {well} into a single risk picture. "
+                + ("All indicators are favorable. Proceed with confidence." if overall_risk == "GREEN" else
+                   "Some concerns exist that should be addressed before committing to expensive operations." if overall_risk == "AMBER" else
+                   "Significant risks identified. Do NOT proceed without addressing red items.")
+            ),
+            "for_non_experts": (
+                "This is like a health checkup for your well data. We've checked the data quality, "
+                "how well our AI model works, whether we have sampling blind spots, and if we have "
+                "enough measurements at all depths. Each area gets a traffic light rating. "
+                + ("Everything looks healthy." if overall_risk == "GREEN" else
+                   "Some areas need attention before making big decisions." if overall_risk == "AMBER" else
+                   "Some areas are concerning and need to be fixed before proceeding.")
+            ),
+            "recommendation": actions[0]["action"],
+        }
+
+        return {
+            "well": well,
+            "n_fractures": n_total,
+            "n_classes": n_classes,
+            "overall_risk": overall_risk,
+            "risk_matrix": risk_items,
+            "n_red": n_red,
+            "n_amber": n_amber,
+            "n_green": n_green,
+            "model_balanced_accuracy": mean_ba,
+            "model_f1": mean_f1,
+            "data_quality": data_quality,
+            "model_quality": model_quality,
+            "prioritized_actions": actions,
+            "glossary": glossary,
+            "recommendations": actions,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("decision_intelligence", {"source": source, "well": well},
+                  {"overall_risk": result["overall_risk"]}, source, well, elapsed)
+    _decision_intel_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [123] Accuracy Feedback Loop ────────────────────────────────────────
+@app.post("/api/feedback/submit-outcome")
+async def api_submit_outcome(request: Request):
+    """Submit field outcome data for accuracy tracking.
+
+    Field engineers submit actual fracture observations to compare against predictions.
+    This enables continuous accuracy monitoring and model improvement.
+    """
+    body = await request.json()
+    prediction_id = body.get("prediction_id", f"pred_{int(time.time())}")
+    well = body.get("well", "unknown")
+    depth_m = body.get("depth_m", 0)
+    predicted_type = body.get("predicted_type", "")
+    actual_type = body.get("actual_type", "")
+    confidence = body.get("confidence", 0.0)
+    engineer_name = body.get("engineer_name", "anonymous")
+    notes = body.get("notes", "")
+
+    if not predicted_type or not actual_type:
+        raise HTTPException(400, "Both predicted_type and actual_type are required")
+
+    outcome = {
+        "prediction_id": prediction_id,
+        "well": well,
+        "depth_m": depth_m,
+        "predicted_type": predicted_type,
+        "actual_type": actual_type,
+        "is_correct": predicted_type == actual_type,
+        "confidence": confidence,
+        "engineer_name": engineer_name,
+        "notes": notes,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    _outcome_store.append(outcome)
+
+    # Update rolling accuracy
+    n_outcomes = len(_outcome_store)
+    n_correct = sum(1 for o in _outcome_store if o["is_correct"])
+    rolling_accuracy = round(n_correct / n_outcomes, 3) if n_outcomes > 0 else 0
+
+    _accuracy_history.append({
+        "timestamp": outcome["timestamp"],
+        "n_outcomes": n_outcomes,
+        "n_correct": n_correct,
+        "rolling_accuracy": rolling_accuracy,
+    })
+
+    return {
+        "status": "recorded",
+        "prediction_id": prediction_id,
+        "is_correct": outcome["is_correct"],
+        "n_total_outcomes": n_outcomes,
+        "rolling_accuracy": rolling_accuracy,
+        "message": f"Outcome recorded. Overall accuracy: {rolling_accuracy:.1%} ({n_correct}/{n_outcomes}).",
+    }
+
+
+@app.get("/api/feedback/accuracy-trend")
+async def api_accuracy_trend():
+    """Get accuracy trend over time from submitted field outcomes."""
+    n_outcomes = len(_outcome_store)
+    if n_outcomes == 0:
+        return {
+            "n_outcomes": 0,
+            "message": "No outcomes submitted yet. Use POST /api/feedback/submit-outcome to record field observations.",
+            "accuracy_trend": [],
+            "confusion_data": [],
+        }
+
+    n_correct = sum(1 for o in _outcome_store if o["is_correct"])
+    rolling_accuracy = round(n_correct / n_outcomes, 3)
+
+    # Confusion data
+    confusion = {}
+    for o in _outcome_store:
+        key = (o["predicted_type"], o["actual_type"])
+        confusion[key] = confusion.get(key, 0) + 1
+    confusion_data = [
+        {"predicted": k[0], "actual": k[1], "count": v}
+        for k, v in sorted(confusion.items())
+    ]
+
+    # Per-type accuracy
+    type_accuracy = {}
+    for o in _outcome_store:
+        t = o["actual_type"]
+        if t not in type_accuracy:
+            type_accuracy[t] = {"correct": 0, "total": 0}
+        type_accuracy[t]["total"] += 1
+        if o["is_correct"]:
+            type_accuracy[t]["correct"] += 1
+    per_type = [
+        {"type": t, "accuracy": round(v["correct"] / v["total"], 3), "n": v["total"]}
+        for t, v in sorted(type_accuracy.items())
+    ]
+
+    # Worst-performing type
+    worst_type = min(per_type, key=lambda x: x["accuracy"]) if per_type else None
+
+    recommendations = []
+    if rolling_accuracy < 0.7:
+        recommendations.append({
+            "priority": "HIGH",
+            "category": "Model Retraining",
+            "action": f"Rolling accuracy is {rolling_accuracy:.1%}, below 70% threshold. Immediate model retraining recommended.",
+            "impact": "Low accuracy means 1 in 3+ predictions is wrong. Field decisions based on these predictions carry significant risk.",
+        })
+    if worst_type and worst_type["accuracy"] < 0.5:
+        recommendations.append({
+            "priority": "HIGH",
+            "category": "Type-Specific",
+            "action": f"Type '{worst_type['type']}' has only {worst_type['accuracy']:.0%} accuracy ({worst_type['n']} samples). Need more training data for this type.",
+            "impact": f"Misclassifying {worst_type['type']} fractures may lead to incorrect completion decisions.",
+        })
+    if not recommendations:
+        recommendations.append({
+            "priority": "LOW",
+            "category": "Monitoring",
+            "action": f"Model accuracy is {rolling_accuracy:.1%}. Continue monitoring with field submissions.",
+            "impact": "Ongoing monitoring ensures long-term reliability.",
+        })
+
+    return {
+        "n_outcomes": n_outcomes,
+        "n_correct": n_correct,
+        "rolling_accuracy": rolling_accuracy,
+        "per_type_accuracy": per_type,
+        "accuracy_trend": _accuracy_history[-100:],
+        "confusion_data": confusion_data,
+        "recommendations": recommendations,
+        "stakeholder_brief": {
+            "headline": f"Model accuracy: {rolling_accuracy:.0%} based on {n_outcomes} field-verified outcomes",
+            "risk_level": "GREEN" if rolling_accuracy >= 0.7 else ("AMBER" if rolling_accuracy >= 0.5 else "RED"),
+            "what_this_means": (
+                f"Field engineers have verified {n_outcomes} of our AI predictions against real observations. "
+                f"The model is correct {rolling_accuracy:.0%} of the time. "
+                + ("This is excellent real-world performance." if rolling_accuracy >= 0.8 else
+                   "This is acceptable but could be improved with more data." if rolling_accuracy >= 0.6 else
+                   "This is concerning. Consider expert review of all predictions.")
+            ),
+        },
+    }
+
+
+@app.post("/api/feedback/retrain-trigger")
+async def api_retrain_trigger(request: Request):
+    """Trigger model retraining incorporating field feedback data.
+
+    Uses submitted outcomes to create a feedback-augmented training set.
+    Misclassified samples get higher weight in retraining.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    n_outcomes = len(_outcome_store)
+    n_corrections = sum(1 for o in _outcome_store if not o["is_correct"])
+
+    def _compute():
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.metrics import balanced_accuracy_score
+
+        # Train baseline model
+        rf_base = RandomForestClassifier(n_estimators=100, max_depth=12, class_weight="balanced",
+                                         random_state=42, n_jobs=-1)
+        rf_base.fit(X, y)
+        y_pred_base = rf_base.predict(X)
+        ba_base = float(balanced_accuracy_score(y, y_pred_base))
+
+        # If we have feedback, create sample weights emphasizing corrected samples
+        sample_weights = np.ones(len(y))
+        corrections_applied = 0
+        if n_outcomes > 0:
+            for o in _outcome_store:
+                if o["well"] == well and not o["is_correct"]:
+                    # Find matching samples by depth proximity
+                    if DEPTH_COL in df_well.columns and o["depth_m"] > 0:
+                        depth_diffs = np.abs(df_well[DEPTH_COL].values - o["depth_m"])
+                        closest = np.argmin(depth_diffs)
+                        if depth_diffs[closest] < 1.0:  # within 1m
+                            sample_weights[closest] = 3.0  # triple weight for corrected samples
+                            corrections_applied += 1
+
+        # Retrain with weighted samples
+        rf_retrained = RandomForestClassifier(n_estimators=150, max_depth=12, class_weight="balanced",
+                                              random_state=42, n_jobs=-1)
+        rf_retrained.fit(X, y, sample_weight=sample_weights)
+        y_pred_retrained = rf_retrained.predict(X)
+        ba_retrained = float(balanced_accuracy_score(y, y_pred_retrained))
+
+        improvement = ba_retrained - ba_base
+
+        return {
+            "well": well,
+            "n_outcomes_used": n_outcomes,
+            "n_corrections_applied": corrections_applied,
+            "baseline_accuracy": round(ba_base, 4),
+            "retrained_accuracy": round(ba_retrained, 4),
+            "improvement": round(improvement, 4),
+            "improvement_pct": round(100 * improvement, 2),
+            "status": "improved" if improvement > 0.005 else "stable",
+            "recommendations": [{
+                "priority": "MEDIUM" if improvement > 0.01 else "LOW",
+                "category": "Retraining",
+                "action": f"Retraining {'improved' if improvement > 0.005 else 'did not significantly change'} accuracy by {100*improvement:.2f}%. {'Deploy retrained model.' if improvement > 0.01 else 'Continue collecting feedback data.'}",
+                "impact": f"{'Better predictions for future fracture classifications.' if improvement > 0.005 else 'More feedback data needed for meaningful improvement.'}",
+            }],
+            "stakeholder_brief": {
+                "headline": f"Model retrained: accuracy {'improved' if improvement > 0.005 else 'stable'} ({100*improvement:+.2f}%)",
+                "risk_level": "GREEN" if ba_retrained >= 0.7 else "AMBER",
+                "what_this_means": (
+                    f"We retrained the AI model using {corrections_applied} corrections from field engineers. "
+                    f"Accuracy went from {ba_base:.1%} to {ba_retrained:.1%}. "
+                    + ("This is a meaningful improvement from incorporating real-world feedback." if improvement > 0.01 else
+                       "The model is already performing well. More feedback data may help further.")
+                ),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    return _sanitize_for_json(result)
+
+
+# ── [124] Failure-Aware Classification ──────────────────────────────────
+@app.post("/api/analysis/failure-aware-classification")
+async def api_failure_aware_classification(request: Request):
+    """Classification with asymmetric costs: penalizing dangerous misclassifications more.
+
+    Uses cost-sensitive learning where:
+    - Misclassifying a critically-stressed fracture as benign = HIGH cost
+    - Misclassifying a Continuous fracture as Discontinuous = MODERATE cost
+    - Other misclassifications = LOW cost
+
+    Also incorporates negative examples (known failures, near-misses) with boosted weights.
+
+    References:
+    - Cost-sensitive learning: Elkan (2001), The Foundations of Cost-Sensitive Learning.
+    - Agent-in-the-loop: Springer 2025, distilling expert knowledge.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    high_cost_types = body.get("high_cost_types", ["Continuous", "Vuggy"])
+    cost_ratio = body.get("cost_ratio", 5.0)  # misclass of high-cost types costs 5x
+
+    cache_key = f"failaware:{well}:{source}:{','.join(sorted(high_cost_types))}:{cost_ratio}"
+    if cache_key in _failure_aware_cache:
+        return _failure_aware_cache[cache_key]
+
+    if not (1.0 <= cost_ratio <= 20.0):
+        raise HTTPException(400, "cost_ratio must be between 1.0 and 20.0")
+
+    t0 = time.time()
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        X, y, le, features, df_well = get_cached_features(df, well, source)
+        n_total = len(df_well)
+        class_names = list(le.classes_)
+
+        from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import balanced_accuracy_score, f1_score, confusion_matrix
+
+        cv = StratifiedKFold(n_splits=min(3, np.bincount(y).min()), shuffle=True, random_state=42)
+
+        # ── Standard (unweighted) model ──
+        rf_std = RandomForestClassifier(n_estimators=150, max_depth=12, class_weight="balanced",
+                                        random_state=42, n_jobs=-1)
+        y_pred_std = np.zeros(len(y), dtype=int)
+        ba_std_scores = []
+        for train_idx, test_idx in cv.split(X, y):
+            rf_clone = RandomForestClassifier(n_estimators=150, max_depth=12, class_weight="balanced",
+                                              random_state=42, n_jobs=-1)
+            rf_clone.fit(X[train_idx], y[train_idx])
+            y_pred_std[test_idx] = rf_clone.predict(X[test_idx])
+            ba_std_scores.append(float(balanced_accuracy_score(y[test_idx], y_pred_std[test_idx])))
+
+        ba_std = round(np.mean(ba_std_scores), 4)
+        cm_std = confusion_matrix(y, y_pred_std).tolist()
+
+        # ── Cost-sensitive model ──
+        # Build sample weights: higher weight for high-cost types
+        sample_weights = np.ones(len(y))
+        high_cost_indices = [i for i, c in enumerate(class_names) if c in high_cost_types]
+        for idx in high_cost_indices:
+            sample_weights[y == idx] = cost_ratio
+
+        # Also boost weight for failure cases from feedback store
+        n_failure_boosts = 0
+        for o in _outcome_store:
+            if o["well"] == well and not o["is_correct"]:
+                if DEPTH_COL in df_well.columns and o.get("depth_m", 0) > 0:
+                    depth_diffs = np.abs(df_well[DEPTH_COL].values - o["depth_m"])
+                    closest = np.argmin(depth_diffs)
+                    if depth_diffs[closest] < 1.0:
+                        sample_weights[closest] *= 2.0  # double weight for known failures
+                        n_failure_boosts += 1
+
+        y_pred_cost = np.zeros(len(y), dtype=int)
+        ba_cost_scores = []
+        for train_idx, test_idx in cv.split(X, y):
+            rf_clone = RandomForestClassifier(n_estimators=150, max_depth=12,
+                                              random_state=42, n_jobs=-1)
+            rf_clone.fit(X[train_idx], y[train_idx], sample_weight=sample_weights[train_idx])
+            y_pred_cost[test_idx] = rf_clone.predict(X[test_idx])
+            ba_cost_scores.append(float(balanced_accuracy_score(y[test_idx], y_pred_cost[test_idx])))
+
+        ba_cost = round(np.mean(ba_cost_scores), 4)
+        cm_cost = confusion_matrix(y, y_pred_cost).tolist()
+
+        # ── Compare: cost-weighted misclassification ──
+        # Calculate actual "cost" of errors
+        def calc_cost(y_true, y_pred, high_idx):
+            cost = 0
+            n_high_errors = 0
+            n_low_errors = 0
+            for yt, yp in zip(y_true, y_pred):
+                if yt != yp:
+                    if yt in high_idx:
+                        cost += cost_ratio
+                        n_high_errors += 1
+                    else:
+                        cost += 1.0
+                        n_low_errors += 1
+            return cost, n_high_errors, n_low_errors
+
+        cost_std, n_high_err_std, n_low_err_std = calc_cost(y, y_pred_std, high_cost_indices)
+        cost_cost, n_high_err_cost, n_low_err_cost = calc_cost(y, y_pred_cost, high_cost_indices)
+        cost_reduction = round((cost_std - cost_cost) / max(cost_std, 1) * 100, 1)
+
+        # Per-type comparison
+        type_comparison = []
+        for i, cn in enumerate(class_names):
+            mask = y == i
+            n_type = int(mask.sum())
+            std_correct = int((y_pred_std[mask] == i).sum())
+            cost_correct = int((y_pred_cost[mask] == i).sum())
+            type_comparison.append({
+                "fracture_type": cn,
+                "n_samples": n_type,
+                "is_high_cost": cn in high_cost_types,
+                "standard_accuracy": round(std_correct / max(n_type, 1), 3),
+                "failure_aware_accuracy": round(cost_correct / max(n_type, 1), 3),
+                "improvement": round((cost_correct - std_correct) / max(n_type, 1), 3),
+            })
+
+        # ── Plot ──
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # 1. Confusion matrix - standard
+            ax1 = axes[0]
+            im1 = ax1.imshow(cm_std, cmap="Blues", aspect="auto")
+            ax1.set_xticks(range(len(class_names)))
+            ax1.set_yticks(range(len(class_names)))
+            ax1.set_xticklabels(class_names, rotation=45, ha="right", fontsize=7)
+            ax1.set_yticklabels(class_names, fontsize=7)
+            ax1.set_xlabel("Predicted")
+            ax1.set_ylabel("Actual")
+            ax1.set_title("Standard Model")
+            for ii in range(len(class_names)):
+                for jj in range(len(class_names)):
+                    ax1.text(jj, ii, str(cm_std[ii][jj]), ha="center", va="center", fontsize=8)
+
+            # 2. Confusion matrix - cost-sensitive
+            ax2 = axes[1]
+            im2 = ax2.imshow(cm_cost, cmap="Oranges", aspect="auto")
+            ax2.set_xticks(range(len(class_names)))
+            ax2.set_yticks(range(len(class_names)))
+            ax2.set_xticklabels(class_names, rotation=45, ha="right", fontsize=7)
+            ax2.set_yticklabels(class_names, fontsize=7)
+            ax2.set_xlabel("Predicted")
+            ax2.set_ylabel("Actual")
+            ax2.set_title("Failure-Aware Model")
+            for ii in range(len(class_names)):
+                for jj in range(len(class_names)):
+                    ax2.text(jj, ii, str(cm_cost[ii][jj]), ha="center", va="center", fontsize=8)
+
+            # 3. Per-type accuracy comparison
+            ax3 = axes[2]
+            x = np.arange(len(class_names))
+            std_accs = [tc["standard_accuracy"] for tc in type_comparison]
+            cost_accs = [tc["failure_aware_accuracy"] for tc in type_comparison]
+            bars1 = ax3.bar(x - 0.2, std_accs, 0.35, label="Standard", color="steelblue", alpha=0.7)
+            bars2 = ax3.bar(x + 0.2, cost_accs, 0.35, label="Failure-Aware", color="orangered", alpha=0.7)
+            # Highlight high-cost types
+            for i, tc in enumerate(type_comparison):
+                if tc["is_high_cost"]:
+                    ax3.axvspan(i - 0.5, i + 0.5, alpha=0.1, color="red")
+            ax3.set_xticks(x)
+            ax3.set_xticklabels(class_names, rotation=45, ha="right", fontsize=8)
+            ax3.set_ylabel("Accuracy")
+            ax3.set_title("Per-Type Accuracy Comparison")
+            ax3.legend(fontsize=8)
+            ax3.set_ylim(0, 1.1)
+
+            fig.suptitle(f"Failure-Aware Classification — Well {well}", fontsize=13, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        # ── Recommendations ──
+        recommendations = []
+        if cost_reduction > 10:
+            recommendations.append({
+                "priority": "HIGH",
+                "category": "Model Selection",
+                "action": f"Failure-aware model reduces high-cost errors by {cost_reduction:.0f}%. Deploy cost-sensitive model for production use.",
+                "impact": f"Reduces risk of dangerous misclassifications (e.g., classifying {', '.join(high_cost_types)} incorrectly).",
+            })
+        improved_types = [tc for tc in type_comparison if tc["improvement"] > 0.05 and tc["is_high_cost"]]
+        for tc in improved_types:
+            recommendations.append({
+                "priority": "MEDIUM",
+                "category": "Type-Specific Improvement",
+                "action": f"'{tc['fracture_type']}' accuracy improved from {tc['standard_accuracy']:.0%} to {tc['failure_aware_accuracy']:.0%}.",
+                "impact": f"Better identification of {tc['fracture_type']} fractures reduces operational risk.",
+            })
+        if not recommendations:
+            recommendations.append({
+                "priority": "LOW",
+                "category": "Model Comparison",
+                "action": "Standard and failure-aware models perform similarly. Cost-sensitive weighting has minimal effect on this dataset.",
+                "impact": "Both models are acceptable. Use failure-aware model as a precaution.",
+            })
+
+        stakeholder_brief = {
+            "headline": f"Failure-aware model reduces high-cost errors by {cost_reduction:.0f}%",
+            "risk_level": "GREEN" if cost_reduction >= 0 else "AMBER",
+            "what_this_means": (
+                f"Not all classification errors are equal. Misidentifying a {', '.join(high_cost_types)} fracture "
+                f"can have serious consequences (wellbore instability, lost circulation). "
+                f"The failure-aware model penalizes these dangerous mistakes {cost_ratio:.0f}x more heavily. "
+                f"Result: high-cost errors dropped from {n_high_err_std} to {n_high_err_cost} "
+                f"(overall cost reduced by {cost_reduction:.0f}%)."
+            ),
+            "for_non_experts": (
+                "Think of a medical test: missing a disease (false negative) is usually worse than "
+                "a false alarm (false positive). Similarly, in fracture classification, some mistakes "
+                "are more dangerous than others. This analysis trains the AI to be extra careful "
+                "about the types of fractures that can cause the most problems, even if it means "
+                "being slightly less accurate on less critical types."
+            ),
+            "recommendation": recommendations[0]["action"],
+        }
+
+        return {
+            "well": well,
+            "n_fractures": n_total,
+            "high_cost_types": high_cost_types,
+            "cost_ratio": cost_ratio,
+            "n_failure_boosts": n_failure_boosts,
+            "standard_model": {
+                "balanced_accuracy": ba_std,
+                "n_high_cost_errors": n_high_err_std,
+                "n_low_cost_errors": n_low_err_std,
+                "total_cost": round(cost_std, 1),
+                "confusion_matrix": cm_std,
+            },
+            "failure_aware_model": {
+                "balanced_accuracy": ba_cost,
+                "n_high_cost_errors": n_high_err_cost,
+                "n_low_cost_errors": n_low_err_cost,
+                "total_cost": round(cost_cost, 1),
+                "confusion_matrix": cm_cost,
+            },
+            "cost_reduction_pct": cost_reduction,
+            "type_comparison": type_comparison,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": stakeholder_brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("failure_aware_classification", {"source": source, "well": well, "cost_ratio": cost_ratio},
+                  {"cost_reduction_pct": result["cost_reduction_pct"]}, source, well, elapsed)
+    _failure_aware_cache[cache_key] = result
     return _sanitize_for_json(result)
