@@ -2015,6 +2015,78 @@
                         </div>
                     </div>
 
+                    <!-- v3.39.0: Counterfactual XAI + Graph + Attention + Privacy + Recalibration -->
+
+                    <!-- [130] Counterfactual Explanations -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-signpost-split"></i> Counterfactual Explanations (XAI)</span>
+                            <button class="btn btn-sm btn-light" onclick="runCounterfactual()">Analyze</button>
+                        </div>
+                        <div class="card-body" id="counterfactual-results" style="display:none;">
+                            <div id="counterfactual-brief" class="alert alert-light mb-2"></div>
+                            <div class="row" id="counterfactual-metrics"></div>
+                            <div id="counterfactual-details" class="mt-2"></div>
+                            <img id="counterfactual-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- [131] Fracture Graph Analysis -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-diagram-3"></i> Fracture Graph Analysis</span>
+                            <button class="btn btn-sm btn-light" onclick="runFractureGraph()">Analyze</button>
+                        </div>
+                        <div class="card-body" id="graph-results" style="display:none;">
+                            <div id="graph-brief" class="alert alert-light mb-2"></div>
+                            <div class="row" id="graph-metrics"></div>
+                            <div id="graph-details" class="mt-2"></div>
+                            <img id="graph-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- [132] Depth-Sequence Attention -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-layers"></i> Depth-Sequence Attention</span>
+                            <button class="btn btn-sm btn-light" onclick="runDepthAttention()">Analyze</button>
+                        </div>
+                        <div class="card-body" id="attention-results" style="display:none;">
+                            <div id="attention-brief" class="alert alert-light mb-2"></div>
+                            <div class="row" id="attention-metrics"></div>
+                            <div id="attention-details" class="mt-2"></div>
+                            <img id="attention-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- [133] Differential Privacy -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-shield-lock"></i> Differential Privacy</span>
+                            <button class="btn btn-sm btn-dark" onclick="runPrivatePredict()">Generate</button>
+                        </div>
+                        <div class="card-body" id="privacy-results" style="display:none;">
+                            <div id="privacy-brief" class="alert alert-light mb-2"></div>
+                            <div class="row" id="privacy-metrics"></div>
+                            <div id="privacy-details" class="mt-2"></div>
+                            <img id="privacy-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- [134] Auto-Recalibration -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-repeat"></i> Auto-Recalibration</span>
+                            <button class="btn btn-sm btn-light" onclick="runAutoRecalibrate()">Recalibrate</button>
+                        </div>
+                        <div class="card-body" id="recalibrate-results" style="display:none;">
+                            <div id="recalibrate-brief" class="alert alert-light mb-2"></div>
+                            <div class="row" id="recalibrate-metrics"></div>
+                            <div id="recalibrate-details" class="mt-2"></div>
+                            <img id="recalibrate-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

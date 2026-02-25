@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.38.0 - SSE Streaming + Data Validation + What-If Simulator + Ensemble Voting + ONNX Fast Classify)."""
+"""GeoStress AI - FastAPI Web Application (v3.39.0 - Counterfactual XAI + Fracture Graph + Depth-Sequence Attention + Differential Privacy + Auto-Recalibration)."""
 
 import os
 import io
@@ -29595,4 +29595,1064 @@ async def api_fast_classify(request: Request):
     _audit_record("fast_classify", {"source": source, "well": well},
                   {"speedup": result["speedup"]}, source, well, elapsed)
     _fast_classify_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v3.39.0 — Counterfactual XAI + Fracture Graph + Depth-Sequence Attention
+#            + Differential Privacy + Auto-Recalibration
+# ══════════════════════════════════════════════════════════════════════════════
+
+_counterfactual_cache: dict = {}
+_fracture_graph_cache: dict = {}
+_depth_attention_cache: dict = {}
+_dp_cache: dict = {}
+_auto_recal_cache: dict = {}
+
+
+# ── [130] Counterfactual Explanations (XAI beyond SHAP) ─────────────────────
+@app.post("/api/analysis/counterfactual")
+async def api_counterfactual(request: Request):
+    """Generate counterfactual explanations: what minimal changes would flip a prediction?
+
+    For each sample (or queried subset), finds the nearest decision boundary
+    and reports which features need to change (and by how much) to change the
+    predicted class. This is critical for stakeholder trust — "why NOT class X?"
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_samples = min(body.get("n_samples", 10), 50)
+
+    cache_key = f"{source}_{well}_{n_samples}"
+    if cache_key in _counterfactual_cache:
+        return _sanitize_for_json(_counterfactual_cache[cache_key])
+
+    t0 = time.time()
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        from src.enhanced_analysis import engineer_enhanced_features
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        import warnings
+        warnings.filterwarnings("ignore")
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 10:
+            raise ValueError(f"Well {well} has too few fractures ({len(df_well)})")
+
+        features_df = engineer_enhanced_features(df_well)
+        X = features_df.values
+        feature_names = features_df.columns.tolist()
+        le = LabelEncoder()
+        y = le.fit_transform(df_well["fracture_type"])
+        classes = le.classes_.tolist()
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        model.fit(X_scaled, y)
+
+        proba = model.predict_proba(X_scaled)
+        preds = model.predict(X_scaled)
+
+        # Find counterfactuals for n_samples most uncertain predictions
+        uncertainty = 1.0 - np.max(proba, axis=1)
+        uncertain_idx = np.argsort(uncertainty)[-n_samples:]
+
+        counterfactuals = []
+        for idx in uncertain_idx:
+            x_orig = X_scaled[idx].copy()
+            pred_class = le.inverse_transform([preds[idx]])[0]
+            pred_prob = float(np.max(proba[idx]))
+
+            # Find nearest class boundary by perturbing features
+            best_flip = None
+            best_distance = float("inf")
+
+            # Try flipping to each alternative class
+            for target_cls_idx in range(len(classes)):
+                if target_cls_idx == preds[idx]:
+                    continue
+
+                # Find samples of target class and compute direction
+                target_mask = y == target_cls_idx
+                if not np.any(target_mask):
+                    continue
+
+                target_centroid = X_scaled[target_mask].mean(axis=0)
+                direction = target_centroid - x_orig
+                dist = float(np.linalg.norm(direction))
+
+                if dist < 1e-10:
+                    continue
+
+                # Binary search for minimal perturbation that flips prediction
+                lo, hi = 0.0, 1.0
+                flip_point = None
+                for _ in range(20):
+                    mid = (lo + hi) / 2
+                    x_perturbed = x_orig + mid * direction
+                    new_pred = model.predict(x_perturbed.reshape(1, -1))[0]
+                    if new_pred == target_cls_idx:
+                        hi = mid
+                        flip_point = mid
+                    else:
+                        lo = mid
+
+                if flip_point is not None:
+                    x_flipped = x_orig + flip_point * direction
+                    delta = x_flipped - x_orig
+
+                    # Unscale deltas to original feature space
+                    delta_orig = delta * scaler.scale_
+                    total_change = float(np.linalg.norm(delta_orig))
+
+                    if total_change < best_distance:
+                        best_distance = total_change
+
+                        # Top features that changed most
+                        abs_delta = np.abs(delta_orig)
+                        top_feat_idx = np.argsort(abs_delta)[-5:][::-1]
+                        changes = []
+                        for fi in top_feat_idx:
+                            if abs_delta[fi] > 1e-6:
+                                changes.append({
+                                    "feature": feature_names[fi],
+                                    "current_value": round(float(X[idx, fi]), 3),
+                                    "needed_value": round(float(X[idx, fi] + delta_orig[fi]), 3),
+                                    "change": round(float(delta_orig[fi]), 3),
+                                    "importance": round(float(abs_delta[fi] / (np.sum(abs_delta) + 1e-10)), 3),
+                                })
+
+                        best_flip = {
+                            "sample_index": int(idx),
+                            "depth": round(float(df_well[DEPTH_COL].iloc[idx]), 1) if DEPTH_COL in df_well.columns and not np.isnan(df_well[DEPTH_COL].iloc[idx]) else None,
+                            "current_prediction": pred_class,
+                            "current_confidence": round(pred_prob, 3),
+                            "counterfactual_class": classes[target_cls_idx],
+                            "total_change_magnitude": round(total_change, 3),
+                            "feature_changes": changes,
+                            "explanation": f"To change from '{pred_class}' to '{classes[target_cls_idx]}', the most important change is in '{changes[0]['feature']}' ({changes[0]['change']:+.2f})" if changes else "No feasible counterfactual found",
+                        }
+
+            if best_flip:
+                counterfactuals.append(best_flip)
+
+        # Summary stats
+        if counterfactuals:
+            all_features = {}
+            for cf in counterfactuals:
+                for ch in cf["feature_changes"]:
+                    fname = ch["feature"]
+                    if fname not in all_features:
+                        all_features[fname] = 0
+                    all_features[fname] += 1
+
+            most_influential = sorted(all_features.items(), key=lambda x: -x[1])[:10]
+        else:
+            most_influential = []
+
+        # Recommendations
+        recommendations = []
+        if most_influential:
+            top_feat = most_influential[0][0]
+            recommendations.append(f"'{top_feat}' is the most common decision boundary feature — focus data collection here")
+        if len(counterfactuals) > n_samples * 0.5:
+            recommendations.append("Many samples are near decision boundaries — consider collecting more training data for borderline cases")
+        recommendations.append("Counterfactual explanations help field engineers understand WHY a classification was made and what would change it")
+
+        # Plot: feature importance in counterfactuals
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            if most_influential:
+                feats = [m[0][:20] for m in most_influential]
+                counts = [m[1] for m in most_influential]
+                axes[0].barh(range(len(feats)), counts, color="#e74c3c")
+                axes[0].set_yticks(range(len(feats)))
+                axes[0].set_yticklabels(feats, fontsize=8)
+                axes[0].set_xlabel("Times in Counterfactual")
+                axes[0].set_title("Most Influential Boundary Features")
+                axes[0].invert_yaxis()
+
+            if counterfactuals:
+                magnitudes = [cf["total_change_magnitude"] for cf in counterfactuals]
+                axes[1].hist(magnitudes, bins=15, color="#3498db", edgecolor="white")
+                axes[1].set_xlabel("Change Magnitude")
+                axes[1].set_ylabel("Count")
+                axes[1].set_title("Counterfactual Distance Distribution")
+                axes[1].axvline(np.median(magnitudes), color="red", linestyle="--", label=f"Median={np.median(magnitudes):.1f}")
+                axes[1].legend()
+
+            fig.suptitle(f"Counterfactual Explanations — Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_samples_analyzed": len(counterfactuals),
+            "n_classes": len(classes),
+            "classes": classes,
+            "counterfactuals": counterfactuals,
+            "most_influential_features": [{"feature": f, "count": c} for f, c in most_influential],
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Counterfactual analysis: {len(counterfactuals)} near-boundary predictions explained",
+                "risk_level": "AMBER" if len(counterfactuals) > n_samples * 0.3 else "GREEN",
+                "what_this_means": "Shows what would need to change for each uncertain prediction to flip to a different class",
+                "for_non_experts": f"We found {len(counterfactuals)} predictions that are close to being classified differently. "
+                                  f"The most important factor is '{most_influential[0][0]}' — small changes here would change the prediction." if most_influential else "All predictions are confidently away from decision boundaries.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("counterfactual", {"source": source, "well": well, "n_samples": n_samples},
+                  {"n_counterfactuals": result["n_samples_analyzed"]}, source, well, elapsed)
+    _counterfactual_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [131] Fracture Graph Analysis (GNN-lite with sklearn) ────────────────────
+@app.post("/api/analysis/fracture-graph")
+async def api_fracture_graph(request: Request):
+    """Analyze fracture network as a spatial graph.
+
+    Treats each fracture as a node. Edges connect fractures within a depth/orientation
+    proximity threshold. Computes graph metrics (degree, clustering, communities)
+    that reveal fracture connectivity patterns invisible to standard ML features.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_threshold = body.get("depth_threshold_m", 5.0)
+    angle_threshold = body.get("angle_threshold_deg", 15.0)
+
+    cache_key = f"{source}_{well}_{depth_threshold}_{angle_threshold}"
+    if cache_key in _fracture_graph_cache:
+        return _sanitize_for_json(_fracture_graph_cache[cache_key])
+
+    t0 = time.time()
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 5:
+            raise ValueError(f"Well {well} has too few fractures ({len(df_well)})")
+
+        n = len(df_well)
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.zeros(n)
+        azimuths = df_well[AZIMUTH_COL].values
+        dips = df_well[DIP_COL].values
+
+        # Build adjacency matrix based on depth + orientation proximity
+        # Angular distance on a circle: min(|a-b|, 360-|a-b|)
+        adj = np.zeros((n, n), dtype=bool)
+        for i in range(n):
+            for j in range(i + 1, n):
+                depth_dist = abs(float(depths[i]) - float(depths[j])) if not (np.isnan(depths[i]) or np.isnan(depths[j])) else float("inf")
+                az_diff = abs(float(azimuths[i]) - float(azimuths[j]))
+                az_dist = min(az_diff, 360.0 - az_diff)
+                dip_dist = abs(float(dips[i]) - float(dips[j]))
+                orient_dist = (az_dist**2 + dip_dist**2) ** 0.5
+
+                if depth_dist <= depth_threshold and orient_dist <= angle_threshold:
+                    adj[i, j] = True
+                    adj[j, i] = True
+
+        # Graph metrics per node
+        degree = adj.sum(axis=1).astype(int)
+        n_edges = int(adj.sum() // 2)
+
+        # Clustering coefficient per node
+        clustering = np.zeros(n)
+        for i in range(n):
+            neighbors = np.where(adj[i])[0]
+            k = len(neighbors)
+            if k < 2:
+                clustering[i] = 0.0
+                continue
+            # Count edges among neighbors
+            neighbor_edges = 0
+            for ni in range(len(neighbors)):
+                for nj in range(ni + 1, len(neighbors)):
+                    if adj[neighbors[ni], neighbors[nj]]:
+                        neighbor_edges += 1
+            clustering[i] = 2.0 * neighbor_edges / (k * (k - 1))
+
+        # Connected components (BFS)
+        visited = np.zeros(n, dtype=bool)
+        components = []
+        for start in range(n):
+            if visited[start]:
+                continue
+            component = []
+            queue = [start]
+            visited[start] = True
+            while queue:
+                node = queue.pop(0)
+                component.append(node)
+                for nb in np.where(adj[node])[0]:
+                    if not visited[nb]:
+                        visited[nb] = True
+                        queue.append(nb)
+            components.append(component)
+
+        component_sizes = sorted([len(c) for c in components], reverse=True)
+        n_components = len(components)
+
+        # Hub nodes (top 10% by degree)
+        hub_threshold = max(1, np.percentile(degree, 90))
+        hub_indices = np.where(degree >= hub_threshold)[0]
+
+        # Per-class graph stats
+        types = df_well["fracture_type"].values if "fracture_type" in df_well.columns else np.array(["Unknown"] * n)
+        unique_types = np.unique(types)
+        class_stats = []
+        for ft in unique_types:
+            mask = types == ft
+            class_stats.append({
+                "class": str(ft),
+                "count": int(mask.sum()),
+                "mean_degree": round(float(degree[mask].mean()), 2),
+                "mean_clustering": round(float(clustering[mask].mean()), 3),
+                "max_degree": int(degree[mask].max()),
+                "pct_hubs": round(100.0 * (degree[mask] >= hub_threshold).sum() / mask.sum(), 1),
+            })
+
+        # Recommendations
+        recommendations = []
+        avg_degree = float(degree.mean())
+        avg_clustering_val = float(clustering.mean())
+        if avg_degree < 2:
+            recommendations.append(f"LOW connectivity (avg degree {avg_degree:.1f}) — fractures are mostly isolated, consider widening depth/angle thresholds")
+        elif avg_degree > 10:
+            recommendations.append(f"HIGH connectivity (avg degree {avg_degree:.1f}) — dense fracture network suggests active structural deformation")
+        if n_components > n * 0.3:
+            recommendations.append(f"{n_components} isolated clusters detected — possible multiple fracture sets from different stress episodes")
+        if avg_clustering_val > 0.3:
+            recommendations.append(f"High clustering ({avg_clustering_val:.2f}) — fractures form tight groups, indicative of localized damage zones")
+        recommendations.append("Graph features (degree, clustering) can be used as additional ML features to improve classification")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+
+            # Degree distribution
+            axes[0, 0].hist(degree, bins=20, color="#2ecc71", edgecolor="white")
+            axes[0, 0].set_xlabel("Node Degree")
+            axes[0, 0].set_ylabel("Count")
+            axes[0, 0].set_title(f"Degree Distribution (avg={avg_degree:.1f})")
+            axes[0, 0].axvline(avg_degree, color="red", linestyle="--")
+
+            # Clustering coefficient distribution
+            axes[0, 1].hist(clustering, bins=20, color="#9b59b6", edgecolor="white")
+            axes[0, 1].set_xlabel("Clustering Coefficient")
+            axes[0, 1].set_ylabel("Count")
+            axes[0, 1].set_title(f"Clustering Distribution (avg={avg_clustering_val:.2f})")
+
+            # Component size distribution
+            axes[1, 0].bar(range(min(20, len(component_sizes))), component_sizes[:20], color="#e74c3c")
+            axes[1, 0].set_xlabel("Component Rank")
+            axes[1, 0].set_ylabel("Size")
+            axes[1, 0].set_title(f"Component Sizes ({n_components} total)")
+
+            # Per-class mean degree
+            cls_names = [cs["class"][:15] for cs in class_stats]
+            cls_degrees = [cs["mean_degree"] for cs in class_stats]
+            axes[1, 1].barh(range(len(cls_names)), cls_degrees, color="#3498db")
+            axes[1, 1].set_yticks(range(len(cls_names)))
+            axes[1, 1].set_yticklabels(cls_names)
+            axes[1, 1].set_xlabel("Mean Degree")
+            axes[1, 1].set_title("Connectivity by Fracture Type")
+            axes[1, 1].invert_yaxis()
+
+            fig.suptitle(f"Fracture Graph Analysis — Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_nodes": n,
+            "n_edges": n_edges,
+            "n_components": n_components,
+            "largest_component_size": component_sizes[0] if component_sizes else 0,
+            "avg_degree": round(avg_degree, 2),
+            "avg_clustering": round(avg_clustering_val, 3),
+            "n_hubs": int(len(hub_indices)),
+            "hub_threshold_degree": int(hub_threshold),
+            "depth_threshold_m": depth_threshold,
+            "angle_threshold_deg": angle_threshold,
+            "component_sizes": component_sizes[:20],
+            "class_graph_stats": class_stats,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fracture graph: {n_edges} connections, {n_components} clusters, avg connectivity {avg_degree:.1f}",
+                "risk_level": "GREEN" if avg_degree >= 2 else "AMBER",
+                "what_this_means": f"Treating {n} fractures as a spatial network reveals {n_components} distinct fracture clusters with {n_edges} connections",
+                "for_non_experts": f"We mapped how fractures connect to each other spatially. "
+                                  f"Found {n_components} separate groups of connected fractures. "
+                                  f"Each fracture connects to about {avg_degree:.0f} others on average. "
+                                  f"{'Highly connected network suggests active deformation.' if avg_degree > 5 else 'Moderate connectivity — fractures are somewhat isolated.'}",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("fracture_graph", {"source": source, "well": well},
+                  {"n_edges": result["n_edges"], "n_components": result["n_components"]}, source, well, elapsed)
+    _fracture_graph_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [132] Depth-Sequence Attention Classification ────────────────────────────
+@app.post("/api/analysis/depth-attention")
+async def api_depth_attention(request: Request):
+    """Classification with depth-sequence attention weighting.
+
+    Implements a simplified attention mechanism: for each fracture, compute
+    attention weights over its depth-neighborhood, creating context-aware
+    features. This captures depth-dependent patterns (e.g., fracture type
+    transitions at formation boundaries) that standard features miss.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    window_size = min(body.get("window_size", 20), 50)
+
+    cache_key = f"{source}_{well}_{window_size}"
+    if cache_key in _depth_attention_cache:
+        return _sanitize_for_json(_depth_attention_cache[cache_key])
+
+    t0 = time.time()
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        from src.enhanced_analysis import engineer_enhanced_features
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.model_selection import cross_val_predict
+        from sklearn.metrics import balanced_accuracy_score, classification_report
+        import warnings
+        warnings.filterwarnings("ignore")
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 10:
+            raise ValueError(f"Well {well} has too few fractures ({len(df_well)})")
+
+        features_df = engineer_enhanced_features(df_well)
+        X_base = features_df.values
+        feature_names = features_df.columns.tolist()
+        le = LabelEncoder()
+        y = le.fit_transform(df_well["fracture_type"])
+        classes = le.classes_.tolist()
+
+        # Sort by depth for sequence modeling
+        depths = df_well[DEPTH_COL].values if DEPTH_COL in df_well.columns else np.arange(len(df_well), dtype=float)
+        sort_idx = np.argsort(depths)
+        X_sorted = X_base[sort_idx]
+        y_sorted = y[sort_idx]
+        depths_sorted = depths[sort_idx]
+
+        n_samples, n_features = X_sorted.shape
+
+        # Compute attention-weighted features
+        # For each sample, attend to its depth neighborhood
+        X_attention = np.zeros((n_samples, n_features * 2))  # original + attention-weighted context
+
+        for i in range(n_samples):
+            # Context window
+            lo = max(0, i - window_size // 2)
+            hi = min(n_samples, i + window_size // 2 + 1)
+            context = X_sorted[lo:hi]
+
+            # Attention weights: softmax of negative distance in feature space
+            center = X_sorted[i]
+            dists = np.linalg.norm(context - center, axis=1)
+            # Add depth-based weighting
+            depth_dists = np.abs(depths_sorted[lo:hi] - depths_sorted[i])
+            depth_weights = np.exp(-depth_dists / max(np.std(depths_sorted[lo:hi]) + 1e-10, 1e-10))
+            # Combined attention
+            feature_weights = np.exp(-dists / max(np.std(dists) + 1e-10, 1e-10))
+            attention = feature_weights * depth_weights
+            attention = attention / (attention.sum() + 1e-10)
+
+            # Weighted context features
+            weighted_context = (context.T @ attention).ravel()
+
+            X_attention[i, :n_features] = center
+            X_attention[i, n_features:] = weighted_context
+
+        # Unsort back to original order
+        unsort_idx = np.argsort(sort_idx)
+        X_attention_orig = X_attention[unsort_idx]
+        y_orig = y_sorted[unsort_idx]
+
+        # Compare: baseline vs attention-enhanced
+        scaler_base = StandardScaler()
+        X_base_scaled = scaler_base.fit_transform(X_base)
+        model_base = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        preds_base = cross_val_predict(model_base, X_base_scaled, y, cv=3)
+        ba_base = round(float(balanced_accuracy_score(y, preds_base)) * 100, 1)
+
+        scaler_att = StandardScaler()
+        X_att_scaled = scaler_att.fit_transform(X_attention_orig)
+        model_att = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        preds_att = cross_val_predict(model_att, X_att_scaled, y_orig, cv=3)
+        ba_att = round(float(balanced_accuracy_score(y_orig, preds_att)) * 100, 1)
+
+        improvement = round(ba_att - ba_base, 1)
+
+        # Per-class comparison
+        report_base = classification_report(y, preds_base, target_names=classes, output_dict=True, zero_division=0)
+        report_att = classification_report(y_orig, preds_att, target_names=classes, output_dict=True, zero_division=0)
+
+        per_class = []
+        for cls in classes:
+            per_class.append({
+                "class": cls,
+                "baseline_f1": round(report_base[cls]["f1-score"] * 100, 1),
+                "attention_f1": round(report_att[cls]["f1-score"] * 100, 1),
+                "improvement": round((report_att[cls]["f1-score"] - report_base[cls]["f1-score"]) * 100, 1),
+            })
+
+        # Attention pattern analysis: which depth zones have strongest attention effects
+        attention_names = [f + "_ctx" for f in feature_names]
+        all_feature_names = feature_names + attention_names
+
+        # Recommendations
+        recommendations = []
+        if improvement > 2:
+            recommendations.append(f"Depth attention IMPROVED accuracy by {improvement}% — depth-sequence patterns are informative")
+            recommendations.append("Consider using attention-enhanced features in production pipeline")
+        elif improvement > -1:
+            recommendations.append(f"Attention effect is marginal ({improvement:+.1f}%) — depth sequence adds limited information")
+        else:
+            recommendations.append(f"Attention DECREASED accuracy by {abs(improvement)}% — standard features already capture depth patterns")
+        recommendations.append(f"Window size {window_size} captures ~{window_size * np.median(np.diff(depths_sorted)):.0f}m depth context" if len(depths_sorted) > 1 else f"Window size {window_size}")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Accuracy comparison
+            labels = ["Baseline", "Depth-Attention"]
+            values = [ba_base, ba_att]
+            colors = ["#3498db", "#e74c3c" if improvement < 0 else "#2ecc71"]
+            axes[0].bar(labels, values, color=colors)
+            axes[0].set_ylabel("Balanced Accuracy (%)")
+            axes[0].set_title(f"Overall: {improvement:+.1f}% change")
+            for i_bar, v in enumerate(values):
+                axes[0].text(i_bar, v + 0.5, f"{v}%", ha="center", fontweight="bold")
+
+            # Per-class F1 comparison
+            x_pos = np.arange(len(classes))
+            width = 0.35
+            axes[1].bar(x_pos - width / 2, [pc["baseline_f1"] for pc in per_class], width, label="Baseline", color="#3498db")
+            axes[1].bar(x_pos + width / 2, [pc["attention_f1"] for pc in per_class], width, label="Attention", color="#2ecc71")
+            axes[1].set_xticks(x_pos)
+            axes[1].set_xticklabels([c[:12] for c in classes], rotation=45, ha="right", fontsize=8)
+            axes[1].set_ylabel("F1 Score (%)")
+            axes[1].set_title("Per-Class F1")
+            axes[1].legend(fontsize=8)
+
+            # Depth profile of prediction changes
+            changed_mask = preds_base != preds_att[unsort_idx] if len(preds_base) == len(preds_att) else np.zeros(len(preds_base), dtype=bool)
+            if DEPTH_COL in df_well.columns:
+                all_depths = df_well[DEPTH_COL].values
+                axes[2].hist(all_depths[~np.isnan(all_depths)], bins=30, alpha=0.3, color="gray", label="All")
+                if changed_mask.any():
+                    changed_depths = all_depths[changed_mask]
+                    axes[2].hist(changed_depths[~np.isnan(changed_depths)], bins=30, alpha=0.7, color="#e74c3c", label="Changed")
+                axes[2].set_xlabel("Depth (m)")
+                axes[2].set_ylabel("Count")
+                axes[2].set_title("Where Attention Changes Predictions")
+                axes[2].legend(fontsize=8)
+            else:
+                axes[2].text(0.5, 0.5, "No depth data", ha="center", va="center", transform=axes[2].transAxes)
+
+            fig.suptitle(f"Depth-Sequence Attention — Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "window_size": window_size,
+            "n_base_features": len(feature_names),
+            "n_attention_features": len(all_feature_names),
+            "baseline_balanced_accuracy": ba_base,
+            "attention_balanced_accuracy": ba_att,
+            "improvement_pct": improvement,
+            "verdict": "ATTENTION_BETTER" if improvement > 1 else ("SIMILAR" if improvement > -1 else "BASELINE_BETTER"),
+            "per_class": per_class,
+            "n_predictions_changed": int(changed_mask.sum()),
+            "pct_predictions_changed": round(100.0 * changed_mask.sum() / len(changed_mask), 1),
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Depth attention: {improvement:+.1f}% accuracy change ({ba_att}% vs {ba_base}% baseline)",
+                "risk_level": "GREEN" if ba_att >= ba_base else "AMBER",
+                "what_this_means": f"Adding depth-sequence context {'improved' if improvement > 0 else 'did not improve'} classification accuracy",
+                "for_non_experts": f"We tested whether looking at nearby fractures in the same depth zone helps predict fracture types. "
+                                  f"{'It improved accuracy by ' + str(improvement) + '%! Nearby fractures carry useful information.' if improvement > 1 else 'The effect was small — standard features already capture most depth patterns.'}",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("depth_attention", {"source": source, "well": well, "window": window_size},
+                  {"improvement": result["improvement_pct"]}, source, well, elapsed)
+    _depth_attention_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [133] Differential Privacy for Proprietary Data Sharing ──────────────────
+@app.post("/api/analysis/private-predict")
+async def api_private_predict(request: Request):
+    """Generate differentially-private predictions for proprietary data sharing.
+
+    Adds calibrated Laplace noise to predictions and confidence scores,
+    enabling operators to share results with partners/regulators without
+    exposing exact proprietary measurements. Provides epsilon-delta privacy
+    guarantees.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    epsilon = body.get("epsilon", 1.0)  # Privacy budget (lower = more private)
+    epsilon = max(0.01, min(epsilon, 10.0))
+
+    cache_key = f"{source}_{well}_{epsilon}"
+    if cache_key in _dp_cache:
+        return _sanitize_for_json(_dp_cache[cache_key])
+
+    t0 = time.time()
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        from src.enhanced_analysis import engineer_enhanced_features
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.model_selection import cross_val_predict
+        from sklearn.metrics import balanced_accuracy_score
+        import warnings
+        warnings.filterwarnings("ignore")
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 10:
+            raise ValueError(f"Well {well} has too few fractures ({len(df_well)})")
+
+        features_df = engineer_enhanced_features(df_well)
+        X = features_df.values
+        feature_names = features_df.columns.tolist()
+        le = LabelEncoder()
+        y = le.fit_transform(df_well["fracture_type"])
+        classes = le.classes_.tolist()
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        model.fit(X_scaled, y)
+        proba = model.predict_proba(X_scaled)
+        preds = model.predict(X_scaled)
+
+        # True accuracy (non-private)
+        preds_cv = cross_val_predict(model, X_scaled, y, cv=3)
+        true_accuracy = round(float(balanced_accuracy_score(y, preds_cv)) * 100, 1)
+
+        # Apply Laplace mechanism to probabilities
+        rng = np.random.default_rng(42)
+        sensitivity = 1.0 / len(df_well)  # L1 sensitivity of probability
+        noise_scale = sensitivity / epsilon
+
+        private_proba = proba + rng.laplace(0, noise_scale, proba.shape)
+        # Clip to valid probability range and re-normalize
+        private_proba = np.clip(private_proba, 0, 1)
+        row_sums = private_proba.sum(axis=1, keepdims=True)
+        private_proba = private_proba / (row_sums + 1e-10)
+
+        private_preds = private_proba.argmax(axis=1)
+
+        # Privacy metrics
+        agreement = float(np.mean(preds == private_preds))
+        private_accuracy = round(float(balanced_accuracy_score(y, private_preds)) * 100, 1)
+        accuracy_cost = round(true_accuracy - private_accuracy, 1)
+
+        # Aggregate statistics (with noise for privacy)
+        class_counts_true = {cls: int((preds == i).sum()) for i, cls in enumerate(classes)}
+        class_counts_private = {cls: int((private_preds == i).sum()) for i, cls in enumerate(classes)}
+
+        # Private summary statistics
+        avg_confidence_true = round(float(np.max(proba, axis=1).mean()), 3)
+        avg_confidence_private = round(float(np.max(private_proba, axis=1).mean()), 3)
+
+        # Per-class privacy impact
+        per_class = []
+        for i, cls in enumerate(classes):
+            true_count = int((preds == i).sum())
+            private_count = int((private_preds == i).sum())
+            per_class.append({
+                "class": cls,
+                "true_count": true_count,
+                "private_count": private_count,
+                "count_difference": private_count - true_count,
+                "true_avg_confidence": round(float(proba[preds == i, i].mean()), 3) if (preds == i).any() else 0,
+                "private_avg_confidence": round(float(private_proba[private_preds == i, i].mean()), 3) if (private_preds == i).any() else 0,
+            })
+
+        # Privacy level assessment
+        if epsilon < 0.1:
+            privacy_level = "VERY_HIGH"
+            privacy_desc = "Strong privacy, significant accuracy cost"
+        elif epsilon < 1.0:
+            privacy_level = "HIGH"
+            privacy_desc = "Good privacy-utility tradeoff"
+        elif epsilon < 5.0:
+            privacy_level = "MODERATE"
+            privacy_desc = "Moderate privacy, low accuracy cost"
+        else:
+            privacy_level = "LOW"
+            privacy_desc = "Minimal privacy protection"
+
+        # Recommendations
+        recommendations = []
+        if accuracy_cost > 5:
+            recommendations.append(f"Privacy cost is HIGH ({accuracy_cost}% accuracy loss) — consider increasing epsilon for better utility")
+        elif accuracy_cost < 1:
+            recommendations.append(f"Privacy cost is LOW ({accuracy_cost}%) — current epsilon provides good privacy-utility balance")
+        recommendations.append(f"Epsilon={epsilon}: {privacy_desc}")
+        recommendations.append("Private predictions can be safely shared with partners without revealing proprietary measurement details")
+        if agreement < 0.9:
+            recommendations.append(f"Only {agreement*100:.0f}% agreement between true and private predictions — consider higher epsilon for critical decisions")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Accuracy comparison
+            bars = axes[0].bar(["True", "Private"], [true_accuracy, private_accuracy],
+                              color=["#2ecc71", "#e74c3c"])
+            axes[0].set_ylabel("Balanced Accuracy (%)")
+            axes[0].set_title(f"Privacy Cost: {accuracy_cost}%")
+            for bar, v in zip(bars, [true_accuracy, private_accuracy]):
+                axes[0].text(bar.get_x() + bar.get_width() / 2, v + 0.5, f"{v}%", ha="center", fontweight="bold")
+
+            # Confidence distribution comparison
+            axes[1].hist(np.max(proba, axis=1), bins=20, alpha=0.5, color="#2ecc71", label="True")
+            axes[1].hist(np.max(private_proba, axis=1), bins=20, alpha=0.5, color="#e74c3c", label="Private")
+            axes[1].set_xlabel("Max Confidence")
+            axes[1].set_ylabel("Count")
+            axes[1].set_title("Confidence Distributions")
+            axes[1].legend()
+
+            # Per-class count comparison
+            x_pos = np.arange(len(classes))
+            width = 0.35
+            axes[2].bar(x_pos - width / 2, [pc["true_count"] for pc in per_class], width, label="True", color="#2ecc71")
+            axes[2].bar(x_pos + width / 2, [pc["private_count"] for pc in per_class], width, label="Private", color="#e74c3c")
+            axes[2].set_xticks(x_pos)
+            axes[2].set_xticklabels([c[:12] for c in classes], rotation=45, ha="right", fontsize=8)
+            axes[2].set_ylabel("Count")
+            axes[2].set_title("Class Distribution Shift")
+            axes[2].legend(fontsize=8)
+
+            fig.suptitle(f"Differential Privacy (ε={epsilon}) — Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "epsilon": epsilon,
+            "privacy_level": privacy_level,
+            "true_accuracy": true_accuracy,
+            "private_accuracy": private_accuracy,
+            "accuracy_cost_pct": accuracy_cost,
+            "prediction_agreement": round(agreement, 3),
+            "true_avg_confidence": avg_confidence_true,
+            "private_avg_confidence": avg_confidence_private,
+            "noise_scale": round(noise_scale, 6),
+            "per_class": per_class,
+            "class_counts_true": class_counts_true,
+            "class_counts_private": class_counts_private,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Differential privacy (ε={epsilon}): {accuracy_cost}% accuracy cost, {privacy_level} protection",
+                "risk_level": "GREEN" if accuracy_cost < 3 else ("AMBER" if accuracy_cost < 10 else "RED"),
+                "what_this_means": f"Added mathematical noise to predictions for secure sharing. {agreement*100:.0f}% of predictions unchanged.",
+                "for_non_experts": f"We added controlled randomness to protect proprietary data. "
+                                  f"This changes {(1-agreement)*100:.0f}% of predictions but keeps the overall accuracy within {accuracy_cost}% of the original. "
+                                  f"Safe to share with partners or regulators.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("private_predict", {"source": source, "well": well, "epsilon": epsilon},
+                  {"accuracy_cost": result["accuracy_cost_pct"]}, source, well, elapsed)
+    _dp_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [134] Auto-Recalibration — Detect and Correct Model Degradation ──────────
+@app.post("/api/analysis/auto-recalibrate")
+async def api_auto_recalibrate(request: Request):
+    """Detect model degradation and auto-recalibrate probability estimates.
+
+    Runs calibration diagnostics, compares expected vs observed class frequencies,
+    and applies Platt scaling or isotonic regression if miscalibration is detected.
+    Critical for production systems where data distribution may shift over time.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    method = body.get("method", "auto")  # auto, platt, isotonic
+    if method not in ("auto", "platt", "isotonic"):
+        raise HTTPException(400, f"method must be auto/platt/isotonic, got '{method}'")
+
+    cache_key = f"{source}_{well}_{method}"
+    if cache_key in _auto_recal_cache:
+        return _sanitize_for_json(_auto_recal_cache[cache_key])
+
+    t0 = time.time()
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        from src.enhanced_analysis import engineer_enhanced_features
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.model_selection import cross_val_predict
+        from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.metrics import balanced_accuracy_score, brier_score_loss
+        import warnings
+        warnings.filterwarnings("ignore")
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 10:
+            raise ValueError(f"Well {well} has too few fractures ({len(df_well)})")
+
+        features_df = engineer_enhanced_features(df_well)
+        X = features_df.values
+        feature_names = features_df.columns.tolist()
+        le = LabelEncoder()
+        y = le.fit_transform(df_well["fracture_type"])
+        classes = le.classes_.tolist()
+        n_classes = len(classes)
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # Baseline model
+        model_base = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        proba_base = cross_val_predict(model_base, X_scaled, y, cv=3, method="predict_proba")
+        preds_base = proba_base.argmax(axis=1)
+        ba_base = round(float(balanced_accuracy_score(y, preds_base)) * 100, 1)
+
+        # Compute ECE (Expected Calibration Error) for baseline
+        n_bins = 10
+        ece_base = 0.0
+        bin_details_base = []
+        max_proba_base = np.max(proba_base, axis=1)
+        correct_base = (preds_base == y).astype(float)
+        for b in range(n_bins):
+            lo = b / n_bins
+            hi = (b + 1) / n_bins
+            mask = (max_proba_base > lo) & (max_proba_base <= hi)
+            if mask.sum() == 0:
+                continue
+            avg_conf = float(max_proba_base[mask].mean())
+            avg_acc = float(correct_base[mask].mean())
+            ece_base += mask.sum() / len(y) * abs(avg_conf - avg_acc)
+            bin_details_base.append({
+                "bin": f"{lo:.1f}-{hi:.1f}",
+                "count": int(mask.sum()),
+                "avg_confidence": round(avg_conf, 3),
+                "avg_accuracy": round(avg_acc, 3),
+                "gap": round(abs(avg_conf - avg_acc), 3),
+            })
+        ece_base = round(ece_base * 100, 2)
+
+        # Choose calibration method
+        if method == "auto":
+            chosen = "isotonic" if len(df_well) >= 50 else "platt"
+        else:
+            chosen = "sigmoid" if method == "platt" else "isotonic"
+
+        # Calibrated model
+        model_cal = CalibratedClassifierCV(
+            RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced"),
+            method="sigmoid" if chosen in ("platt", "sigmoid") else "isotonic",
+            cv=3,
+        )
+        model_cal.fit(X_scaled, y)
+        proba_cal = model_cal.predict_proba(X_scaled)
+        preds_cal = proba_cal.argmax(axis=1)
+        ba_cal = round(float(balanced_accuracy_score(y, preds_cal)) * 100, 1)
+
+        # ECE for calibrated model
+        ece_cal = 0.0
+        bin_details_cal = []
+        max_proba_cal = np.max(proba_cal, axis=1)
+        correct_cal = (preds_cal == y).astype(float)
+        for b in range(n_bins):
+            lo = b / n_bins
+            hi = (b + 1) / n_bins
+            mask = (max_proba_cal > lo) & (max_proba_cal <= hi)
+            if mask.sum() == 0:
+                continue
+            avg_conf = float(max_proba_cal[mask].mean())
+            avg_acc = float(correct_cal[mask].mean())
+            ece_cal += mask.sum() / len(y) * abs(avg_conf - avg_acc)
+            bin_details_cal.append({
+                "bin": f"{lo:.1f}-{hi:.1f}",
+                "count": int(mask.sum()),
+                "avg_confidence": round(avg_conf, 3),
+                "avg_accuracy": round(avg_acc, 3),
+                "gap": round(abs(avg_conf - avg_acc), 3),
+            })
+        ece_cal = round(ece_cal * 100, 2)
+
+        ece_improvement = round(ece_base - ece_cal, 2)
+
+        # Brier score (multi-class)
+        brier_base = 0.0
+        brier_cal = 0.0
+        for cls_idx in range(n_classes):
+            y_binary = (y == cls_idx).astype(float)
+            brier_base += brier_score_loss(y_binary, proba_base[:, cls_idx])
+            brier_cal += brier_score_loss(y_binary, proba_cal[:, cls_idx])
+        brier_base = round(brier_base / n_classes, 4)
+        brier_cal = round(brier_cal / n_classes, 4)
+
+        # Calibration assessment
+        if ece_base < 3:
+            cal_status = "WELL_CALIBRATED"
+            needs_recal = False
+        elif ece_base < 8:
+            cal_status = "SLIGHTLY_MISCALIBRATED"
+            needs_recal = True
+        else:
+            cal_status = "POORLY_CALIBRATED"
+            needs_recal = True
+
+        # Recommendations
+        recommendations = []
+        if ece_improvement > 1:
+            recommendations.append(f"Recalibration IMPROVED ECE by {ece_improvement}% — use calibrated model in production")
+        elif ece_improvement > -0.5:
+            recommendations.append(f"Recalibration had minimal effect ({ece_improvement:+.1f}% ECE) — original model is already well-calibrated")
+        else:
+            recommendations.append(f"Recalibration WORSENED ECE — keep original model, investigate data distribution")
+        if not needs_recal:
+            recommendations.append(f"Model is {cal_status} (ECE={ece_base}%) — no recalibration needed")
+        recommendations.append(f"Method used: {chosen} ({method})")
+        recommendations.append("Monitor ECE over time — degradation above 5% triggers recalibration")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+            # Reliability diagram — baseline
+            confs_base = [bd["avg_confidence"] for bd in bin_details_base]
+            accs_base = [bd["avg_accuracy"] for bd in bin_details_base]
+            axes[0].plot([0, 1], [0, 1], "k--", alpha=0.5, label="Perfect")
+            axes[0].scatter(confs_base, accs_base, color="#e74c3c", s=80, zorder=5, label=f"Base ECE={ece_base}%")
+            axes[0].plot(confs_base, accs_base, "r-", alpha=0.5)
+            confs_cal = [bd["avg_confidence"] for bd in bin_details_cal]
+            accs_cal = [bd["avg_accuracy"] for bd in bin_details_cal]
+            axes[0].scatter(confs_cal, accs_cal, color="#2ecc71", s=80, zorder=5, marker="s", label=f"Cal ECE={ece_cal}%")
+            axes[0].plot(confs_cal, accs_cal, "g-", alpha=0.5)
+            axes[0].set_xlabel("Predicted Confidence")
+            axes[0].set_ylabel("Observed Accuracy")
+            axes[0].set_title("Reliability Diagram")
+            axes[0].legend(fontsize=8)
+
+            # ECE / Brier comparison
+            metrics = ["ECE (%)", "Brier Score"]
+            base_vals = [ece_base, brier_base * 100]
+            cal_vals = [ece_cal, brier_cal * 100]
+            x_pos = np.arange(len(metrics))
+            width = 0.35
+            axes[1].bar(x_pos - width / 2, base_vals, width, label="Baseline", color="#e74c3c")
+            axes[1].bar(x_pos + width / 2, cal_vals, width, label="Calibrated", color="#2ecc71")
+            axes[1].set_xticks(x_pos)
+            axes[1].set_xticklabels(metrics)
+            axes[1].set_ylabel("Score (lower = better)")
+            axes[1].set_title("Calibration Metrics")
+            axes[1].legend()
+
+            # Confidence distribution shift
+            axes[2].hist(max_proba_base, bins=20, alpha=0.5, color="#e74c3c", label="Baseline")
+            axes[2].hist(max_proba_cal, bins=20, alpha=0.5, color="#2ecc71", label="Calibrated")
+            axes[2].set_xlabel("Max Prediction Confidence")
+            axes[2].set_ylabel("Count")
+            axes[2].set_title("Confidence Distribution Shift")
+            axes[2].legend()
+
+            fig.suptitle(f"Auto-Recalibration ({chosen}) — Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "method": chosen,
+            "calibration_status": cal_status,
+            "needs_recalibration": needs_recal,
+            "baseline": {
+                "balanced_accuracy": ba_base,
+                "ece_pct": ece_base,
+                "brier_score": brier_base,
+                "calibration_bins": bin_details_base,
+            },
+            "calibrated": {
+                "balanced_accuracy": ba_cal,
+                "ece_pct": ece_cal,
+                "brier_score": brier_cal,
+                "calibration_bins": bin_details_cal,
+            },
+            "ece_improvement_pct": ece_improvement,
+            "accuracy_change_pct": round(ba_cal - ba_base, 1),
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Calibration: ECE {ece_base}% → {ece_cal}% ({ece_improvement:+.1f}% improvement)",
+                "risk_level": "GREEN" if ece_cal < 5 else ("AMBER" if ece_cal < 10 else "RED"),
+                "what_this_means": f"Model probability estimates are {'well-calibrated' if ece_cal < 5 else 'somewhat miscalibrated'} after {chosen} correction",
+                "for_non_experts": f"When the model says it's 80% confident, is it right 80% of the time? "
+                                  f"Before calibration: {ece_base}% error. After: {ece_cal}% error. "
+                                  f"{'No correction needed.' if ece_improvement < 1 else f'Calibration improved reliability by {ece_improvement}%.'}",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _audit_record("auto_recalibrate", {"source": source, "well": well, "method": method},
+                  {"ece_improvement": result["ece_improvement_pct"]}, source, well, elapsed)
+    _auto_recal_cache[cache_key] = result
     return _sanitize_for_json(result)

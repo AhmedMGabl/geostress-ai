@@ -11736,3 +11736,205 @@ async function runFastClassify() {
         hideLoading();
     }
 }
+
+// ── v3.39.0 ──────────────────────────────────────────────
+
+// ── [130] Counterfactual Explanations ──
+async function runCounterfactual() {
+    showLoading();
+    var results = document.getElementById('counterfactual-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/counterfactual', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well, n_samples: 10})
+        });
+        results.style.display = '';
+        var m = document.getElementById('counterfactual-metrics');
+        m.innerHTML =
+            metricCard('Samples', r.n_samples_analyzed) +
+            metricCard('Classes', r.n_classes) +
+            metricCard('Time', r.elapsed_s + 's');
+        var brief = r.stakeholder_brief;
+        if (brief) {
+            var rl = brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('counterfactual-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + brief.headline + '</strong><br>' +
+                brief.what_this_means + '<br><br><em>' + brief.for_non_experts + '</em>';
+        }
+        var det = document.getElementById('counterfactual-details');
+        if (r.counterfactuals && r.counterfactuals.length > 0) {
+            var html = '<h6>Counterfactual Explanations</h6><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Depth</th><th>Current</th><th>Conf</th><th>Counterfactual</th><th>Key Change</th></tr></thead><tbody>';
+            for (var i = 0; i < Math.min(r.counterfactuals.length, 15); i++) {
+                var cf = r.counterfactuals[i];
+                html += '<tr><td>' + (cf.depth || 'N/A') + 'm</td><td>' + cf.current_prediction + '</td><td>' + (cf.current_confidence*100).toFixed(0) + '%</td><td>' + cf.counterfactual_class + '</td><td>' + cf.explanation + '</td></tr>';
+            }
+            html += '</tbody></table></div>';
+            det.innerHTML = html;
+        }
+        var plotEl = document.getElementById('counterfactual-plot');
+        if (r.plot) { plotEl.src = r.plot; plotEl.style.display = ''; }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [131] Fracture Graph Analysis ──
+async function runFractureGraph() {
+    showLoading();
+    var results = document.getElementById('graph-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/fracture-graph', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well})
+        });
+        results.style.display = '';
+        var m = document.getElementById('graph-metrics');
+        m.innerHTML =
+            metricCard('Nodes', r.n_nodes) +
+            metricCard('Edges', r.n_edges) +
+            metricCard('Components', r.n_components) +
+            metricCard('Avg Degree', r.avg_degree) +
+            metricCard('Clustering', r.avg_clustering) +
+            metricCard('Hubs', r.n_hubs);
+        var brief = r.stakeholder_brief;
+        if (brief) {
+            var rl = brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('graph-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + brief.headline + '</strong><br>' +
+                brief.what_this_means + '<br><br><em>' + brief.for_non_experts + '</em>';
+        }
+        var plotEl = document.getElementById('graph-plot');
+        if (r.plot) { plotEl.src = r.plot; plotEl.style.display = ''; }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [132] Depth-Sequence Attention ──
+async function runDepthAttention() {
+    showLoading();
+    var results = document.getElementById('attention-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/depth-attention', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well, window_size: 20})
+        });
+        results.style.display = '';
+        var m = document.getElementById('attention-metrics');
+        var impCls = r.improvement_pct > 0 ? 'success' : r.improvement_pct < -1 ? 'danger' : 'warning';
+        m.innerHTML =
+            metricCard('Baseline', r.baseline_balanced_accuracy + '%') +
+            metricCard('Attention', r.attention_balanced_accuracy + '%', impCls) +
+            metricCard('Improvement', r.improvement_pct + '%', impCls) +
+            metricCard('Changed', r.pct_predictions_changed + '%') +
+            metricCard('Verdict', r.verdict) +
+            metricCard('Time', r.elapsed_s + 's');
+        var brief = r.stakeholder_brief;
+        if (brief) {
+            var rl = brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('attention-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + brief.headline + '</strong><br>' +
+                brief.what_this_means + '<br><br><em>' + brief.for_non_experts + '</em>';
+        }
+        var plotEl = document.getElementById('attention-plot');
+        if (r.plot) { plotEl.src = r.plot; plotEl.style.display = ''; }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [133] Differential Privacy ──
+async function runPrivatePredict() {
+    showLoading();
+    var results = document.getElementById('privacy-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/private-predict', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well, epsilon: 1.0})
+        });
+        results.style.display = '';
+        var m = document.getElementById('privacy-metrics');
+        var costCls = r.accuracy_cost_pct < 3 ? 'success' : r.accuracy_cost_pct < 10 ? 'warning' : 'danger';
+        m.innerHTML =
+            metricCard('Privacy', r.privacy_level) +
+            metricCard('True Acc', r.true_accuracy + '%') +
+            metricCard('Private Acc', r.private_accuracy + '%', costCls) +
+            metricCard('Cost', r.accuracy_cost_pct + '%', costCls) +
+            metricCard('Agreement', (r.prediction_agreement*100).toFixed(0) + '%') +
+            metricCard('Epsilon', r.epsilon);
+        var brief = r.stakeholder_brief;
+        if (brief) {
+            var rl = brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('privacy-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + brief.headline + '</strong><br>' +
+                brief.what_this_means + '<br><br><em>' + brief.for_non_experts + '</em>';
+        }
+        var plotEl = document.getElementById('privacy-plot');
+        if (r.plot) { plotEl.src = r.plot; plotEl.style.display = ''; }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [134] Auto-Recalibration ──
+async function runAutoRecalibrate() {
+    showLoading();
+    var results = document.getElementById('recalibrate-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/auto-recalibrate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well, method: 'auto'})
+        });
+        results.style.display = '';
+        var m = document.getElementById('recalibrate-metrics');
+        var eceCls = r.calibrated.ece_pct < 5 ? 'success' : r.calibrated.ece_pct < 10 ? 'warning' : 'danger';
+        m.innerHTML =
+            metricCard('Status', r.calibration_status) +
+            metricCard('Base ECE', r.baseline.ece_pct + '%') +
+            metricCard('Cal ECE', r.calibrated.ece_pct + '%', eceCls) +
+            metricCard('Improvement', r.ece_improvement_pct + '%', r.ece_improvement_pct > 0 ? 'success' : 'warning') +
+            metricCard('Method', r.method) +
+            metricCard('Time', r.elapsed_s + 's');
+        var brief = r.stakeholder_brief;
+        if (brief) {
+            var rl = brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('recalibrate-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + brief.headline + '</strong><br>' +
+                brief.what_this_means + '<br><br><em>' + brief.for_non_experts + '</em>';
+        }
+        var plotEl = document.getElementById('recalibrate-plot');
+        if (r.plot) { plotEl.src = r.plot; plotEl.style.display = ''; }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
