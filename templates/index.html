@@ -1939,6 +1939,82 @@
                         </div>
                     </div>
 
+                    <!-- v3.38.0: SSE Streaming Inversion -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-broadcast"></i> Live Streaming Inversion (SSE)</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runStreamingInversion()">
+                                <i class="bi bi-play-fill"></i> Stream Analysis
+                            </button>
+                        </div>
+                        <div class="card-body" id="stream-results" style="display:none">
+                            <div class="progress mb-2" id="stream-progress-bar" style="display:none"><div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width:0%"></div></div>
+                            <div class="row mb-2" id="stream-metrics"></div>
+                            <div class="text-center"><img id="stream-plot" class="img-fluid" style="max-width:700px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.38.0: Data Validation -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-shield-exclamation"></i> Data Quality Validation</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runDataValidation()">
+                                <i class="bi bi-play-fill"></i> Validate Data
+                            </button>
+                        </div>
+                        <div class="card-body" id="validate-results" style="display:none">
+                            <div class="row mb-2" id="validate-metrics"></div>
+                            <div id="validate-issues"></div>
+                            <div class="alert alert-light border small" id="validate-brief"></div>
+                            <div class="text-center"><img id="validate-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.38.0: What-If Simulator -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-toggles"></i> What-If Scenario Simulator</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runWhatIf()">
+                                <i class="bi bi-play-fill"></i> Compare Scenarios
+                            </button>
+                        </div>
+                        <div class="card-body" id="whatif-results" style="display:none">
+                            <div class="row mb-2" id="whatif-metrics"></div>
+                            <div class="alert alert-light border small" id="whatif-brief"></div>
+                            <div class="text-center"><img id="whatif-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.38.0: Ensemble Voting -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-people-fill"></i> Multi-Model Ensemble Voting</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runEnsembleVote()">
+                                <i class="bi bi-play-fill"></i> Run Ensemble
+                            </button>
+                        </div>
+                        <div class="card-body" id="ensemble-results" style="display:none">
+                            <div class="row mb-2" id="ensemble-metrics"></div>
+                            <div class="alert alert-light border small" id="ensemble-brief"></div>
+                            <div class="text-center"><img id="ensemble-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
+                    <!-- v3.38.0: Fast Classify -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-lightning-fill"></i> Fast Classification (Optimized)</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runFastClassify()">
+                                <i class="bi bi-play-fill"></i> Speed Test
+                            </button>
+                        </div>
+                        <div class="card-body" id="fastclassify-results" style="display:none">
+                            <div class="row mb-2" id="fastclassify-metrics"></div>
+                            <div class="alert alert-light border small" id="fastclassify-brief"></div>
+                            <div class="text-center"><img id="fastclassify-plot" class="img-fluid" style="max-width:900px" /></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

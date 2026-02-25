@@ -11504,3 +11504,235 @@ async function runFailureAwareClassification() {
         hideLoading();
     }
 }
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// v3.38.0 — SSE Streaming + Data Validation + What-If + Ensemble + Fast Classify
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── [125] SSE Streaming Inversion ──
+async function runStreamingInversion() {
+    var results = document.getElementById('stream-results');
+    var progressBar = document.getElementById('stream-progress-bar');
+    var m = document.getElementById('stream-metrics');
+    results.style.display = '';
+    progressBar.style.display = '';
+    m.innerHTML = '<div class="col-12"><em>Starting streaming inversion...</em></div>';
+    document.getElementById('stream-plot').src = '';
+
+    var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+
+    try {
+        var resp = await fetch('/api/analysis/inversion-stream', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well, n_steps: 500})
+        });
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+
+        while (true) {
+            var chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, {stream: true});
+            var lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (var li = 0; li < lines.length; li++) {
+                var line = lines[li].trim();
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    var data = JSON.parse(line.substring(6));
+                    if (data.event === 'progress') {
+                        progressBar.querySelector('.progress-bar').style.width = data.pct + '%';
+                        m.innerHTML =
+                            metricCard('Step', data.step + '/' + data.total) +
+                            metricCard('Progress', data.pct + '%') +
+                            metricCard('Elapsed', data.elapsed_s + 's') +
+                            metricCard('ETA', data.eta_s + 's') +
+                            metricCard('SHmax', data.current_best.SHmax_azimuth + '°') +
+                            metricCard('Misfit', data.current_best.misfit.toFixed(4));
+                    } else if (data.event === 'complete') {
+                        progressBar.querySelector('.progress-bar').style.width = '100%';
+                        m.innerHTML =
+                            metricCard('SHmax', data.result.SHmax_azimuth + '°', 'success') +
+                            metricCard('σ1', data.result.sigma1_MPa + ' MPa') +
+                            metricCard('σ3', data.result.sigma3_MPa + ' MPa') +
+                            metricCard('R', data.result.R_ratio) +
+                            metricCard('μ', data.result.mu) +
+                            metricCard('Misfit', data.result.misfit.toFixed(4)) +
+                            metricCard('Time', data.elapsed_s + 's');
+                        if (data.plot) document.getElementById('stream-plot').src = data.plot;
+                    } else if (data.event === 'start') {
+                        m.innerHTML = metricCard('Well', data.well) + metricCard('Regime', data.regime) + metricCard('Fractures', data.n_fractures);
+                    }
+                } catch (parseErr) {}
+            }
+        }
+    } catch (e) {
+        m.innerHTML = '<div class="col-12"><div class="alert alert-danger">Error: ' + e.message + '</div></div>';
+    }
+}
+
+// ── [126] Data Validation ──
+async function runDataValidation() {
+    showLoading();
+    var results = document.getElementById('validate-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/data/quality-check', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well})
+        });
+        results.style.display = '';
+        var m = document.getElementById('validate-metrics');
+        var scoreCls = r.quality_score >= 75 ? 'success' : r.quality_score >= 50 ? 'warning' : 'danger';
+        m.innerHTML =
+            metricCard('Quality Score', r.quality_score + '/100', scoreCls) +
+            metricCard('Grade', r.grade, scoreCls) +
+            metricCard('High Issues', r.n_high, r.n_high > 0 ? 'danger' : 'success') +
+            metricCard('Medium Issues', r.n_medium, r.n_medium > 0 ? 'warning' : 'success') +
+            metricCard('Imbalance', r.imbalance_ratio) +
+            metricCard('Time', r.elapsed_s + 's');
+
+        // Issues table
+        var issDiv = document.getElementById('validate-issues');
+        if (r.issues && r.issues.length > 0) {
+            var html = '<h6>Issues Found</h6><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Severity</th><th>Category</th><th>Issue</th><th>Affected</th></tr></thead><tbody>';
+            for (var i = 0; i < r.issues.length; i++) {
+                var iss = r.issues[i];
+                var iCls = iss.severity === 'HIGH' ? 'danger' : iss.severity === 'MEDIUM' ? 'warning' : 'info';
+                html += '<tr><td><span class="badge bg-' + iCls + '">' + iss.severity + '</span></td><td>' + iss.category + '</td><td>' + iss.issue + '</td><td>' + iss.affected + '</td></tr>';
+            }
+            html += '</tbody></table></div>';
+            issDiv.innerHTML = html;
+        } else {
+            issDiv.innerHTML = '<div class="alert alert-success">No issues found!</div>';
+        }
+
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('validate-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' +
+                r.stakeholder_brief.what_this_means + '<br><br><em>' + r.stakeholder_brief.for_non_experts + '</em>';
+        }
+        if (r.plot) document.getElementById('validate-plot').src = r.plot;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [127] What-If Simulator ──
+async function runWhatIf() {
+    showLoading();
+    var results = document.getElementById('whatif-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/scenario-compare', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well})
+        });
+        results.style.display = '';
+        var m = document.getElementById('whatif-metrics');
+        var verdictCls = r.verdict === 'BASELINE_BETTER' ? 'success' : r.verdict === 'ALTERNATIVE_BETTER' ? 'warning' : 'info';
+        m.innerHTML =
+            metricCard('Verdict', r.verdict.replace(/_/g, ' '), verdictCls) +
+            metricCard('MW Change', r.differences.min_mw_change_MPa + ' MPa') +
+            metricCard('Critical Δ', r.differences.critical_zones_change, r.differences.critical_zones_change > 0 ? 'danger' : 'success') +
+            metricCard('Narrow Δ', r.differences.narrow_zones_change) +
+            metricCard('Time', r.elapsed_s + 's');
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('whatif-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' +
+                r.stakeholder_brief.what_this_means + '<br><br><em>' + r.stakeholder_brief.for_non_experts + '</em>';
+        }
+        if (r.plot) document.getElementById('whatif-plot').src = r.plot;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [128] Ensemble Voting ──
+async function runEnsembleVote() {
+    showLoading();
+    var results = document.getElementById('ensemble-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/ensemble-vote', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well})
+        });
+        results.style.display = '';
+        var m = document.getElementById('ensemble-metrics');
+        m.innerHTML =
+            metricCard('Models', r.n_models) +
+            metricCard('Ensemble Acc', (r.ensemble_balanced_accuracy * 100).toFixed(1) + '%', 'success') +
+            metricCard('Unanimous', r.pct_unanimous + '%') +
+            metricCard('Majority', r.pct_majority + '%') +
+            metricCard('Contested', r.n_contested, r.n_contested > 10 ? 'danger' : 'success') +
+            metricCard('Time', r.elapsed_s + 's');
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('ensemble-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' +
+                r.stakeholder_brief.what_this_means + '<br><br><em>' + r.stakeholder_brief.for_non_experts + '</em>';
+        }
+        if (r.plot) document.getElementById('ensemble-plot').src = r.plot;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [129] Fast Classify ──
+async function runFastClassify() {
+    showLoading();
+    var results = document.getElementById('fastclassify-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/fast-classify', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource(), well: well})
+        });
+        results.style.display = '';
+        var m = document.getElementById('fastclassify-metrics');
+        m.innerHTML =
+            metricCard('Speedup', r.speedup + 'x', r.speedup > 1.5 ? 'success' : 'info') +
+            metricCard('Std Accuracy', (r.standard.balanced_accuracy * 100).toFixed(1) + '%') +
+            metricCard('Opt Accuracy', (r.optimized.balanced_accuracy * 100).toFixed(1) + '%') +
+            metricCard('Std Time', r.standard.inference_time_ms + 'ms') +
+            metricCard('Opt Time', r.optimized.inference_time_ms + 'ms') +
+            metricCard('Agreement', (r.agreement * 100).toFixed(1) + '%') +
+            metricCard('Time', r.elapsed_s + 's');
+        if (r.stakeholder_brief) {
+            var rl = r.stakeholder_brief.risk_level;
+            var cls = rl === 'GREEN' ? 'success' : rl === 'AMBER' ? 'warning' : 'danger';
+            document.getElementById('fastclassify-brief').innerHTML =
+                '<span class="badge bg-' + cls + '">' + rl + '</span> <strong>' + r.stakeholder_brief.headline + '</strong><br>' +
+                r.stakeholder_brief.what_this_means + '<br><br><em>' + r.stakeholder_brief.for_non_experts + '</em>';
+        }
+        if (r.plot) document.getElementById('fastclassify-plot').src = r.plot;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
