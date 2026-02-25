@@ -11938,3 +11938,271 @@ async function runAutoRecalibrate() {
         hideLoading();
     }
 }
+
+// ── v3.40.0: Regulatory Compliance ─────────────────────────
+async function runRegulatoryCompliance() {
+    showLoading();
+    var results = document.getElementById('compliance-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/report/regulatory-compliance', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Regulatory Compliance Report — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Overall Score</h6><h2>' + (r.overall_score || 0) + '/100</h2>';
+        html += '<span class="badge bg-' + (r.overall_rating === 'COMPLIANT' ? 'success' : r.overall_rating === 'PARTIALLY_COMPLIANT' ? 'warning' : 'danger') + '">' + (r.overall_rating || 'N/A') + '</span>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Standards Checked</h6><h2>' + (r.n_standards_checked || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Gaps Found</h6><h2>' + (r.n_gaps || 0) + '</h2>';
+        html += '</div></div></div></div>';
+        if (r.standards && r.standards.length) {
+            html += '<h6>Standards Detail</h6><table class="table table-sm table-bordered"><thead><tr><th>Standard</th><th>Status</th><th>Score</th></tr></thead><tbody>';
+            r.standards.forEach(function(s) {
+                var badge = s.status === 'COMPLIANT' ? 'success' : s.status === 'PARTIAL' ? 'warning' : 'danger';
+                html += '<tr><td>' + s.name + '</td><td><span class="badge bg-' + badge + '">' + s.status + '</span></td><td>' + (s.score || 0) + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('compliance-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.40.0: Operator Workflow Checklist ────────────────────
+async function runWorkflowChecklist() {
+    showLoading();
+    var results = document.getElementById('workflow-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/workflow/checklist', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Operator Workflow Checklist — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Steps Completed</h6><h2>' + (r.steps_completed || 0) + '/' + (r.total_steps || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Completion</h6><h2>' + (r.completion_pct || 0).toFixed(0) + '%</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Readiness</h6><span class="badge bg-' + (r.overall_readiness === 'READY' ? 'success' : r.overall_readiness === 'PARTIAL' ? 'warning' : 'danger') + ' fs-6">' + (r.overall_readiness || 'N/A') + '</span>';
+        html += '</div></div></div></div>';
+        if (r.steps && r.steps.length) {
+            html += '<h6>Checklist Steps</h6><table class="table table-sm table-bordered"><thead><tr><th>#</th><th>Step</th><th>Status</th><th>Detail</th></tr></thead><tbody>';
+            r.steps.forEach(function(s, i) {
+                var icon = s.status === 'PASS' ? '✅' : s.status === 'WARN' ? '⚠️' : '❌';
+                html += '<tr><td>' + (i+1) + '</td><td>' + (s.name || '') + '</td><td>' + icon + ' ' + s.status + '</td><td>' + (s.detail || '') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.40.0: Smart Alerts ──────────────────────────────────
+async function runSmartAlerts() {
+    showLoading();
+    var results = document.getElementById('alerts-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/alerts/check', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Smart Alerts — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Total Alerts</h6><h2>' + (r.n_alerts || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card border-danger"><div class="card-body text-center">';
+        html += '<h6>Critical</h6><h2 class="text-danger">' + (r.n_critical || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card border-warning"><div class="card-body text-center">';
+        html += '<h6>Warning</h6><h2 class="text-warning">' + (r.n_warning || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card border-info"><div class="card-body text-center">';
+        html += '<h6>Info</h6><h2 class="text-info">' + (r.n_info || 0) + '</h2>';
+        html += '</div></div></div></div>';
+        if (r.alerts && r.alerts.length) {
+            html += '<h6>Alert Details</h6>';
+            r.alerts.forEach(function(a) {
+                var cls = a.severity === 'CRITICAL' ? 'danger' : a.severity === 'WARNING' ? 'warning' : 'info';
+                html += '<div class="alert alert-' + cls + '"><strong>[' + a.severity + '] ' + (a.category || '') + ':</strong> ' + (a.message || '') + '</div>';
+            });
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.40.0: Model Lifecycle Management ────────────────────
+async function runModelLifecycle() {
+    showLoading();
+    var results = document.getElementById('lifecycle-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/models/lifecycle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Model Lifecycle — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Active Models</h6><h2>' + (r.n_active_models || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Total Versions</h6><h2>' + (r.n_total_versions || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Lifecycle Stage</h6><span class="badge bg-primary fs-6">' + (r.lifecycle_stage || 'N/A') + '</span>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Health</h6><span class="badge bg-' + (r.health_status === 'HEALTHY' ? 'success' : r.health_status === 'DEGRADED' ? 'warning' : 'danger') + ' fs-6">' + (r.health_status || 'N/A') + '</span>';
+        html += '</div></div></div></div>';
+        if (r.models && r.models.length) {
+            html += '<h6>Model Details</h6><table class="table table-sm table-bordered"><thead><tr><th>Model</th><th>Version</th><th>Accuracy</th><th>Status</th></tr></thead><tbody>';
+            r.models.forEach(function(m) {
+                html += '<tr><td>' + (m.name || '') + '</td><td>v' + (m.version || '?') + '</td><td>' + ((m.accuracy || 0) * 100).toFixed(1) + '%</td><td><span class="badge bg-' + (m.status === 'ACTIVE' ? 'success' : 'secondary') + '">' + (m.status || '') + '</span></td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.40.0: Performance Benchmark ─────────────────────────
+async function runBenchmark() {
+    showLoading();
+    var results = document.getElementById('benchmark-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/benchmark/run', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Performance Benchmark — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Overall Score</h6><h2>' + (r.overall_score || 0) + '/100</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Total Time</h6><h2>' + (r.total_time_s || 0).toFixed(1) + 's</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Grade</h6><span class="badge bg-' + (r.grade === 'A' ? 'success' : r.grade === 'B' ? 'primary' : r.grade === 'C' ? 'warning' : 'danger') + ' fs-4">' + (r.grade || 'N/A') + '</span>';
+        html += '</div></div></div></div>';
+        if (r.benchmarks && r.benchmarks.length) {
+            html += '<h6>Benchmark Details</h6><table class="table table-sm table-bordered"><thead><tr><th>Operation</th><th>Time (ms)</th><th>Status</th></tr></thead><tbody>';
+            r.benchmarks.forEach(function(b) {
+                var badge = b.status === 'FAST' ? 'success' : b.status === 'ACCEPTABLE' ? 'warning' : 'danger';
+                html += '<tr><td>' + (b.operation || '') + '</td><td>' + (b.time_ms || 0).toFixed(0) + '</td><td><span class="badge bg-' + badge + '">' + (b.status || '') + '</span></td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('benchmark-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
