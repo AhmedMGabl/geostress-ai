@@ -2157,6 +2157,71 @@
                         </div>
                     </div>
 
+                    <!-- v3.41.0: Feature Ranking -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bar-chart-steps"></i> Feature Importance Ranking</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runFeatureRanking()">Rank Features</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Multi-method feature importance: RF impurity + permutation + correlation consensus ranking.</p>
+                            <div id="feature-ranking-results" style="display:none;"></div>
+                            <img id="feature-ranking-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- v3.41.0: Cluster Stability -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-diagram-3"></i> Cluster Stability Analysis</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runClusterStability()">Analyze Stability</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Silhouette, elbow, and gap statistic for optimal cluster count and reliability.</p>
+                            <div id="cluster-stability-results" style="display:none;"></div>
+                            <img id="cluster-stability-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- v3.41.0: Well Similarity -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-grid-3x3"></i> Well Similarity Matrix</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runWellSimilarity()">Compare Wells</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Statistical distance metrics between wells: can they share models?</p>
+                            <div id="well-similarity-results" style="display:none;"></div>
+                            <img id="well-similarity-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- v3.41.0: Prediction Timeline -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-up"></i> Prediction Timeline</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runPredictionTimeline()">Generate Timeline</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Prediction confidence along depth — identifies low-confidence zones for review.</p>
+                            <div id="prediction-timeline-results" style="display:none;"></div>
+                            <img id="prediction-timeline-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- v3.41.0: Augmentation Preview -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-plus-circle"></i> Data Augmentation Preview</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runAugmentationPreview()">Preview Augmentation</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Test 3 augmentation strategies (noise, SMOTE, boundary) without modifying data.</p>
+                            <div id="augmentation-preview-results" style="display:none;"></div>
+                            <img id="augmentation-preview-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

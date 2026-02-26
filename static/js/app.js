@@ -12206,3 +12206,278 @@ async function runBenchmark() {
         hideLoading();
     }
 }
+
+// ── v3.41.0: Feature Importance Ranking ────────────────
+async function runFeatureRanking() {
+    showLoading();
+    var results = document.getElementById('feature-ranking-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/analysis/feature-ranking', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Feature Importance Ranking — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Features Analyzed</h6><h2>' + (r.n_features || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Samples</h6><h2>' + (r.n_samples || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Top Feature</h6><span class="badge bg-primary fs-6">' + (r.top_5 && r.top_5[0] || 'N/A') + '</span>';
+        html += '</div></div></div></div>';
+        if (r.features && r.features.length) {
+            html += '<h6>Top 15 Features</h6><table class="table table-sm table-bordered"><thead><tr><th>#</th><th>Feature</th><th>Consensus</th><th>RF</th><th>Permutation</th><th>Correlation</th><th>Agreement</th></tr></thead><tbody>';
+            r.features.slice(0, 15).forEach(function(f, i) {
+                var agr = f.agreement === 3 ? '🟢 3/3' : f.agreement === 2 ? '🟡 2/3' : '🔴 ' + f.agreement + '/3';
+                html += '<tr><td>' + (i+1) + '</td><td>' + f.feature + '</td><td>' + f.consensus_score + '</td><td>' + f.rf_importance + '</td><td>' + f.permutation_importance + '</td><td>' + f.correlation + '</td><td>' + agr + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('feature-ranking-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.41.0: Cluster Stability Analysis ────────────────
+async function runClusterStability() {
+    showLoading();
+    var results = document.getElementById('cluster-stability-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/analysis/cluster-stability', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Cluster Stability — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Best k</h6><h2>' + (r.best_k || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Silhouette</h6><h2>' + (r.best_silhouette || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Elbow k</h6><h2>' + (r.elbow_k || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Stability</h6><span class="badge bg-' + (r.stability === 'HIGH' ? 'success' : r.stability === 'MODERATE' ? 'warning' : 'danger') + ' fs-6">' + (r.stability || 'N/A') + '</span>';
+        html += '</div></div></div></div>';
+        if (r.k_results && r.k_results.length) {
+            html += '<h6>Results per k</h6><table class="table table-sm table-bordered"><thead><tr><th>k</th><th>Silhouette</th><th>Inertia</th></tr></thead><tbody>';
+            r.k_results.forEach(function(kr) {
+                var bold = kr.k === r.best_k ? 'fw-bold' : '';
+                html += '<tr class="' + bold + '"><td>' + kr.k + '</td><td>' + kr.silhouette + '</td><td>' + kr.inertia + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('cluster-stability-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.41.0: Well Similarity Matrix ────────────────────
+async function runWellSimilarity() {
+    showLoading();
+    var results = document.getElementById('well-similarity-results');
+    results.style.display = 'none';
+    try {
+        var r = await apiFetch('/api/analysis/well-similarity', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo'})
+        });
+        results.style.display = '';
+        var html = '<h5>Well Similarity Matrix</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-6"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Wells Compared</h6><h2>' + (r.n_wells || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-6"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Can Share Models</h6><h2>' + (r.pairs ? r.pairs.filter(function(p) { return p.can_share_model; }).length : 0) + '/' + (r.pairs ? r.pairs.length : 0) + '</h2>';
+        html += '</div></div></div></div>';
+        if (r.pairs && r.pairs.length) {
+            html += '<h6>Well Pairs</h6><table class="table table-sm table-bordered"><thead><tr><th>Well A</th><th>Well B</th><th>Similarity</th><th>Type Overlap</th><th>Share Model?</th></tr></thead><tbody>';
+            r.pairs.forEach(function(p) {
+                var badge = p.can_share_model ? 'success' : 'danger';
+                html += '<tr><td>' + p.well_a + '</td><td>' + p.well_b + '</td><td>' + p.similarity + '</td><td>' + p.type_overlap + '</td><td><span class="badge bg-' + badge + '">' + (p.can_share_model ? 'YES' : 'NO') + '</span></td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('well-similarity-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.41.0: Prediction Timeline ───────────────────────
+async function runPredictionTimeline() {
+    showLoading();
+    var results = document.getElementById('prediction-timeline-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/analysis/prediction-timeline', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Prediction Timeline — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Mean Confidence</h6><h2>' + ((r.mean_confidence || 0) * 100).toFixed(0) + '%</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Accuracy</h6><h2>' + (r.accuracy_pct || 0) + '%</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card border-danger"><div class="card-body text-center">';
+        html += '<h6>Low Confidence</h6><h2 class="text-danger">' + (r.n_low_confidence || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card border-success"><div class="card-body text-center">';
+        html += '<h6>High Confidence</h6><h2 class="text-success">' + (r.n_high_confidence || 0) + '</h2>';
+        html += '</div></div></div></div>';
+        if (r.low_conf_depth_range) {
+            html += '<div class="alert alert-warning"><strong>Low-confidence zone:</strong> ' + r.low_conf_depth_range.min + 'm - ' + r.low_conf_depth_range.max + 'm depth</div>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('prediction-timeline-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.41.0: Augmentation Preview ──────────────────────
+async function runAugmentationPreview() {
+    showLoading();
+    var results = document.getElementById('augmentation-preview-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/analysis/augmentation-preview', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Augmentation Preview — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Baseline Accuracy</h6><h2>' + (r.baseline_accuracy || 0) + '%</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Best Method</h6><span class="badge bg-success fs-6">' + (r.best_method || 'N/A') + '</span>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Best Accuracy</h6><h2>' + (r.best_accuracy || 0) + '%</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Imbalance Ratio</h6><h2>' + (r.imbalance_ratio || 0) + ':1</h2>';
+        html += '</div></div></div></div>';
+        if (r.strategies && r.strategies.length) {
+            html += '<h6>Strategy Comparison</h6><table class="table table-sm table-bordered"><thead><tr><th>Method</th><th>Synthetic</th><th>Baseline</th><th>Augmented</th><th>Change</th></tr></thead><tbody>';
+            r.strategies.forEach(function(s) {
+                var cls = s.improvement_pct > 0 ? 'text-success' : 'text-danger';
+                html += '<tr><td>' + s.method + '</td><td>' + s.n_synthetic + '</td><td>' + s.baseline_accuracy + '%</td><td>' + s.augmented_accuracy + '%</td><td class="' + cls + '">' + (s.improvement_pct > 0 ? '+' : '') + s.improvement_pct + '%</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('augmentation-preview-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
