@@ -33077,3 +33077,789 @@ async def api_anomaly_score(request: Request):
     result["elapsed_s"] = elapsed
     _anomaly_score_cache[cache_key] = result
     return _sanitize_for_json(result)
+
+
+# ── v3.43.0 caches ─────────────────────────────────────────────────────────
+_fracture_spacing_cache: dict = {}
+_stress_polygon_cache: dict = {}
+_orientation_clustering_cache: dict = {}
+_depth_trend_cache: dict = {}
+_confidence_map_cache: dict = {}
+
+
+# ── [150] Fracture Spacing Analysis ─────────────────────────────────────────
+@app.post("/api/analysis/fracture-spacing")
+async def fracture_spacing_analysis(request: Request):
+    """Statistical fracture spacing distribution with log-normal fit and clustering coefficient."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    cache_key = f"{source}_{well}"
+    if cache_key in _fracture_spacing_cache:
+        return _sanitize_for_json(_fracture_spacing_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        depths = df_well[DEPTH_COL].dropna().sort_values().values
+        if len(depths) < 3:
+            raise HTTPException(status_code=400, detail="Need at least 3 samples with depth")
+
+        spacings = np.diff(depths)
+        spacings = spacings[spacings > 0]
+
+        mean_spacing = float(np.mean(spacings))
+        median_spacing = float(np.median(spacings))
+        std_spacing = float(np.std(spacings))
+        cv = std_spacing / mean_spacing if mean_spacing > 0 else 0
+
+        # Log-normal fit
+        log_spacings = np.log(spacings[spacings > 0])
+        ln_mu = float(np.mean(log_spacings)) if len(log_spacings) > 0 else 0
+        ln_sigma = float(np.std(log_spacings)) if len(log_spacings) > 0 else 0
+
+        # Clustering coefficient: ratio of observed clustering vs random (Poisson)
+        # CV > 1 = clustered, CV < 1 = regular, CV ~ 1 = random
+        if cv > 1.2:
+            pattern = "CLUSTERED"
+        elif cv < 0.8:
+            pattern = "REGULAR"
+        else:
+            pattern = "RANDOM"
+
+        # Depth zones
+        n_zones = min(5, max(2, len(depths) // 50))
+        zone_edges = np.linspace(depths.min(), depths.max(), n_zones + 1)
+        zones = []
+        for i in range(n_zones):
+            mask = (depths >= zone_edges[i]) & (depths < zone_edges[i + 1] + 0.01)
+            zone_depths = depths[mask]
+            zone_spacings = np.diff(zone_depths) if len(zone_depths) > 1 else np.array([0])
+            zone_spacings = zone_spacings[zone_spacings > 0]
+            zones.append({
+                "zone": f"{zone_edges[i]:.0f}-{zone_edges[i+1]:.0f}m",
+                "n_fractures": int(mask.sum()),
+                "mean_spacing": round(float(np.mean(zone_spacings)), 3) if len(zone_spacings) > 0 else None,
+                "density_per_m": round(float(mask.sum()) / max(zone_edges[i + 1] - zone_edges[i], 1), 3),
+            })
+
+        # Percentiles
+        percentiles = {f"p{p}": round(float(np.percentile(spacings, p)), 3) for p in [5, 25, 50, 75, 95]}
+
+        recommendations = []
+        if pattern == "CLUSTERED":
+            recommendations.append("Fractures are clustered -- consider stress shadow effects or lithological controls.")
+        elif pattern == "REGULAR":
+            recommendations.append("Regular spacing suggests systematic jointing -- good for reservoir modeling.")
+        if cv > 2:
+            recommendations.append("Very high spacing variability -- separate analysis per depth zone recommended.")
+        if mean_spacing < 0.5:
+            recommendations.append("Very dense fracturing (<0.5m mean spacing) -- check for drilling-induced fractures.")
+        recommendations.append(f"Log-normal parameters: mu={ln_mu:.3f}, sigma={ln_sigma:.3f} (use for stochastic DFN modeling).")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+            axes[0].hist(spacings, bins=min(30, len(spacings) // 2 + 1), color="#2196F3", edgecolor="white", alpha=0.8)
+            axes[0].axvline(mean_spacing, color="red", linestyle="--", label=f"Mean={mean_spacing:.2f}m")
+            axes[0].axvline(median_spacing, color="orange", linestyle="--", label=f"Median={median_spacing:.2f}m")
+            axes[0].set_xlabel("Spacing (m)")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title("Spacing Distribution")
+            axes[0].legend(fontsize=8)
+
+            if len(log_spacings) > 0:
+                axes[1].hist(log_spacings, bins=min(25, len(log_spacings) // 2 + 1), color="#4CAF50", edgecolor="white", alpha=0.8)
+                axes[1].axvline(ln_mu, color="red", linestyle="--", label=f"ln(mu)={ln_mu:.2f}")
+                axes[1].set_xlabel("ln(Spacing)")
+                axes[1].set_ylabel("Count")
+                axes[1].set_title("Log-Normal Fit")
+                axes[1].legend(fontsize=8)
+
+            zone_names = [z["zone"] for z in zones]
+            zone_densities = [z["density_per_m"] for z in zones]
+            axes[2].barh(zone_names, zone_densities, color="#FF9800", edgecolor="white")
+            axes[2].set_xlabel("Fractures per meter")
+            axes[2].set_title("Density by Depth Zone")
+
+            fig.suptitle(f"Fracture Spacing Analysis -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_fractures": int(len(depths)),
+            "n_spacings": int(len(spacings)),
+            "mean_spacing_m": round(mean_spacing, 4),
+            "median_spacing_m": round(median_spacing, 4),
+            "std_spacing_m": round(std_spacing, 4),
+            "cv": round(cv, 4),
+            "pattern": pattern,
+            "lognormal_mu": round(ln_mu, 4),
+            "lognormal_sigma": round(ln_sigma, 4),
+            "percentiles": percentiles,
+            "depth_zones": zones,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fracture spacing: {pattern} pattern, mean {mean_spacing:.2f}m",
+                "risk_level": "GREEN" if pattern == "REGULAR" else ("AMBER" if pattern == "RANDOM" else "RED"),
+                "what_this_means": f"Fractures are spaced {mean_spacing:.2f}m apart on average with a {pattern.lower()} distribution (CV={cv:.2f}).",
+                "for_non_experts": "We measured the distance between fractures. "
+                    + ("They are evenly spaced, which is good for modeling." if pattern == "REGULAR"
+                       else "They appear in clusters, which may indicate stress concentrations." if pattern == "CLUSTERED"
+                       else "Spacing is random, typical of natural fracture networks."),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _fracture_spacing_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [151] Stress Polygon (Extended) ─────────────────────────────────────────
+@app.post("/api/analysis/stress-polygon-extended")
+async def stress_polygon_extended(request: Request):
+    """Extended Anderson faulting stress polygon: regime bounds + frictional limits + visualization."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = float(body.get("depth", 3000))
+    friction = float(body.get("friction", 0.6))
+    pp_mpa = body.get("pp_mpa", None)
+    cache_key = f"{source}_{well}_{depth}_{friction}_{pp_mpa}"
+    if cache_key in _stress_polygon_cache:
+        return _sanitize_for_json(_stress_polygon_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        # Compute overburden (Sv)
+        rho = 2500  # kg/m3
+        g = 9.81
+        Sv = rho * g * depth / 1e6  # MPa
+        Pp = pp_mpa if pp_mpa is not None else 0.01 * depth  # hydrostatic default
+
+        # Frictional equilibrium limit: sigma1/sigma3 <= ((mu^2+1)^0.5 + mu)^2
+        q = (np.sqrt(friction**2 + 1) + friction) ** 2
+
+        # Anderson regimes
+        regimes = []
+
+        # Normal faulting: Sv = sigma1
+        nf_shmin_min = max((Sv - Pp) / q + Pp, 0.1)
+        nf_shmax_max = Sv
+        regimes.append({
+            "regime": "Normal",
+            "Sv_MPa": round(Sv, 2),
+            "SHmax_range": [round(nf_shmin_min, 2), round(nf_shmax_max, 2)],
+            "Shmin_range": [round(nf_shmin_min, 2), round(nf_shmax_max, 2)],
+            "description": "Sv >= SHmax >= Shmin",
+        })
+
+        # Strike-slip: Sv = sigma2
+        ss_shmin_min = max((Sv - Pp) / q + Pp, 0.1)
+        ss_shmax_max = q * (Sv - Pp) + Pp
+        regimes.append({
+            "regime": "Strike-slip",
+            "Sv_MPa": round(Sv, 2),
+            "SHmax_range": [round(Sv, 2), round(ss_shmax_max, 2)],
+            "Shmin_range": [round(ss_shmin_min, 2), round(Sv, 2)],
+            "description": "SHmax >= Sv >= Shmin",
+        })
+
+        # Reverse faulting: Sv = sigma3
+        rf_shmin_min = Sv
+        rf_shmax_max = q * (Sv - Pp) + Pp
+        regimes.append({
+            "regime": "Reverse",
+            "Sv_MPa": round(Sv, 2),
+            "SHmax_range": [round(Sv, 2), round(rf_shmax_max, 2)],
+            "Shmin_range": [round(Sv, 2), round(rf_shmax_max, 2)],
+            "description": "SHmax >= Shmin >= Sv",
+        })
+
+        recommendations = []
+        recommendations.append(f"Overburden stress Sv = {Sv:.1f} MPa at {depth:.0f}m depth (rho={rho} kg/m3).")
+        recommendations.append(f"Frictional limit q = {q:.2f} (friction={friction}).")
+        if Pp > 0.5 * Sv:
+            recommendations.append("High pore pressure narrows the stress polygon -- overpressure risk.")
+        recommendations.append("Stress polygon constrains allowable (SHmax, Shmin) pairs for each faulting regime.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(8, 8))
+
+            # Build polygon boundaries
+            s_range = np.linspace(0, rf_shmax_max * 1.1, 200)
+
+            # Normal faulting region: below Sv line, above friction limit
+            nf_shmin = np.linspace(nf_shmin_min, Sv, 50)
+            nf_shmax_upper = np.minimum(nf_shmin * 1.0, Sv)  # SHmax <= Sv
+            nf_shmax_lower = nf_shmin  # SHmax >= Shmin
+            ax.fill_between(nf_shmin, nf_shmax_lower, nf_shmax_upper, alpha=0.3, color="#2196F3", label="Normal")
+
+            # Strike-slip region
+            ss_shmin = np.linspace(ss_shmin_min, Sv, 50)
+            ss_shmax_low = np.full_like(ss_shmin, Sv)
+            ss_shmax_hi = np.minimum(q * (ss_shmin - Pp) + Pp, ss_shmax_max) if friction > 0 else np.full_like(ss_shmin, ss_shmax_max)
+            valid = ss_shmax_hi >= ss_shmax_low
+            if valid.any():
+                ax.fill_between(ss_shmin[valid], ss_shmax_low[valid], ss_shmax_hi[valid], alpha=0.3, color="#4CAF50", label="Strike-slip")
+
+            # Reverse region
+            rf_shmin = np.linspace(Sv, rf_shmax_max, 50)
+            rf_shmax_low = rf_shmin
+            rf_shmax_hi = np.minimum(q * (rf_shmin - Pp) + Pp, rf_shmax_max)
+            valid_r = rf_shmax_hi >= rf_shmax_low
+            if valid_r.any():
+                ax.fill_between(rf_shmin[valid_r], rf_shmax_low[valid_r], rf_shmax_hi[valid_r], alpha=0.3, color="#FF5722", label="Reverse")
+
+            # Reference lines
+            lim = rf_shmax_max * 1.15
+            ax.plot([0, lim], [0, lim], "k--", alpha=0.3, label="SHmax=Shmin")
+            ax.axhline(Sv, color="gray", linestyle=":", alpha=0.5, label=f"Sv={Sv:.1f} MPa")
+            ax.axvline(Sv, color="gray", linestyle=":", alpha=0.5)
+
+            ax.set_xlabel("Shmin (MPa)", fontsize=12)
+            ax.set_ylabel("SHmax (MPa)", fontsize=12)
+            ax.set_title(f"Stress Polygon -- Well {well} ({depth:.0f}m, mu={friction})", fontsize=14, fontweight="bold")
+            ax.legend(loc="upper left", fontsize=9)
+            ax.set_xlim(0, lim)
+            ax.set_ylim(0, lim)
+            ax.set_aspect("equal")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "depth_m": depth,
+            "friction": friction,
+            "Pp_MPa": round(Pp, 2),
+            "Sv_MPa": round(Sv, 2),
+            "frictional_limit_q": round(q, 4),
+            "regimes": regimes,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stress polygon at {depth:.0f}m: Sv={Sv:.1f} MPa, q={q:.2f}",
+                "risk_level": "AMBER" if Pp > 0.4 * Sv else "GREEN",
+                "what_this_means": f"The stress polygon shows the physically allowed range of horizontal stresses at {depth:.0f}m depth given friction={friction}.",
+                "for_non_experts": "This diagram shows the limits of underground stress. It tells engineers what stress values are physically possible, which constrains drilling design.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _stress_polygon_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [152] Orientation Clustering ────────────────────────────────────────────
+@app.post("/api/analysis/orientation-clustering")
+async def orientation_clustering_analysis(request: Request):
+    """K-means clustering on fracture pole orientations with silhouette analysis."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    max_k = int(body.get("max_k", 6))
+    cache_key = f"{source}_{well}_{max_k}"
+    if cache_key in _orientation_clustering_cache:
+        return _sanitize_for_json(_orientation_clustering_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        from sklearn.cluster import KMeans
+        from sklearn.metrics import silhouette_score
+
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        az = df_well[AZIMUTH_COL].values
+        dip = df_well[DIP_COL].values
+
+        # Convert to pole vectors (unit normals)
+        az_rad = np.radians(az)
+        dip_rad = np.radians(dip)
+        nx = np.sin(dip_rad) * np.sin(az_rad)
+        ny = np.sin(dip_rad) * np.cos(az_rad)
+        nz = np.cos(dip_rad)
+        X = np.column_stack([nx, ny, nz])
+
+        # Try k=2..max_k, pick best silhouette
+        results_k = []
+        best_k = 2
+        best_sil = -1
+        for k in range(2, min(max_k + 1, len(X))):
+            km = KMeans(n_clusters=k, n_init=10, random_state=42)
+            labels = km.fit_predict(X)
+            sil = float(silhouette_score(X, labels))
+            results_k.append({"k": k, "silhouette": round(sil, 4), "inertia": round(float(km.inertia_), 4)})
+            if sil > best_sil:
+                best_sil = sil
+                best_k = k
+
+        # Final clustering with best k
+        km_final = KMeans(n_clusters=best_k, n_init=10, random_state=42)
+        final_labels = km_final.fit_predict(X)
+
+        # Cluster summaries
+        clusters = []
+        for c in range(best_k):
+            mask = final_labels == c
+            c_az = az[mask]
+            c_dip = dip[mask]
+            # Circular mean for azimuth
+            sin_sum = np.sum(np.sin(np.radians(c_az)))
+            cos_sum = np.sum(np.cos(np.radians(c_az)))
+            mean_az = float(np.degrees(np.arctan2(sin_sum, cos_sum)) % 360)
+            mean_dip = float(np.mean(c_dip))
+            clusters.append({
+                "cluster": c,
+                "n_fractures": int(mask.sum()),
+                "pct": round(100 * mask.sum() / len(X), 1),
+                "mean_azimuth": round(mean_az, 1),
+                "mean_dip": round(mean_dip, 1),
+                "std_azimuth": round(float(np.std(c_az)), 1),
+                "std_dip": round(float(np.std(c_dip)), 1),
+            })
+
+        quality = "EXCELLENT" if best_sil > 0.5 else ("GOOD" if best_sil > 0.3 else ("FAIR" if best_sil > 0.15 else "POOR"))
+
+        recommendations = []
+        recommendations.append(f"Best clustering: k={best_k} with silhouette={best_sil:.3f} ({quality}).")
+        if quality in ("EXCELLENT", "GOOD"):
+            recommendations.append("Fracture sets are well-defined -- suitable for DFN modeling with distinct set orientations.")
+        else:
+            recommendations.append("Fracture orientations overlap significantly -- consider treating as a single broad distribution.")
+        for cl in clusters:
+            recommendations.append(f"Set {cl['cluster']}: {cl['n_fractures']} fractures, mean az={cl['mean_azimuth']:.0f} dip={cl['mean_dip']:.0f}.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+            colors = ["#2196F3", "#4CAF50", "#FF5722", "#9C27B0", "#FF9800", "#795548"]
+
+            # Silhouette vs k
+            ks = [r["k"] for r in results_k]
+            sils = [r["silhouette"] for r in results_k]
+            axes[0].plot(ks, sils, "o-", color="#2196F3", linewidth=2)
+            axes[0].axvline(best_k, color="red", linestyle="--", alpha=0.7, label=f"Best k={best_k}")
+            axes[0].set_xlabel("Number of clusters (k)")
+            axes[0].set_ylabel("Silhouette Score")
+            axes[0].set_title("Optimal k Selection")
+            axes[0].legend(fontsize=8)
+
+            # Scatter: azimuth vs dip colored by cluster
+            for c in range(best_k):
+                mask = final_labels == c
+                axes[1].scatter(az[mask], dip[mask], c=colors[c % len(colors)], alpha=0.5, s=15, label=f"Set {c}")
+            axes[1].set_xlabel("Azimuth (deg)")
+            axes[1].set_ylabel("Dip (deg)")
+            axes[1].set_title("Orientation Clusters")
+            axes[1].legend(fontsize=7, loc="upper right")
+
+            # Pie chart of cluster sizes
+            sizes = [cl["n_fractures"] for cl in clusters]
+            labels_pie = [f"Set {cl['cluster']}\n({cl['pct']}%)" for cl in clusters]
+            axes[2].pie(sizes, labels=labels_pie, colors=colors[:best_k], autopct="%1.0f%%", startangle=90)
+            axes[2].set_title("Cluster Distribution")
+
+            fig.suptitle(f"Orientation Clustering -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_fractures": int(len(X)),
+            "best_k": best_k,
+            "best_silhouette": round(best_sil, 4),
+            "quality": quality,
+            "k_analysis": results_k,
+            "clusters": clusters,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Orientation clustering: {best_k} fracture sets identified ({quality})",
+                "risk_level": "GREEN" if quality in ("EXCELLENT", "GOOD") else ("AMBER" if quality == "FAIR" else "RED"),
+                "what_this_means": f"K-means clustering on pole orientations found {best_k} distinct fracture sets with {quality.lower()} separation (silhouette={best_sil:.3f}).",
+                "for_non_experts": f"Fractures were grouped by direction. We found {best_k} natural groups. "
+                    + ("These groups are clearly distinct." if quality in ("EXCELLENT", "GOOD")
+                       else "The groups overlap somewhat -- interpretation with caution." if quality == "FAIR"
+                       else "Groups are not well separated -- fractures may not have distinct preferred directions."),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _orientation_clustering_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [153] Depth Trend Analysis ──────────────────────────────────────────────
+@app.post("/api/analysis/depth-trend")
+async def depth_trend_analysis(request: Request):
+    """Detect trends in azimuth, dip, and density vs depth with rolling windows and breakpoints."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    window = int(body.get("window", 20))
+    cache_key = f"{source}_{well}_{window}"
+    if cache_key in _depth_trend_cache:
+        return _sanitize_for_json(_depth_trend_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        df_sorted = df_well.dropna(subset=[DEPTH_COL]).sort_values(DEPTH_COL).reset_index(drop=True)
+        if len(df_sorted) < 10:
+            raise HTTPException(status_code=400, detail="Need at least 10 samples with depth")
+
+        depths = df_sorted[DEPTH_COL].values
+        azimuths = df_sorted[AZIMUTH_COL].values
+        dips = df_sorted[DIP_COL].values
+
+        # Rolling statistics
+        win = min(window, len(df_sorted) // 3)
+        rolling_data = []
+        for i in range(0, len(df_sorted) - win + 1, max(1, win // 4)):
+            chunk = df_sorted.iloc[i:i + win]
+            d = chunk[DEPTH_COL].values
+            az = chunk[AZIMUTH_COL].values
+            dp = chunk[DIP_COL].values
+            sin_sum = np.sum(np.sin(np.radians(az)))
+            cos_sum = np.sum(np.cos(np.radians(az)))
+            mean_az = float(np.degrees(np.arctan2(sin_sum, cos_sum)) % 360)
+            rolling_data.append({
+                "depth_center": round(float(np.mean(d)), 1),
+                "depth_min": round(float(d.min()), 1),
+                "depth_max": round(float(d.max()), 1),
+                "mean_azimuth": round(mean_az, 1),
+                "mean_dip": round(float(np.mean(dp)), 1),
+                "std_azimuth": round(float(np.std(az)), 1),
+                "std_dip": round(float(np.std(dp)), 1),
+                "n_fractures": int(len(chunk)),
+            })
+
+        # Simple trend detection: linear regression on dip vs depth
+        from numpy.polynomial import polynomial as P
+        if len(depths) > 5:
+            dip_coeffs = np.polyfit(depths, dips, 1)
+            dip_slope = float(dip_coeffs[0])  # deg per meter
+            az_sin = np.sin(np.radians(azimuths))
+            az_cos = np.cos(np.radians(azimuths))
+            az_sin_slope = float(np.polyfit(depths, az_sin, 1)[0])
+            az_cos_slope = float(np.polyfit(depths, az_cos, 1)[0])
+            az_rotation_rate = float(np.sqrt(az_sin_slope**2 + az_cos_slope**2)) * 1000  # per km
+        else:
+            dip_slope = 0
+            az_rotation_rate = 0
+
+        dip_trend = "STEEPENING" if dip_slope > 0.005 else ("SHALLOWING" if dip_slope < -0.005 else "STABLE")
+        az_trend = "ROTATING" if az_rotation_rate > 5 else "STABLE"
+
+        # Breakpoint detection: largest change in rolling mean dip
+        breakpoints = []
+        if len(rolling_data) > 4:
+            rd_dips = [r["mean_dip"] for r in rolling_data]
+            rd_depths = [r["depth_center"] for r in rolling_data]
+            diffs = [abs(rd_dips[i + 1] - rd_dips[i]) for i in range(len(rd_dips) - 1)]
+            if diffs:
+                max_idx = int(np.argmax(diffs))
+                if diffs[max_idx] > 5:  # Significant change threshold
+                    breakpoints.append({
+                        "depth_m": rd_depths[max_idx],
+                        "property": "dip",
+                        "change_deg": round(diffs[max_idx], 1),
+                        "description": f"Dip changes by {diffs[max_idx]:.1f} deg near {rd_depths[max_idx]:.0f}m",
+                    })
+
+        recommendations = []
+        recommendations.append(f"Dip trend: {dip_trend} ({dip_slope:.4f} deg/m)")
+        recommendations.append(f"Azimuth trend: {az_trend} (rotation rate {az_rotation_rate:.2f} deg/km)")
+        if breakpoints:
+            recommendations.append(f"Breakpoint detected at {breakpoints[0]['depth_m']:.0f}m -- possible formation boundary.")
+        if dip_trend != "STABLE":
+            recommendations.append("Changing dip with depth suggests structural rotation or different tectonic domains.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+
+            # Dip vs depth
+            axes[0].scatter(dips, depths, alpha=0.3, s=10, c="#2196F3")
+            if rolling_data:
+                rd_d = [r["depth_center"] for r in rolling_data]
+                rd_dip = [r["mean_dip"] for r in rolling_data]
+                axes[0].plot(rd_dip, rd_d, "r-", linewidth=2, label=f"Rolling mean (n={win})")
+            axes[0].set_xlabel("Dip (deg)")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].invert_yaxis()
+            axes[0].set_title(f"Dip vs Depth ({dip_trend})")
+            axes[0].legend(fontsize=8)
+
+            # Azimuth vs depth
+            axes[1].scatter(azimuths, depths, alpha=0.3, s=10, c="#4CAF50")
+            if rolling_data:
+                rd_az = [r["mean_azimuth"] for r in rolling_data]
+                axes[1].plot(rd_az, rd_d, "r-", linewidth=2, label=f"Circular mean (n={win})")
+            axes[1].set_xlabel("Azimuth (deg)")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].invert_yaxis()
+            axes[1].set_title(f"Azimuth vs Depth ({az_trend})")
+            axes[1].legend(fontsize=8)
+
+            # Density profile
+            n_bins = min(20, len(depths) // 5 + 1)
+            depth_bins = np.linspace(depths.min(), depths.max(), n_bins + 1)
+            counts = np.histogram(depths, bins=depth_bins)[0]
+            bin_centers = (depth_bins[:-1] + depth_bins[1:]) / 2
+            bin_widths = np.diff(depth_bins)
+            density = counts / bin_widths
+            axes[2].barh(bin_centers, density, height=bin_widths * 0.9, color="#FF9800", alpha=0.7)
+            axes[2].set_xlabel("Fractures per meter")
+            axes[2].set_ylabel("Depth (m)")
+            axes[2].invert_yaxis()
+            axes[2].set_title("Fracture Density")
+
+            for bp in breakpoints:
+                for ax in axes:
+                    ax.axhline(bp["depth_m"], color="red", linestyle="--", alpha=0.7)
+
+            fig.suptitle(f"Depth Trend Analysis -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_samples": int(len(df_sorted)),
+            "depth_range": [round(float(depths.min()), 1), round(float(depths.max()), 1)],
+            "window_size": win,
+            "dip_trend": dip_trend,
+            "dip_slope_deg_per_m": round(dip_slope, 6),
+            "azimuth_trend": az_trend,
+            "azimuth_rotation_rate_per_km": round(az_rotation_rate, 3),
+            "breakpoints": breakpoints,
+            "rolling_stats": rolling_data[:50],
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Depth trends: dip {dip_trend}, azimuth {az_trend}",
+                "risk_level": "GREEN" if dip_trend == "STABLE" and az_trend == "STABLE" else "AMBER",
+                "what_this_means": f"Analysis of {len(df_sorted)} fractures over {depths.min():.0f}-{depths.max():.0f}m depth. Dip is {dip_trend.lower()}, azimuth is {az_trend.lower()}.",
+                "for_non_experts": "We checked if fracture angles change with depth. "
+                    + ("Both dip and direction are stable -- consistent fracture system." if dip_trend == "STABLE" and az_trend == "STABLE"
+                       else "Some properties change with depth, which may indicate different rock layers or stress conditions."),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _depth_trend_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [154] Classification Confidence Map ─────────────────────────────────────
+@app.post("/api/analysis/confidence-map")
+async def confidence_map_analysis(request: Request):
+    """Per-sample classification confidence heatmap with decision boundary analysis."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    cache_key = f"{source}_{well}"
+    if cache_key in _confidence_map_cache:
+        return _sanitize_for_json(_confidence_map_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.model_selection import cross_val_predict
+
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        features_df = engineer_enhanced_features(df_well)
+        feature_cols = [c for c in features_df.columns if c not in [DEPTH_COL, AZIMUTH_COL, DIP_COL, FRACTURE_TYPE_COL, WELL_COL, "Well"]]
+        X = features_df[feature_cols].values
+        y_raw = df_well[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(y_raw)
+        classes = le.classes_.tolist()
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # Train RF for probability estimates
+        rf = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        proba = cross_val_predict(rf, X_scaled, y, cv=min(3, len(np.unique(y))), method="predict_proba")
+        preds = np.argmax(proba, axis=1)
+        confidences = np.max(proba, axis=1)
+
+        correct = (preds == y)
+        accuracy = float(np.mean(correct))
+
+        # Confidence bins
+        bins = [(0, 0.4, "VERY_LOW"), (0.4, 0.6, "LOW"), (0.6, 0.8, "MODERATE"), (0.8, 0.95, "HIGH"), (0.95, 1.01, "VERY_HIGH")]
+        confidence_distribution = []
+        for lo, hi, label in bins:
+            mask = (confidences >= lo) & (confidences < hi)
+            n = int(mask.sum())
+            acc = float(np.mean(correct[mask])) if mask.any() else 0
+            confidence_distribution.append({
+                "range": f"{lo:.0%}-{hi:.0%}",
+                "label": label,
+                "n_samples": n,
+                "pct": round(100 * n / len(X), 1),
+                "accuracy": round(acc, 4),
+            })
+
+        # Per-class confidence
+        per_class = []
+        for i, cls in enumerate(classes):
+            mask = y == i
+            cls_conf = confidences[mask]
+            cls_correct = correct[mask]
+            per_class.append({
+                "class": cls,
+                "n_samples": int(mask.sum()),
+                "mean_confidence": round(float(np.mean(cls_conf)), 4),
+                "accuracy": round(float(np.mean(cls_correct)), 4) if mask.any() else 0,
+                "n_low_confidence": int(np.sum(cls_conf < 0.5)),
+            })
+
+        # Uncertain samples (near decision boundary)
+        uncertain_mask = confidences < 0.5
+        n_uncertain = int(uncertain_mask.sum())
+        uncertain_samples = []
+        uncertain_indices = np.where(uncertain_mask)[0]
+        df_well_reset = df_well.reset_index(drop=True)
+        for idx in uncertain_indices[:20]:
+            row = df_well_reset.iloc[idx]
+            depth_val = row.get(DEPTH_COL, float("nan"))
+            sample = {
+                "index": int(idx),
+                "depth": round(float(depth_val), 1) if not (isinstance(depth_val, float) and np.isnan(depth_val)) else None,
+                "azimuth": round(float(row[AZIMUTH_COL]), 1),
+                "dip": round(float(row[DIP_COL]), 1),
+                "true_class": str(y_raw[idx]),
+                "predicted_class": classes[preds[idx]],
+                "confidence": round(float(confidences[idx]), 4),
+                "top2_classes": [],
+            }
+            top2 = np.argsort(proba[idx])[::-1][:2]
+            for t in top2:
+                sample["top2_classes"].append({"class": classes[t], "prob": round(float(proba[idx][t]), 4)})
+            uncertain_samples.append(sample)
+
+        # Overall calibration: mean confidence vs accuracy
+        calibration_gap = abs(float(np.mean(confidences)) - accuracy)
+
+        recommendations = []
+        if n_uncertain > len(X) * 0.3:
+            recommendations.append(f"HIGH uncertainty: {n_uncertain} samples ({100*n_uncertain/len(X):.0f}%) below 50% confidence -- model struggles.")
+        elif n_uncertain > len(X) * 0.1:
+            recommendations.append(f"MODERATE uncertainty: {n_uncertain} samples near decision boundary.")
+        else:
+            recommendations.append(f"LOW uncertainty: only {n_uncertain} samples below 50% confidence.")
+        if calibration_gap > 0.1:
+            recommendations.append(f"Calibration gap of {calibration_gap:.2f} -- confidence estimates may be unreliable.")
+        for pc in per_class:
+            if pc["mean_confidence"] < 0.5:
+                recommendations.append(f"Class '{pc['class']}' has very low mean confidence ({pc['mean_confidence']:.2f}) -- likely under-represented or hard to classify.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+
+            # Confidence histogram
+            axes[0].hist(confidences, bins=20, color="#2196F3", edgecolor="white", alpha=0.8)
+            axes[0].axvline(0.5, color="red", linestyle="--", label="Decision boundary")
+            axes[0].set_xlabel("Confidence")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title("Confidence Distribution")
+            axes[0].legend(fontsize=8)
+
+            # Confidence vs accuracy by bin
+            bin_labels = [d["range"] for d in confidence_distribution]
+            bin_accs = [d["accuracy"] for d in confidence_distribution]
+            bin_counts = [d["n_samples"] for d in confidence_distribution]
+            x_pos = range(len(bin_labels))
+            bars = axes[1].bar(x_pos, bin_accs, color="#4CAF50", alpha=0.7)
+            axes[1].set_xticks(list(x_pos))
+            axes[1].set_xticklabels(bin_labels, fontsize=7, rotation=30)
+            axes[1].set_ylabel("Accuracy")
+            axes[1].set_title("Accuracy by Confidence Bin")
+            axes[1].set_ylim(0, 1.1)
+            for i, bar in enumerate(bars):
+                axes[1].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
+                             f"n={bin_counts[i]}", ha="center", fontsize=7)
+
+            # Per-class confidence
+            cls_names = [pc["class"][:8] for pc in per_class]
+            cls_confs = [pc["mean_confidence"] for pc in per_class]
+            cls_accs = [pc["accuracy"] for pc in per_class]
+            x2 = np.arange(len(cls_names))
+            w = 0.35
+            axes[2].bar(x2 - w / 2, cls_confs, w, color="#FF9800", alpha=0.7, label="Confidence")
+            axes[2].bar(x2 + w / 2, cls_accs, w, color="#9C27B0", alpha=0.7, label="Accuracy")
+            axes[2].set_xticks(x2)
+            axes[2].set_xticklabels(cls_names, fontsize=7, rotation=30)
+            axes[2].set_ylabel("Score")
+            axes[2].set_title("Per-Class Metrics")
+            axes[2].legend(fontsize=8)
+            axes[2].set_ylim(0, 1.1)
+
+            fig.suptitle(f"Classification Confidence Map -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_samples": int(len(X)),
+            "n_classes": int(len(classes)),
+            "classes": classes,
+            "overall_accuracy": round(accuracy, 4),
+            "mean_confidence": round(float(np.mean(confidences)), 4),
+            "calibration_gap": round(calibration_gap, 4),
+            "n_uncertain": n_uncertain,
+            "pct_uncertain": round(100 * n_uncertain / len(X), 1),
+            "confidence_distribution": confidence_distribution,
+            "per_class": per_class,
+            "uncertain_samples": uncertain_samples,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Confidence map: {100-100*n_uncertain/len(X):.0f}% samples above 50% confidence",
+                "risk_level": "GREEN" if n_uncertain < len(X) * 0.1 else ("AMBER" if n_uncertain < len(X) * 0.3 else "RED"),
+                "what_this_means": f"Analyzed confidence for all {len(X)} predictions. {n_uncertain} samples are near the decision boundary and uncertain.",
+                "for_non_experts": f"We checked how confident the model is about each prediction. {len(X) - n_uncertain} out of {len(X)} predictions are confident, while {n_uncertain} are uncertain and should be reviewed by an expert.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _confidence_map_cache[cache_key] = result
+    return _sanitize_for_json(result)

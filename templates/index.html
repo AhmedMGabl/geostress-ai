@@ -2287,6 +2287,67 @@
                         </div>
                     </div>
 
+                    <!-- v3.43.0: Fracture Spacing + Stress Polygon + Orientation Clustering + Depth Trends + Confidence Map -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-rulers"></i> Fracture Spacing Analysis</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runFractureSpacing()">Analyze Spacing</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Statistical spacing distribution, log-normal fit, clustering coefficient, depth zones.</p>
+                            <div id="fracture-spacing-results" style="display:none;"></div>
+                            <img id="fracture-spacing-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-hexagon"></i> Stress Polygon</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runStressPolygon()">Build Polygon</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Anderson faulting stress bounds: allowable SHmax/Shmin for each regime.</p>
+                            <div id="stress-polygon-results" style="display:none;"></div>
+                            <img id="stress-polygon-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-diagram-3"></i> Orientation Clustering</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runOrientationClustering()">Cluster Orientations</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">K-means on fracture pole orientations with silhouette-based optimal k selection.</p>
+                            <div id="orientation-clustering-results" style="display:none;"></div>
+                            <img id="orientation-clustering-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-down-arrow"></i> Depth Trend Analysis</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runDepthTrend()">Analyze Trends</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Rolling-window trends in azimuth, dip, and density vs depth with breakpoint detection.</p>
+                            <div id="depth-trend-results" style="display:none;"></div>
+                            <img id="depth-trend-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bullseye"></i> Confidence Map</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runConfidenceMap()">Map Confidence</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Per-sample classification confidence distribution, calibration, and uncertain sample identification.</p>
+                            <div id="confidence-map-results" style="display:none;"></div>
+                            <img id="confidence-map-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
