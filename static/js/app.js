@@ -13913,3 +13913,134 @@ async function runDataCompleteness() {
         hideLoading();
     }
 }
+
+// ── [175] Stress Rotation ────────────────────────────────
+async function runStressRotation() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('stress-rotation-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/stress-rotation', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, window: 30})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Rotation Rate</h6><h3>' + r.rotation_rate_deg_per_km + '°/km</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Total Rotation</h6><h3>' + r.total_rotation_deg + '°</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Class</h6><h3 class="' + (r.rotation_class === 'SIGNIFICANT' ? 'text-danger' : r.rotation_class === 'MODERATE' ? 'text-warning' : 'text-success') + '">' + r.rotation_class + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Breakpoints</h6><h3>' + r.n_breakpoints + '</h3></div></div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('stress-rotation-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ── [176] Hydraulic Conductivity ─────────────────────────
+async function runHydraulicConductivity() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('hydraulic-conductivity-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/hydraulic-conductivity', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, aperture_mm: 0.5})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>K (m/s)</h6><h3>' + r.K_bulk_m_per_s + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>k (Darcy)</h6><h3>' + r.k_permeability_darcy + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>P10</h6><h3>' + r.P10_per_m + '/m</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Anisotropy</h6><h3>' + r.anisotropy_ratio + 'x</h3></div></div>';
+        html += '</div>';
+        if (r.directional_conductivity && r.directional_conductivity.length) {
+            html += '<h6 class="mt-2">Directional K</h6><table class="table table-sm table-bordered"><thead><tr><th>Dir</th><th>N</th><th>Dip°</th><th>K (m/s)</th></tr></thead><tbody>';
+            r.directional_conductivity.forEach(function(s) { html += '<tr><td>' + s.azimuth_range + '</td><td>' + s.n_fractures + '</td><td>' + s.mean_dip_deg + '</td><td>' + s.K_m_per_s + '</td></tr>'; });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) { html += '<h6>Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('hydraulic-conductivity-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ── [177] Trajectory Optimization ────────────────────────
+async function runTrajectoryOptimization() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('trajectory-opt-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/trajectory-optimization', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, depth: 3000, friction: 0.6, ucs_mpa: 80, mud_weight_sg: 1.2})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-4"><div class="card p-2 text-center border-success"><h6>Optimal</h6><h3 class="text-success">' + r.optimal.azimuth_deg + '° / ' + r.optimal.dip_deg + '°</h3><small>SF=' + r.optimal.safety_factor + '</small></div></div>';
+        html += '<div class="col-md-4"><div class="card p-2 text-center border-danger"><h6>Worst</h6><h3 class="text-danger">' + r.worst.azimuth_deg + '° / ' + r.worst.dip_deg + '°</h3><small>SF=' + r.worst.safety_factor + '</small></div></div>';
+        html += '<div class="col-md-4"><div class="card p-2 text-center"><h6>Stable %</h6><h3>' + r.pct_stable + '%</h3><small>' + r.n_trajectories_tested + ' tested</small></div></div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('trajectory-opt-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ── [178] Criticality Ranking ────────────────────────────
+async function runCriticalityRanking() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('criticality-ranking-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/criticality-ranking', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, friction: 0.6, depth: 3000, top_n: 20})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Critical</h6><h3 class="text-danger">' + r.n_critically_stressed + '/' + r.n_fractures + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>CS%</h6><h3>' + r.pct_critically_stressed + '%</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Mean Score</h6><h3>' + r.mean_score + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Std Score</h6><h3>' + r.std_score + '</h3></div></div>';
+        html += '</div>';
+        if (r.top_fractures && r.top_fractures.length) {
+            html += '<h6 class="mt-2">Top Critical Fractures</h6><table class="table table-sm table-bordered"><thead><tr><th>#</th><th>Az°</th><th>Dip°</th><th>Depth</th><th>Slip</th><th>Score</th><th>CS</th></tr></thead><tbody>';
+            r.top_fractures.slice(0, 10).forEach(function(f) {
+                html += '<tr class="' + (f.critically_stressed ? 'table-danger' : '') + '"><td>' + f.index + '</td><td>' + f.azimuth_deg + '</td><td>' + f.dip_deg + '</td><td>' + (f.depth_m || 'N/A') + '</td><td>' + f.slip_tendency + '</td><td>' + f.composite_score + '</td><td>' + (f.critically_stressed ? 'YES' : 'no') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) { html += '<h6>Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('criticality-ranking-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ── [179] Geomech Log ────────────────────────────────────
+async function runGeomechLog() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('geomech-log-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/geomech-log', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, bin_size_m: 10})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Intervals</h6><h3>' + r.n_intervals + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>With Data</h6><h3>' + r.n_with_data + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Coverage</h6><h3>' + r.coverage_pct + '%</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Depth Range</h6><h3>' + r.depth_range_m[0] + '-' + r.depth_range_m[1] + 'm</h3></div></div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('geomech-log-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}

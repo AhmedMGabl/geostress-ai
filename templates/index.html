@@ -2620,6 +2620,81 @@
                         </div>
                     </div>
 
+                    <!-- Stress Rotation -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-repeat"></i> Stress Rotation Analysis</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runStressRotation()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Detect stress direction rotation with depth.</p>
+                            <div id="stress-rotation-results" style="display:none;"></div>
+                            <img id="stress-rotation-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Hydraulic Conductivity -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-droplet-half"></i> Hydraulic Conductivity</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runHydraulicConductivity()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Bulk hydraulic conductivity from fracture network (cubic law).</p>
+                            <div id="hydraulic-conductivity-results" style="display:none;"></div>
+                            <img id="hydraulic-conductivity-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Trajectory Optimization -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-geo-alt-fill"></i> Trajectory Optimization</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runTrajectoryOptimization()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Find optimal drilling direction for wellbore stability.</p>
+                            <div id="trajectory-opt-results" style="display:none;"></div>
+                            <img id="trajectory-opt-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Criticality Ranking -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-sort-numeric-down"></i> Criticality Ranking</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runCriticalityRanking()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Rank individual fractures by criticality score.</p>
+                            <div id="criticality-ranking-results" style="display:none;"></div>
+                            <img id="criticality-ranking-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Geomech Log -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bar-chart-steps"></i> Geomechanical Log</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runGeomechLog()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Synthetic geomechanical log from fracture data.</p>
+                            <div id="geomech-log-results" style="display:none;"></div>
+                            <img id="geomech-log-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
