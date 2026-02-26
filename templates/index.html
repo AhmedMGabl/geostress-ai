@@ -2348,6 +2348,67 @@
                         </div>
                     </div>
 
+                    <!-- v3.44.0: PCA + Fracture Intensity + CV Stability + Geomech Summary + Correlation Network -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bounding-box"></i> PCA Analysis</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runPCA()">Run PCA</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Principal Component Analysis: variance explained, loadings, biplot.</p>
+                            <div id="pca-results" style="display:none;"></div>
+                            <img id="pca-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bar-chart-steps"></i> Fracture Intensity (P10)</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runFractureIntensity()">Profile Intensity</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">P10 linear intensity profile along the well in depth bins.</p>
+                            <div id="fracture-intensity-results" style="display:none;"></div>
+                            <img id="fracture-intensity-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-shuffle"></i> CV Stability</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runCVStability()">Test Stability</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Cross-validation stability: per-fold variance, overfitting detection.</p>
+                            <div id="cv-stability-results" style="display:none;"></div>
+                            <img id="cv-stability-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-clipboard2-data"></i> Geomechanical Summary</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runGeomechSummary()">Summarize</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Integrated stress, classification, and risk summary in one card.</p>
+                            <div id="geomech-summary-results" style="display:none;"></div>
+                            <img id="geomech-summary-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-share"></i> Correlation Network</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runCorrelationNetwork()">Map Correlations</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Feature correlation matrix with strong/weak link identification.</p>
+                            <div id="correlation-network-results" style="display:none;"></div>
+                            <img id="correlation-network-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

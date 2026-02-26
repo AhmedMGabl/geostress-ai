@@ -13003,3 +13003,217 @@ async function runConfidenceMap() {
         hideLoading();
     }
 }
+
+// ── v3.44.0: PCA + Fracture Intensity + CV Stability + Geomech Summary + Correlation Network ──
+
+async function runPCA() {
+    showLoading();
+    var results = document.getElementById('pca-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/pca', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, n_components:5})});
+        results.style.display = '';
+        var html = '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.n_features + '</div><small class="text-muted">Features</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.n_for_80pct + '</div><small class="text-muted">For 80%</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.n_for_95pct + '</div><small class="text-muted">For 95%</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + (r.variance_explained[0] * 100).toFixed(1) + '%</div><small class="text-muted">PC1 Var</small></div></div>';
+        html += '</div>';
+        if (r.components && r.components.length) {
+            html += '<h6>Components</h6><table class="table table-sm table-bordered"><thead><tr><th>PC</th><th>Var %</th><th>Cumul %</th><th>Top Feature</th></tr></thead><tbody>';
+            r.components.forEach(function(c) {
+                html += '<tr><td>PC' + c.component + '</td><td>' + c.variance_pct + '%</td><td>' + c.cumulative_pct + '%</td><td>' + (c.top_features[0] ? c.top_features[0].feature + ' (' + c.top_features[0].loading + ')' : '') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('pca-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+async function runFractureIntensity() {
+    showLoading();
+    var results = document.getElementById('fracture-intensity-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/fracture-intensity', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, bin_size_m:10})});
+        results.style.display = '';
+        var html = '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.overall_P10 + '/m</div><small class="text-muted">Overall P10</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.intensity_class + '</div><small class="text-muted">Class</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.max_P10 + '/m</div><small class="text-muted">Max P10</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.n_intervals + '</div><small class="text-muted">Intervals</small></div></div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('fracture-intensity-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+async function runCVStability() {
+    showLoading();
+    var results = document.getElementById('cv-stability-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/cv-stability', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, n_folds:5})});
+        results.style.display = '';
+        var html = '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.best_model + '</div><small class="text-muted">Best Model</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + (r.best_accuracy * 100).toFixed(1) + '%</div><small class="text-muted">Best Accuracy</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.most_stable_model + '</div><small class="text-muted">Most Stable</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.n_folds + '</div><small class="text-muted">Folds</small></div></div>';
+        html += '</div>';
+        if (r.models && r.models.length) {
+            html += '<h6>Model Results</h6><table class="table table-sm table-bordered"><thead><tr><th>Model</th><th>Mean Acc</th><th>Std</th><th>Train Acc</th><th>Overfit</th><th>Stability</th></tr></thead><tbody>';
+            r.models.forEach(function(m) {
+                var cls = m.overfitting === 'YES' ? 'table-danger' : (m.overfitting === 'MILD' ? 'table-warning' : '');
+                html += '<tr class="' + cls + '"><td>' + m.model + '</td><td>' + (m.mean_accuracy * 100).toFixed(1) + '%</td><td>' + (m.std_accuracy * 100).toFixed(1) + '%</td><td>' + (m.train_accuracy * 100).toFixed(1) + '%</td><td>' + m.overfitting + '</td><td>' + m.stability + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('cv-stability-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+async function runGeomechSummary() {
+    showLoading();
+    var results = document.getElementById('geomech-summary-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/geomech-summary', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well})});
+        results.style.display = '';
+        var html = '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.n_fractures + '</div><small class="text-muted">Fractures</small></div></div>';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.n_types + '</div><small class="text-muted">Types</small></div></div>';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.mean_azimuth + '</div><small class="text-muted">Mean Az</small></div></div>';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.mean_dip + '</div><small class="text-muted">Mean Dip</small></div></div>';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.quality_grade + '</div><small class="text-muted">Grade</small></div></div>';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.quality_score + '</div><small class="text-muted">Score</small></div></div>';
+        html += '</div>';
+        if (r.fracture_types) {
+            html += '<h6>Fracture Types</h6><table class="table table-sm table-bordered"><thead><tr><th>Type</th><th>Count</th></tr></thead><tbody>';
+            Object.keys(r.fracture_types).forEach(function(k) {
+                html += '<tr><td>' + k + '</td><td>' + r.fracture_types[k] + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('geomech-summary-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+async function runCorrelationNetwork() {
+    showLoading();
+    var results = document.getElementById('correlation-network-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/correlation-network', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, threshold:0.5})});
+        results.style.display = '';
+        var html = '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.n_features + '</div><small class="text-muted">Features</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.n_strong_links + '</div><small class="text-muted">Strong Links</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.n_redundant_features + '</div><small class="text-muted">Redundant</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.mean_abs_correlation + '</div><small class="text-muted">Mean |r|</small></div></div>';
+        html += '</div>';
+        if (r.top_pairs && r.top_pairs.length) {
+            html += '<h6>Top Correlated Pairs</h6><table class="table table-sm table-bordered"><thead><tr><th>Feature A</th><th>Feature B</th><th>|r|</th></tr></thead><tbody>';
+            r.top_pairs.slice(0, 8).forEach(function(p) {
+                var cls = p.abs_correlation > 0.8 ? 'table-danger' : (p.abs_correlation > 0.5 ? 'table-warning' : '');
+                html += '<tr class="' + cls + '"><td>' + p.feature_a + '</td><td>' + p.feature_b + '</td><td>' + p.abs_correlation + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('correlation-network-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

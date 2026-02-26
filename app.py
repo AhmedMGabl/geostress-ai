@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.43.0 - Fracture Spacing + Stress Polygon + Orientation Clustering + Depth Trends + Confidence Map)."""
+"""GeoStress AI - FastAPI Web Application (v3.44.0 - PCA + Fracture Intensity + CV Stability + Geomech Summary + Correlation Network)."""
 
 import os
 import io
@@ -33862,4 +33862,678 @@ async def confidence_map_analysis(request: Request):
     elapsed = round(time.time() - t0, 2)
     result["elapsed_s"] = elapsed
     _confidence_map_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── v3.44.0 caches ─────────────────────────────────────────────────────────
+_pca_cache: dict = {}
+_fracture_intensity_cache: dict = {}
+_cv_stability_cache: dict = {}
+_geomech_summary_cache: dict = {}
+_correlation_network_cache: dict = {}
+
+
+# ── [155] Principal Component Analysis ──────────────────────────────────────
+@app.post("/api/analysis/pca")
+async def pca_analysis(request: Request):
+    """PCA on engineered features: variance explained, loadings, biplot."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_components = int(body.get("n_components", 5))
+    cache_key = f"{source}_{well}_{n_components}"
+    if cache_key in _pca_cache:
+        return _sanitize_for_json(_pca_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
+
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        features_df = engineer_enhanced_features(df_well)
+        feature_cols = [c for c in features_df.columns if c not in [DEPTH_COL, AZIMUTH_COL, DIP_COL, FRACTURE_TYPE_COL, WELL_COL, "Well"]]
+        X = features_df[feature_cols].values
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        nc = min(n_components, X_scaled.shape[1], X_scaled.shape[0])
+        pca = PCA(n_components=nc, random_state=42)
+        X_pca = pca.fit_transform(X_scaled)
+
+        variance_explained = [round(float(v), 4) for v in pca.explained_variance_ratio_]
+        cumulative = [round(float(np.sum(pca.explained_variance_ratio_[:i+1])), 4) for i in range(nc)]
+
+        # Loadings: top features per component
+        components_info = []
+        for i in range(nc):
+            loadings = pca.components_[i]
+            sorted_idx = np.argsort(np.abs(loadings))[::-1]
+            top_features = []
+            for j in sorted_idx[:5]:
+                top_features.append({
+                    "feature": feature_cols[j],
+                    "loading": round(float(loadings[j]), 4),
+                })
+            components_info.append({
+                "component": i + 1,
+                "variance_pct": round(float(pca.explained_variance_ratio_[i]) * 100, 2),
+                "cumulative_pct": round(cumulative[i] * 100, 2),
+                "top_features": top_features,
+            })
+
+        # How many components for 80% and 95%?
+        n_for_80 = int(np.searchsorted(cumulative, 0.80) + 1) if cumulative[-1] >= 0.80 else nc
+        n_for_95 = int(np.searchsorted(cumulative, 0.95) + 1) if cumulative[-1] >= 0.95 else nc
+
+        recommendations = []
+        recommendations.append(f"{n_for_80} components explain 80% variance, {n_for_95} for 95%.")
+        if n_for_80 <= 3:
+            recommendations.append("Data is low-dimensional -- 2-3 features capture most information.")
+        recommendations.append(f"First component explains {variance_explained[0]*100:.1f}% -- dominated by {components_info[0]['top_features'][0]['feature']}.")
+
+        # Plot
+        plot_b64 = ""
+        y_raw = df_well[FRACTURE_TYPE_COL].values
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+
+            # Scree plot
+            axes[0].bar(range(1, nc + 1), [v * 100 for v in variance_explained], color="#2196F3", alpha=0.7)
+            axes[0].plot(range(1, nc + 1), [c * 100 for c in cumulative], "ro-", markersize=5)
+            axes[0].axhline(80, color="gray", linestyle="--", alpha=0.5, label="80%")
+            axes[0].set_xlabel("Component")
+            axes[0].set_ylabel("Variance (%)")
+            axes[0].set_title("Scree Plot")
+            axes[0].legend(fontsize=8)
+
+            # PC1 vs PC2 scatter
+            if nc >= 2:
+                unique_types = np.unique(y_raw)
+                colors = ["#2196F3", "#4CAF50", "#FF5722", "#9C27B0", "#FF9800"]
+                for i_t, t in enumerate(unique_types):
+                    mask = y_raw == t
+                    axes[1].scatter(X_pca[mask, 0], X_pca[mask, 1], alpha=0.4, s=15,
+                                    c=colors[i_t % len(colors)], label=str(t)[:10])
+                axes[1].set_xlabel(f"PC1 ({variance_explained[0]*100:.1f}%)")
+                axes[1].set_ylabel(f"PC2 ({variance_explained[1]*100:.1f}%)")
+                axes[1].set_title("PCA Scatter")
+                axes[1].legend(fontsize=7, loc="upper right")
+
+            # Loading bar for PC1
+            pc1_loadings = pca.components_[0]
+            top_idx = np.argsort(np.abs(pc1_loadings))[::-1][:8]
+            feat_names = [feature_cols[i][:12] for i in top_idx]
+            feat_vals = [pc1_loadings[i] for i in top_idx]
+            colors_bar = ["#4CAF50" if v > 0 else "#FF5722" for v in feat_vals]
+            axes[2].barh(feat_names[::-1], [feat_vals[i] for i in range(len(feat_vals))][::-1], color=colors_bar[::-1])
+            axes[2].set_xlabel("Loading")
+            axes[2].set_title("PC1 Loadings")
+
+            fig.suptitle(f"PCA -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_features": len(feature_cols),
+            "n_components": nc,
+            "variance_explained": variance_explained,
+            "cumulative_variance": cumulative,
+            "n_for_80pct": n_for_80,
+            "n_for_95pct": n_for_95,
+            "components": components_info,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"PCA: {n_for_80} components explain 80% of data variance",
+                "risk_level": "GREEN" if n_for_80 <= 5 else "AMBER",
+                "what_this_means": f"Reduced {len(feature_cols)} features to {n_for_80} principal components that capture 80% of the information.",
+                "for_non_experts": f"We simplified the data from {len(feature_cols)} measurements down to {n_for_80} key factors that capture most of the important patterns.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _pca_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [156] Fracture Intensity Profile ────────────────────────────────────────
+@app.post("/api/analysis/fracture-intensity")
+async def fracture_intensity_profile(request: Request):
+    """P10 (linear intensity) profile along the well: fractures per meter in depth bins."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    bin_size = float(body.get("bin_size_m", 10))
+    cache_key = f"{source}_{well}_{bin_size}"
+    if cache_key in _fracture_intensity_cache:
+        return _sanitize_for_json(_fracture_intensity_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        depths = df_well[DEPTH_COL].dropna().values
+        if len(depths) < 5:
+            raise HTTPException(status_code=400, detail="Need at least 5 samples with depth")
+
+        d_min, d_max = float(depths.min()), float(depths.max())
+        n_bins = max(3, int((d_max - d_min) / bin_size))
+        bin_edges = np.linspace(d_min, d_max, n_bins + 1)
+
+        intervals = []
+        p10_values = []
+        for i in range(n_bins):
+            lo, hi = bin_edges[i], bin_edges[i + 1]
+            mask = (depths >= lo) & (depths < hi + 0.01)
+            count = int(mask.sum())
+            length = hi - lo
+            p10 = count / length if length > 0 else 0
+            intervals.append({
+                "depth_from": round(lo, 1),
+                "depth_to": round(hi, 1),
+                "n_fractures": count,
+                "interval_m": round(length, 1),
+                "P10": round(p10, 4),
+            })
+            p10_values.append(p10)
+
+        overall_p10 = float(len(depths)) / (d_max - d_min) if d_max > d_min else 0
+        max_p10 = max(p10_values) if p10_values else 0
+        min_p10 = min(p10_values) if p10_values else 0
+        max_zone = intervals[np.argmax(p10_values)] if p10_values else None
+        min_zone = intervals[np.argmin(p10_values)] if p10_values else None
+
+        # Intensity classification
+        if overall_p10 > 2:
+            intensity_class = "VERY_HIGH"
+        elif overall_p10 > 1:
+            intensity_class = "HIGH"
+        elif overall_p10 > 0.5:
+            intensity_class = "MODERATE"
+        else:
+            intensity_class = "LOW"
+
+        recommendations = []
+        recommendations.append(f"Overall P10 = {overall_p10:.3f} fractures/m ({intensity_class}).")
+        recommendations.append(f"Maximum intensity at {max_zone['depth_from']}-{max_zone['depth_to']}m (P10={max_p10:.3f})." if max_zone else "No data.")
+        if max_p10 / max(overall_p10, 0.01) > 3:
+            recommendations.append("Intense fracturing zone detected -- potential fault damage zone or formation boundary.")
+        if min_p10 == 0:
+            recommendations.append("Some intervals have zero fractures -- check for missing data or massive rock sections.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 6))
+            bin_centers = [(iv["depth_from"] + iv["depth_to"]) / 2 for iv in intervals]
+            p10s = [iv["P10"] for iv in intervals]
+
+            axes[0].barh(bin_centers, p10s, height=bin_size * 0.9, color="#2196F3", alpha=0.7)
+            axes[0].axvline(overall_p10, color="red", linestyle="--", label=f"Mean P10={overall_p10:.3f}")
+            axes[0].set_xlabel("P10 (fractures/m)")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].invert_yaxis()
+            axes[0].set_title("Fracture Intensity (P10)")
+            axes[0].legend(fontsize=8)
+
+            counts = [iv["n_fractures"] for iv in intervals]
+            axes[1].barh(bin_centers, counts, height=bin_size * 0.9, color="#4CAF50", alpha=0.7)
+            axes[1].set_xlabel("Fracture Count")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].invert_yaxis()
+            axes[1].set_title("Fracture Count per Interval")
+
+            fig.suptitle(f"Fracture Intensity -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_fractures": int(len(depths)),
+            "depth_range_m": [round(d_min, 1), round(d_max, 1)],
+            "bin_size_m": bin_size,
+            "n_intervals": n_bins,
+            "overall_P10": round(overall_p10, 4),
+            "max_P10": round(max_p10, 4),
+            "min_P10": round(min_p10, 4),
+            "intensity_class": intensity_class,
+            "intervals": intervals,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fracture intensity: P10={overall_p10:.3f}/m ({intensity_class})",
+                "risk_level": "GREEN" if intensity_class in ("LOW", "MODERATE") else ("AMBER" if intensity_class == "HIGH" else "RED"),
+                "what_this_means": f"The well has {overall_p10:.3f} fractures per meter on average over {d_max-d_min:.0f}m interval.",
+                "for_non_experts": "We counted fractures per meter of well depth. Higher numbers mean more fractured rock, which affects fluid flow and drilling risk.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _fracture_intensity_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [157] Cross-Validation Stability ────────────────────────────────────────
+@app.post("/api/analysis/cv-stability")
+async def cv_stability_analysis(request: Request):
+    """Per-fold cross-validation accuracy variance and overfitting detection."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_folds = int(body.get("n_folds", 5))
+    cache_key = f"{source}_{well}_{n_folds}"
+    if cache_key in _cv_stability_cache:
+        return _sanitize_for_json(_cv_stability_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+        from sklearn.svm import SVC
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        features_df = engineer_enhanced_features(df_well)
+        feature_cols = [c for c in features_df.columns if c not in [DEPTH_COL, AZIMUTH_COL, DIP_COL, FRACTURE_TYPE_COL, WELL_COL, "Well"]]
+        X = features_df[feature_cols].values
+        y_raw = df_well[FRACTURE_TYPE_COL].values
+        le = LabelEncoder()
+        y = le.fit_transform(y_raw)
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        n_cv = min(n_folds, len(np.unique(y)), len(y) // 3)
+        skf = StratifiedKFold(n_splits=max(2, n_cv), shuffle=True, random_state=42)
+
+        models = {
+            "RandomForest": RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced"),
+            "GBM": GradientBoostingClassifier(n_estimators=50, random_state=42),
+            "SVM": SVC(kernel="rbf", class_weight="balanced", random_state=42),
+        }
+
+        model_results = []
+        for name, model in models.items():
+            scores = cross_val_score(model, X_scaled, y, cv=skf, scoring="accuracy")
+            fold_scores = [round(float(s), 4) for s in scores]
+            mean_acc = float(np.mean(scores))
+            std_acc = float(np.std(scores))
+            cv_ratio = std_acc / mean_acc if mean_acc > 0 else 0
+
+            # Train accuracy for overfitting detection
+            model.fit(X_scaled, y)
+            train_acc = float(model.score(X_scaled, y))
+            overfit_gap = train_acc - mean_acc
+
+            stability = "STABLE" if cv_ratio < 0.05 else ("MODERATE" if cv_ratio < 0.1 else "UNSTABLE")
+
+            model_results.append({
+                "model": name,
+                "mean_accuracy": round(mean_acc, 4),
+                "std_accuracy": round(std_acc, 4),
+                "cv_ratio": round(cv_ratio, 4),
+                "train_accuracy": round(train_acc, 4),
+                "overfit_gap": round(overfit_gap, 4),
+                "stability": stability,
+                "fold_scores": fold_scores,
+                "overfitting": "YES" if overfit_gap > 0.15 else ("MILD" if overfit_gap > 0.05 else "NO"),
+            })
+
+        best_model = max(model_results, key=lambda m: m["mean_accuracy"])
+        most_stable = min(model_results, key=lambda m: m["cv_ratio"])
+
+        recommendations = []
+        recommendations.append(f"Best accuracy: {best_model['model']} ({best_model['mean_accuracy']*100:.1f}%)")
+        recommendations.append(f"Most stable: {most_stable['model']} (CV ratio={most_stable['cv_ratio']:.3f})")
+        for mr in model_results:
+            if mr["overfitting"] == "YES":
+                recommendations.append(f"{mr['model']} is overfitting (train={mr['train_accuracy']*100:.0f}% vs CV={mr['mean_accuracy']*100:.0f}%) -- consider regularization.")
+        if all(mr["stability"] == "STABLE" for mr in model_results):
+            recommendations.append("All models are stable across folds -- results are reliable.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+
+            # Box plot of fold scores
+            fold_data = [mr["fold_scores"] for mr in model_results]
+            bp = axes[0].boxplot(fold_data, labels=[mr["model"] for mr in model_results], patch_artist=True)
+            colors = ["#2196F3", "#4CAF50", "#FF5722"]
+            for patch, color in zip(bp["boxes"], colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.6)
+            axes[0].set_ylabel("Accuracy")
+            axes[0].set_title("Fold Score Distribution")
+
+            # Train vs CV comparison
+            names = [mr["model"] for mr in model_results]
+            train_accs = [mr["train_accuracy"] for mr in model_results]
+            cv_accs = [mr["mean_accuracy"] for mr in model_results]
+            x = np.arange(len(names))
+            w = 0.35
+            axes[1].bar(x - w/2, train_accs, w, color="#FF9800", alpha=0.7, label="Train")
+            axes[1].bar(x + w/2, cv_accs, w, color="#2196F3", alpha=0.7, label="CV")
+            axes[1].set_xticks(x)
+            axes[1].set_xticklabels(names, fontsize=8)
+            axes[1].set_ylabel("Accuracy")
+            axes[1].set_title("Train vs CV (Overfit?)")
+            axes[1].legend(fontsize=8)
+            axes[1].set_ylim(0, 1.1)
+
+            # Stability (CV ratio)
+            cv_ratios = [mr["cv_ratio"] for mr in model_results]
+            bar_colors = ["#4CAF50" if r < 0.05 else "#FF9800" if r < 0.1 else "#FF5722" for r in cv_ratios]
+            axes[2].bar(names, cv_ratios, color=bar_colors, alpha=0.7)
+            axes[2].axhline(0.05, color="green", linestyle="--", alpha=0.5, label="Stable")
+            axes[2].axhline(0.1, color="red", linestyle="--", alpha=0.5, label="Unstable")
+            axes[2].set_ylabel("CV Ratio (std/mean)")
+            axes[2].set_title("Stability")
+            axes[2].legend(fontsize=8)
+
+            fig.suptitle(f"CV Stability -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_samples": int(len(X)),
+            "n_folds": int(max(2, n_cv)),
+            "n_models": len(model_results),
+            "models": model_results,
+            "best_model": best_model["model"],
+            "best_accuracy": best_model["mean_accuracy"],
+            "most_stable_model": most_stable["model"],
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"CV stability: best={best_model['model']} {best_model['mean_accuracy']*100:.1f}%, most stable={most_stable['model']}",
+                "risk_level": "GREEN" if all(mr["stability"] != "UNSTABLE" for mr in model_results) else "AMBER",
+                "what_this_means": f"Tested {len(model_results)} models across {max(2,n_cv)} folds. Results are {'stable' if all(mr['stability']=='STABLE' for mr in model_results) else 'variable'}.",
+                "for_non_experts": "We tested the models multiple times with different data splits to check if results are consistent. Consistent results mean we can trust the predictions.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _cv_stability_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [158] Geomechanical Summary ─────────────────────────────────────────────
+@app.post("/api/analysis/geomech-summary")
+async def geomech_summary(request: Request):
+    """Integrated geomechanical summary: stress, classification, risk in one card."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    cache_key = f"{source}_{well}"
+    if cache_key in _geomech_summary_cache:
+        return _sanitize_for_json(_geomech_summary_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        n_fractures = len(df_well)
+        depths = df_well[DEPTH_COL].dropna().values
+        azimuths = df_well[AZIMUTH_COL].values
+        dips = df_well[DIP_COL].values
+        frac_types = df_well[FRACTURE_TYPE_COL].value_counts().to_dict()
+
+        # Basic stats
+        sin_sum = np.sum(np.sin(np.radians(azimuths)))
+        cos_sum = np.sum(np.cos(np.radians(azimuths)))
+        mean_az = float(np.degrees(np.arctan2(sin_sum, cos_sum)) % 360)
+        mean_dip = float(np.mean(dips))
+        R_len = np.sqrt(sin_sum**2 + cos_sum**2) / len(azimuths)
+
+        depth_range = [round(float(depths.min()), 1), round(float(depths.max()), 1)] if len(depths) > 0 else [None, None]
+        mean_depth = round(float(np.mean(depths)), 1) if len(depths) > 0 else None
+
+        # Data quality indicators
+        has_depth = len(depths) / n_fractures if n_fractures > 0 else 0
+        n_types = len(frac_types)
+        min_class_size = min(frac_types.values()) if frac_types else 0
+
+        # Stress estimate (quick)
+        rho, g = 2500, 9.81
+        Sv = rho * g * (mean_depth or 3000) / 1e6
+        Pp_est = 0.01 * (mean_depth or 3000)
+
+        # Quality score
+        quality_score = 0
+        if has_depth > 0.9:
+            quality_score += 25
+        elif has_depth > 0.5:
+            quality_score += 15
+        if n_fractures > 100:
+            quality_score += 25
+        elif n_fractures > 30:
+            quality_score += 15
+        if n_types >= 3:
+            quality_score += 25
+        elif n_types >= 2:
+            quality_score += 15
+        if min_class_size >= 20:
+            quality_score += 25
+        elif min_class_size >= 10:
+            quality_score += 15
+
+        quality_grade = "A" if quality_score >= 80 else ("B" if quality_score >= 60 else ("C" if quality_score >= 40 else "D"))
+
+        recommendations = []
+        recommendations.append(f"Data quality grade: {quality_grade} ({quality_score}/100)")
+        if has_depth < 0.9:
+            recommendations.append(f"Only {has_depth*100:.0f}% of fractures have depth -- limits spatial analysis.")
+        if min_class_size < 20:
+            recommendations.append(f"Smallest class has only {min_class_size} samples -- classification unreliable for rare types.")
+        recommendations.append(f"Estimated Sv={Sv:.1f} MPa, Pp={Pp_est:.1f} MPa at mean depth {mean_depth}m.")
+
+        # Plot: summary dashboard
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+
+            # Rose-style azimuth histogram
+            az_bins = np.linspace(0, 360, 37)
+            axes[0].hist(azimuths, bins=az_bins, color="#2196F3", edgecolor="white", alpha=0.7)
+            axes[0].axvline(mean_az, color="red", linestyle="--", label=f"Mean={mean_az:.0f}")
+            axes[0].set_xlabel("Azimuth (deg)")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title("Azimuth Distribution")
+            axes[0].legend(fontsize=8)
+
+            # Dip histogram
+            axes[1].hist(dips, bins=18, color="#4CAF50", edgecolor="white", alpha=0.7)
+            axes[1].axvline(mean_dip, color="red", linestyle="--", label=f"Mean={mean_dip:.0f}")
+            axes[1].set_xlabel("Dip (deg)")
+            axes[1].set_ylabel("Count")
+            axes[1].set_title("Dip Distribution")
+            axes[1].legend(fontsize=8)
+
+            # Fracture type pie
+            types = list(frac_types.keys())
+            counts = list(frac_types.values())
+            colors_pie = ["#2196F3", "#4CAF50", "#FF5722", "#9C27B0", "#FF9800"]
+            axes[2].pie(counts, labels=[f"{t[:10]}\n({c})" for t, c in zip(types, counts)],
+                        colors=colors_pie[:len(types)], autopct="%1.0f%%", startangle=90)
+            axes[2].set_title("Fracture Types")
+
+            fig.suptitle(f"Geomechanical Summary -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_fractures": n_fractures,
+            "n_types": n_types,
+            "fracture_types": {str(k): int(v) for k, v in frac_types.items()},
+            "mean_azimuth": round(mean_az, 1),
+            "mean_dip": round(mean_dip, 1),
+            "resultant_length": round(float(R_len), 4),
+            "depth_range_m": depth_range,
+            "mean_depth_m": mean_depth,
+            "depth_completeness_pct": round(has_depth * 100, 1),
+            "estimated_Sv_MPa": round(Sv, 2),
+            "estimated_Pp_MPa": round(Pp_est, 2),
+            "quality_score": quality_score,
+            "quality_grade": quality_grade,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Geomech summary: {n_fractures} fractures, {n_types} types, grade {quality_grade}",
+                "risk_level": "GREEN" if quality_grade in ("A", "B") else ("AMBER" if quality_grade == "C" else "RED"),
+                "what_this_means": f"Well {well} has {n_fractures} fractures of {n_types} types spanning {depth_range[0]}-{depth_range[1]}m. Data quality is grade {quality_grade}.",
+                "for_non_experts": f"This well has {n_fractures} cracks in the rock of {n_types} different types. The data quality is rated {quality_grade} out of A-D.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _geomech_summary_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [159] Feature Correlation Network ───────────────────────────────────────
+@app.post("/api/analysis/correlation-network")
+async def correlation_network(request: Request):
+    """Feature correlation matrix with strong/weak link identification."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    threshold = float(body.get("threshold", 0.5))
+    cache_key = f"{source}_{well}_{threshold}"
+    if cache_key in _correlation_network_cache:
+        return _sanitize_for_json(_correlation_network_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        features_df = engineer_enhanced_features(df_well)
+        feature_cols = [c for c in features_df.columns if c not in [DEPTH_COL, AZIMUTH_COL, DIP_COL, FRACTURE_TYPE_COL, WELL_COL, "Well"]]
+        X = features_df[feature_cols]
+
+        # Correlation matrix
+        corr = X.corr()
+
+        # Strong correlations
+        strong_links = []
+        weak_features = set()
+        for i in range(len(feature_cols)):
+            for j in range(i + 1, len(feature_cols)):
+                r = float(corr.iloc[i, j])
+                if abs(r) >= threshold:
+                    strong_links.append({
+                        "feature_a": feature_cols[i],
+                        "feature_b": feature_cols[j],
+                        "correlation": round(r, 4),
+                        "strength": "STRONG_POSITIVE" if r > 0 else "STRONG_NEGATIVE",
+                    })
+                if abs(r) > 0.9:
+                    weak_features.add(feature_cols[j])  # Candidate for removal
+
+        # Feature independence score
+        triu_vals = np.abs(corr.values[np.triu_indices(len(feature_cols), k=1)])
+        triu_vals = triu_vals[~np.isnan(triu_vals)]
+        mean_abs_corr = float(np.mean(triu_vals)) if len(triu_vals) > 0 else 0.0
+
+        # Top correlated pairs
+        all_pairs = []
+        for i in range(len(feature_cols)):
+            for j in range(i + 1, len(feature_cols)):
+                all_pairs.append((feature_cols[i], feature_cols[j], abs(float(corr.iloc[i, j]))))
+        all_pairs.sort(key=lambda x: x[2], reverse=True)
+        top_pairs = [{"feature_a": a, "feature_b": b, "abs_correlation": round(c, 4)} for a, b, c in all_pairs[:10]]
+
+        recommendations = []
+        recommendations.append(f"Mean absolute correlation: {mean_abs_corr:.3f}")
+        if len(strong_links) > len(feature_cols):
+            recommendations.append(f"Many strong correlations ({len(strong_links)}) -- consider dimensionality reduction (PCA).")
+        if weak_features:
+            recommendations.append(f"Redundant features (r>0.9): {', '.join(list(weak_features)[:5])} -- consider removing.")
+        if mean_abs_corr < 0.2:
+            recommendations.append("Features are largely independent -- good feature set diversity.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Correlation heatmap (top 12 features)
+            top_n = min(12, len(feature_cols))
+            corr_sub = corr.iloc[:top_n, :top_n]
+            im = axes[0].imshow(corr_sub.values, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+            axes[0].set_xticks(range(top_n))
+            axes[0].set_yticks(range(top_n))
+            axes[0].set_xticklabels([f[:10] for f in feature_cols[:top_n]], rotation=45, ha="right", fontsize=6)
+            axes[0].set_yticklabels([f[:10] for f in feature_cols[:top_n]], fontsize=6)
+            axes[0].set_title("Correlation Matrix")
+            fig.colorbar(im, ax=axes[0], shrink=0.8)
+
+            # Top pairs bar
+            if top_pairs:
+                pair_labels = [f"{p['feature_a'][:6]}-{p['feature_b'][:6]}" for p in top_pairs[:8]]
+                pair_vals = [p["abs_correlation"] for p in top_pairs[:8]]
+                bar_colors = ["#FF5722" if v > 0.8 else "#FF9800" if v > 0.5 else "#4CAF50" for v in pair_vals]
+                axes[1].barh(pair_labels[::-1], pair_vals[::-1], color=bar_colors[::-1])
+                axes[1].axvline(threshold, color="red", linestyle="--", alpha=0.5, label=f"Threshold={threshold}")
+                axes[1].set_xlabel("|Correlation|")
+                axes[1].set_title("Top Correlated Pairs")
+                axes[1].legend(fontsize=8)
+
+            fig.suptitle(f"Correlation Network -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_features": len(feature_cols),
+            "mean_abs_correlation": round(mean_abs_corr, 4),
+            "n_strong_links": len(strong_links),
+            "n_redundant_features": len(weak_features),
+            "redundant_features": sorted(list(weak_features)),
+            "strong_links": strong_links[:30],
+            "top_pairs": top_pairs,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Correlation network: {len(strong_links)} strong links, {len(weak_features)} redundant features",
+                "risk_level": "GREEN" if len(weak_features) < 3 else ("AMBER" if len(weak_features) < 6 else "RED"),
+                "what_this_means": f"Analyzed correlations among {len(feature_cols)} features. {len(strong_links)} pairs are strongly correlated (|r|>{threshold}).",
+                "for_non_experts": f"We checked if any measurements are repetitive. {len(weak_features)} features are very similar to others and could be removed to simplify the analysis.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _correlation_network_cache[cache_key] = result
     return _sanitize_for_json(result)
