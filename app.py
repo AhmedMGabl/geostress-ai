@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.45.0 - Mohr Interactive + Class Balance + Feature Importance + Trajectory Impact + RQD)."""
+"""GeoStress AI - FastAPI Web Application (v3.46.0 - Stereonet Density + Stress Path + Aperture Distribution + Stability Window + Orientation Statistics)."""
 
 import os
 import io
@@ -35213,4 +35213,824 @@ async def rqd_analysis(request: Request):
     elapsed = round(time.time() - t0, 2)
     result["elapsed_s"] = elapsed
     _rqd_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── v3.46.0 caches ──────────────────────────────────────────
+_stereonet_density_cache: dict = {}
+_stress_path_cache: dict = {}
+_aperture_dist_cache: dict = {}
+_stability_window_cache: dict = {}
+_orientation_stats_cache: dict = {}
+
+
+# ── [165] Stereonet Density (Kamb contours) ──────────────────
+@app.post("/api/analysis/stereonet-density")
+async def stereonet_density(request: Request):
+    """Pole density contours on stereonet using Kamb method."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    grid_resolution = body.get("grid_resolution", 100)
+    sigma = body.get("sigma", 3.0)
+    cache_key = f"{source}_{well}_{grid_resolution}_{sigma}"
+    if cache_key in _stereonet_density_cache:
+        return _sanitize_for_json(_stereonet_density_cache[cache_key])
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well {well} not found"}, 404)
+
+    def _compute():
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        dips = df_well[DIP_COL].dropna().values
+        n = min(len(azimuths), len(dips))
+        azimuths = azimuths[:n]
+        dips = dips[:n]
+
+        # Convert to pole orientations (trend + plunge of pole)
+        pole_trend = (azimuths + 180) % 360
+        pole_plunge = 90 - dips
+
+        # Convert to Cartesian for density calculation
+        pole_trend_rad = np.radians(pole_trend)
+        pole_plunge_rad = np.radians(pole_plunge)
+        x = np.cos(pole_plunge_rad) * np.sin(pole_trend_rad)
+        y = np.cos(pole_plunge_rad) * np.cos(pole_trend_rad)
+        z = np.sin(pole_plunge_rad)
+
+        # Kamb density on a grid
+        grid_n = int(grid_resolution)
+        theta_grid = np.linspace(0, 2 * np.pi, grid_n)
+        r_grid = np.linspace(0, 1, grid_n // 2)
+        THETA, R = np.meshgrid(theta_grid, r_grid)
+
+        # Equal-area projection grid points to 3D
+        plunge_g = np.degrees(np.arcsin(1 - R ** 2))
+        trend_g = np.degrees(THETA)
+        pg_rad = np.radians(plunge_g)
+        tg_rad = np.radians(trend_g)
+        gx = np.cos(pg_rad) * np.sin(tg_rad)
+        gy = np.cos(pg_rad) * np.cos(tg_rad)
+        gz = np.sin(pg_rad)
+
+        # Counting cone angle (Kamb)
+        kamb_sigma = float(sigma)
+        area = kamb_sigma ** 2 / float(n)
+        angle = np.degrees(np.arcsin(np.sqrt(area)))
+        cos_angle = np.cos(np.radians(angle))
+
+        # Density at each grid point
+        density = np.zeros(THETA.shape)
+        for i in range(n):
+            dot = gx * x[i] + gy * y[i] + gz * z[i]
+            density += (dot >= cos_angle).astype(float)
+
+        # Normalize to multiples of expected uniform density
+        expected = n * area
+        density_norm = density / max(expected, 1e-6)
+
+        max_density = float(np.nanmax(density_norm))
+        mean_density = float(np.nanmean(density_norm))
+
+        # Find peak pole orientation
+        peak_idx = np.unravel_index(np.argmax(density_norm), density_norm.shape)
+        peak_trend = float(trend_g[peak_idx])
+        peak_plunge = float(plunge_g[peak_idx])
+
+        # Concentration parameter (Fisher kappa estimate)
+        R_resultant = np.sqrt(np.sum(x) ** 2 + np.sum(y) ** 2 + np.sum(z) ** 2)
+        R_bar = R_resultant / n
+        if R_bar >= 1.0:
+            kappa = 500.0
+        elif R_bar < 0.01:
+            kappa = 0.0
+        else:
+            kappa = (n - 1) / (n - R_resultant)
+
+        clustering = "STRONG" if kappa > 10 else ("MODERATE" if kappa > 3 else "WEAK")
+
+        # Percentile contours
+        d_flat = density_norm.flatten()
+        d_flat_clean = d_flat[~np.isnan(d_flat)]
+        contour_levels = {}
+        for pct in [50, 75, 90, 95]:
+            contour_levels[f"p{pct}"] = round(float(np.percentile(d_flat_clean, pct)), 2)
+
+        recommendations = []
+        if clustering == "STRONG":
+            recommendations.append(f"Strong pole clustering (kappa={kappa:.1f}) — dominant fracture set well-defined.")
+        elif clustering == "WEAK":
+            recommendations.append("Weak pole clustering — fracture orientations are dispersed, multiple sets likely.")
+        if max_density > 5:
+            recommendations.append(f"Peak density {max_density:.1f}x expected — highly concentrated fracture set at trend {peak_trend:.0f}, plunge {peak_plunge:.0f}.")
+        recommendations.append(f"Use contour levels (50th={contour_levels['p50']}, 95th={contour_levels['p95']}) to define set boundaries.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 8), subplot_kw={"projection": "polar"})
+            ax.set_theta_zero_location("N")
+            ax.set_theta_direction(-1)
+            cf = ax.contourf(THETA, R, density_norm, levels=15, cmap="YlOrRd")
+            ax.scatter(np.radians(pole_trend), np.sqrt(1 - np.sin(pole_plunge_rad)), s=5, c="black", alpha=0.3, zorder=5)
+            fig.colorbar(cf, ax=ax, label="Density (x uniform)", shrink=0.6)
+            ax.set_title(f"Pole Density — Well {well} (n={n}, kappa={kappa:.1f})", fontsize=13, fontweight="bold", pad=20)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_poles": int(n),
+            "grid_resolution": grid_n,
+            "sigma": kamb_sigma,
+            "counting_angle_deg": round(angle, 2),
+            "max_density": round(max_density, 2),
+            "mean_density": round(mean_density, 2),
+            "peak_pole_trend": round(peak_trend, 1),
+            "peak_pole_plunge": round(peak_plunge, 1),
+            "fisher_kappa": round(kappa, 2),
+            "R_bar": round(R_bar, 4),
+            "clustering": clustering,
+            "contour_levels": contour_levels,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Pole density: {clustering} clustering (kappa={kappa:.1f})",
+                "risk_level": "GREEN" if clustering == "STRONG" else ("AMBER" if clustering == "MODERATE" else "RED"),
+                "what_this_means": f"Analyzed {n} fracture poles. Peak density {max_density:.1f}x uniform at trend {peak_trend:.0f}, plunge {peak_plunge:.0f}.",
+                "for_non_experts": f"This map shows where fracture orientations are concentrated. {'Strong' if clustering == 'STRONG' else 'Weak'} clustering means fractures {'follow a clear pattern' if clustering == 'STRONG' else 'are more randomly oriented'}.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _stereonet_density_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [166] Stress Path Simulation ────────────────────────────
+@app.post("/api/analysis/stress-path")
+async def stress_path(request: Request):
+    """Simulate stress path over depth range with gradient assumptions."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_start = body.get("depth_start", 1000)
+    depth_end = body.get("depth_end", 5000)
+    n_points = body.get("n_points", 20)
+    friction = body.get("friction", 0.6)
+    pp_gradient = body.get("pp_gradient", 10.0)  # MPa/km
+    sv_gradient = body.get("sv_gradient", 25.0)   # MPa/km
+    cache_key = f"{source}_{well}_{depth_start}_{depth_end}_{n_points}_{friction}_{pp_gradient}_{sv_gradient}"
+    if cache_key in _stress_path_cache:
+        return _sanitize_for_json(_stress_path_cache[cache_key])
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well {well} not found"}, 404)
+
+    def _compute():
+        depths = np.linspace(float(depth_start), float(depth_end), int(n_points))
+        mu = float(friction)
+        q = ((np.sqrt(mu ** 2 + 1) + mu) ** 2)  # Frictional limit
+
+        path_points = []
+        for d in depths:
+            d_km = d / 1000.0
+            Sv = sv_gradient * d_km
+            Pp = pp_gradient * d_km
+            Sv_eff = Sv - Pp
+
+            # Normal fault: Sv > SHmax > Shmin
+            Shmin_nf = Pp + Sv_eff / q
+            SHmax_nf = (Sv + Shmin_nf) / 2.0
+
+            # Strike-slip: SHmax > Sv > Shmin
+            Shmin_ss = Pp + Sv_eff / q
+            SHmax_ss = Pp + q * Sv_eff
+
+            # Reverse: SHmax > Shmin > Sv
+            SHmax_rf = Pp + q * Sv_eff
+            Shmin_rf = (SHmax_rf + Sv) / 2.0
+
+            path_points.append({
+                "depth_m": round(float(d), 1),
+                "Sv_MPa": round(float(Sv), 2),
+                "Pp_MPa": round(float(Pp), 2),
+                "Sv_eff_MPa": round(float(Sv_eff), 2),
+                "normal_fault": {
+                    "SHmax_MPa": round(float(SHmax_nf), 2),
+                    "Shmin_MPa": round(float(Shmin_nf), 2),
+                },
+                "strike_slip": {
+                    "SHmax_MPa": round(float(SHmax_ss), 2),
+                    "Shmin_MPa": round(float(Shmin_ss), 2),
+                },
+                "reverse_fault": {
+                    "SHmax_MPa": round(float(SHmax_rf), 2),
+                    "Shmin_MPa": round(float(Shmin_rf), 2),
+                },
+            })
+
+        # Compute stress ratios at midpoint for summary
+        mid = path_points[len(path_points) // 2]
+        stress_ratio_nf = mid["normal_fault"]["Shmin_MPa"] / mid["Sv_MPa"] if mid["Sv_MPa"] > 0 else 0
+        stress_ratio_rf = mid["reverse_fault"]["SHmax_MPa"] / mid["Sv_MPa"] if mid["Sv_MPa"] > 0 else 0
+
+        recommendations = [
+            f"Stress path computed for {depth_start}-{depth_end}m with Sv gradient {sv_gradient} MPa/km, Pp gradient {pp_gradient} MPa/km.",
+            f"Frictional limit q = {q:.2f} (friction = {mu}).",
+            f"At {mid['depth_m']}m depth: Sv = {mid['Sv_MPa']} MPa, Pp = {mid['Pp_MPa']} MPa.",
+        ]
+        if stress_ratio_nf < 0.5:
+            recommendations.append("Low Shmin/Sv ratio — high fracture opening potential in normal fault regime.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 8))
+            d_arr = [p["depth_m"] for p in path_points]
+            sv_arr = [p["Sv_MPa"] for p in path_points]
+            pp_arr = [p["Pp_MPa"] for p in path_points]
+
+            # Left: all stress magnitudes vs depth
+            axes[0].plot(sv_arr, d_arr, "k-", linewidth=2, label="Sv")
+            axes[0].plot(pp_arr, d_arr, "b--", linewidth=2, label="Pp")
+            axes[0].plot([p["normal_fault"]["Shmin_MPa"] for p in path_points], d_arr, "g-", label="Shmin (NF)")
+            axes[0].plot([p["normal_fault"]["SHmax_MPa"] for p in path_points], d_arr, "g--", label="SHmax (NF)")
+            axes[0].plot([p["strike_slip"]["SHmax_MPa"] for p in path_points], d_arr, "r-", label="SHmax (SS)")
+            axes[0].plot([p["reverse_fault"]["SHmax_MPa"] for p in path_points], d_arr, "m-", label="SHmax (RF)")
+            axes[0].set_xlabel("Stress (MPa)")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].invert_yaxis()
+            axes[0].legend(fontsize=8)
+            axes[0].set_title("Stress Magnitudes vs Depth")
+            axes[0].grid(True, alpha=0.3)
+
+            # Right: stress polygon at mid-depth
+            mid_sv = mid["Sv_MPa"]
+            axes[1].set_xlim(0, mid_sv * 3)
+            axes[1].set_ylim(0, mid_sv * 3)
+            axes[1].plot([0, mid_sv * 3], [0, mid_sv * 3], "k--", alpha=0.3, label="SH = Sh")
+            axes[1].axhline(mid_sv, color="gray", linestyle=":", alpha=0.5, label=f"Sv={mid_sv:.0f}")
+            axes[1].axvline(mid_sv, color="gray", linestyle=":", alpha=0.5)
+
+            # NF polygon area
+            nf_sh = [mid["normal_fault"]["Shmin_MPa"], mid["normal_fault"]["SHmax_MPa"]]
+            axes[1].plot(nf_sh[0], nf_sh[1], "go", markersize=10, label="NF")
+            ss_sh = [mid["strike_slip"]["Shmin_MPa"], mid["strike_slip"]["SHmax_MPa"]]
+            axes[1].plot(ss_sh[0], ss_sh[1], "r^", markersize=10, label="SS")
+            rf_sh = [mid["reverse_fault"]["Shmin_MPa"], mid["reverse_fault"]["SHmax_MPa"]]
+            axes[1].plot(rf_sh[0], rf_sh[1], "ms", markersize=10, label="RF")
+
+            axes[1].set_xlabel("Shmin (MPa)")
+            axes[1].set_ylabel("SHmax (MPa)")
+            axes[1].set_title(f"Stress State at {mid['depth_m']}m")
+            axes[1].legend(fontsize=8)
+            axes[1].grid(True, alpha=0.3)
+
+            fig.suptitle(f"Stress Path — Well {well} (mu={mu}, Sv grad={sv_gradient} MPa/km)", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "depth_range_m": [float(depth_start), float(depth_end)],
+            "n_points": int(n_points),
+            "friction": mu,
+            "frictional_limit_q": round(float(q), 3),
+            "pp_gradient_MPa_per_km": float(pp_gradient),
+            "sv_gradient_MPa_per_km": float(sv_gradient),
+            "path_points": path_points,
+            "mid_depth_summary": {
+                "depth_m": mid["depth_m"],
+                "Sv_MPa": mid["Sv_MPa"],
+                "Pp_MPa": mid["Pp_MPa"],
+                "stress_ratio_NF": round(float(stress_ratio_nf), 3),
+                "stress_ratio_RF": round(float(stress_ratio_rf), 3),
+            },
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stress path: {depth_start}-{depth_end}m, q={q:.2f}",
+                "risk_level": "AMBER" if stress_ratio_nf < 0.5 else "GREEN",
+                "what_this_means": f"Simulated stress state at {len(path_points)} depths using gradients Sv={sv_gradient}, Pp={pp_gradient} MPa/km.",
+                "for_non_experts": "This shows how underground pressures change with depth. It helps engineers predict where the rock might break or stay stable.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _stress_path_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [167] Fracture Aperture Distribution ────────────────────
+@app.post("/api/analysis/aperture-distribution")
+async def aperture_distribution(request: Request):
+    """Statistical aperture modeling from fracture spacing (power-law + lognormal)."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    aperture_model = body.get("model", "power_law")
+    reference_aperture_mm = body.get("reference_aperture_mm", 0.5)
+    cache_key = f"{source}_{well}_{aperture_model}_{reference_aperture_mm}"
+    if cache_key in _aperture_dist_cache:
+        return _sanitize_for_json(_aperture_dist_cache[cache_key])
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well {well} not found"}, 404)
+
+    def _compute():
+        depths = df_well[DEPTH_COL].dropna().values.astype(float)
+        depths_sorted = np.sort(depths)
+        spacings = np.diff(depths_sorted)
+        spacings = spacings[spacings > 0]
+
+        if len(spacings) < 5:
+            return {
+                "well": well,
+                "error": "Insufficient fracture spacing data",
+                "n_fractures": int(len(depths)),
+                "n_spacings": int(len(spacings)),
+                "recommendations": ["Need at least 5 valid spacings for aperture analysis."],
+                "plot": "",
+                "stakeholder_brief": {
+                    "headline": "Insufficient data for aperture analysis",
+                    "risk_level": "RED",
+                    "what_this_means": "Not enough fracture data to estimate aperture distribution.",
+                    "for_non_experts": "We need more fracture measurements to estimate how wide the fractures might be.",
+                },
+            }
+
+        ref_a = float(reference_aperture_mm)
+
+        # Power-law model: aperture ~ spacing^exponent
+        # Typical exponent from literature: 0.5-0.8
+        exponent = 0.65
+        apertures_mm = ref_a * (spacings / np.median(spacings)) ** exponent
+
+        # Lognormal fit
+        log_apertures = np.log(apertures_mm[apertures_mm > 0])
+        mu_ln = float(np.mean(log_apertures))
+        sigma_ln = float(np.std(log_apertures))
+
+        stats = {
+            "mean_mm": round(float(np.mean(apertures_mm)), 4),
+            "median_mm": round(float(np.median(apertures_mm)), 4),
+            "std_mm": round(float(np.std(apertures_mm)), 4),
+            "min_mm": round(float(np.min(apertures_mm)), 4),
+            "max_mm": round(float(np.max(apertures_mm)), 4),
+            "p10_mm": round(float(np.percentile(apertures_mm, 10)), 4),
+            "p50_mm": round(float(np.percentile(apertures_mm, 50)), 4),
+            "p90_mm": round(float(np.percentile(apertures_mm, 90)), 4),
+        }
+
+        # Permeability estimate (cubic law): k ~ a^2 / 12
+        mean_a_m = stats["mean_mm"] / 1000.0
+        perm_m2 = mean_a_m ** 2 / 12.0
+        perm_darcy = perm_m2 / 9.869e-13
+
+        # Bins by aperture size
+        bins = [("< 0.1 mm", 0, 0.1), ("0.1 - 0.5 mm", 0.1, 0.5), ("0.5 - 1.0 mm", 0.5, 1.0),
+                ("1.0 - 5.0 mm", 1.0, 5.0), ("> 5.0 mm", 5.0, float("inf"))]
+        size_distribution = []
+        for label, lo, hi in bins:
+            count = int(np.sum((apertures_mm >= lo) & (apertures_mm < hi)))
+            size_distribution.append({
+                "range": label,
+                "count": count,
+                "pct": round(100.0 * count / len(apertures_mm), 1),
+            })
+
+        recommendations = []
+        if stats["mean_mm"] < 0.1:
+            recommendations.append("Very tight fractures (mean < 0.1 mm) — low permeability expected.")
+        elif stats["mean_mm"] > 2.0:
+            recommendations.append("Wide apertures (mean > 2 mm) — high permeability, potential fluid conduits.")
+        recommendations.append(f"Estimated permeability from cubic law: {perm_darcy:.2e} Darcy.")
+        recommendations.append(f"Lognormal parameters: mu={mu_ln:.3f}, sigma={sigma_ln:.3f}.")
+        if sigma_ln > 1.5:
+            recommendations.append("High aperture variability — consider heterogeneous flow modeling.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 6))
+
+            # Histogram
+            axes[0].hist(apertures_mm, bins=min(30, len(apertures_mm) // 2 + 1), color="#2196F3", edgecolor="white", alpha=0.7)
+            axes[0].axvline(stats["mean_mm"], color="red", linestyle="--", label=f"Mean={stats['mean_mm']:.3f}")
+            axes[0].axvline(stats["median_mm"], color="green", linestyle="--", label=f"Median={stats['median_mm']:.3f}")
+            axes[0].set_xlabel("Aperture (mm)")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title("Aperture Distribution")
+            axes[0].legend(fontsize=8)
+
+            # Log-scale histogram
+            axes[1].hist(log_apertures, bins=min(30, len(log_apertures) // 2 + 1), color="#FF9800", edgecolor="white", alpha=0.7)
+            axes[1].set_xlabel("ln(Aperture)")
+            axes[1].set_ylabel("Count")
+            axes[1].set_title("Log-Aperture Distribution")
+
+            # CDF
+            sorted_a = np.sort(apertures_mm)
+            cdf = np.arange(1, len(sorted_a) + 1) / len(sorted_a)
+            axes[2].plot(sorted_a, cdf, "b-", linewidth=2)
+            axes[2].axhline(0.5, color="gray", linestyle=":", alpha=0.5)
+            axes[2].set_xlabel("Aperture (mm)")
+            axes[2].set_ylabel("CDF")
+            axes[2].set_title("Cumulative Distribution")
+            axes[2].grid(True, alpha=0.3)
+
+            fig.suptitle(f"Aperture Analysis — Well {well} (n={len(apertures_mm)}, model={aperture_model})", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "model": aperture_model,
+            "reference_aperture_mm": ref_a,
+            "n_fractures": int(len(depths)),
+            "n_spacings": int(len(spacings)),
+            "statistics": stats,
+            "lognormal_mu": round(mu_ln, 4),
+            "lognormal_sigma": round(sigma_ln, 4),
+            "permeability_darcy": round(float(perm_darcy), 4) if perm_darcy < 1e6 else float(f"{perm_darcy:.2e}"),
+            "permeability_m2": float(f"{perm_m2:.4e}"),
+            "size_distribution": size_distribution,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Aperture: mean {stats['mean_mm']:.3f} mm, perm {perm_darcy:.2e} Darcy",
+                "risk_level": "RED" if stats["mean_mm"] > 2.0 else ("AMBER" if stats["mean_mm"] > 0.5 else "GREEN"),
+                "what_this_means": f"Estimated aperture distribution from {len(spacings)} spacings using {aperture_model} model.",
+                "for_non_experts": "Fracture aperture (width) controls how easily fluids flow through rock. Wider fractures mean more flow.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _aperture_dist_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [168] Well Stability Window (Mud Weight) ────────────────
+@app.post("/api/analysis/stability-window")
+async def stability_window(request: Request):
+    """Compute safe mud weight window for wellbore stability."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = body.get("depth", 3000)
+    friction = body.get("friction", 0.6)
+    ucs_mpa = body.get("ucs_mpa", 80.0)
+    tensile_strength_mpa = body.get("tensile_strength_mpa", 8.0)
+    pp_gradient = body.get("pp_gradient", 10.0)
+    sv_gradient = body.get("sv_gradient", 25.0)
+    cache_key = f"{source}_{well}_{depth}_{friction}_{ucs_mpa}_{tensile_strength_mpa}_{pp_gradient}_{sv_gradient}"
+    if cache_key in _stability_window_cache:
+        return _sanitize_for_json(_stability_window_cache[cache_key])
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well {well} not found"}, 404)
+
+    def _compute():
+        d_km = float(depth) / 1000.0
+        mu = float(friction)
+        Sv = sv_gradient * d_km
+        Pp = pp_gradient * d_km
+        UCS = float(ucs_mpa)
+        T0 = float(tensile_strength_mpa)
+
+        # Anderson faulting: assume normal fault as default
+        q = ((np.sqrt(mu ** 2 + 1) + mu) ** 2)
+        Shmin = Pp + (Sv - Pp) / q
+        SHmax = (Sv + Shmin) / 2.0
+
+        # Mud weight equivalents (MPa -> SG using depth)
+        g = 9.81
+        rho_w = 1000.0
+        mw_factor = 1e6 / (g * rho_w * float(depth)) if float(depth) > 0 else 1.0
+
+        # Collapse pressure (Mohr-Coulomb breakout)
+        phi_rad = np.arctan(mu)
+        C0 = UCS
+        collapse_mpa = (3 * SHmax - Shmin - C0) / (1 + (1 / np.tan(phi_rad + np.pi / 4) if np.tan(phi_rad + np.pi / 4) != 0 else 1e6))
+        # Simplified: collapse = Pp if C0 is large enough
+        collapse_mpa = max(float(Pp) - 5, float(collapse_mpa))
+        collapse_mpa = max(0, collapse_mpa)
+
+        # Fracture initiation pressure (tensile failure)
+        fracture_mpa = 3 * Shmin - SHmax - Pp + T0
+
+        # Loss circulation (minimum stress)
+        loss_mpa = float(Shmin)
+
+        # Kick pressure (pore pressure)
+        kick_mpa = float(Pp)
+
+        # Safe window
+        mw_collapse = collapse_mpa * mw_factor
+        mw_kick = kick_mpa * mw_factor
+        mw_fracture = fracture_mpa * mw_factor
+        mw_loss = loss_mpa * mw_factor
+        mw_lower = max(mw_collapse, mw_kick)
+        mw_upper = min(mw_fracture, mw_loss)
+        window_width = mw_upper - mw_lower
+        window_status = "SAFE" if window_width > 0.3 else ("NARROW" if window_width > 0 else "NO_WINDOW")
+
+        recommendations = []
+        if window_status == "NO_WINDOW":
+            recommendations.append("NO safe mud weight window exists — consider managed pressure drilling (MPD).")
+        elif window_status == "NARROW":
+            recommendations.append(f"Narrow mud weight window ({window_width:.2f} SG) — tight control required.")
+        else:
+            recommendations.append(f"Safe window: {mw_lower:.2f} to {mw_upper:.2f} SG (width={window_width:.2f} SG).")
+        recommendations.append(f"Collapse at {mw_collapse:.2f} SG, fracture at {mw_fracture:.2f} SG, loss at {mw_loss:.2f} SG.")
+        recommendations.append(f"Rock strength: UCS={UCS} MPa, tensile={T0} MPa.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+            categories = ["Collapse", "Kick/Pp", "Safe Lower", "Safe Upper", "Fracture", "Loss Circ"]
+            values = [mw_collapse, mw_kick, mw_lower, mw_upper, mw_fracture, mw_loss]
+            colors = ["#FF5722", "#FF9800", "#4CAF50", "#4CAF50", "#2196F3", "#9C27B0"]
+
+            bars = ax.barh(categories, values, color=colors, alpha=0.7, edgecolor="white")
+            if window_width > 0:
+                ax.axvspan(mw_lower, mw_upper, alpha=0.2, color="green", label=f"Safe Window ({window_width:.2f} SG)")
+            ax.set_xlabel("Mud Weight (SG)")
+            ax.set_title(f"Stability Window — Well {well} at {depth}m ({window_status})", fontsize=13, fontweight="bold")
+            ax.legend(fontsize=9)
+            ax.grid(True, alpha=0.3, axis="x")
+            for bar, val in zip(bars, values):
+                ax.text(val + 0.02, bar.get_y() + bar.get_height() / 2, f"{val:.2f}", va="center", fontsize=9)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "depth_m": float(depth),
+            "friction": mu,
+            "UCS_MPa": UCS,
+            "tensile_strength_MPa": T0,
+            "Sv_MPa": round(float(Sv), 2),
+            "SHmax_MPa": round(float(SHmax), 2),
+            "Shmin_MPa": round(float(Shmin), 2),
+            "Pp_MPa": round(float(Pp), 2),
+            "collapse_pressure_MPa": round(float(collapse_mpa), 2),
+            "fracture_pressure_MPa": round(float(fracture_mpa), 2),
+            "loss_circulation_MPa": round(float(loss_mpa), 2),
+            "mud_weight_collapse_SG": round(float(mw_collapse), 3),
+            "mud_weight_kick_SG": round(float(mw_kick), 3),
+            "mud_weight_fracture_SG": round(float(mw_fracture), 3),
+            "mud_weight_loss_SG": round(float(mw_loss), 3),
+            "safe_window_lower_SG": round(float(mw_lower), 3),
+            "safe_window_upper_SG": round(float(mw_upper), 3),
+            "window_width_SG": round(float(window_width), 3),
+            "window_status": window_status,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Mud weight window: {window_status} ({window_width:.2f} SG) at {depth}m",
+                "risk_level": "RED" if window_status == "NO_WINDOW" else ("AMBER" if window_status == "NARROW" else "GREEN"),
+                "what_this_means": f"Safe drilling fluid density range is {mw_lower:.2f}-{mw_upper:.2f} SG at {depth}m depth.",
+                "for_non_experts": "The mud weight window shows the safe range of drilling fluid density. Too light causes collapse, too heavy causes fractures.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _stability_window_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [169] Orientation Statistics (Fisher/von Mises) ─────────
+@app.post("/api/analysis/orientation-stats")
+async def orientation_stats(request: Request):
+    """Comprehensive circular statistics for fracture orientations."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    cache_key = f"{source}_{well}"
+    if cache_key in _orientation_stats_cache:
+        return _sanitize_for_json(_orientation_stats_cache[cache_key])
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well {well} not found"}, 404)
+
+    def _compute():
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        dips = df_well[DIP_COL].dropna().values
+        n_az = len(azimuths)
+        n_dip = len(dips)
+
+        # ── Circular statistics for azimuth ──
+        az_rad = np.radians(azimuths)
+        sin_sum = np.sum(np.sin(az_rad))
+        cos_sum = np.sum(np.cos(az_rad))
+        R = np.sqrt(sin_sum ** 2 + cos_sum ** 2)
+        R_bar = R / n_az if n_az > 0 else 0
+
+        mean_azimuth = float(np.degrees(np.arctan2(sin_sum, cos_sum)) % 360)
+        circular_variance = 1 - R_bar
+        circular_std = float(np.degrees(np.sqrt(-2 * np.log(max(R_bar, 1e-10)))))
+
+        # von Mises concentration (kappa)
+        if R_bar >= 0.99:
+            kappa = 500.0
+        elif R_bar < 0.01:
+            kappa = 0.0
+        else:
+            kappa = R_bar * (2 - R_bar ** 2) / (1 - R_bar ** 2)
+
+        # Rayleigh test for uniformity
+        rayleigh_z = n_az * R_bar ** 2
+        rayleigh_p = np.exp(-rayleigh_z) if rayleigh_z < 30 else 0.0
+        is_uniform = rayleigh_p > 0.05
+
+        # Kuiper's V statistic (simplified)
+        az_sorted = np.sort(az_rad / (2 * np.pi))
+        Fn = np.arange(1, n_az + 1) / n_az
+        D_plus = float(np.max(Fn - az_sorted))
+        D_minus = float(np.max(az_sorted - np.arange(0, n_az) / n_az))
+        kuiper_V = D_plus + D_minus
+
+        # ── Dip statistics ──
+        mean_dip = float(np.mean(dips))
+        std_dip = float(np.std(dips))
+        median_dip = float(np.median(dips))
+
+        # ── 3D orientation tensor (eigenvalue analysis) ──
+        n_both = min(n_az, n_dip)
+        az_arr = azimuths[:n_both]
+        dip_arr = dips[:n_both]
+
+        az_r = np.radians(az_arr)
+        dip_r = np.radians(dip_arr)
+        l = np.cos(dip_r) * np.cos(az_r)
+        m = np.cos(dip_r) * np.sin(az_r)
+        n_vec = np.sin(dip_r)
+
+        # Orientation tensor T
+        T = np.zeros((3, 3))
+        for i in range(n_both):
+            v = np.array([l[i], m[i], n_vec[i]])
+            T += np.outer(v, v)
+        T /= n_both
+
+        eigenvalues, eigenvectors = np.linalg.eigh(T)
+        # Sort descending
+        idx = np.argsort(eigenvalues)[::-1]
+        eigenvalues = eigenvalues[idx]
+        eigenvectors = eigenvectors[:, idx]
+
+        # Woodcock parameters
+        e1, e2, e3 = eigenvalues
+        if e3 > 0 and e2 > 0:
+            C = np.log(e1 / e3) if e3 > 1e-10 else 0
+            K = np.log(e1 / e2) / np.log(e2 / e3) if (e2 > 1e-10 and np.log(e2 / e3) != 0) else 0
+        else:
+            C = 0
+            K = 0
+
+        fabric = "CLUSTER" if K > 1 else ("GIRDLE" if K < 1 and C > 1 else "RANDOM")
+        strength = "STRONG" if C > 3 else ("MODERATE" if C > 1 else "WEAK")
+
+        # Quartile azimuths
+        az_quartiles = {
+            "q1": round(float(np.percentile(azimuths, 25)), 1),
+            "q2": round(float(np.percentile(azimuths, 50)), 1),
+            "q3": round(float(np.percentile(azimuths, 75)), 1),
+        }
+        dip_quartiles = {
+            "q1": round(float(np.percentile(dips, 25)), 1),
+            "q2": round(float(np.percentile(dips, 50)), 1),
+            "q3": round(float(np.percentile(dips, 75)), 1),
+        }
+
+        recommendations = []
+        if is_uniform:
+            recommendations.append(f"Rayleigh test: azimuths are UNIFORMLY distributed (p={rayleigh_p:.4f}) — no preferred orientation.")
+        else:
+            recommendations.append(f"Rayleigh test: significant preferred azimuth at {mean_azimuth:.1f}° (p={rayleigh_p:.6f}).")
+        recommendations.append(f"Fabric type: {fabric} ({strength} strength, C={C:.2f}, K={K:.2f}).")
+        if fabric == "GIRDLE":
+            recommendations.append("Girdle fabric suggests fractures along a great circle — possible fold axis control.")
+        elif fabric == "CLUSTER":
+            recommendations.append("Cluster fabric indicates a dominant fracture set — favorable for directional drilling planning.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(16, 6))
+
+            # Rose diagram
+            n_bins = 36
+            bin_edges = np.linspace(0, 360, n_bins + 1)
+            counts, _ = np.histogram(azimuths, bins=bin_edges)
+            theta = np.radians((bin_edges[:-1] + bin_edges[1:]) / 2)
+            width = np.radians(360 / n_bins)
+
+            ax_rose = fig.add_subplot(131, projection="polar")
+            axes[0].set_visible(False)
+            ax_rose.set_theta_zero_location("N")
+            ax_rose.set_theta_direction(-1)
+            ax_rose.bar(theta, counts, width=width, color="#2196F3", alpha=0.7, edgecolor="white")
+            ax_rose.set_title(f"Rose Diagram (mean={mean_azimuth:.0f}°)", fontsize=11, fontweight="bold", pad=15)
+
+            # Dip histogram
+            axes[1].hist(dips, bins=18, color="#FF9800", edgecolor="white", alpha=0.7)
+            axes[1].axvline(mean_dip, color="red", linestyle="--", label=f"Mean={mean_dip:.1f}°")
+            axes[1].set_xlabel("Dip (°)")
+            axes[1].set_ylabel("Count")
+            axes[1].set_title("Dip Distribution")
+            axes[1].legend(fontsize=8)
+
+            # Eigenvalue ternary-like bar chart
+            axes[2].bar(["E1", "E2", "E3"], eigenvalues, color=["#4CAF50", "#FF9800", "#F44336"], alpha=0.7)
+            axes[2].set_ylabel("Eigenvalue")
+            axes[2].set_title(f"Orientation Tensor ({fabric})")
+            axes[2].set_ylim(0, 1)
+
+            fig.suptitle(f"Orientation Statistics — Well {well} (n={n_both})", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_azimuths": int(n_az),
+            "n_dips": int(n_dip),
+            "azimuth_stats": {
+                "mean_deg": round(mean_azimuth, 2),
+                "circular_variance": round(float(circular_variance), 4),
+                "circular_std_deg": round(circular_std, 2),
+                "resultant_length": round(float(R_bar), 4),
+                "von_mises_kappa": round(float(kappa), 3),
+                "quartiles": az_quartiles,
+            },
+            "dip_stats": {
+                "mean_deg": round(mean_dip, 2),
+                "std_deg": round(std_dip, 2),
+                "median_deg": round(median_dip, 2),
+                "quartiles": dip_quartiles,
+            },
+            "rayleigh_test": {
+                "z_statistic": round(float(rayleigh_z), 4),
+                "p_value": round(float(rayleigh_p), 6),
+                "is_uniform": is_uniform,
+                "interpretation": "Uniformly distributed" if is_uniform else "Preferred orientation detected",
+            },
+            "kuiper_V": round(float(kuiper_V), 4),
+            "orientation_tensor": {
+                "eigenvalues": [round(float(e), 4) for e in eigenvalues],
+                "fabric_type": fabric,
+                "fabric_strength": strength,
+                "woodcock_C": round(float(C), 3),
+                "woodcock_K": round(float(K), 3),
+            },
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Orientation: {fabric} ({strength}), mean az {mean_azimuth:.0f}°",
+                "risk_level": "GREEN" if fabric == "CLUSTER" else ("AMBER" if fabric == "GIRDLE" else "RED"),
+                "what_this_means": f"Circular statistics for {n_both} fractures: mean azimuth {mean_azimuth:.0f}°, mean dip {mean_dip:.0f}°, kappa={kappa:.1f}.",
+                "for_non_experts": f"Fractures {'have a clear preferred direction' if not is_uniform else 'are randomly oriented'}. The {fabric.lower()} pattern helps predict rock behavior.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _orientation_stats_cache[cache_key] = result
     return _sanitize_for_json(result)

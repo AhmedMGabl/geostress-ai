@@ -2470,6 +2470,81 @@
                         </div>
                     </div>
 
+                    <!-- Stereonet Density -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bullseye"></i> Stereonet Pole Density</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runStereonetDensity()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Kamb contour density analysis of fracture pole orientations.</p>
+                            <div id="stereonet-density-results" style="display:none;"></div>
+                            <img id="stereonet-density-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Stress Path -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-down-up"></i> Stress Path Simulation</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runStressPath()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Stress magnitude vs depth for NF/SS/RF regimes with frictional limits.</p>
+                            <div id="stress-path-results" style="display:none;"></div>
+                            <img id="stress-path-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Aperture Distribution -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-distribute-vertical"></i> Aperture Distribution</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runApertureDistribution()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Statistical fracture aperture modeling with permeability estimation.</p>
+                            <div id="aperture-dist-results" style="display:none;"></div>
+                            <img id="aperture-dist-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Stability Window -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-shield-fill-check"></i> Well Stability Window</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runStabilityWindow()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Safe mud weight window computation for wellbore stability.</p>
+                            <div id="stability-window-results" style="display:none;"></div>
+                            <img id="stability-window-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Orientation Statistics -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-compass"></i> Orientation Statistics</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runOrientationStats()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Fisher/von Mises circular statistics and orientation tensor analysis.</p>
+                            <div id="orientation-stats-results" style="display:none;"></div>
+                            <img id="orientation-stats-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

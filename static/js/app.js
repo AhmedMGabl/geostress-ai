@@ -13431,3 +13431,254 @@ async function runRQD() {
         hideLoading();
     }
 }
+
+// ── [165] Stereonet Density ──────────────────────────────
+async function runStereonetDensity() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('stereonet-density-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/stereonet-density', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, grid_resolution: 100, sigma: 3.0})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Poles</h6><h3>' + r.n_poles + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Max Density</h6><h3>' + r.max_density + 'x</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Fisher Kappa</h6><h3>' + r.fisher_kappa + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Clustering</h6><h3 class="' + (r.clustering === 'STRONG' ? 'text-success' : r.clustering === 'WEAK' ? 'text-danger' : 'text-warning') + '">' + r.clustering + '</h3></div></div>';
+        html += '</div>';
+        html += '<p class="mt-2"><strong>Peak Pole:</strong> Trend ' + r.peak_pole_trend + '°, Plunge ' + r.peak_pole_plunge + '°</p>';
+        if (r.contour_levels) {
+            html += '<p><strong>Contours:</strong> P50=' + r.contour_levels.p50 + ', P75=' + r.contour_levels.p75 + ', P90=' + r.contour_levels.p90 + ', P95=' + r.contour_levels.p95 + '</p>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('stereonet-density-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [166] Stress Path ────────────────────────────────────
+async function runStressPath() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('stress-path-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/stress-path', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, depth_start: 1000, depth_end: 5000, n_points: 20, friction: 0.6, pp_gradient: 10.0, sv_gradient: 25.0})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Depth Range</h6><h3>' + r.depth_range_m[0] + '-' + r.depth_range_m[1] + 'm</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Friction Limit q</h6><h3>' + r.frictional_limit_q + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Sv Gradient</h6><h3>' + r.sv_gradient_MPa_per_km + ' MPa/km</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Pp Gradient</h6><h3>' + r.pp_gradient_MPa_per_km + ' MPa/km</h3></div></div>';
+        html += '</div>';
+        if (r.mid_depth_summary) {
+            var ms = r.mid_depth_summary;
+            html += '<p class="mt-2"><strong>Mid-depth (' + ms.depth_m + 'm):</strong> Sv=' + ms.Sv_MPa + ' MPa, Pp=' + ms.Pp_MPa + ' MPa, Stress ratio NF=' + ms.stress_ratio_NF + '</p>';
+        }
+        if (r.path_points && r.path_points.length) {
+            html += '<h6>Stress Path Points</h6><table class="table table-sm table-bordered"><thead><tr><th>Depth</th><th>Sv</th><th>Pp</th><th>Shmin(NF)</th><th>SHmax(SS)</th><th>SHmax(RF)</th></tr></thead><tbody>';
+            r.path_points.forEach(function(p, i) {
+                if (i % 4 === 0) {
+                    html += '<tr><td>' + p.depth_m + '</td><td>' + p.Sv_MPa + '</td><td>' + p.Pp_MPa + '</td><td>' + p.normal_fault.Shmin_MPa + '</td><td>' + p.strike_slip.SHmax_MPa + '</td><td>' + p.reverse_fault.SHmax_MPa + '</td></tr>';
+                }
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('stress-path-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [167] Aperture Distribution ──────────────────────────
+async function runApertureDistribution() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('aperture-dist-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/aperture-distribution', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, model: 'power_law', reference_aperture_mm: 0.5})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        if (r.statistics) {
+            var s = r.statistics;
+            html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Mean Aperture</h6><h3>' + s.mean_mm + ' mm</h3></div></div>';
+            html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Median</h6><h3>' + s.median_mm + ' mm</h3></div></div>';
+            html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>P90</h6><h3>' + s.p90_mm + ' mm</h3></div></div>';
+        }
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Permeability</h6><h3>' + r.permeability_darcy + ' D</h3></div></div>';
+        html += '</div>';
+        if (r.size_distribution && r.size_distribution.length) {
+            html += '<h6 class="mt-2">Size Distribution</h6><table class="table table-sm table-bordered"><thead><tr><th>Range</th><th>Count</th><th>%</th></tr></thead><tbody>';
+            r.size_distribution.forEach(function(sd) {
+                html += '<tr><td>' + sd.range + '</td><td>' + sd.count + '</td><td>' + sd.pct + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('aperture-dist-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [168] Stability Window ───────────────────────────────
+async function runStabilityWindow() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('stability-window-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/stability-window', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, depth: 3000, friction: 0.6, ucs_mpa: 80, tensile_strength_mpa: 8, pp_gradient: 10.0, sv_gradient: 25.0})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Window Status</h6><h3 class="' + (r.window_status === 'SAFE' ? 'text-success' : r.window_status === 'NO_WINDOW' ? 'text-danger' : 'text-warning') + '">' + r.window_status + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Window Width</h6><h3>' + r.window_width_SG + ' SG</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Safe Range</h6><h3>' + r.safe_window_lower_SG + ' - ' + r.safe_window_upper_SG + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Depth</h6><h3>' + r.depth_m + 'm</h3></div></div>';
+        html += '</div>';
+        html += '<div class="row mt-2">';
+        html += '<div class="col-md-4"><strong>Sv:</strong> ' + r.Sv_MPa + ' MPa | <strong>SHmax:</strong> ' + r.SHmax_MPa + ' MPa | <strong>Shmin:</strong> ' + r.Shmin_MPa + ' MPa</div>';
+        html += '<div class="col-md-4"><strong>UCS:</strong> ' + r.UCS_MPa + ' MPa | <strong>T0:</strong> ' + r.tensile_strength_MPa + ' MPa</div>';
+        html += '<div class="col-md-4"><strong>Collapse:</strong> ' + r.mud_weight_collapse_SG + ' SG | <strong>Fracture:</strong> ' + r.mud_weight_fracture_SG + ' SG</div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6 class="mt-2">Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('stability-window-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [169] Orientation Statistics ─────────────────────────
+async function runOrientationStats() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('orientation-stats-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/orientation-stats', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        if (r.azimuth_stats) {
+            var az = r.azimuth_stats;
+            html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Mean Azimuth</h6><h3>' + az.mean_deg + '°</h3></div></div>';
+            html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Circ. Std</h6><h3>' + az.circular_std_deg + '°</h3></div></div>';
+            html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>von Mises κ</h6><h3>' + az.von_mises_kappa + '</h3></div></div>';
+        }
+        if (r.dip_stats) {
+            html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Mean Dip</h6><h3>' + r.dip_stats.mean_deg + '°</h3></div></div>';
+        }
+        html += '</div>';
+        if (r.rayleigh_test) {
+            var rt = r.rayleigh_test;
+            html += '<p class="mt-2"><strong>Rayleigh Test:</strong> Z=' + rt.z_statistic + ', p=' + rt.p_value + ' → <span class="badge bg-' + (rt.is_uniform ? 'warning' : 'success') + '">' + rt.interpretation + '</span></p>';
+        }
+        if (r.orientation_tensor) {
+            var ot = r.orientation_tensor;
+            html += '<p><strong>Fabric:</strong> ' + ot.fabric_type + ' (' + ot.fabric_strength + '), Woodcock C=' + ot.woodcock_C + ', K=' + ot.woodcock_K + '</p>';
+            html += '<p><strong>Eigenvalues:</strong> ' + ot.eigenvalues.join(', ') + '</p>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('orientation-stats-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
