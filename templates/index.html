@@ -2222,6 +2222,71 @@
                         </div>
                     </div>
 
+                    <!-- v3.42.0: Sensitivity Matrix -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-grid-fill"></i> Feature Interaction Sensitivity</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runSensitivityMatrix()">Analyze Interactions</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">N x N feature interaction heatmap: synergistic vs redundant feature pairs.</p>
+                            <div id="sensitivity-matrix-results" style="display:none;"></div>
+                            <img id="sensitivity-matrix-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- v3.42.0: Prediction Explanation -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-lightbulb"></i> Prediction Explanations</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runPredictionExplanation()">Explain Predictions</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Per-sample explanations: top-3 features driving each prediction decision.</p>
+                            <div id="prediction-explanation-results" style="display:none;"></div>
+                            <img id="prediction-explanation-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- v3.42.0: Model Comparison Detailed -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-trophy"></i> Detailed Model Comparison</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runModelComparisonDetailed()">Compare Models</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">6-model comparison with per-class precision/recall/F1 breakdown.</p>
+                            <div id="model-comparison-detail-results" style="display:none;"></div>
+                            <img id="model-comparison-detail-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- v3.42.0: Data Profile -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-clipboard-data"></i> Data Profile</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runDataProfile()">Profile Data</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Statistical summary: distributions, correlations, quality metrics per column.</p>
+                            <div id="data-profile-results" style="display:none;"></div>
+                            <img id="data-profile-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- v3.42.0: Anomaly Score -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-diamond"></i> Anomaly Scoring</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runAnomalyScore()">Score Anomalies</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Per-sample outlier detection with Isolation Forest, depth zone clustering.</p>
+                            <div id="anomaly-score-results" style="display:none;"></div>
+                            <img id="anomaly-score-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

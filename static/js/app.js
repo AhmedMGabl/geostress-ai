@@ -12481,3 +12481,299 @@ async function runAugmentationPreview() {
         hideLoading();
     }
 }
+
+// ── v3.42.0: Feature Interaction Sensitivity ───────────
+async function runSensitivityMatrix() {
+    showLoading();
+    var results = document.getElementById('sensitivity-matrix-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/analysis/sensitivity-matrix', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well, top_n: 10})
+        });
+        results.style.display = '';
+        var html = '<h5>Feature Interaction Sensitivity — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Features Analyzed</h6><h2>' + (r.n_features_analyzed || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card border-success"><div class="card-body text-center">';
+        html += '<h6>Synergistic</h6><h2 class="text-success">' + (r.n_synergistic || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card border-warning"><div class="card-body text-center">';
+        html += '<h6>Redundant</h6><h2 class="text-warning">' + (r.n_redundant || 0) + '</h2>';
+        html += '</div></div></div></div>';
+        if (r.interactions && r.interactions.length) {
+            html += '<h6>Top Interactions</h6><table class="table table-sm table-bordered"><thead><tr><th>Feature A</th><th>Feature B</th><th>Strength</th><th>Type</th></tr></thead><tbody>';
+            r.interactions.slice(0, 10).forEach(function(ix) {
+                var badge = ix.type === 'SYNERGISTIC' ? 'success' : 'warning';
+                html += '<tr><td>' + ix.feature_a + '</td><td>' + ix.feature_b + '</td><td>' + ix.interaction_strength + '</td><td><span class="badge bg-' + badge + '">' + ix.type + '</span></td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('sensitivity-matrix-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.42.0: Prediction Explanation ────────────────────
+async function runPredictionExplanation() {
+    showLoading();
+    var results = document.getElementById('prediction-explanation-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/analysis/prediction-explanation', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well, n_samples: 20})
+        });
+        results.style.display = '';
+        var html = '<h5>Prediction Explanations — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Explained</h6><h2>' + (r.n_explained || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card border-success"><div class="card-body text-center">';
+        html += '<h6>Correct</h6><h2 class="text-success">' + (r.n_correct || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card border-danger"><div class="card-body text-center">';
+        html += '<h6>Misclassified</h6><h2 class="text-danger">' + (r.n_misclassified || 0) + '</h2>';
+        html += '</div></div></div></div>';
+        if (r.explanations && r.explanations.length) {
+            html += '<h6>Sample Explanations</h6><table class="table table-sm table-bordered"><thead><tr><th>Depth</th><th>Predicted</th><th>True</th><th>Conf</th><th>Top Reason</th></tr></thead><tbody>';
+            r.explanations.slice(0, 15).forEach(function(ex) {
+                var cls = ex.correct ? '' : 'table-danger';
+                html += '<tr class="' + cls + '"><td>' + (ex.depth || 'N/A') + '</td><td>' + ex.predicted_class + '</td><td>' + ex.true_class + '</td><td>' + (ex.confidence * 100).toFixed(0) + '%</td><td>' + (ex.top_reasons[0] ? ex.top_reasons[0].feature + ' (' + ex.top_reasons[0].direction + ')' : '') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('prediction-explanation-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.42.0: Detailed Model Comparison ─────────────────
+async function runModelComparisonDetailed() {
+    showLoading();
+    var results = document.getElementById('model-comparison-detail-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/analysis/model-comparison-detailed', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Detailed Model Comparison — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Models Tested</h6><h2>' + (r.n_models || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Best Model</h6><span class="badge bg-success fs-6">' + (r.best_model || 'N/A') + '</span>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Best Accuracy</h6><h2>' + (r.best_accuracy || 0) + '%</h2>';
+        html += '</div></div></div></div>';
+        if (r.models && r.models.length) {
+            html += '<h6>Model Rankings</h6>';
+            r.models.forEach(function(m) {
+                html += '<div class="card mb-2"><div class="card-body p-2">';
+                html += '<strong>' + m.model + '</strong> — ' + m.balanced_accuracy + '% balanced accuracy';
+                if (m.per_class && m.per_class.length) {
+                    html += '<table class="table table-sm table-bordered mt-1 mb-0"><thead><tr><th>Class</th><th>Precision</th><th>Recall</th><th>F1</th><th>Support</th></tr></thead><tbody>';
+                    m.per_class.forEach(function(pc) {
+                        var cls = pc.f1 < 0.3 ? 'table-danger' : '';
+                        html += '<tr class="' + cls + '"><td>' + pc.class + '</td><td>' + pc.precision.toFixed(2) + '</td><td>' + pc.recall.toFixed(2) + '</td><td>' + pc.f1.toFixed(2) + '</td><td>' + pc.support + '</td></tr>';
+                    });
+                    html += '</tbody></table>';
+                }
+                html += '</div></div>';
+            });
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('model-comparison-detail-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.42.0: Data Profile ──────────────────────────────
+async function runDataProfile() {
+    showLoading();
+    var results = document.getElementById('data-profile-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/analysis/data-profile', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Data Profile — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Samples</h6><h2>' + (r.n_samples || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Completeness</h6><h2>' + (r.completeness_pct || 0) + '%</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Fracture Types</h6><h2>' + (r.class_distribution ? r.class_distribution.length : 0) + '</h2>';
+        html += '</div></div></div></div>';
+        if (r.columns && r.columns.length) {
+            html += '<h6>Column Statistics</h6><table class="table table-sm table-bordered"><thead><tr><th>Column</th><th>Count</th><th>Missing</th><th>Mean</th><th>Std</th><th>Min</th><th>Median</th><th>Max</th></tr></thead><tbody>';
+            r.columns.forEach(function(c) {
+                html += '<tr><td>' + c.column + '</td><td>' + c.count + '</td><td>' + c.missing + ' (' + c.missing_pct + '%)</td><td>' + c.mean + '</td><td>' + c.std + '</td><td>' + c.min + '</td><td>' + c.median + '</td><td>' + c.max + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.class_distribution && r.class_distribution.length) {
+            html += '<h6>Class Distribution</h6><table class="table table-sm table-bordered"><thead><tr><th>Class</th><th>Count</th><th>%</th></tr></thead><tbody>';
+            r.class_distribution.forEach(function(c) {
+                html += '<tr><td>' + c.class + '</td><td>' + c.count + '</td><td>' + c.pct + '%</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('data-profile-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── v3.42.0: Anomaly Score ─────────────────────────────
+async function runAnomalyScore() {
+    showLoading();
+    var results = document.getElementById('anomaly-score-results');
+    results.style.display = 'none';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var r = await apiFetch('/api/analysis/anomaly-score', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: 'demo', well: well})
+        });
+        results.style.display = '';
+        var html = '<h5>Anomaly Scoring — Well ' + r.well + '</h5>';
+        html += '<div class="row mb-3">';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Total Samples</h6><h2>' + (r.n_samples || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card border-danger"><div class="card-body text-center">';
+        html += '<h6>Anomalies</h6><h2 class="text-danger">' + (r.n_anomalies || 0) + '</h2>';
+        html += '</div></div></div>';
+        html += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        html += '<h6>Anomaly Rate</h6><h2>' + (r.pct_anomalies || 0) + '%</h2>';
+        html += '</div></div></div></div>';
+        if (r.anomaly_depth_zones && r.anomaly_depth_zones.length) {
+            html += '<h6>Anomaly Depth Zones</h6><table class="table table-sm table-bordered"><thead><tr><th>Start (m)</th><th>End (m)</th><th>Count</th></tr></thead><tbody>';
+            r.anomaly_depth_zones.forEach(function(z) {
+                html += '<tr><td>' + z.start + '</td><td>' + z.end + '</td><td>' + z.count + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.samples && r.samples.length) {
+            html += '<h6>Top Anomalous Samples</h6><table class="table table-sm table-bordered"><thead><tr><th>Depth</th><th>Az</th><th>Dip</th><th>Type</th><th>Score</th><th>Top Feature</th></tr></thead><tbody>';
+            r.samples.filter(function(s) { return s.is_anomaly; }).slice(0, 15).forEach(function(s) {
+                var topFeat = s.top_unusual_features && s.top_unusual_features[0] ? s.top_unusual_features[0].feature + ' (z=' + s.top_unusual_features[0].z_score + ')' : '';
+                html += '<tr class="table-danger"><td>' + (s.depth || 'N/A') + '</td><td>' + (s.azimuth || '') + '</td><td>' + (s.dip || '') + '</td><td>' + (s.fracture_type || '') + '</td><td>' + s.anomaly_score.toFixed(3) + '</td><td>' + topFeat + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-info mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('anomaly-score-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

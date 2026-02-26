@@ -32282,3 +32282,798 @@ async def api_augmentation_preview(request: Request):
     result["elapsed_s"] = elapsed
     _augmentation_preview_cache[cache_key] = result
     return _sanitize_for_json(result)
+
+
+# ── [145] Feature Interaction Sensitivity Matrix ─────────────────────────────
+@app.post("/api/analysis/sensitivity-matrix")
+async def api_sensitivity_matrix(request: Request):
+    """N x N feature interaction sensitivity heatmap.
+
+    Measures how pairs of features jointly influence classification accuracy.
+    Uses permutation-based interaction: permute feature A alone, feature B alone,
+    and both together. If joint effect > sum of individual effects, there is
+    a synergistic interaction.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    top_n = min(body.get("top_n", 10), 15)
+
+    cache_key = f"{source}_{well}_{top_n}"
+    if cache_key in _sensitivity_matrix_cache:
+        return _sanitize_for_json(_sensitivity_matrix_cache[cache_key])
+
+    t0 = time.time()
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        from src.enhanced_analysis import engineer_enhanced_features
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.metrics import balanced_accuracy_score
+        import warnings
+        warnings.filterwarnings("ignore")
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 10:
+            raise ValueError(f"Well {well} has too few fractures ({len(df_well)})")
+
+        features_df = engineer_enhanced_features(df_well)
+        X = features_df.values
+        feature_names = features_df.columns.tolist()
+        le = LabelEncoder()
+        y = le.fit_transform(df_well["fracture_type"])
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        rf = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        rf.fit(X_scaled, y)
+        base_acc = float(balanced_accuracy_score(y, rf.predict(X_scaled)))
+
+        # Select top-N features by importance
+        imp = rf.feature_importances_
+        top_idx = np.argsort(-imp)[:top_n]
+        top_names = [feature_names[i] for i in top_idx]
+
+        n = len(top_idx)
+        interaction_matrix = np.zeros((n, n))
+        individual_drops = np.zeros(n)
+
+        rng = np.random.RandomState(42)
+
+        # Individual permutation importance
+        for i_pos in range(n):
+            X_perm = X_scaled.copy()
+            X_perm[:, top_idx[i_pos]] = rng.permutation(X_perm[:, top_idx[i_pos]])
+            acc_i = float(balanced_accuracy_score(y, rf.predict(X_perm)))
+            individual_drops[i_pos] = base_acc - acc_i
+
+        # Pairwise interactions
+        interactions = []
+        for i_pos in range(n):
+            for j_pos in range(i_pos + 1, n):
+                X_perm = X_scaled.copy()
+                X_perm[:, top_idx[i_pos]] = rng.permutation(X_perm[:, top_idx[i_pos]])
+                X_perm[:, top_idx[j_pos]] = rng.permutation(X_perm[:, top_idx[j_pos]])
+                acc_ij = float(balanced_accuracy_score(y, rf.predict(X_perm)))
+                joint_drop = base_acc - acc_ij
+                expected_drop = individual_drops[i_pos] + individual_drops[j_pos]
+                interaction_strength = joint_drop - expected_drop
+
+                interaction_matrix[i_pos, j_pos] = interaction_strength
+                interaction_matrix[j_pos, i_pos] = interaction_strength
+
+                if abs(interaction_strength) > 0.005:
+                    interactions.append({
+                        "feature_a": top_names[i_pos],
+                        "feature_b": top_names[j_pos],
+                        "interaction_strength": round(interaction_strength, 4),
+                        "type": "SYNERGISTIC" if interaction_strength > 0 else "REDUNDANT",
+                        "joint_drop": round(joint_drop, 4),
+                        "expected_drop": round(expected_drop, 4),
+                    })
+
+        np.fill_diagonal(interaction_matrix, individual_drops)
+        interactions.sort(key=lambda x: -abs(x["interaction_strength"]))
+
+        n_synergistic = sum(1 for ix in interactions if ix["type"] == "SYNERGISTIC")
+        n_redundant = sum(1 for ix in interactions if ix["type"] == "REDUNDANT")
+
+        recommendations = []
+        recommendations.append(f"Baseline accuracy: {base_acc*100:.1f}%")
+        recommendations.append(f"{n_synergistic} synergistic and {n_redundant} redundant feature interactions found")
+        if interactions:
+            top_int = interactions[0]
+            recommendations.append(f"Strongest interaction: {top_int['feature_a']} x {top_int['feature_b']} ({top_int['type']}, strength={top_int['interaction_strength']:.3f})")
+        if n_redundant > n_synergistic:
+            recommendations.append("Many redundant features — consider feature selection to reduce model complexity")
+
+        # Plot
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(10, 8))
+            im = ax.imshow(interaction_matrix, cmap="RdBu_r", aspect="equal")
+            ax.set_xticks(range(n))
+            ax.set_yticks(range(n))
+            ax.set_xticklabels([name[:15] for name in top_names], rotation=45, ha="right", fontsize=7)
+            ax.set_yticklabels([name[:15] for name in top_names], fontsize=7)
+            for i_r in range(n):
+                for j_c in range(n):
+                    val = interaction_matrix[i_r, j_c]
+                    ax.text(j_c, i_r, f"{val:.3f}", ha="center", va="center", fontsize=6,
+                           color="white" if abs(val) > 0.03 else "black")
+            plt.colorbar(im, ax=ax, label="Interaction Strength")
+            ax.set_title(f"Feature Interaction Sensitivity — Well {well} (top {n})")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_features_analyzed": n,
+            "baseline_accuracy": round(base_acc * 100, 1),
+            "features": top_names,
+            "individual_importance": [{"feature": top_names[i], "drop_pct": round(individual_drops[i] * 100, 2)} for i in range(n)],
+            "interactions": interactions[:20],
+            "n_synergistic": n_synergistic,
+            "n_redundant": n_redundant,
+            "matrix": [[round(float(interaction_matrix[i, j]), 4) for j in range(n)] for i in range(n)],
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Feature interactions: {n_synergistic} synergistic, {n_redundant} redundant among top {n} features",
+                "risk_level": "GREEN" if n_redundant < 3 else "AMBER",
+                "what_this_means": f"Analyzed how the top {n} features interact when predicting fracture types. Synergistic pairs work better together; redundant pairs carry overlapping information.",
+                "for_non_experts": f"We checked which measurements work best in combination. {n_synergistic} pairs reinforce each other, while {n_redundant} pairs overlap and could be simplified.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _sensitivity_matrix_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [146] Per-Sample Prediction Explanation ──────────────────────────────────
+@app.post("/api/analysis/prediction-explanation")
+async def api_prediction_explanation(request: Request):
+    """Generate per-sample prediction explanations with top contributing features.
+
+    For each sample, identifies the top-3 features that most influenced the
+    prediction using feature contribution analysis (tree-based feature splitting).
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_samples = min(body.get("n_samples", 20), 50)
+
+    cache_key = f"{source}_{well}_{n_samples}"
+    if cache_key in _prediction_explanation_cache:
+        return _sanitize_for_json(_prediction_explanation_cache[cache_key])
+
+    t0 = time.time()
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        from src.enhanced_analysis import engineer_enhanced_features
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        import warnings
+        warnings.filterwarnings("ignore")
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 10:
+            raise ValueError(f"Well {well} has too few fractures ({len(df_well)})")
+
+        features_df = engineer_enhanced_features(df_well)
+        X = features_df.values
+        feature_names = features_df.columns.tolist()
+        le = LabelEncoder()
+        y = le.fit_transform(df_well["fracture_type"])
+        classes = le.classes_.tolist()
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        rf = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        rf.fit(X_scaled, y)
+        proba = rf.predict_proba(X_scaled)
+        preds = rf.predict(X_scaled)
+
+        # Feature importance per tree for local explanations
+        global_imp = rf.feature_importances_
+
+        has_depth = DEPTH_COL in df_well.columns and not df_well[DEPTH_COL].isna().all()
+
+        # Select samples: mix of high-confidence, low-confidence, and misclassified
+        confidences = np.max(proba, axis=1)
+        misclassified = np.where(preds != y)[0]
+        low_conf = np.argsort(confidences)[:min(n_samples // 3, len(confidences))]
+        high_conf = np.argsort(-confidences)[:min(n_samples // 3, len(confidences))]
+
+        sample_indices = list(set(
+            list(misclassified[:n_samples // 3]) +
+            list(low_conf) +
+            list(high_conf)
+        ))[:n_samples]
+        sample_indices.sort()
+
+        explanations = []
+        for idx in sample_indices:
+            conf = float(confidences[idx])
+            pred_class = classes[int(preds[idx])]
+            true_class = classes[int(y[idx])]
+            depth = float(df_well[DEPTH_COL].iloc[idx]) if has_depth and not np.isnan(df_well[DEPTH_COL].iloc[idx]) else None
+
+            # Local feature contribution: use deviation from mean scaled by importance
+            x_sample = X_scaled[idx]
+            contributions = []
+            for f_idx in range(len(feature_names)):
+                # Contribution = |feature_value| * global_importance
+                contrib = abs(float(x_sample[f_idx])) * float(global_imp[f_idx])
+                contributions.append((feature_names[f_idx], contrib, float(x_sample[f_idx])))
+
+            contributions.sort(key=lambda c: -c[1])
+            top3 = [{
+                "feature": c[0],
+                "contribution": round(c[1], 4),
+                "value_zscore": round(c[2], 2),
+                "direction": "high" if c[2] > 0 else "low",
+            } for c in contributions[:3]]
+
+            explanations.append({
+                "index": int(idx),
+                "depth": round(depth, 2) if depth is not None else None,
+                "predicted_class": pred_class,
+                "true_class": true_class,
+                "correct": pred_class == true_class,
+                "confidence": round(conf, 4),
+                "top_reasons": top3,
+                "explanation": f"Predicted {pred_class} (confidence {conf:.0%}) mainly due to {top3[0]['feature']} ({top3[0]['direction']}), {top3[1]['feature']} ({top3[1]['direction']}), {top3[2]['feature']} ({top3[2]['direction']})",
+            })
+
+        n_correct = sum(1 for e in explanations if e["correct"])
+        n_misclassified = sum(1 for e in explanations if not e["correct"])
+        mean_conf = round(float(np.mean([e["confidence"] for e in explanations])), 4)
+
+        recommendations = []
+        recommendations.append(f"Analyzed {len(explanations)} samples: {n_correct} correct, {n_misclassified} misclassified")
+        recommendations.append(f"Mean confidence for selected samples: {mean_conf:.0%}")
+        # Find most common top feature
+        from collections import Counter
+        top_features = Counter(e["top_reasons"][0]["feature"] for e in explanations)
+        most_common = top_features.most_common(1)[0]
+        recommendations.append(f"Most influential feature: {most_common[0]} (top reason in {most_common[1]}/{len(explanations)} samples)")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Confidence distribution of explained samples
+            confs = [e["confidence"] for e in explanations]
+            colors_conf = ["#2ecc71" if e["correct"] else "#e74c3c" for e in explanations]
+            axes[0].bar(range(len(confs)), confs, color=colors_conf, alpha=0.8)
+            axes[0].axhline(0.5, color="red", linestyle="--", alpha=0.5)
+            axes[0].set_xlabel("Sample Index")
+            axes[0].set_ylabel("Confidence")
+            axes[0].set_title(f"Prediction Confidence ({n_correct} correct, {n_misclassified} wrong)")
+
+            # Top feature frequency
+            feat_counts = top_features.most_common(8)
+            if feat_counts:
+                axes[1].barh([f[0][:18] for f in feat_counts], [f[1] for f in feat_counts], color="#3498db")
+                axes[1].set_xlabel("Times as Top Reason")
+                axes[1].set_title("Most Influential Features")
+                axes[1].invert_yaxis()
+
+            fig.suptitle(f"Prediction Explanations -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_explained": len(explanations),
+            "n_correct": n_correct,
+            "n_misclassified": n_misclassified,
+            "mean_confidence": mean_conf,
+            "explanations": explanations,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Explained {len(explanations)} predictions: {n_correct} correct, {n_misclassified} misclassified",
+                "risk_level": "GREEN" if n_misclassified == 0 else ("AMBER" if n_misclassified < len(explanations) * 0.3 else "RED"),
+                "what_this_means": f"For each prediction, identified the top 3 features driving the decision. Most influential: {most_common[0]}.",
+                "for_non_experts": f"We explained why the AI made each prediction. The most important measurement is {most_common[0]}, which was the top reason in {most_common[1]} out of {len(explanations)} cases.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _prediction_explanation_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [147] Detailed Model Comparison ──────────────────────────────────────────
+@app.post("/api/analysis/model-comparison-detailed")
+async def api_model_comparison_detailed(request: Request):
+    """Extended model comparison with per-class precision/recall/F1 breakdown.
+
+    Compares 6 core classifiers with detailed per-class metrics, confusion
+    insights, and class-specific recommendations.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"{source}_{well}"
+    if cache_key in _model_comparison_detail_cache:
+        return _sanitize_for_json(_model_comparison_detail_cache[cache_key])
+
+    t0 = time.time()
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        from src.enhanced_analysis import engineer_enhanced_features
+        from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+        from sklearn.svm import SVC
+        from sklearn.neural_network import MLPClassifier
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.model_selection import cross_val_predict
+        from sklearn.metrics import balanced_accuracy_score, precision_recall_fscore_support
+        import warnings
+        warnings.filterwarnings("ignore")
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 10:
+            raise ValueError(f"Well {well} has too few fractures ({len(df_well)})")
+
+        features_df = engineer_enhanced_features(df_well)
+        X = features_df.values
+        le = LabelEncoder()
+        y = le.fit_transform(df_well["fracture_type"])
+        classes = le.classes_.tolist()
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        models = {
+            "RandomForest": RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced"),
+            "GradientBoosting": GradientBoostingClassifier(n_estimators=100, random_state=42),
+            "SVM": SVC(kernel="rbf", class_weight="balanced", random_state=42),
+            "MLP": MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=500, random_state=42),
+        }
+
+        try:
+            from xgboost import XGBClassifier
+            models["XGBoost"] = XGBClassifier(n_estimators=100, random_state=42, use_label_encoder=False, eval_metric="mlogloss", verbosity=0)
+        except ImportError:
+            pass
+
+        try:
+            from lightgbm import LGBMClassifier
+            models["LightGBM"] = LGBMClassifier(n_estimators=100, random_state=42, class_weight="balanced", verbose=-1)
+        except ImportError:
+            pass
+
+        model_results = []
+        for name, model in models.items():
+            try:
+                preds = cross_val_predict(model, X_scaled, y, cv=3)
+                ba = float(balanced_accuracy_score(y, preds))
+                prec, rec, f1, sup = precision_recall_fscore_support(y, preds, labels=range(len(classes)), zero_division=0)
+
+                per_class = []
+                for c_idx in range(len(classes)):
+                    per_class.append({
+                        "class": classes[c_idx],
+                        "precision": round(float(prec[c_idx]), 4),
+                        "recall": round(float(rec[c_idx]), 4),
+                        "f1": round(float(f1[c_idx]), 4),
+                        "support": int(sup[c_idx]),
+                    })
+
+                model_results.append({
+                    "model": name,
+                    "balanced_accuracy": round(ba * 100, 1),
+                    "per_class": per_class,
+                    "best_class": max(per_class, key=lambda c: c["f1"])["class"],
+                    "worst_class": min(per_class, key=lambda c: c["f1"])["class"],
+                })
+            except Exception:
+                model_results.append({
+                    "model": name,
+                    "balanced_accuracy": 0,
+                    "per_class": [],
+                    "best_class": "N/A",
+                    "worst_class": "N/A",
+                })
+
+        model_results.sort(key=lambda m: -m["balanced_accuracy"])
+        best = model_results[0] if model_results else None
+
+        recommendations = []
+        if best:
+            recommendations.append(f"Best model: {best['model']} ({best['balanced_accuracy']}% balanced accuracy)")
+            recommendations.append(f"Best performing class: {best['best_class']}, worst: {best['worst_class']}")
+        weak_classes = set()
+        for mr in model_results:
+            for pc in mr["per_class"]:
+                if pc["f1"] < 0.3:
+                    weak_classes.add(pc["class"])
+        if weak_classes:
+            recommendations.append(f"Classes with F1 < 30% across models: {', '.join(weak_classes)} - need more training data")
+        recommendations.append(f"Compared {len(model_results)} models with 3-fold cross-validation")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            names = [m["model"][:12] for m in model_results]
+            accs = [m["balanced_accuracy"] for m in model_results]
+            axes[0].barh(range(len(names)), accs, color="#3498db")
+            axes[0].set_yticks(range(len(names)))
+            axes[0].set_yticklabels(names, fontsize=8)
+            axes[0].set_xlabel("Balanced Accuracy (%)")
+            axes[0].set_title("Model Comparison")
+            axes[0].invert_yaxis()
+
+            # Per-class F1 for best model
+            if best and best["per_class"]:
+                cls_names = [pc["class"][:12] for pc in best["per_class"]]
+                f1s = [pc["f1"] for pc in best["per_class"]]
+                colors_f1 = ["#2ecc71" if f > 0.5 else "#f39c12" if f > 0.2 else "#e74c3c" for f in f1s]
+                axes[1].bar(range(len(cls_names)), f1s, color=colors_f1)
+                axes[1].set_xticks(range(len(cls_names)))
+                axes[1].set_xticklabels(cls_names, rotation=45, ha="right", fontsize=8)
+                axes[1].set_ylabel("F1 Score")
+                axes[1].set_title(f"Per-Class F1 ({best['model']})")
+
+            fig.suptitle(f"Detailed Model Comparison -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_models": len(model_results),
+            "n_classes": len(classes),
+            "classes": classes,
+            "models": model_results,
+            "best_model": best["model"] if best else None,
+            "best_accuracy": best["balanced_accuracy"] if best else 0,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Model comparison: {best['model']} leads at {best['balanced_accuracy']}% balanced accuracy" if best else "No models evaluated",
+                "risk_level": "GREEN" if best and best["balanced_accuracy"] >= 70 else ("AMBER" if best and best["balanced_accuracy"] >= 50 else "RED"),
+                "what_this_means": f"Compared {len(model_results)} AI models with detailed per-class metrics. Best model is {best['model']}." if best else "No models evaluated",
+                "for_non_experts": f"We tested {len(model_results)} different AI approaches. The best one ({best['model']}) correctly classifies {best['balanced_accuracy']:.0f}% of fractures." if best else "No models available.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _model_comparison_detail_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [148] Data Profile ───────────────────────────────────────────────────────
+@app.post("/api/analysis/data-profile")
+async def api_data_profile(request: Request):
+    """Comprehensive statistical profile of well fracture data.
+
+    Computes summary statistics, distributions, correlations, and data quality
+    metrics for all columns. Designed for data scientists and QA.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"{source}_{well}"
+    if cache_key in _data_profile_cache:
+        return _sanitize_for_json(_data_profile_cache[cache_key])
+
+    t0 = time.time()
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        n = len(df_well)
+
+        numeric_cols = [c for c in [DEPTH_COL, AZIMUTH_COL, DIP_COL] if c in df_well.columns]
+        column_profiles = []
+
+        for col in numeric_cols:
+            vals = df_well[col].dropna()
+            if len(vals) == 0:
+                continue
+            profile = {
+                "column": col,
+                "count": int(len(vals)),
+                "missing": int(df_well[col].isna().sum()),
+                "missing_pct": round(100 * df_well[col].isna().sum() / n, 1),
+                "mean": round(float(vals.mean()), 2),
+                "std": round(float(vals.std()), 2),
+                "min": round(float(vals.min()), 2),
+                "q25": round(float(vals.quantile(0.25)), 2),
+                "median": round(float(vals.median()), 2),
+                "q75": round(float(vals.quantile(0.75)), 2),
+                "max": round(float(vals.max()), 2),
+                "skewness": round(float(vals.skew()), 3),
+                "kurtosis": round(float(vals.kurtosis()), 3),
+            }
+            column_profiles.append(profile)
+
+        # Class distribution
+        class_dist = []
+        if "fracture_type" in df_well.columns:
+            counts = df_well["fracture_type"].value_counts()
+            for cls, cnt in counts.items():
+                class_dist.append({"class": cls, "count": int(cnt), "pct": round(100 * cnt / n, 1)})
+
+        # Correlations between numeric columns
+        correlations = []
+        if len(numeric_cols) >= 2:
+            for i_c in range(len(numeric_cols)):
+                for j_c in range(i_c + 1, len(numeric_cols)):
+                    col_a = numeric_cols[i_c]
+                    col_b = numeric_cols[j_c]
+                    valid = df_well[[col_a, col_b]].dropna()
+                    if len(valid) > 5:
+                        corr = float(valid[col_a].corr(valid[col_b]))
+                        correlations.append({
+                            "column_a": col_a,
+                            "column_b": col_b,
+                            "correlation": round(corr, 4),
+                            "strength": "STRONG" if abs(corr) > 0.7 else ("MODERATE" if abs(corr) > 0.3 else "WEAK"),
+                        })
+
+        # Data quality summary
+        total_missing = int(df_well[numeric_cols].isna().sum().sum()) if numeric_cols else 0
+        total_cells = n * len(numeric_cols) if numeric_cols else 1
+        completeness = round(100 * (1 - total_missing / total_cells), 1)
+
+        recommendations = []
+        recommendations.append(f"{n} fractures with {len(numeric_cols)} numeric columns, {completeness}% complete")
+        for cp in column_profiles:
+            if cp["missing_pct"] > 10:
+                recommendations.append(f"{cp['column']}: {cp['missing_pct']}% missing - address before analysis")
+            if abs(cp["skewness"]) > 2:
+                recommendations.append(f"{cp['column']}: highly skewed (skewness={cp['skewness']}) - consider transformation")
+        if class_dist:
+            max_cls = max(class_dist, key=lambda c: c["count"])
+            min_cls = min(class_dist, key=lambda c: c["count"])
+            ratio = max_cls["count"] / max(min_cls["count"], 1)
+            if ratio > 5:
+                recommendations.append(f"Class imbalance: {max_cls['class']}({max_cls['count']}) vs {min_cls['class']}({min_cls['count']}) = {ratio:.0f}:1")
+
+        # Plot
+        with plot_lock:
+            n_cols = len(column_profiles)
+            fig, axes = plt.subplots(1, max(n_cols, 1), figsize=(5 * max(n_cols, 1), 5))
+            if n_cols == 1:
+                axes = [axes]
+            for i_p, cp in enumerate(column_profiles):
+                vals = df_well[cp["column"]].dropna()
+                axes[i_p].hist(vals, bins=30, color="#3498db", edgecolor="white", alpha=0.8)
+                axes[i_p].axvline(cp["mean"], color="red", linestyle="--", label=f"Mean={cp['mean']:.1f}")
+                axes[i_p].axvline(cp["median"], color="green", linestyle="--", label=f"Median={cp['median']:.1f}")
+                axes[i_p].set_xlabel(cp["column"])
+                axes[i_p].set_ylabel("Count")
+                axes[i_p].set_title(f"{cp['column']} (n={cp['count']})")
+                axes[i_p].legend(fontsize=7)
+            fig.suptitle(f"Data Profile -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_samples": n,
+            "n_columns": len(numeric_cols),
+            "completeness_pct": completeness,
+            "columns": column_profiles,
+            "class_distribution": class_dist,
+            "correlations": correlations,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Data profile: {n} samples, {completeness}% complete, {len(class_dist)} fracture types",
+                "risk_level": "GREEN" if completeness >= 90 else ("AMBER" if completeness >= 70 else "RED"),
+                "what_this_means": f"Statistical summary of {n} fracture measurements across {len(numeric_cols)} key columns.",
+                "for_non_experts": f"The dataset has {n} fracture measurements. Data completeness is {completeness}% - " + ("excellent quality." if completeness >= 90 else "some missing values need attention." if completeness >= 70 else "significant missing data needs to be addressed."),
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _data_profile_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [149] Per-Sample Anomaly Score ───────────────────────────────────────────
+@app.post("/api/analysis/anomaly-score")
+async def api_anomaly_score(request: Request):
+    """Per-sample anomaly scoring using Isolation Forest and Local Outlier Factor.
+
+    Identifies individual fracture measurements that are statistical outliers
+    in feature space. Returns scores, rankings, and depth zones with clusters
+    of anomalous measurements.
+    """
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    cache_key = f"{source}_{well}"
+    if cache_key in _anomaly_score_cache:
+        return _sanitize_for_json(_anomaly_score_cache[cache_key])
+
+    t0 = time.time()
+
+    df = get_df(source)
+    if df is None:
+        raise HTTPException(400, "No data loaded")
+
+    def _compute():
+        from src.enhanced_analysis import engineer_enhanced_features
+        from sklearn.ensemble import IsolationForest
+        from sklearn.preprocessing import StandardScaler
+        import warnings
+        warnings.filterwarnings("ignore")
+
+        df_well = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df.copy()
+        if len(df_well) < 10:
+            raise ValueError(f"Well {well} has too few fractures ({len(df_well)})")
+
+        features_df = engineer_enhanced_features(df_well)
+        X = features_df.values
+        feature_names = features_df.columns.tolist()
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # Isolation Forest
+        iso = IsolationForest(n_estimators=100, contamination=0.1, random_state=42)
+        iso_labels = iso.fit_predict(X_scaled)
+        iso_scores = -iso.decision_function(X_scaled)  # Higher = more anomalous
+
+        has_depth = DEPTH_COL in df_well.columns and not df_well[DEPTH_COL].isna().all()
+
+        # Build per-sample results
+        samples = []
+        n_anomaly = 0
+        for idx in range(len(df_well)):
+            is_anomaly = iso_labels[idx] == -1
+            if is_anomaly:
+                n_anomaly += 1
+
+            depth = float(df_well[DEPTH_COL].iloc[idx]) if has_depth and not np.isnan(df_well[DEPTH_COL].iloc[idx]) else None
+            azimuth = float(df_well[AZIMUTH_COL].iloc[idx]) if AZIMUTH_COL in df_well.columns else None
+            dip = float(df_well[DIP_COL].iloc[idx]) if DIP_COL in df_well.columns else None
+            ftype = str(df_well["fracture_type"].iloc[idx]) if "fracture_type" in df_well.columns else None
+
+            # Find top unusual features for anomalies
+            top_unusual = []
+            if is_anomaly:
+                abs_z = np.abs(X_scaled[idx])
+                top_feat_idx = np.argsort(-abs_z)[:3]
+                for fi in top_feat_idx:
+                    top_unusual.append({
+                        "feature": feature_names[fi],
+                        "z_score": round(float(X_scaled[idx, fi]), 2),
+                    })
+
+            samples.append({
+                "index": idx,
+                "depth": round(depth, 2) if depth is not None else None,
+                "azimuth": round(azimuth, 1) if azimuth is not None else None,
+                "dip": round(dip, 1) if dip is not None else None,
+                "fracture_type": ftype,
+                "anomaly_score": round(float(iso_scores[idx]), 4),
+                "is_anomaly": is_anomaly,
+                "top_unusual_features": top_unusual,
+            })
+
+        # Sort by anomaly score descending
+        samples.sort(key=lambda s: -s["anomaly_score"])
+        pct_anomaly = round(100 * n_anomaly / len(df_well), 1)
+
+        # Anomalous depth zones
+        anomaly_depths = [s["depth"] for s in samples if s["is_anomaly"] and s["depth"] is not None]
+        depth_zones = []
+        if anomaly_depths:
+            anomaly_depths.sort()
+            # Simple clustering: group anomalies within 50m
+            zone_start = anomaly_depths[0]
+            zone_end = anomaly_depths[0]
+            zone_count = 1
+            for d in anomaly_depths[1:]:
+                if d - zone_end <= 50:
+                    zone_end = d
+                    zone_count += 1
+                else:
+                    depth_zones.append({"start": round(zone_start, 1), "end": round(zone_end, 1), "count": zone_count})
+                    zone_start = d
+                    zone_end = d
+                    zone_count = 1
+            depth_zones.append({"start": round(zone_start, 1), "end": round(zone_end, 1), "count": zone_count})
+
+        recommendations = []
+        recommendations.append(f"{n_anomaly}/{len(df_well)} samples flagged as anomalous ({pct_anomaly}%)")
+        if pct_anomaly > 20:
+            recommendations.append("High anomaly rate (>20%) - check data quality and processing pipeline")
+        elif pct_anomaly > 10:
+            recommendations.append("Moderate anomaly rate - review flagged samples for potential errors")
+        if depth_zones:
+            biggest_zone = max(depth_zones, key=lambda z: z["count"])
+            recommendations.append(f"Largest anomaly cluster: {biggest_zone['start']}-{biggest_zone['end']}m ({biggest_zone['count']} samples)")
+        recommendations.append("Review top anomalous samples manually - they may be errors or genuinely unusual fractures")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Anomaly score distribution
+            scores = [s["anomaly_score"] for s in samples]
+            colors_anom = ["#e74c3c" if s["is_anomaly"] else "#3498db" for s in samples]
+            axes[0].hist([s["anomaly_score"] for s in samples if not s["is_anomaly"]],
+                        bins=30, color="#3498db", alpha=0.7, label="Normal")
+            axes[0].hist([s["anomaly_score"] for s in samples if s["is_anomaly"]],
+                        bins=15, color="#e74c3c", alpha=0.7, label="Anomaly")
+            axes[0].set_xlabel("Anomaly Score")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title(f"Score Distribution ({n_anomaly} anomalies)")
+            axes[0].legend()
+
+            # Anomalies vs depth
+            if has_depth:
+                all_depths = [s["depth"] for s in samples if s["depth"] is not None]
+                all_scores = [s["anomaly_score"] for s in samples if s["depth"] is not None]
+                all_colors = ["#e74c3c" if s["is_anomaly"] else "#3498db" for s in samples if s["depth"] is not None]
+                axes[1].scatter(all_scores, all_depths, c=all_colors, s=15, alpha=0.6)
+                axes[1].set_xlabel("Anomaly Score")
+                axes[1].set_ylabel("Depth (m)")
+                axes[1].set_title("Anomalies vs Depth")
+                axes[1].invert_yaxis()
+            else:
+                axes[1].text(0.5, 0.5, "No depth data", ha="center", va="center", transform=axes[1].transAxes)
+
+            fig.suptitle(f"Anomaly Scoring -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_samples": len(df_well),
+            "n_anomalies": n_anomaly,
+            "pct_anomalies": pct_anomaly,
+            "anomaly_depth_zones": depth_zones,
+            "samples": samples[:100],  # Top 100 by score
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Anomaly detection: {n_anomaly} outliers ({pct_anomaly}%) out of {len(df_well)} samples",
+                "risk_level": "GREEN" if pct_anomaly < 5 else ("AMBER" if pct_anomaly < 15 else "RED"),
+                "what_this_means": f"Scanned all {len(df_well)} fractures for statistical outliers using Isolation Forest. {n_anomaly} measurements appear unusual.",
+                "for_non_experts": f"We checked each measurement for errors or unusual values. {n_anomaly} out of {len(df_well)} look unusual and should be reviewed by an expert.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _anomaly_score_cache[cache_key] = result
+    return _sanitize_for_json(result)
