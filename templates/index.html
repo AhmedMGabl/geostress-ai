@@ -2545,6 +2545,81 @@
                         </div>
                     </div>
 
+                    <!-- Slip Tendency Map -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-map"></i> Slip Tendency Map</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runSlipTendencyMap()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Slip and dilation tendency mapped across azimuth-dip space.</p>
+                            <div id="slip-tendency-map-results" style="display:none;"></div>
+                            <img id="slip-tendency-map-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Formation Pressure -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-thermometer-half"></i> Formation Pressure Profile</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runFormationPressure()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Pore pressure, overburden, and fracture gradient vs depth.</p>
+                            <div id="formation-pressure-results" style="display:none;"></div>
+                            <img id="formation-pressure-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Fracture Sets -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-diagram-3"></i> Fracture Set Identification</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runFractureSets()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Automated fracture set identification from orientation clusters.</p>
+                            <div id="fracture-sets-results" style="display:none;"></div>
+                            <img id="fracture-sets-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Breakout Prediction -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-triangle"></i> Breakout Prediction</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runBreakoutPrediction()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Wellbore breakout width and orientation from stress state.</p>
+                            <div id="breakout-prediction-results" style="display:none;"></div>
+                            <img id="breakout-prediction-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Data Completeness -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-clipboard-data"></i> Data Completeness Audit</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runDataCompleteness()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Per-column completeness, quality metrics, and gap analysis.</p>
+                            <div id="data-completeness-results" style="display:none;"></div>
+                            <img id="data-completeness-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

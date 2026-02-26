@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.46.0 - Stereonet Density + Stress Path + Aperture Distribution + Stability Window + Orientation Statistics)."""
+"""GeoStress AI - FastAPI Web Application (v3.47.0 - Slip Tendency Map + Formation Pressure + Fracture Sets + Breakout Prediction + Data Completeness)."""
 
 import os
 import io
@@ -36033,4 +36033,805 @@ async def orientation_stats(request: Request):
     elapsed = round(time.time() - t0, 2)
     result["elapsed_s"] = elapsed
     _orientation_stats_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── v3.47.0 caches ──────────────────────────────────────────
+_slip_tendency_map_cache: dict = {}
+_formation_pressure_cache: dict = {}
+_fracture_sets_cache: dict = {}
+_breakout_prediction_cache: dict = {}
+_data_completeness_cache: dict = {}
+
+
+# ── [170] Slip Tendency Map ─────────────────────────────────
+@app.post("/api/analysis/slip-tendency-map")
+async def slip_tendency_map(request: Request):
+    """Slip/dilation tendency mapped across azimuth-dip space."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    friction = body.get("friction", 0.6)
+    depth = body.get("depth", 3000)
+    pp_gradient = body.get("pp_gradient", 10.0)
+    sv_gradient = body.get("sv_gradient", 25.0)
+    grid_size = body.get("grid_size", 36)
+    cache_key = f"{source}_{well}_{friction}_{depth}_{pp_gradient}_{sv_gradient}_{grid_size}"
+    if cache_key in _slip_tendency_map_cache:
+        return _sanitize_for_json(_slip_tendency_map_cache[cache_key])
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well {well} not found"}, 404)
+
+    def _compute():
+        mu = float(friction)
+        d_km = float(depth) / 1000.0
+        Sv = sv_gradient * d_km
+        Pp = pp_gradient * d_km
+        q = ((np.sqrt(mu ** 2 + 1) + mu) ** 2)
+        Shmin = Pp + (Sv - Pp) / q
+        SHmax = (Sv + Shmin) / 2.0
+
+        sigma1, sigma2, sigma3 = Sv, SHmax, Shmin
+        sigma1_eff = sigma1 - Pp
+        sigma3_eff = sigma3 - Pp
+
+        # Grid of azimuths and dips
+        gs = int(grid_size)
+        az_grid = np.linspace(0, 360, gs + 1)[:-1]
+        dip_grid = np.linspace(0, 90, gs // 2 + 1)
+        AZ, DIP = np.meshgrid(az_grid, dip_grid)
+
+        # Compute slip and dilation tendency for each grid point
+        slip_map = np.zeros_like(AZ)
+        dil_map = np.zeros_like(AZ)
+
+        for i in range(AZ.shape[0]):
+            for j in range(AZ.shape[1]):
+                az_r = np.radians(AZ[i, j])
+                dip_r = np.radians(DIP[i, j])
+                n = np.array([np.cos(dip_r) * np.sin(az_r),
+                              np.cos(dip_r) * np.cos(az_r),
+                              np.sin(dip_r)])
+                stress = np.diag([sigma1, sigma2, sigma3])
+                traction = stress @ n
+                sigma_n = float(np.dot(n, traction))
+                tau = float(np.sqrt(np.dot(traction, traction) - sigma_n ** 2))
+                sigma_n_eff = sigma_n - Pp
+                slip_map[i, j] = tau / max(sigma_n_eff, 0.01)
+                dil_map[i, j] = (sigma1 - sigma_n) / max(sigma1 - sigma3, 0.01)
+
+        # Statistics
+        max_slip = float(np.nanmax(slip_map))
+        mean_slip = float(np.nanmean(slip_map))
+        max_dil = float(np.nanmax(dil_map))
+        mean_dil = float(np.nanmean(dil_map))
+
+        # Find most critically oriented planes
+        critical_az_idx, critical_dip_idx = np.unravel_index(np.argmax(slip_map), slip_map.shape)
+        critical_az = float(az_grid[critical_dip_idx]) if critical_dip_idx < len(az_grid) else 0
+        critical_dip = float(dip_grid[critical_az_idx]) if critical_az_idx < len(dip_grid) else 0
+
+        # Real fracture tendencies
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        dips = df_well[DIP_COL].dropna().values
+        n_frac = min(len(azimuths), len(dips))
+        frac_slips = []
+        frac_dils = []
+        for k in range(n_frac):
+            az_r = np.radians(azimuths[k])
+            dip_r = np.radians(dips[k])
+            n = np.array([np.cos(dip_r) * np.sin(az_r),
+                          np.cos(dip_r) * np.cos(az_r),
+                          np.sin(dip_r)])
+            stress = np.diag([sigma1, sigma2, sigma3])
+            traction = stress @ n
+            sigma_n = float(np.dot(n, traction))
+            tau = float(np.sqrt(max(np.dot(traction, traction) - sigma_n ** 2, 0)))
+            sigma_n_eff = sigma_n - Pp
+            frac_slips.append(tau / max(sigma_n_eff, 0.01))
+            frac_dils.append((sigma1 - sigma_n) / max(sigma1 - sigma3, 0.01))
+
+        n_critical = sum(1 for s in frac_slips if s > mu)
+
+        recommendations = []
+        if n_critical > n_frac * 0.5:
+            recommendations.append(f"High criticality: {n_critical}/{n_frac} fractures exceed friction limit.")
+        recommendations.append(f"Peak slip tendency {max_slip:.2f} at azimuth {critical_az:.0f}°, dip {critical_dip:.0f}°.")
+        recommendations.append(f"Mean dilation tendency {mean_dil:.2f} — {'high' if mean_dil > 0.5 else 'moderate' if mean_dil > 0.3 else 'low'} opening potential.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+            cf1 = axes[0].contourf(AZ, DIP, slip_map, levels=15, cmap="YlOrRd")
+            axes[0].scatter(azimuths[:n_frac], dips[:n_frac], s=8, c="black", alpha=0.3, zorder=5)
+            fig.colorbar(cf1, ax=axes[0], label="Slip Tendency")
+            axes[0].axhline(y=np.degrees(np.arctan(mu)), color="white", linestyle="--", alpha=0.5)
+            axes[0].set_xlabel("Azimuth (°)")
+            axes[0].set_ylabel("Dip (°)")
+            axes[0].set_title("Slip Tendency")
+
+            cf2 = axes[1].contourf(AZ, DIP, dil_map, levels=15, cmap="YlGnBu")
+            axes[1].scatter(azimuths[:n_frac], dips[:n_frac], s=8, c="black", alpha=0.3, zorder=5)
+            fig.colorbar(cf2, ax=axes[1], label="Dilation Tendency")
+            axes[1].set_xlabel("Azimuth (°)")
+            axes[1].set_ylabel("Dip (°)")
+            axes[1].set_title("Dilation Tendency")
+
+            fig.suptitle(f"Tendency Map — Well {well} (mu={mu}, depth={depth}m)", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "depth_m": float(depth),
+            "friction": mu,
+            "sigma1_MPa": round(float(sigma1), 2),
+            "sigma3_MPa": round(float(sigma3), 2),
+            "Pp_MPa": round(float(Pp), 2),
+            "grid_size": gs,
+            "max_slip_tendency": round(max_slip, 4),
+            "mean_slip_tendency": round(mean_slip, 4),
+            "max_dilation_tendency": round(max_dil, 4),
+            "mean_dilation_tendency": round(mean_dil, 4),
+            "critical_orientation": {
+                "azimuth_deg": round(critical_az, 1),
+                "dip_deg": round(critical_dip, 1),
+                "slip_tendency": round(float(slip_map[critical_az_idx, critical_dip_idx]), 4),
+            },
+            "n_fractures": int(n_frac),
+            "n_critically_stressed": int(n_critical),
+            "pct_critically_stressed": round(100.0 * n_critical / max(n_frac, 1), 1),
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Slip tendency map: {n_critical}/{n_frac} critical fractures",
+                "risk_level": "RED" if n_critical > n_frac * 0.5 else ("AMBER" if n_critical > n_frac * 0.2 else "GREEN"),
+                "what_this_means": f"Mapped slip and dilation tendency across all orientations at {depth}m depth.",
+                "for_non_experts": "This map shows which fracture directions are most likely to slip or open. Red areas are high risk.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _slip_tendency_map_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [171] Formation Pressure Profile ───────────────────────
+@app.post("/api/analysis/formation-pressure")
+async def formation_pressure(request: Request):
+    """Pore pressure, overburden, and fracture gradient vs depth."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_start = body.get("depth_start", 500)
+    depth_end = body.get("depth_end", 5000)
+    n_points = body.get("n_points", 20)
+    pp_gradient = body.get("pp_gradient", 10.0)
+    sv_gradient = body.get("sv_gradient", 25.0)
+    fracture_gradient = body.get("fracture_gradient", 17.0)
+    cache_key = f"{source}_{well}_{depth_start}_{depth_end}_{n_points}_{pp_gradient}_{sv_gradient}_{fracture_gradient}"
+    if cache_key in _formation_pressure_cache:
+        return _sanitize_for_json(_formation_pressure_cache[cache_key])
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well {well} not found"}, 404)
+
+    def _compute():
+        depths = np.linspace(float(depth_start), float(depth_end), int(n_points))
+        profile = []
+        for d in depths:
+            d_km = d / 1000.0
+            Sv = sv_gradient * d_km
+            Pp = pp_gradient * d_km
+            Fg = fracture_gradient * d_km
+            # Mud weight equivalents
+            g = 9.81
+            rho_w = 1000.0
+            mw_factor = 1e6 / (g * rho_w * d) if d > 0 else 1.0
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Sv_MPa": round(float(Sv), 2),
+                "Pp_MPa": round(float(Pp), 2),
+                "Fg_MPa": round(float(Fg), 2),
+                "effective_stress_MPa": round(float(Sv - Pp), 2),
+                "Sv_SG": round(float(Sv * mw_factor), 3),
+                "Pp_SG": round(float(Pp * mw_factor), 3),
+                "Fg_SG": round(float(Fg * mw_factor), 3),
+            })
+
+        # Overpressure check
+        mid = profile[len(profile) // 2]
+        pp_sv_ratio = mid["Pp_MPa"] / mid["Sv_MPa"] if mid["Sv_MPa"] > 0 else 0
+        pressure_regime = "OVERPRESSURED" if pp_sv_ratio > 0.5 else ("HYDROSTATIC" if pp_sv_ratio > 0.35 else "UNDERPRESSURED")
+
+        # Fracture data depth coverage
+        frac_depths = df_well[DEPTH_COL].dropna().values
+        frac_min = float(np.min(frac_depths)) if len(frac_depths) > 0 else 0
+        frac_max = float(np.max(frac_depths)) if len(frac_depths) > 0 else 0
+        coverage_pct = 0
+        if frac_max > frac_min:
+            overlap_min = max(float(depth_start), frac_min)
+            overlap_max = min(float(depth_end), frac_max)
+            if overlap_max > overlap_min:
+                coverage_pct = 100.0 * (overlap_max - overlap_min) / (float(depth_end) - float(depth_start))
+
+        recommendations = [
+            f"Pressure regime: {pressure_regime} (Pp/Sv = {pp_sv_ratio:.2f} at {mid['depth_m']}m).",
+            f"Fracture gradient margin: {(mid['Fg_MPa'] - mid['Pp_MPa']):.1f} MPa at mid-depth.",
+            f"Data coverage: {coverage_pct:.0f}% of profile range has fracture data ({frac_min:.0f}-{frac_max:.0f}m).",
+        ]
+        if pp_sv_ratio > 0.5:
+            recommendations.append("WARNING: Overpressured formation — managed pressure drilling may be required.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 10))
+            d_arr = [p["depth_m"] for p in profile]
+            ax.plot([p["Sv_MPa"] for p in profile], d_arr, "k-", linewidth=2, label="Sv (Overburden)")
+            ax.plot([p["Pp_MPa"] for p in profile], d_arr, "b--", linewidth=2, label="Pp (Pore Pressure)")
+            ax.plot([p["Fg_MPa"] for p in profile], d_arr, "r-.", linewidth=2, label="Fg (Fracture Gradient)")
+            ax.fill_betweenx(d_arr, [p["Pp_MPa"] for p in profile], [p["Fg_MPa"] for p in profile],
+                             alpha=0.1, color="green", label="Safe Window")
+            # Show fracture data range
+            if len(frac_depths) > 0:
+                ax.axhspan(frac_min, frac_max, alpha=0.05, color="orange", label=f"Data Range ({frac_min:.0f}-{frac_max:.0f}m)")
+            ax.set_xlabel("Pressure (MPa)")
+            ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis()
+            ax.legend(fontsize=9, loc="lower left")
+            ax.set_title(f"Formation Pressure Profile — Well {well} ({pressure_regime})", fontsize=13, fontweight="bold")
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "depth_range_m": [float(depth_start), float(depth_end)],
+            "n_points": int(n_points),
+            "pp_gradient_MPa_per_km": float(pp_gradient),
+            "sv_gradient_MPa_per_km": float(sv_gradient),
+            "fracture_gradient_MPa_per_km": float(fracture_gradient),
+            "pressure_regime": pressure_regime,
+            "pp_sv_ratio": round(float(pp_sv_ratio), 3),
+            "fracture_data_range_m": [round(frac_min, 1), round(frac_max, 1)] if len(frac_depths) > 0 else None,
+            "data_coverage_pct": round(coverage_pct, 1),
+            "profile": profile,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Pressure profile: {pressure_regime} (Pp/Sv={pp_sv_ratio:.2f})",
+                "risk_level": "RED" if pressure_regime == "OVERPRESSURED" else "GREEN",
+                "what_this_means": f"Modeled formation pressures from {depth_start}-{depth_end}m using standard gradients.",
+                "for_non_experts": "This shows how underground pressures increase with depth. The safe drilling window is between pore pressure and fracture gradient.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _formation_pressure_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [172] Fracture Set Identification ──────────────────────
+@app.post("/api/analysis/fracture-sets")
+async def fracture_sets(request: Request):
+    """Automated fracture set identification from orientation clusters."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    max_sets = body.get("max_sets", 5)
+    cache_key = f"{source}_{well}_{max_sets}"
+    if cache_key in _fracture_sets_cache:
+        return _sanitize_for_json(_fracture_sets_cache[cache_key])
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well {well} not found"}, 404)
+
+    def _compute():
+        from sklearn.cluster import KMeans
+        from sklearn.metrics import silhouette_score
+
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        dips = df_well[DIP_COL].dropna().values
+        n = min(len(azimuths), len(dips))
+        azimuths = azimuths[:n]
+        dips = dips[:n]
+
+        # Convert to unit vectors for clustering (handles circularity)
+        az_rad = np.radians(azimuths)
+        dip_rad = np.radians(dips)
+        X = np.column_stack([
+            np.cos(dip_rad) * np.sin(az_rad),
+            np.cos(dip_rad) * np.cos(az_rad),
+            np.sin(dip_rad),
+        ])
+
+        # Try different k values
+        max_k = min(int(max_sets), n // 5, 8)
+        max_k = max(max_k, 2)
+        k_results = []
+        for k in range(2, max_k + 1):
+            km = KMeans(n_clusters=k, random_state=42, n_init=10)
+            labels = km.fit_predict(X)
+            sil = float(silhouette_score(X, labels))
+            k_results.append({"k": k, "silhouette": round(sil, 4), "inertia": round(float(km.inertia_), 2)})
+
+        # Pick best k
+        best_k_result = max(k_results, key=lambda x: x["silhouette"])
+        best_k = best_k_result["k"]
+
+        # Final clustering
+        km_final = KMeans(n_clusters=best_k, random_state=42, n_init=10)
+        labels = km_final.fit_predict(X)
+
+        sets = []
+        for s in range(best_k):
+            mask = labels == s
+            set_az = azimuths[mask]
+            set_dip = dips[mask]
+            # Circular mean for azimuth
+            sin_s = np.sum(np.sin(np.radians(set_az)))
+            cos_s = np.sum(np.cos(np.radians(set_az)))
+            mean_az = float(np.degrees(np.arctan2(sin_s, cos_s)) % 360)
+            mean_dip = float(np.mean(set_dip))
+            std_az = float(np.std(set_az))
+            std_dip = float(np.std(set_dip))
+
+            # Set classification by dip
+            if mean_dip < 20:
+                dip_class = "sub-horizontal"
+            elif mean_dip < 45:
+                dip_class = "low-angle"
+            elif mean_dip < 70:
+                dip_class = "moderate-angle"
+            else:
+                dip_class = "high-angle"
+
+            sets.append({
+                "set_id": int(s + 1),
+                "n_fractures": int(np.sum(mask)),
+                "pct": round(100.0 * np.sum(mask) / n, 1),
+                "mean_azimuth_deg": round(mean_az, 1),
+                "mean_dip_deg": round(mean_dip, 1),
+                "std_azimuth_deg": round(std_az, 1),
+                "std_dip_deg": round(std_dip, 1),
+                "dip_class": dip_class,
+                "strike_deg": round((mean_az + 90) % 360, 1),
+            })
+
+        # Sort by count descending
+        sets.sort(key=lambda x: x["n_fractures"], reverse=True)
+
+        # Conjugate pair check: any two sets ~60° dip intersection?
+        conjugate_pairs = []
+        for i in range(len(sets)):
+            for j in range(i + 1, len(sets)):
+                dip_diff = abs(sets[i]["mean_dip_deg"] - sets[j]["mean_dip_deg"])
+                az_diff = min(abs(sets[i]["mean_azimuth_deg"] - sets[j]["mean_azimuth_deg"]),
+                              360 - abs(sets[i]["mean_azimuth_deg"] - sets[j]["mean_azimuth_deg"]))
+                if 40 < dip_diff + az_diff < 120:
+                    conjugate_pairs.append({
+                        "set_a": sets[i]["set_id"],
+                        "set_b": sets[j]["set_id"],
+                        "angle_between": round(dip_diff + az_diff, 1),
+                    })
+
+        recommendations = [
+            f"Identified {best_k} fracture sets (silhouette={best_k_result['silhouette']:.3f}).",
+            f"Dominant set: Set {sets[0]['set_id']} with {sets[0]['n_fractures']} fractures ({sets[0]['pct']:.0f}%), mean az {sets[0]['mean_azimuth_deg']:.0f}°.",
+        ]
+        if conjugate_pairs:
+            recommendations.append(f"Potential conjugate pair detected: Sets {conjugate_pairs[0]['set_a']} and {conjugate_pairs[0]['set_b']}.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+            colors = ["#2196F3", "#FF5722", "#4CAF50", "#9C27B0", "#FF9800", "#00BCD4", "#E91E63", "#795548"]
+            for s_info in sets:
+                sid = s_info["set_id"] - 1
+                mask = labels == sid
+                c = colors[sid % len(colors)]
+                axes[0].scatter(azimuths[mask], dips[mask], s=15, c=c, alpha=0.6, label=f"Set {s_info['set_id']} (n={s_info['n_fractures']})")
+            axes[0].set_xlabel("Azimuth (°)")
+            axes[0].set_ylabel("Dip (°)")
+            axes[0].set_title("Fracture Sets")
+            axes[0].legend(fontsize=8)
+            axes[0].set_xlim(0, 360)
+            axes[0].set_ylim(0, 90)
+            axes[0].grid(True, alpha=0.3)
+
+            # Rose per set
+            ax_rose = fig.add_subplot(122, projection="polar")
+            axes[1].set_visible(False)
+            ax_rose.set_theta_zero_location("N")
+            ax_rose.set_theta_direction(-1)
+            for s_info in sets:
+                sid = s_info["set_id"] - 1
+                mask = labels == sid
+                c = colors[sid % len(colors)]
+                n_bins = 36
+                bin_edges = np.linspace(0, 360, n_bins + 1)
+                counts, _ = np.histogram(azimuths[mask], bins=bin_edges)
+                theta = np.radians((bin_edges[:-1] + bin_edges[1:]) / 2)
+                width = np.radians(360 / n_bins)
+                ax_rose.bar(theta, counts, width=width, color=c, alpha=0.5, label=f"Set {s_info['set_id']}")
+            ax_rose.set_title("Rose by Set", fontsize=11, fontweight="bold", pad=15)
+            ax_rose.legend(fontsize=7, loc="upper right", bbox_to_anchor=(1.3, 1.0))
+
+            fig.suptitle(f"Fracture Set ID — Well {well} ({best_k} sets)", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_fractures": int(n),
+            "n_sets": best_k,
+            "best_silhouette": best_k_result["silhouette"],
+            "k_analysis": k_results,
+            "sets": sets,
+            "conjugate_pairs": conjugate_pairs,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"{best_k} fracture sets identified (sil={best_k_result['silhouette']:.3f})",
+                "risk_level": "GREEN" if best_k_result["silhouette"] > 0.3 else ("AMBER" if best_k_result["silhouette"] > 0.15 else "RED"),
+                "what_this_means": f"Automatic clustering found {best_k} distinct fracture sets from {n} measurements.",
+                "for_non_experts": "Fracture sets are groups of fractures with similar orientations. Identifying sets helps predict rock mass behavior and plan drilling.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _fracture_sets_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [173] Wellbore Breakout Prediction ─────────────────────
+@app.post("/api/analysis/breakout-prediction")
+async def breakout_prediction(request: Request):
+    """Predict wellbore breakout width and orientation from stress state."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = body.get("depth", 3000)
+    friction = body.get("friction", 0.6)
+    ucs_mpa = body.get("ucs_mpa", 80.0)
+    mud_weight_sg = body.get("mud_weight_sg", 1.2)
+    wellbore_azimuth = body.get("wellbore_azimuth", 0)
+    pp_gradient = body.get("pp_gradient", 10.0)
+    sv_gradient = body.get("sv_gradient", 25.0)
+    cache_key = f"{source}_{well}_{depth}_{friction}_{ucs_mpa}_{mud_weight_sg}_{wellbore_azimuth}_{pp_gradient}_{sv_gradient}"
+    if cache_key in _breakout_prediction_cache:
+        return _sanitize_for_json(_breakout_prediction_cache[cache_key])
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well {well} not found"}, 404)
+
+    def _compute():
+        mu = float(friction)
+        d_km = float(depth) / 1000.0
+        Sv = sv_gradient * d_km
+        Pp = pp_gradient * d_km
+        UCS = float(ucs_mpa)
+        mw = float(mud_weight_sg)
+        wb_az = float(wellbore_azimuth)
+
+        q_val = ((np.sqrt(mu ** 2 + 1) + mu) ** 2)
+        Shmin = Pp + (Sv - Pp) / q_val
+        SHmax = (Sv + Shmin) / 2.0
+
+        # Mud pressure at depth
+        g = 9.81
+        rho_w = 1000.0
+        Pw = mw * rho_w * g * float(depth) / 1e6  # MPa
+
+        # Kirsch equations for hoop stress around wellbore
+        # sigma_theta = (SHmax + Shmin) - 2*(SHmax - Shmin)*cos(2*theta) - Pw
+        # Breakout occurs where sigma_theta > UCS
+        theta_arr = np.linspace(0, 360, 361)
+        theta_rad = np.radians(theta_arr)
+        # Adjust for wellbore azimuth
+        theta_stress = theta_rad - np.radians(wb_az)
+
+        sigma_theta = (SHmax + Shmin) - 2 * (SHmax - Shmin) * np.cos(2 * theta_stress) - Pw
+
+        # Breakout zones: where sigma_theta > UCS
+        breakout_mask = sigma_theta > UCS
+        breakout_angles = theta_arr[breakout_mask]
+
+        # Breakout properties
+        if len(breakout_angles) > 0:
+            breakout_width_deg = float(len(breakout_angles))
+            breakout_center = float(np.mean(breakout_angles))
+            # Shmin direction: breakouts form at Shmin direction (90° from SHmax)
+            breakout_azimuth = (wb_az + 90) % 360  # Simplified: perpendicular to max stress
+            breakout_exists = True
+            max_sigma_theta = float(np.max(sigma_theta))
+            safety_factor = UCS / max_sigma_theta if max_sigma_theta > 0 else float("inf")
+        else:
+            breakout_width_deg = 0.0
+            breakout_center = 0.0
+            breakout_azimuth = 0.0
+            breakout_exists = False
+            max_sigma_theta = float(np.max(sigma_theta))
+            safety_factor = UCS / max_sigma_theta if max_sigma_theta > 0 else float("inf")
+
+        # Tensile fracture check (sigma_theta < -tensile_strength)
+        tensile_strength = UCS / 10.0  # Typical ratio
+        tensile_mask = sigma_theta < -tensile_strength
+        dif_exists = bool(np.any(tensile_mask))
+        dif_angles = theta_arr[tensile_mask]
+        dif_width_deg = float(len(dif_angles))
+
+        stability = "STABLE" if not breakout_exists and not dif_exists else (
+            "BREAKOUT_ONLY" if breakout_exists and not dif_exists else (
+                "TENSILE_ONLY" if dif_exists and not breakout_exists else "BOTH"
+            )
+        )
+
+        recommendations = []
+        if breakout_exists:
+            recommendations.append(f"Breakout predicted: {breakout_width_deg:.0f}° wide at azimuth ~{breakout_azimuth:.0f}° (safety factor {safety_factor:.2f}).")
+        else:
+            recommendations.append(f"No breakout predicted at current mud weight (safety factor {safety_factor:.2f}).")
+        if dif_exists:
+            recommendations.append(f"Drilling-induced fractures predicted: {dif_width_deg:.0f}° width. Increase mud weight.")
+        recommendations.append(f"Stress state: SHmax={SHmax:.1f} MPa, Shmin={Shmin:.1f} MPa, Pw={Pw:.1f} MPa.")
+        if safety_factor < 1.2:
+            recommendations.append("WARNING: Low safety factor — consider increasing mud weight or casing earlier.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Hoop stress profile
+            axes[0].plot(theta_arr, sigma_theta, "b-", linewidth=1.5, label="σθ (Hoop Stress)")
+            axes[0].axhline(UCS, color="red", linestyle="--", label=f"UCS={UCS} MPa")
+            axes[0].axhline(-tensile_strength, color="green", linestyle="--", label=f"-T0={-tensile_strength:.0f} MPa")
+            if breakout_exists:
+                axes[0].fill_between(theta_arr, sigma_theta, UCS, where=breakout_mask, color="red", alpha=0.2, label="Breakout Zone")
+            axes[0].set_xlabel("Angle around wellbore (°)")
+            axes[0].set_ylabel("Hoop Stress (MPa)")
+            axes[0].set_title("Hoop Stress Profile")
+            axes[0].legend(fontsize=8)
+            axes[0].grid(True, alpha=0.3)
+
+            # Polar view of breakout
+            ax_polar = fig.add_subplot(122, projection="polar")
+            axes[1].set_visible(False)
+            ax_polar.set_theta_zero_location("N")
+            ax_polar.set_theta_direction(-1)
+            # Wellbore circle
+            theta_circ = np.linspace(0, 2 * np.pi, 361)
+            ax_polar.plot(theta_circ, np.ones_like(theta_circ), "k-", linewidth=1)
+            # Breakout zones
+            if breakout_exists:
+                bo_theta = np.radians(breakout_angles)
+                ax_polar.scatter(bo_theta, np.ones_like(bo_theta) * 1.1, c="red", s=3, alpha=0.5, label="Breakout")
+            if dif_exists:
+                dif_theta = np.radians(dif_angles)
+                ax_polar.scatter(dif_theta, np.ones_like(dif_theta) * 0.9, c="green", s=3, alpha=0.5, label="DIF")
+            ax_polar.set_title(f"Wellbore View ({stability})", fontsize=11, fontweight="bold", pad=15)
+            ax_polar.legend(fontsize=7)
+            ax_polar.set_ylim(0, 1.5)
+
+            fig.suptitle(f"Breakout Prediction — Well {well} at {depth}m", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "depth_m": float(depth),
+            "friction": mu,
+            "UCS_MPa": UCS,
+            "mud_weight_SG": mw,
+            "wellbore_azimuth_deg": wb_az,
+            "SHmax_MPa": round(float(SHmax), 2),
+            "Shmin_MPa": round(float(Shmin), 2),
+            "Sv_MPa": round(float(Sv), 2),
+            "Pp_MPa": round(float(Pp), 2),
+            "Pw_MPa": round(float(Pw), 2),
+            "max_hoop_stress_MPa": round(max_sigma_theta, 2),
+            "safety_factor": round(float(safety_factor), 3),
+            "breakout_exists": breakout_exists,
+            "breakout_width_deg": round(breakout_width_deg, 1),
+            "breakout_azimuth_deg": round(breakout_azimuth, 1),
+            "dif_exists": dif_exists,
+            "dif_width_deg": round(dif_width_deg, 1),
+            "stability": stability,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Breakout: {stability} (SF={safety_factor:.2f}) at {depth}m",
+                "risk_level": "RED" if stability == "BOTH" else ("AMBER" if breakout_exists else "GREEN"),
+                "what_this_means": f"{'Breakout predicted' if breakout_exists else 'No breakout'} at {depth}m with MW={mw} SG. Safety factor={safety_factor:.2f}.",
+                "for_non_experts": "Breakouts happen when the rock around the wellbore is too weak to handle the stress. This prediction helps choose the right drilling fluid weight.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _breakout_prediction_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [174] Data Completeness Audit ─────────────────────────
+@app.post("/api/analysis/data-completeness")
+async def data_completeness(request: Request):
+    """Per-column completeness, quality metrics, and gap analysis."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    cache_key = f"{source}_{well}"
+    if cache_key in _data_completeness_cache:
+        return _sanitize_for_json(_data_completeness_cache[cache_key])
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well {well} not found"}, 404)
+
+    def _compute():
+        n_rows = len(df_well)
+        columns = []
+
+        for col in [DEPTH_COL, AZIMUTH_COL, DIP_COL]:
+            vals = df_well[col]
+            n_present = int(vals.notna().sum())
+            n_missing = int(vals.isna().sum())
+            pct_complete = round(100.0 * n_present / n_rows, 1) if n_rows > 0 else 0
+            col_data = {
+                "column": col,
+                "n_present": n_present,
+                "n_missing": n_missing,
+                "pct_complete": pct_complete,
+                "completeness": "COMPLETE" if pct_complete == 100 else ("GOOD" if pct_complete > 90 else ("FAIR" if pct_complete > 70 else "POOR")),
+            }
+            if n_present > 0:
+                valid = vals.dropna().values.astype(float)
+                col_data["min"] = round(float(np.min(valid)), 2)
+                col_data["max"] = round(float(np.max(valid)), 2)
+                col_data["mean"] = round(float(np.mean(valid)), 2)
+                col_data["std"] = round(float(np.std(valid)), 2)
+                # Duplicates
+                col_data["n_duplicates"] = int(len(valid) - len(np.unique(valid)))
+                col_data["pct_duplicates"] = round(100.0 * col_data["n_duplicates"] / n_present, 1)
+            columns.append(col_data)
+
+        # Fracture type completeness
+        if FRACTURE_TYPE_COL in df_well.columns:
+            ft_vals = df_well[FRACTURE_TYPE_COL]
+            n_ft_present = int(ft_vals.notna().sum())
+            type_counts = ft_vals.value_counts().to_dict()
+            columns.append({
+                "column": FRACTURE_TYPE_COL,
+                "n_present": n_ft_present,
+                "n_missing": int(ft_vals.isna().sum()),
+                "pct_complete": round(100.0 * n_ft_present / n_rows, 1),
+                "completeness": "COMPLETE" if n_ft_present == n_rows else "PARTIAL",
+                "unique_values": len(type_counts),
+                "value_counts": {str(k): int(v) for k, v in type_counts.items()},
+            })
+
+        # Depth gap analysis
+        depths = df_well[DEPTH_COL].dropna().values.astype(float)
+        gaps = []
+        if len(depths) > 1:
+            sorted_d = np.sort(depths)
+            spacings = np.diff(sorted_d)
+            median_spacing = float(np.median(spacings))
+            gap_threshold = max(median_spacing * 5, 20.0)  # 5x median or 20m
+
+            for i, s in enumerate(spacings):
+                if s > gap_threshold:
+                    gaps.append({
+                        "from_m": round(float(sorted_d[i]), 1),
+                        "to_m": round(float(sorted_d[i + 1]), 1),
+                        "gap_m": round(float(s), 1),
+                        "severity": "CRITICAL" if s > gap_threshold * 3 else "SIGNIFICANT",
+                    })
+
+        # Overall quality score
+        avg_completeness = np.mean([c["pct_complete"] for c in columns])
+        n_gaps = len(gaps)
+        quality_score = max(0, min(100, int(avg_completeness - n_gaps * 5)))
+        quality_grade = "A" if quality_score >= 90 else ("B" if quality_score >= 75 else ("C" if quality_score >= 50 else "D"))
+
+        recommendations = []
+        for c in columns:
+            if c.get("completeness") in ("FAIR", "POOR"):
+                recommendations.append(f"Column '{c['column']}' has {c['pct_complete']:.0f}% completeness ({c['n_missing']} missing) — collect more data.")
+        if gaps:
+            recommendations.append(f"{len(gaps)} depth gaps detected — largest is {gaps[0]['gap_m']:.0f}m. Consider targeted data collection.")
+        if quality_grade in ("C", "D"):
+            recommendations.append(f"Overall data quality is {quality_grade} (score={quality_score}/100) — significant improvement needed.")
+        if not recommendations:
+            recommendations.append("Data completeness is good. No major gaps or missing values detected.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Completeness bars
+            col_names = [c["column"] for c in columns]
+            col_pcts = [c["pct_complete"] for c in columns]
+            col_colors = ["#4CAF50" if p == 100 else "#FF9800" if p > 90 else "#FF5722" for p in col_pcts]
+            axes[0].barh(col_names, col_pcts, color=col_colors, alpha=0.7)
+            axes[0].set_xlabel("Completeness (%)")
+            axes[0].set_title("Column Completeness")
+            axes[0].set_xlim(0, 105)
+            for i, v in enumerate(col_pcts):
+                axes[0].text(v + 0.5, i, f"{v:.0f}%", va="center", fontsize=9)
+
+            # Depth coverage
+            if len(depths) > 0:
+                axes[1].hist(depths, bins=min(30, len(depths) // 3 + 1), color="#2196F3", edgecolor="white", alpha=0.7)
+                for gap in gaps[:5]:  # Show top 5 gaps
+                    axes[1].axvspan(gap["from_m"], gap["to_m"], alpha=0.2, color="red")
+                axes[1].set_xlabel("Depth (m)")
+                axes[1].set_ylabel("Fracture Count")
+                axes[1].set_title("Depth Coverage & Gaps")
+            else:
+                axes[1].text(0.5, 0.5, "No depth data", ha="center", va="center", transform=axes[1].transAxes)
+
+            fig.suptitle(f"Data Completeness — Well {well} (Grade {quality_grade}, Score {quality_score}/100)", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_rows": n_rows,
+            "columns": columns,
+            "n_gaps": len(gaps),
+            "gaps": gaps[:10],  # Top 10 gaps
+            "quality_score": quality_score,
+            "quality_grade": quality_grade,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Data completeness: Grade {quality_grade} ({quality_score}/100)",
+                "risk_level": "RED" if quality_grade == "D" else ("AMBER" if quality_grade == "C" else "GREEN"),
+                "what_this_means": f"Audited {n_rows} records across {len(columns)} columns. Found {len(gaps)} depth gaps.",
+                "for_non_experts": f"Data quality is rated {quality_grade}. {'Good data coverage.' if quality_grade in ('A', 'B') else 'Some data gaps need attention before analysis.'}",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _data_completeness_cache[cache_key] = result
     return _sanitize_for_json(result)

@@ -13682,3 +13682,234 @@ async function runOrientationStats() {
         hideLoading();
     }
 }
+
+// ── [170] Slip Tendency Map ──────────────────────────────
+async function runSlipTendencyMap() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('slip-tendency-map-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/slip-tendency-map', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, friction: 0.6, depth: 3000, pp_gradient: 10.0, sv_gradient: 25.0})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Max Slip</h6><h3>' + r.max_slip_tendency + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Mean Dilation</h6><h3>' + r.mean_dilation_tendency + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Critical</h6><h3 class="text-danger">' + r.n_critically_stressed + '/' + r.n_fractures + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>CS%</h6><h3>' + r.pct_critically_stressed + '%</h3></div></div>';
+        html += '</div>';
+        if (r.critical_orientation) {
+            html += '<p class="mt-2"><strong>Most Critical:</strong> Az ' + r.critical_orientation.azimuth_deg + '°, Dip ' + r.critical_orientation.dip_deg + '° (slip=' + r.critical_orientation.slip_tendency + ')</p>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('slip-tendency-map-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [171] Formation Pressure ─────────────────────────────
+async function runFormationPressure() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('formation-pressure-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/formation-pressure', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, depth_start: 500, depth_end: 5000, n_points: 20})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Pressure Regime</h6><h3 class="' + (r.pressure_regime === 'OVERPRESSURED' ? 'text-danger' : 'text-success') + '">' + r.pressure_regime + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Pp/Sv Ratio</h6><h3>' + r.pp_sv_ratio + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Data Coverage</h6><h3>' + r.data_coverage_pct + '%</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Depth Range</h6><h3>' + r.depth_range_m[0] + '-' + r.depth_range_m[1] + 'm</h3></div></div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6 class="mt-2">Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('formation-pressure-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [172] Fracture Sets ──────────────────────────────────
+async function runFractureSets() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('fracture-sets-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/fracture-sets', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, max_sets: 5})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Sets Found</h6><h3>' + r.n_sets + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Silhouette</h6><h3>' + r.best_silhouette + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Fractures</h6><h3>' + r.n_fractures + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Conjugate Pairs</h6><h3>' + (r.conjugate_pairs ? r.conjugate_pairs.length : 0) + '</h3></div></div>';
+        html += '</div>';
+        if (r.sets && r.sets.length) {
+            html += '<h6 class="mt-2">Fracture Sets</h6><table class="table table-sm table-bordered"><thead><tr><th>Set</th><th>N</th><th>%</th><th>Az°</th><th>Dip°</th><th>Strike°</th><th>Class</th></tr></thead><tbody>';
+            r.sets.forEach(function(s) {
+                html += '<tr><td>' + s.set_id + '</td><td>' + s.n_fractures + '</td><td>' + s.pct + '</td><td>' + s.mean_azimuth_deg + '</td><td>' + s.mean_dip_deg + '</td><td>' + s.strike_deg + '</td><td>' + s.dip_class + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('fracture-sets-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [173] Breakout Prediction ────────────────────────────
+async function runBreakoutPrediction() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('breakout-prediction-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/breakout-prediction', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, depth: 3000, friction: 0.6, ucs_mpa: 80, mud_weight_sg: 1.2})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Stability</h6><h3 class="' + (r.stability === 'STABLE' ? 'text-success' : 'text-danger') + '">' + r.stability + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Safety Factor</h6><h3>' + r.safety_factor + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Breakout Width</h6><h3>' + r.breakout_width_deg + '°</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>DIF</h6><h3>' + (r.dif_exists ? r.dif_width_deg + '°' : 'None') + '</h3></div></div>';
+        html += '</div>';
+        html += '<p class="mt-2"><strong>Stress:</strong> SHmax=' + r.SHmax_MPa + ' MPa, Shmin=' + r.Shmin_MPa + ' MPa, Sv=' + r.Sv_MPa + ' MPa | <strong>MW:</strong> ' + r.mud_weight_SG + ' SG → Pw=' + r.Pw_MPa + ' MPa</p>';
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('breakout-prediction-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── [174] Data Completeness ──────────────────────────────
+async function runDataCompleteness() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('data-completeness-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/data-completeness', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Grade</h6><h3 class="' + (r.quality_grade === 'A' ? 'text-success' : r.quality_grade === 'D' ? 'text-danger' : 'text-warning') + '">' + r.quality_grade + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Score</h6><h3>' + r.quality_score + '/100</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Records</h6><h3>' + r.n_rows + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Gaps</h6><h3>' + r.n_gaps + '</h3></div></div>';
+        html += '</div>';
+        if (r.columns && r.columns.length) {
+            html += '<h6 class="mt-2">Column Completeness</h6><table class="table table-sm table-bordered"><thead><tr><th>Column</th><th>Present</th><th>Missing</th><th>%</th><th>Status</th></tr></thead><tbody>';
+            r.columns.forEach(function(c) {
+                var cls = c.completeness === 'POOR' ? 'table-danger' : (c.completeness === 'FAIR' ? 'table-warning' : '');
+                html += '<tr class="' + cls + '"><td>' + c.column + '</td><td>' + c.n_present + '</td><td>' + c.n_missing + '</td><td>' + c.pct_complete + '</td><td>' + c.completeness + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.gaps && r.gaps.length) {
+            html += '<h6>Depth Gaps</h6><table class="table table-sm table-bordered"><thead><tr><th>From</th><th>To</th><th>Gap (m)</th><th>Severity</th></tr></thead><tbody>';
+            r.gaps.forEach(function(g) {
+                html += '<tr class="' + (g.severity === 'CRITICAL' ? 'table-danger' : 'table-warning') + '"><td>' + g.from_m + '</td><td>' + g.to_m + '</td><td>' + g.gap_m + '</td><td>' + g.severity + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('data-completeness-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
