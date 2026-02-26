@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.42.0 - Sensitivity Matrix + Prediction Explanation + Model Comparison Detail + Data Profile + Anomaly Score)."""
+"""GeoStress AI - FastAPI Web Application (v3.43.0 - Fracture Spacing + Stress Polygon + Orientation Clustering + Depth Trends + Confidence Map)."""
 
 import os
 import io
