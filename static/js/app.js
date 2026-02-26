@@ -13217,3 +13217,217 @@ async function runCorrelationNetwork() {
         hideLoading();
     }
 }
+
+// ── v3.45.0: Mohr Interactive + Class Balance + Feature Importance + Trajectory Impact + RQD ──
+
+async function runMohrInteractive() {
+    showLoading();
+    var results = document.getElementById('mohr-interactive-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/mohr-interactive', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, sigma1:80, sigma3:30, pp:20, friction:0.6})});
+        results.style.display = '';
+        var html = '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.pct_critically_stressed + '%</div><small class="text-muted">Crit Stressed</small></div></div>';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.n_critically_stressed + '/' + r.n_fractures + '</div><small class="text-muted">Count</small></div></div>';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.mean_slip_tendency + '</div><small class="text-muted">Mean Slip</small></div></div>';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.mohr_center + '</div><small class="text-muted">Center</small></div></div>';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.mohr_radius + '</div><small class="text-muted">Radius</small></div></div>';
+        html += '<div class="col-md-2"><div class="card text-center p-2"><div class="fw-bold">' + r.effective_sigma1 + '</div><small class="text-muted">Eff s1</small></div></div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('mohr-interactive-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+async function runClassBalance() {
+    showLoading();
+    var results = document.getElementById('class-balance-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/class-balance', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well})});
+        results.style.display = '';
+        var html = '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.imbalance_ratio + ':1</div><small class="text-muted">Imbalance</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.severity + '</div><small class="text-muted">Severity</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.balance_score + '</div><small class="text-muted">Score</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.n_classes + '</div><small class="text-muted">Classes</small></div></div>';
+        html += '</div>';
+        if (r.classes && r.classes.length) {
+            html += '<h6>Class Details</h6><table class="table table-sm table-bordered"><thead><tr><th>Class</th><th>Count</th><th>%</th><th>Minority?</th><th>SMOTE?</th><th>Deficit</th></tr></thead><tbody>';
+            r.classes.forEach(function(c) {
+                var cls = c.is_minority ? 'table-warning' : '';
+                html += '<tr class="' + cls + '"><td>' + c.class + '</td><td>' + c.count + '</td><td>' + c.pct + '</td><td>' + (c.is_minority ? 'YES' : 'no') + '</td><td>' + (c.smote_eligible ? 'YES' : 'NO') + '</td><td>' + c.deficit_to_balance + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('class-balance-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+async function runFeatureImportanceCompare() {
+    showLoading();
+    var results = document.getElementById('feature-importance-cmp-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/feature-importance-compare', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, top_n:10})});
+        results.style.display = '';
+        var html = '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><div class="fw-bold">' + r.n_features + '</div><small class="text-muted">Features</small></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><div class="fw-bold">' + r.n_consensus + '</div><small class="text-muted">Consensus</small></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><div class="fw-bold">' + (r.features[0] ? r.features[0].feature : 'N/A') + '</div><small class="text-muted">Top Feature</small></div></div>';
+        html += '</div>';
+        if (r.features && r.features.length) {
+            html += '<h6>Top Features</h6><table class="table table-sm table-bordered"><thead><tr><th>Feature</th><th>RF</th><th>GBM</th><th>Perm</th><th>Mean Rank</th></tr></thead><tbody>';
+            r.features.slice(0, 10).forEach(function(f) {
+                html += '<tr><td>' + f.feature + '</td><td>' + f.rf_importance + '</td><td>' + f.gbm_importance + '</td><td>' + f.permutation_importance + '</td><td>' + f.mean_rank + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('feature-importance-cmp-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+async function runTrajectoryImpact() {
+    showLoading();
+    var results = document.getElementById('trajectory-impact-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/trajectory-impact', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, wellbore_dip:0, wellbore_azimuth:0})});
+        results.style.display = '';
+        var html = '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.bias_level + '</div><small class="text-muted">Bias Level</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.mean_correction_factor + 'x</div><small class="text-muted">Mean Correction</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.pct_high_bias + '%</div><small class="text-muted">High Bias %</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.n_fractures + '</div><small class="text-muted">Fractures</small></div></div>';
+        html += '</div>';
+        if (r.dip_analysis && r.dip_analysis.length) {
+            html += '<h6>Bias by Dip Range</h6><table class="table table-sm table-bordered"><thead><tr><th>Dip Range</th><th>N</th><th>Mean Correction</th><th>Undersampled?</th></tr></thead><tbody>';
+            r.dip_analysis.forEach(function(d) {
+                var cls = d.undersampled ? 'table-warning' : '';
+                html += '<tr class="' + cls + '"><td>' + d.dip_range + '</td><td>' + d.n_fractures + '</td><td>' + d.mean_correction + 'x</td><td>' + (d.undersampled ? 'YES' : 'no') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('trajectory-impact-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}
+
+async function runRQD() {
+    showLoading();
+    var results = document.getElementById('rqd-results');
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var r = await apiFetch('/api/analysis/rqd', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, threshold_m:0.1})});
+        results.style.display = '';
+        var html = '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.rqd_pct + '%</div><small class="text-muted">RQD</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.quality + '</div><small class="text-muted">Quality</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.theoretical_rqd_pct + '%</div><small class="text-muted">Theoretical</small></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.mean_spacing_m + 'm</div><small class="text-muted">Mean Spacing</small></div></div>';
+        html += '</div>';
+        if (r.depth_zones && r.depth_zones.length) {
+            html += '<h6>RQD by Zone</h6><table class="table table-sm table-bordered"><thead><tr><th>Zone</th><th>N</th><th>RQD %</th><th>Quality</th></tr></thead><tbody>';
+            r.depth_zones.forEach(function(z) {
+                var cls = z.rqd < 50 ? 'table-danger' : (z.rqd < 75 ? 'table-warning' : '');
+                html += '<tr class="' + cls + '"><td>' + z.zone + '</td><td>' + z.n_fractures + '</td><td>' + z.rqd + '</td><td>' + z.quality + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) {
+            html += '<h6>Recommendations</h6><ul>';
+            r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; });
+            html += '</ul>';
+        }
+        if (r.stakeholder_brief) {
+            var brief = r.stakeholder_brief;
+            html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' +
+                (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>';
+        }
+        results.innerHTML = html;
+        if (r.plot) {
+            var plotEl = document.getElementById('rqd-plot');
+            if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; }
+        }
+    } catch (e) {
+        results.style.display = '';
+        results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>';
+    } finally {
+        hideLoading();
+    }
+}

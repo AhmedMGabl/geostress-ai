@@ -2409,6 +2409,67 @@
                         </div>
                     </div>
 
+                    <!-- v3.45.0: Mohr Interactive + Class Balance + Feature Importance + Trajectory Impact + RQD -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-circle"></i> Mohr Circle Interactive</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runMohrInteractive()">Build Mohr</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Mohr circle with slip/dilation tendency overlay at user-specified stress.</p>
+                            <div id="mohr-interactive-results" style="display:none;"></div>
+                            <img id="mohr-interactive-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-pie-chart"></i> Class Balance Report</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runClassBalance()">Check Balance</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Detailed class imbalance analysis with SMOTE eligibility.</p>
+                            <div id="class-balance-results" style="display:none;"></div>
+                            <img id="class-balance-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bar-chart-line"></i> Feature Importance Comparison</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runFeatureImportanceCompare()">Compare Methods</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">RF vs GBM vs permutation importance side by side.</p>
+                            <div id="feature-importance-cmp-results" style="display:none;"></div>
+                            <img id="feature-importance-cmp-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-down-right-circle"></i> Trajectory Impact</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runTrajectoryImpact()">Assess Bias</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Wellbore trajectory sampling bias via Terzaghi correction.</p>
+                            <div id="trajectory-impact-results" style="display:none;"></div>
+                            <img id="trajectory-impact-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-gem"></i> Rock Quality (RQD)</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runRQD()">Estimate RQD</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Rock Quality Designation from fracture spacing with Priest-Hudson model.</p>
+                            <div id="rqd-results" style="display:none;"></div>
+                            <img id="rqd-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

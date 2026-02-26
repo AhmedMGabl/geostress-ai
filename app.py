@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.44.0 - PCA + Fracture Intensity + CV Stability + Geomech Summary + Correlation Network)."""
+"""GeoStress AI - FastAPI Web Application (v3.45.0 - Mohr Interactive + Class Balance + Feature Importance + Trajectory Impact + RQD)."""
 
 import os
 import io
@@ -34536,4 +34536,681 @@ async def correlation_network(request: Request):
     elapsed = round(time.time() - t0, 2)
     result["elapsed_s"] = elapsed
     _correlation_network_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── v3.45.0 caches ─────────────────────────────────────────────────────────
+_mohr_interactive_cache: dict = {}
+_class_balance_cache: dict = {}
+_feature_importance_cmp_cache: dict = {}
+_trajectory_impact_cache: dict = {}
+_rqd_cache: dict = {}
+
+
+# ── [160] Mohr Circle Interactive ───────────────────────────────────────────
+@app.post("/api/analysis/mohr-interactive")
+async def mohr_interactive(request: Request):
+    """Mohr circle at user-specified stress parameters with slip/dilation tendency overlay."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    sigma1 = float(body.get("sigma1", 80))
+    sigma3 = float(body.get("sigma3", 30))
+    pp = float(body.get("pp", 20))
+    friction = float(body.get("friction", 0.6))
+    cohesion = float(body.get("cohesion", 0))
+    cache_key = f"{source}_{well}_{sigma1}_{sigma3}_{pp}_{friction}_{cohesion}"
+    if cache_key in _mohr_interactive_cache:
+        return _sanitize_for_json(_mohr_interactive_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        az = df_well[AZIMUTH_COL].values
+        dip_vals = df_well[DIP_COL].values
+
+        # Effective stresses
+        s1_eff = sigma1 - pp
+        s3_eff = sigma3 - pp
+
+        # Mohr circle center and radius
+        center = (s1_eff + s3_eff) / 2
+        radius = (s1_eff - s3_eff) / 2
+
+        # For each fracture: normal stress and shear stress on the plane
+        # Simplified: sigma_n = (s1+s3)/2 + (s1-s3)/2 * cos(2*theta), tau = (s1-s3)/2 * sin(2*theta)
+        # theta = dip angle from sigma1 direction
+        theta = np.radians(dip_vals)
+        sigma_n = center + radius * np.cos(2 * theta)
+        tau = np.abs(radius * np.sin(2 * theta))
+
+        # Slip tendency: tau / sigma_n
+        slip_tendency = np.where(sigma_n > 0, tau / sigma_n, 0)
+        # Dilation tendency: (s1_eff - sigma_n) / (s1_eff - s3_eff) if s1_eff != s3_eff
+        dil_tendency = np.where(s1_eff > s3_eff, (s1_eff - sigma_n) / (s1_eff - s3_eff), 0.5)
+
+        # Coulomb failure criterion: tau_fail = cohesion + friction * sigma_n
+        # Critically stressed: tau >= tau_fail
+        tau_fail = cohesion + friction * sigma_n
+        critically_stressed = tau >= tau_fail
+        n_cs = int(critically_stressed.sum())
+        pct_cs = round(100 * n_cs / len(dip_vals), 1) if len(dip_vals) > 0 else 0
+
+        fractures = []
+        for i in range(min(len(dip_vals), 50)):
+            fractures.append({
+                "azimuth": round(float(az[i]), 1),
+                "dip": round(float(dip_vals[i]), 1),
+                "sigma_n": round(float(sigma_n[i]), 2),
+                "tau": round(float(tau[i]), 2),
+                "slip_tendency": round(float(slip_tendency[i]), 4),
+                "dilation_tendency": round(float(dil_tendency[i]), 4),
+                "critically_stressed": bool(critically_stressed[i]),
+            })
+
+        recommendations = []
+        recommendations.append(f"Critically stressed: {n_cs}/{len(dip_vals)} fractures ({pct_cs}%).")
+        if pct_cs > 30:
+            recommendations.append("HIGH slip risk -- many fractures above Coulomb failure line.")
+        elif pct_cs > 10:
+            recommendations.append("MODERATE slip risk -- some fractures near failure.")
+        else:
+            recommendations.append("LOW slip risk -- most fractures are stable.")
+        recommendations.append(f"Mean slip tendency: {float(np.mean(slip_tendency)):.3f}, max: {float(np.max(slip_tendency)):.3f}")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(8, 6))
+
+            # Mohr circle
+            theta_circle = np.linspace(0, np.pi, 200)
+            mc_sn = center + radius * np.cos(2 * theta_circle)
+            mc_tau = radius * np.sin(2 * theta_circle)
+            ax.plot(mc_sn, mc_tau, "b-", linewidth=2, label="Mohr Circle")
+
+            # Coulomb line
+            sn_line = np.linspace(0, s1_eff * 1.1, 100)
+            tau_line = cohesion + friction * sn_line
+            ax.plot(sn_line, tau_line, "r--", linewidth=1.5, label=f"Coulomb (mu={friction}, c={cohesion})")
+
+            # Fracture points
+            cs_mask = critically_stressed
+            ax.scatter(sigma_n[~cs_mask], tau[~cs_mask], c="#4CAF50", s=15, alpha=0.5, label="Stable", zorder=5)
+            ax.scatter(sigma_n[cs_mask], tau[cs_mask], c="#FF5722", s=25, alpha=0.7, label=f"Critical ({n_cs})", zorder=6)
+
+            ax.set_xlabel("Effective Normal Stress (MPa)", fontsize=11)
+            ax.set_ylabel("Shear Stress (MPa)", fontsize=11)
+            ax.set_title(f"Mohr Circle -- Well {well}\n(s1={sigma1}, s3={sigma3}, Pp={pp} MPa)", fontsize=13, fontweight="bold")
+            ax.legend(fontsize=9)
+            ax.set_xlim(0, max(s1_eff * 1.15, 10))
+            ax.set_ylim(0, max(radius * 1.3, 5))
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "sigma1": sigma1,
+            "sigma3": sigma3,
+            "pp": pp,
+            "friction": friction,
+            "cohesion": cohesion,
+            "effective_sigma1": round(s1_eff, 2),
+            "effective_sigma3": round(s3_eff, 2),
+            "mohr_center": round(center, 2),
+            "mohr_radius": round(radius, 2),
+            "n_fractures": int(len(dip_vals)),
+            "n_critically_stressed": n_cs,
+            "pct_critically_stressed": pct_cs,
+            "mean_slip_tendency": round(float(np.mean(slip_tendency)), 4),
+            "max_slip_tendency": round(float(np.max(slip_tendency)), 4),
+            "mean_dilation_tendency": round(float(np.mean(dil_tendency)), 4),
+            "fractures": fractures,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Mohr circle: {pct_cs}% critically stressed ({n_cs}/{len(dip_vals)})",
+                "risk_level": "RED" if pct_cs > 30 else ("AMBER" if pct_cs > 10 else "GREEN"),
+                "what_this_means": f"At these stress conditions, {n_cs} fractures exceed the Coulomb failure criterion and may be active fluid conduits.",
+                "for_non_experts": f"We tested which cracks are under enough pressure to slip. {n_cs} out of {len(dip_vals)} are at risk, which affects fluid flow in the reservoir.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _mohr_interactive_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [161] Class Balance Report ──────────────────────────────────────────────
+@app.post("/api/analysis/class-balance")
+async def class_balance_report(request: Request):
+    """Detailed class imbalance analysis with SMOTE recommendation and minority detection."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    cache_key = f"{source}_{well}"
+    if cache_key in _class_balance_cache:
+        return _sanitize_for_json(_class_balance_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        from collections import Counter
+
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        y = df_well[FRACTURE_TYPE_COL].values
+        counts = Counter(y)
+        total = len(y)
+        n_classes = len(counts)
+
+        max_count = max(counts.values())
+        min_count = min(counts.values())
+        imbalance_ratio = round(max_count / max(min_count, 1), 2)
+
+        classes = []
+        for cls, cnt in sorted(counts.items(), key=lambda x: -x[1]):
+            pct = round(100 * cnt / total, 1)
+            is_minority = cnt < total / n_classes * 0.5
+            deficit = max(0, int(total / n_classes) - cnt)
+            classes.append({
+                "class": str(cls),
+                "count": cnt,
+                "pct": pct,
+                "is_minority": is_minority,
+                "deficit_to_balance": deficit,
+                "smote_eligible": cnt >= 6,
+            })
+
+        # Overall balance score (0-100, 100 = perfectly balanced)
+        expected = total / n_classes
+        deviations = [abs(c["count"] - expected) / expected for c in classes]
+        balance_score = max(0, round(100 * (1 - np.mean(deviations)), 1))
+
+        severity = "BALANCED" if imbalance_ratio < 2 else ("MILD" if imbalance_ratio < 5 else ("SEVERE" if imbalance_ratio < 10 else "EXTREME"))
+
+        smote_candidates = [c for c in classes if c["is_minority"] and c["smote_eligible"]]
+        smote_ineligible = [c for c in classes if c["is_minority"] and not c["smote_eligible"]]
+
+        recommendations = []
+        recommendations.append(f"Imbalance ratio: {imbalance_ratio}:1 ({severity}).")
+        recommendations.append(f"Balance score: {balance_score}/100.")
+        if smote_candidates:
+            names = ", ".join([c["class"] for c in smote_candidates])
+            recommendations.append(f"SMOTE recommended for: {names} (have enough samples for synthetic generation).")
+        if smote_ineligible:
+            names = ", ".join([c["class"] for c in smote_ineligible])
+            recommendations.append(f"Cannot SMOTE: {names} (fewer than 6 samples -- collect more data).")
+        if severity in ("SEVERE", "EXTREME"):
+            recommendations.append("Consider hierarchical classification or class-weighted models.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+
+            # Bar chart
+            names = [c["class"][:12] for c in classes]
+            cnts = [c["count"] for c in classes]
+            bar_colors = ["#FF5722" if c["is_minority"] else "#4CAF50" for c in classes]
+            axes[0].bar(names, cnts, color=bar_colors, alpha=0.7)
+            axes[0].axhline(expected, color="gray", linestyle="--", label=f"Balanced={expected:.0f}")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title("Class Counts")
+            axes[0].tick_params(axis="x", rotation=30)
+            axes[0].legend(fontsize=8)
+
+            # Pie
+            axes[1].pie(cnts, labels=names, autopct="%1.0f%%", startangle=90,
+                        colors=["#2196F3", "#4CAF50", "#FF5722", "#9C27B0", "#FF9800"][:len(names)])
+            axes[1].set_title("Distribution")
+
+            # Deficit bar
+            deficits = [c["deficit_to_balance"] for c in classes]
+            axes[2].barh(names, deficits, color="#FF9800", alpha=0.7)
+            axes[2].set_xlabel("Samples needed to balance")
+            axes[2].set_title("Deficit to Balance")
+
+            fig.suptitle(f"Class Balance -- Well {well} (ratio={imbalance_ratio}:1)", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_samples": total,
+            "n_classes": n_classes,
+            "imbalance_ratio": imbalance_ratio,
+            "balance_score": balance_score,
+            "severity": severity,
+            "classes": classes,
+            "n_smote_candidates": len(smote_candidates),
+            "n_smote_ineligible": len(smote_ineligible),
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Class balance: {severity} imbalance ({imbalance_ratio}:1), score {balance_score}/100",
+                "risk_level": "GREEN" if severity == "BALANCED" else ("AMBER" if severity == "MILD" else "RED"),
+                "what_this_means": f"The {n_classes} fracture types have counts ranging from {min_count} to {max_count}. Imbalance is {severity.lower()}.",
+                "for_non_experts": f"Some fracture types are much rarer than others (ratio {imbalance_ratio}:1). This makes the model less accurate for rare types.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _class_balance_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [162] Feature Importance Comparison ─────────────────────────────────────
+@app.post("/api/analysis/feature-importance-compare")
+async def feature_importance_compare(request: Request):
+    """Compare RF impurity, GBM impurity, and permutation importance side by side."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    top_n = int(body.get("top_n", 10))
+    cache_key = f"{source}_{well}_{top_n}"
+    if cache_key in _feature_importance_cmp_cache:
+        return _sanitize_for_json(_feature_importance_cmp_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.inspection import permutation_importance
+
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        features_df = engineer_enhanced_features(df_well)
+        feature_cols = [c for c in features_df.columns if c not in [DEPTH_COL, AZIMUTH_COL, DIP_COL, FRACTURE_TYPE_COL, WELL_COL, "Well"]]
+        X = features_df[feature_cols].values
+        y = LabelEncoder().fit_transform(df_well[FRACTURE_TYPE_COL].values)
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # RF importance
+        rf = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        rf.fit(X_scaled, y)
+        rf_imp = rf.feature_importances_
+
+        # GBM importance
+        gbm = GradientBoostingClassifier(n_estimators=50, random_state=42)
+        gbm.fit(X_scaled, y)
+        gbm_imp = gbm.feature_importances_
+
+        # Permutation importance (using RF)
+        perm = permutation_importance(rf, X_scaled, y, n_repeats=5, random_state=42, n_jobs=-1)
+        perm_imp = perm.importances_mean
+
+        # Combine and rank
+        features_data = []
+        for i, fname in enumerate(feature_cols):
+            features_data.append({
+                "feature": fname,
+                "rf_importance": round(float(rf_imp[i]), 4),
+                "gbm_importance": round(float(gbm_imp[i]), 4),
+                "permutation_importance": round(float(perm_imp[i]), 4),
+                "mean_rank": 0,
+            })
+
+        # Compute ranks
+        for method in ["rf_importance", "gbm_importance", "permutation_importance"]:
+            sorted_idx = sorted(range(len(features_data)), key=lambda i: -features_data[i][method])
+            for rank, idx in enumerate(sorted_idx):
+                features_data[idx]["mean_rank"] += rank + 1
+        for f in features_data:
+            f["mean_rank"] = round(f["mean_rank"] / 3, 1)
+
+        features_data.sort(key=lambda f: f["mean_rank"])
+        top_features = features_data[:top_n]
+
+        # Agreement: features in top-5 of all methods
+        rf_top5 = set(sorted(range(len(feature_cols)), key=lambda i: -rf_imp[i])[:5])
+        gbm_top5 = set(sorted(range(len(feature_cols)), key=lambda i: -gbm_imp[i])[:5])
+        perm_top5 = set(sorted(range(len(feature_cols)), key=lambda i: -perm_imp[i])[:5])
+        consensus = rf_top5 & gbm_top5 & perm_top5
+        consensus_features = [feature_cols[i] for i in consensus]
+
+        recommendations = []
+        recommendations.append(f"Top feature by consensus: {top_features[0]['feature']} (mean rank {top_features[0]['mean_rank']}).")
+        if consensus_features:
+            recommendations.append(f"All 3 methods agree on: {', '.join(consensus_features)}.")
+        else:
+            recommendations.append("No feature appears in top-5 of all methods -- importance is method-dependent.")
+        recommendations.append(f"RF top: {feature_cols[np.argmax(rf_imp)]}, GBM top: {feature_cols[np.argmax(gbm_imp)]}, Perm top: {feature_cols[np.argmax(perm_imp)]}.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+            top = top_features[:8]
+
+            # RF
+            names = [f["feature"][:12] for f in top]
+            rf_vals = [f["rf_importance"] for f in top]
+            axes[0].barh(names[::-1], rf_vals[::-1], color="#2196F3", alpha=0.7)
+            axes[0].set_xlabel("Importance")
+            axes[0].set_title("Random Forest")
+
+            # GBM
+            gbm_vals = [f["gbm_importance"] for f in top]
+            axes[1].barh(names[::-1], gbm_vals[::-1], color="#4CAF50", alpha=0.7)
+            axes[1].set_xlabel("Importance")
+            axes[1].set_title("Gradient Boosting")
+
+            # Permutation
+            perm_vals = [f["permutation_importance"] for f in top]
+            axes[2].barh(names[::-1], perm_vals[::-1], color="#FF9800", alpha=0.7)
+            axes[2].set_xlabel("Importance")
+            axes[2].set_title("Permutation")
+
+            fig.suptitle(f"Feature Importance Comparison -- Well {well}", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_features": len(feature_cols),
+            "top_n": top_n,
+            "features": top_features,
+            "consensus_features": consensus_features,
+            "n_consensus": len(consensus_features),
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Feature importance: top={top_features[0]['feature']}, {len(consensus_features)} consensus features",
+                "risk_level": "GREEN" if len(consensus_features) >= 2 else "AMBER",
+                "what_this_means": f"Compared 3 importance methods across {len(feature_cols)} features. {len(consensus_features)} features are consistently important.",
+                "for_non_experts": "We tested which measurements matter most using three different methods. Consistent results mean we can trust which factors drive predictions.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _feature_importance_cmp_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [163] Wellbore Trajectory Impact ────────────────────────────────────────
+@app.post("/api/analysis/trajectory-impact")
+async def trajectory_impact(request: Request):
+    """Assess how wellbore trajectory deviation affects fracture sampling bias (Terzaghi-based)."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    wellbore_dip = float(body.get("wellbore_dip", 0))  # 0 = vertical
+    wellbore_azimuth = float(body.get("wellbore_azimuth", 0))
+    cache_key = f"{source}_{well}_{wellbore_dip}_{wellbore_azimuth}"
+    if cache_key in _trajectory_impact_cache:
+        return _sanitize_for_json(_trajectory_impact_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        az = df_well[AZIMUTH_COL].values
+        dip_vals = df_well[DIP_COL].values
+
+        # Wellbore axis unit vector
+        wb_dip_rad = np.radians(wellbore_dip)
+        wb_az_rad = np.radians(wellbore_azimuth)
+        wb_x = np.sin(wb_dip_rad) * np.sin(wb_az_rad)
+        wb_y = np.sin(wb_dip_rad) * np.cos(wb_az_rad)
+        wb_z = np.cos(wb_dip_rad)
+
+        # Fracture pole normals
+        az_rad = np.radians(az)
+        dip_rad = np.radians(dip_vals)
+        nx = np.sin(dip_rad) * np.sin(az_rad)
+        ny = np.sin(dip_rad) * np.cos(az_rad)
+        nz = np.cos(dip_rad)
+
+        # Angle between wellbore axis and fracture normal
+        cos_alpha = np.abs(nx * wb_x + ny * wb_y + nz * wb_z)
+        cos_alpha = np.clip(cos_alpha, 0.001, 1.0)
+        alpha_deg = np.degrees(np.arccos(cos_alpha))
+
+        # Terzaghi correction weight: 1/cos(alpha) capped at 10
+        terzaghi_weight = np.minimum(1.0 / cos_alpha, 10.0)
+
+        # Bias assessment
+        mean_weight = float(np.mean(terzaghi_weight))
+        max_weight = float(np.max(terzaghi_weight))
+        high_bias_pct = float(np.sum(terzaghi_weight > 3) / len(terzaghi_weight) * 100)
+
+        # Dip bins: how bias varies with fracture dip
+        dip_bins_edges = [0, 15, 30, 45, 60, 75, 90]
+        dip_analysis = []
+        for i in range(len(dip_bins_edges) - 1):
+            lo, hi = dip_bins_edges[i], dip_bins_edges[i + 1]
+            mask = (dip_vals >= lo) & (dip_vals < hi)
+            if mask.any():
+                dip_analysis.append({
+                    "dip_range": f"{lo}-{hi}",
+                    "n_fractures": int(mask.sum()),
+                    "mean_correction": round(float(np.mean(terzaghi_weight[mask])), 3),
+                    "undersampled": bool(np.mean(terzaghi_weight[mask]) > 2),
+                })
+
+        bias_level = "LOW" if mean_weight < 1.5 else ("MODERATE" if mean_weight < 2.5 else "HIGH")
+
+        recommendations = []
+        recommendations.append(f"Mean Terzaghi correction: {mean_weight:.2f}x (bias level: {bias_level}).")
+        if wellbore_dip == 0:
+            recommendations.append("Vertical well: sub-horizontal fractures are undersampled (high dip = parallel to borehole).")
+        else:
+            recommendations.append(f"Deviated well ({wellbore_dip} deg): fractures parallel to borehole are undersampled.")
+        if high_bias_pct > 20:
+            recommendations.append(f"{high_bias_pct:.0f}% of fractures have >3x correction -- significant sampling bias.")
+        recommendations.append("Apply Terzaghi weights to fracture counts for unbiased density estimates.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+
+            # Correction factor histogram
+            axes[0].hist(terzaghi_weight, bins=20, color="#2196F3", edgecolor="white", alpha=0.7)
+            axes[0].axvline(mean_weight, color="red", linestyle="--", label=f"Mean={mean_weight:.2f}")
+            axes[0].set_xlabel("Terzaghi Correction Factor")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title("Correction Distribution")
+            axes[0].legend(fontsize=8)
+
+            # Correction vs dip
+            axes[1].scatter(dip_vals, terzaghi_weight, alpha=0.3, s=10, c="#4CAF50")
+            axes[1].set_xlabel("Fracture Dip (deg)")
+            axes[1].set_ylabel("Correction Factor")
+            axes[1].set_title("Bias vs Dip")
+            axes[1].axhline(1, color="gray", linestyle="--", alpha=0.5)
+
+            # Alpha angle distribution
+            axes[2].hist(alpha_deg, bins=18, color="#FF9800", edgecolor="white", alpha=0.7)
+            axes[2].set_xlabel("Angle to Wellbore (deg)")
+            axes[2].set_ylabel("Count")
+            axes[2].set_title("Fracture-Wellbore Angle")
+
+            fig.suptitle(f"Trajectory Impact -- Well {well} (WB dip={wellbore_dip})", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "wellbore_dip": wellbore_dip,
+            "wellbore_azimuth": wellbore_azimuth,
+            "n_fractures": int(len(dip_vals)),
+            "mean_correction_factor": round(mean_weight, 4),
+            "max_correction_factor": round(max_weight, 4),
+            "pct_high_bias": round(high_bias_pct, 1),
+            "bias_level": bias_level,
+            "dip_analysis": dip_analysis,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Trajectory bias: {bias_level} (mean correction {mean_weight:.2f}x)",
+                "risk_level": "GREEN" if bias_level == "LOW" else ("AMBER" if bias_level == "MODERATE" else "RED"),
+                "what_this_means": f"Wellbore orientation causes {bias_level.lower()} sampling bias. Mean Terzaghi correction is {mean_weight:.2f}x.",
+                "for_non_experts": "The angle of the well affects which fractures we can see. Some fracture orientations are harder to detect. We calculate a correction factor to account for this.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _trajectory_impact_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ── [164] Rock Quality Designation (RQD) ────────────────────────────────────
+@app.post("/api/analysis/rqd")
+async def rqd_analysis(request: Request):
+    """Estimate Rock Quality Designation from fracture spacing along the borehole."""
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    threshold_m = float(body.get("threshold_m", 0.1))
+    cache_key = f"{source}_{well}_{threshold_m}"
+    if cache_key in _rqd_cache:
+        return _sanitize_for_json(_rqd_cache[cache_key])
+    t0 = time.time()
+
+    def _compute():
+        df = get_df(source)
+        df_well = df[df[WELL_COL] == well].copy() if WELL_COL in df.columns else df.copy()
+        if df_well.empty:
+            raise HTTPException(status_code=404, detail=f"Well {well} not found")
+
+        depths = df_well[DEPTH_COL].dropna().sort_values().values
+        if len(depths) < 5:
+            raise HTTPException(status_code=400, detail="Need at least 5 samples with depth")
+
+        spacings = np.diff(depths)
+        spacings = spacings[spacings > 0]
+
+        total_length = float(depths.max() - depths.min())
+        # RQD = sum of pieces >= threshold / total length * 100
+        pieces_above = spacings[spacings >= threshold_m]
+        rqd = float(np.sum(pieces_above) / total_length * 100) if total_length > 0 else 0
+        rqd = min(rqd, 100.0)
+
+        # Classify
+        if rqd >= 90:
+            quality = "EXCELLENT"
+        elif rqd >= 75:
+            quality = "GOOD"
+        elif rqd >= 50:
+            quality = "FAIR"
+        elif rqd >= 25:
+            quality = "POOR"
+        else:
+            quality = "VERY_POOR"
+
+        # Depth-zone RQD
+        n_zones = min(5, max(2, len(depths) // 30))
+        zone_edges = np.linspace(depths.min(), depths.max(), n_zones + 1)
+        zones = []
+        for i in range(n_zones):
+            lo, hi = zone_edges[i], zone_edges[i + 1]
+            mask = (depths >= lo) & (depths < hi + 0.01)
+            zone_depths = depths[mask]
+            if len(zone_depths) > 1:
+                z_spacings = np.diff(zone_depths)
+                z_spacings = z_spacings[z_spacings > 0]
+                z_length = hi - lo
+                z_pieces = z_spacings[z_spacings >= threshold_m]
+                z_rqd = float(np.sum(z_pieces) / z_length * 100) if z_length > 0 else 0
+                z_rqd = min(z_rqd, 100.0)
+            else:
+                z_rqd = 100.0  # No fractures = intact
+            zones.append({
+                "zone": f"{lo:.0f}-{hi:.0f}m",
+                "n_fractures": int(mask.sum()),
+                "rqd": round(z_rqd, 1),
+                "quality": "EXCELLENT" if z_rqd >= 90 else ("GOOD" if z_rqd >= 75 else ("FAIR" if z_rqd >= 50 else ("POOR" if z_rqd >= 25 else "VERY_POOR"))),
+            })
+
+        # Theoretical RQD from mean spacing (Priest & Hudson 1976): RQD = 100 * e^(-lambda*t) * (lambda*t + 1)
+        mean_spacing = float(np.mean(spacings)) if len(spacings) > 0 else 1.0
+        lam = 1.0 / mean_spacing  # fracture frequency
+        theoretical_rqd = 100 * np.exp(-lam * threshold_m) * (lam * threshold_m + 1)
+
+        recommendations = []
+        recommendations.append(f"RQD = {rqd:.1f}% ({quality}) over {total_length:.0f}m interval.")
+        recommendations.append(f"Theoretical RQD (Priest-Hudson): {theoretical_rqd:.1f}% (mean spacing {mean_spacing:.3f}m).")
+        worst_zone = min(zones, key=lambda z: z["rqd"]) if zones else None
+        if worst_zone and worst_zone["rqd"] < 50:
+            recommendations.append(f"Worst zone: {worst_zone['zone']} with RQD={worst_zone['rqd']}% -- potential support/reinforcement needed.")
+        if quality in ("POOR", "VERY_POOR"):
+            recommendations.append("Overall poor rock quality -- consider support design and alternative drilling approaches.")
+
+        # Plot
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+            # RQD by zone
+            zone_names = [z["zone"] for z in zones]
+            zone_rqds = [z["rqd"] for z in zones]
+            zone_colors = ["#4CAF50" if r >= 75 else "#FF9800" if r >= 50 else "#FF5722" for r in zone_rqds]
+            axes[0].barh(zone_names, zone_rqds, color=zone_colors, alpha=0.7)
+            axes[0].axvline(rqd, color="blue", linestyle="--", label=f"Overall={rqd:.0f}%")
+            axes[0].set_xlabel("RQD (%)")
+            axes[0].set_title("RQD by Depth Zone")
+            axes[0].set_xlim(0, 105)
+            axes[0].legend(fontsize=8)
+
+            # Spacing distribution with threshold
+            axes[1].hist(spacings, bins=min(30, len(spacings) // 2 + 1), color="#2196F3", edgecolor="white", alpha=0.7)
+            axes[1].axvline(threshold_m, color="red", linestyle="--", label=f"Threshold={threshold_m}m")
+            axes[1].set_xlabel("Spacing (m)")
+            axes[1].set_ylabel("Count")
+            axes[1].set_title("Spacing Distribution")
+            axes[1].legend(fontsize=8)
+
+            fig.suptitle(f"RQD Analysis -- Well {well} (RQD={rqd:.0f}%, {quality})", fontsize=14, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_fractures": int(len(depths)),
+            "total_length_m": round(total_length, 1),
+            "threshold_m": threshold_m,
+            "rqd_pct": round(rqd, 1),
+            "quality": quality,
+            "theoretical_rqd_pct": round(float(theoretical_rqd), 1),
+            "mean_spacing_m": round(mean_spacing, 4),
+            "fracture_frequency": round(lam, 4),
+            "depth_zones": zones,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"RQD = {rqd:.0f}% ({quality})",
+                "risk_level": "GREEN" if quality in ("EXCELLENT", "GOOD") else ("AMBER" if quality == "FAIR" else "RED"),
+                "what_this_means": f"Rock Quality Designation is {rqd:.0f}% based on {len(spacings)} fracture spacings over {total_length:.0f}m.",
+                "for_non_experts": f"RQD measures how fractured the rock is. {rqd:.0f}% means the rock is in {quality.lower().replace('_', ' ')} condition for engineering purposes.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _rqd_cache[cache_key] = result
     return _sanitize_for_json(result)
