@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.41.0 - Feature Ranking + Cluster Stability + Well Similarity + Prediction Timeline + Augmentation Preview)."""
+"""GeoStress AI - FastAPI Web Application (v3.42.0 - Sensitivity Matrix + Prediction Explanation + Model Comparison Detail + Data Profile + Anomaly Score)."""
 
 import os
 import io
@@ -30673,6 +30673,11 @@ _cluster_stability_cache: dict = {}
 _well_similarity_cache: dict = {}
 _prediction_timeline_cache: dict = {}
 _augmentation_preview_cache: dict = {}
+_sensitivity_matrix_cache: dict = {}
+_prediction_explanation_cache: dict = {}
+_model_comparison_detail_cache: dict = {}
+_data_profile_cache: dict = {}
+_anomaly_score_cache: dict = {}
 
 
 # ── [135] Regulatory Compliance Report ───────────────────────────────────────

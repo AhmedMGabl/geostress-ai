@@ -1,0 +1,4 @@
+SQLite database initialized at data/geostress.db
+Loaded 1022 demo fractures from W:\ws\oil\data\raw
+  Pre-warm 3P: done (9.1s)
+  Pre-warm 6P: done (12.0s)

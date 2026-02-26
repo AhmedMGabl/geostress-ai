@@ -1,0 +1,404 @@
+
+[1] Classifier Validation
+  PASS: Invalid classifier returns 400
+  PASS: Invalid classifier on SHAP returns 400
+  PASS: Invalid classifier on deep-ensemble returns 400
+  PASS: Invalid classifier on transfer-learning returns 400
+  PASS: Invalid classifier on retrain returns 400
+  PASS: Valid classifier works
+
+[2] Regime Validation
+  PASS: Invalid regime on sensitivity returns 400
+  PASS: Invalid regime on bayesian returns 400
+  PASS: Invalid regime on risk-matrix returns 400
+  PASS: Valid regime works
+
+[3] Numeric Range Validation
+  PASS: Depth out of range returns 400
+  PASS: Depth too large returns 400
+  PASS: Cohesion negative returns 400
+  PASS: Pore pressure out of range returns 400
+  PASS: Rating out of range returns 400
+  PASS: Friction out of range on what-if returns 400
+  PASS: n_clusters out of range returns 400
+  PASS: fine_tune_fraction out of range returns 400
+
+[4] Well Not Found Validation
+  PASS: Unknown well on cluster returns 404
+  PASS: Unknown well on inversion returns 404
+
+[5] Global Error Boundaries
+  PASS: Health endpoint works
+  PASS: Version is 3.x
+
+[6] Field Calibration - Add Measurement
+  PASS: Add LOT measurement
+  PASS: Measurement has ID
+  PASS: Add XLOT measurement with azimuth
+  PASS: Total count incremented
+
+[7] Field Calibration - Input Validation
+  PASS: Invalid test type returns 400
+  PASS: Invalid stress direction returns 400
+  PASS: Missing well returns 400
+
+[8] Field Calibration - Validate Against Model
+  PASS: Validation returns comparisons
+  PASS: Has calibration score
+  PASS: Has overall rating
+  PASS: Has model predictions
+  PASS: Has recommendations
+  PASS: Has industry context
+  PASS: Comparison has test_type
+  PASS: Comparison has measured_mpa
+  PASS: Comparison has predicted_mpa
+
+[9] Field Calibration - Empty Well
+  PASS: Empty well returns no_measurements
+  PASS: Has helpful message
+
+[10] Get Measurements
+  PASS: Get measurements returns list
+  PASS: Get all measurements returns dict
+
+[11] Regression - Core Endpoints
+  PASS: Data summary works
+  PASS: Inversion works
+  PASS: Classification works
+
+[12] Inversion Uncertainty (v3.6.0)
+  PASS: Has uncertainty block
+  PASS: Has shmax_ci_90
+  PASS: Has shmax_std_deg
+  PASS: Has quality assessment
+  PASS: Has sigma1_ci_90
+  PASS: Has CS% range
+  PASS: CS% range has note
+
+[13] Classification Confidence (v3.6.0)
+  PASS: Has confidence block
+  PASS: Has mean_prediction_confidence
+  PASS: Mean confidence > 0.5
+  PASS: Has per_class_confidence
+  PASS: Has accuracy_range
+
+[14] Executive Decision Matrix (v3.6.0)
+  PASS: Has decision_matrix
+  PASS: Has verdict
+  PASS: Has verdict_note
+  PASS: Has 6 factors
+  PASS: Has Data Sufficiency factor
+  PASS: Has Safety Margin factor
+  PASS: Has WSM Quality factor
+  PASS: Has Data Quality factor
+  PASS: Factor "Data Sufficiency" has valid status (GREEN)
+  PASS: Factor "Model Reliability" has valid status (GREEN)
+  PASS: Factor "Stress Constraint" has valid status (AMBER)
+  PASS: Factor "Safety Margin" has valid status (GREEN)
+  PASS: Factor "WSM Quality" has valid status (GREEN)
+  PASS: Factor "Data Quality" has valid status (GREEN)
+
+[15] WSM Quality Ranking (v3.7.0)
+  PASS: Has WSM quality rank
+  PASS: WSM rank detail is string
+  PASS: WSM rank A or B for 3P (A)
+
+[16] Calibration Warning (v3.7.0)
+  PASS: Has calibration warning
+  PASS: Warning mentions LOT/XLOT
+  PASS: Lists reliable outputs
+  PASS: Lists outputs needing validation
+
+[17] Multi-Criteria CS% (v3.7.0)
+  PASS: Has Mohr-Coulomb CS%
+  PASS: Has Mogi-Coulomb CS%
+  PASS: Has Drucker-Prager CS%
+  PASS: Multi-criteria has note
+  PASS: Different criteria give different values
+
+[18] Stress Polygon (v3.7.0)
+  PASS: Has stress polygon
+  PASS: Has Sv
+  PASS: Has frictional limit ratio
+  PASS: Has normal fault bounds
+  PASS: Has strike-slip bounds
+  PASS: Has thrust fault bounds
+  PASS: Stress polygon endpoint works
+  PASS: Has friction sensitivity
+  PASS: Has stress polygon validation
+  PASS: Has effective stress ratio
+  PASS: Mogi-Coulomb CS% >= MC CS% (sigma2 correction) (Mogi=67.8% >= MC=53.3%)
+  PASS: Drucker-Prager CS% <= MC CS% (conservative smooth yield) (DP=0.0% <= MC=53.3%)
+
+[19] Mud Weight Window (v3.7.0)
+  PASS: Inversion includes mud weight
+  PASS: Has safe window
+  PASS: Has pore pressure in ppg
+  PASS: Has status
+  PASS: MWW endpoint has safe window
+  PASS: MWW has depth profile
+  PASS: MWW profile has status
+
+[20] Fracture QC (v3.7.0)
+  PASS: QC has total
+  PASS: QC has pass rate
+  PASS: QC has flags
+  PASS: QC has azimuth quality
+  PASS: QC has WSM note
+  PASS: Per-well QC works
+  PASS: Well 3P has better pass rate
+
+[21] Spatial (Depth-Blocked) CV (v3.7.0)
+  PASS: Has spatial CV results
+  PASS: Has spatial CV accuracy
+  PASS: Has spatial CV note
+  PASS: Spatial CV < random CV (spatial autocorrelation) (spatial=0.4375, random=0.865)
+
+[22] 1D Stress Profile
+  PASS: Has profile array
+  PASS: Has plot image
+  PASS: Has regime
+  PASS: Has SHmax azimuth
+  PASS: Has R ratio
+  PASS: Has reference depth
+  PASS: Has note with caveats
+  PASS: Depths are monotonically increasing
+  PASS: Sv increases with depth
+  PASS: All stresses positive
+  PASS: Sv > Pp at all depths
+  PASS: 6P stress profile works
+  PASS: Invalid well returns 404
+
+[23] QC in Overview
+  PASS: Overview has QC summary
+  PASS: QC has total
+  PASS: QC has passed count
+  PASS: QC has pass rate pct
+  PASS: QC pass rate is percentage
+  PASS: QC has WSM note
+  PASS: 3P pass rate > 90% (pass_rate=99.5%)
+
+[24] Conformal Prediction
+  PASS: Has conformal prediction
+  PASS: Has coverage target
+  PASS: Empirical coverage >= target
+  PASS: Has avg prediction set size
+  PASS: Set size <= n_classes
+  PASS: Has precision ratio
+  PASS: Precision > 0.5 (model is useful) (precision=0.977)
+  PASS: Has explanatory note
+
+[25] Cost-Sensitive Learning
+  PASS: Has high-risk classes
+  PASS: Has standard accuracy
+  PASS: Has cost-sensitive accuracy
+  PASS: Has per-class comparison
+  PASS: Has interpretation
+  PASS: Has note about 2025 literature
+  PASS: High-risk Brecciated has recall data
+
+[26] Physics Check
+  PASS: Physics check returns result
+  PASS: Has checks or constraints
+
+[27] Physics-Constrained Prediction
+  PASS: Physics prediction returns result
+
+[28] Inversion Stakeholder Brief
+  PASS: Has stakeholder_brief
+  PASS: Has headline
+  PASS: Has risk_level
+  PASS: Has confidence_sentence
+  PASS: Has next_action
+  PASS: Has suitable_for list
+  PASS: Has not_suitable_for list
+  PASS: Has critically_stressed_plain
+  PASS: Has feedback_note
+  PASS: Headline mentions well
+
+[29] Classification Stakeholder Brief
+  PASS: Has stakeholder_brief
+  PASS: Has headline
+  PASS: Has verdict
+  PASS: Has what_it_means
+  PASS: Has confidence_sentence
+  PASS: Has action recommendation
+  PASS: Has limiting_class info
+
+[30] Model Comparison Stakeholder Brief
+  PASS: Has stakeholder_brief
+  PASS: Has headline
+  PASS: Has what_agreement_means
+  PASS: Has model_to_use
+  PASS: Has caution
+
+[31] Cost-Sensitive Stakeholder Brief
+  PASS: Has stakeholder_brief
+  PASS: Has headline
+  PASS: Has tradeoff_explained
+  PASS: Has high_risk_classes
+  PASS: Has recommended_use
+
+[32] Overview Stakeholder Brief
+  PASS: Has stakeholder_brief
+  PASS: Has headline
+  PASS: Has confidence_sentence
+  PASS: Has feedback_note
+  PASS: Headline mentions well
+
+[33] RLHF Stakeholder Brief
+  PASS: Has stakeholder_brief
+  PASS: Has why_these_samples
+  PASS: Has what_to_look_for
+  PASS: Has what_happens_next
+  PASS: Has progress
+
+[34] Feedback Receipt
+  PASS: Has feedback_receipt
+  PASS: Has recorded_at
+  PASS: Has what_happens_next
+  PASS: Has current_average_rating
+  PASS: Has n_ratings_total
+
+[35] Correction Receipt
+  PASS: Has correction_receipt
+  PASS: Has recorded_at
+  PASS: Has what_happens_next
+  PASS: Has corrections_pending
+  PASS: Has ready_to_retrain
+  PASS: Has expected_improvement
+
+[36] RLHF Accept Receipt
+  PASS: Has receipt
+  PASS: Has verdict_recorded
+  PASS: Has impact
+  PASS: Has reviewed_this_session
+
+[37] Verdict Consistency
+  PASS: Overview has risk level
+  PASS: CS>30% = RED risk (cs=59.0% risk=RED)
+
+[38] A/B Test Endpoint
+  PASS: Has model_a
+  PASS: Has model_b
+  PASS: Has agreement
+  PASS: Agreement total > 0
+  PASS: Agreement pct in range
+  PASS: Has verdict
+  PASS: Has disagreements list
+
+[39] A/B Test Stakeholder Brief
+  PASS: Has headline
+  PASS: Has risk_level
+  PASS: Has winner
+  PASS: Has confidence_sentence
+  PASS: Has action
+  PASS: Has disagreement_note
+
+[40] Version Compare Stakeholder Brief
+  PASS: Has headline
+  PASS: Has risk_level
+  PASS: Has action
+  PASS: Has what_changed
+  PASS: Has suitable_for
+
+[41] Stacking Ensemble Classifier
+    (retry 1/2 after timeout on /api/analysis/classify)
+  PASS: Stacking returns accuracy
+  PASS: Stacking has confusion matrix
+  PASS: Stacking has class names
+  PASS: Stacking has stakeholder brief
+
+[42] Top Feature Drivers in Classification
+  PASS: Has top_drivers
+  PASS: Top driver has feature name
+  PASS: Top driver has importance
+  PASS: Top driver has explanation
+  PASS: At most 5 drivers
+
+[43] Ensemble Vote Endpoint
+  PASS: Has n_models
+  PASS: Has n_fractures
+  PASS: Has models dict
+  PASS: Has mean_agreement_pct
+  PASS: Has unanimous_count
+  PASS: Has contested_count
+  PASS: Has predictions list
+  PASS: Has contested_fractures
+
+[44] Ensemble Vote Stakeholder Brief
+  PASS: Has headline
+  PASS: Has risk_level
+  PASS: Has confidence_sentence
+  PASS: Has action
+  PASS: Has models_used list
+
+[45] Data Improvement Plan
+  PASS: Has headline
+  PASS: Has risk_level
+  PASS: Has overall_accuracy
+  PASS: Has per_class_performance
+  PASS: Per-class has recall
+  PASS: Per-class has status
+  PASS: Has action_plan
+  PASS: Has stakeholder brief
+
+[46] SHAP Visualization Plots
+  PASS: Has global_importance_plot
+  PASS: Has waterfall_plot
+  PASS: Has feature_scatter_plot
+  PASS: Has per_class_plots
+  PASS: Has SHAP flag
+  PASS: Has waterfall_sample
+  PASS: Has classifier_used
+  PASS: Has stakeholder_brief
+
+[47] Near-Miss Detection & Blind Spots
+  PASS: Has n_near_misses
+  PASS: Has near_misses list
+  PASS: Has blind_spots
+  PASS: Has n_blind_spots
+  PASS: Has risk_matrix
+  PASS: Has plot
+  PASS: Has overall_accuracy
+  PASS: Near-miss has margin
+  PASS: Blind spot has error_rate
+  PASS: Has stakeholder_brief
+  PASS: Brief has standards_reference
+
+[48] Query-by-Committee Active Learning
+    (retry 1/1 after timeout on /api/analysis/active-learning-qbc)
+Traceback (most recent call last):
+  File "W:\ws\oil\test_v350.py", line 834, in <module>
+    qbc = api("POST", "/api/analysis/active-learning-qbc", {"source": "demo", "n_suggest": 5}, timeout=180)
+  File "W:\ws\oil\test_v350.py", line 21, in api
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\eng20\miniconda3\Lib\urllib\request.py", line 189, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\eng20\miniconda3\Lib\urllib\request.py", line 489, in open
+    response = self._open(req, data)
+  File "C:\Users\eng20\miniconda3\Lib\urllib\request.py", line 506, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+                              '_open', req)
+  File "C:\Users\eng20\miniconda3\Lib\urllib\request.py", line 466, in _call_chain
+    result = func(*args)
+  File "C:\Users\eng20\miniconda3\Lib\urllib\request.py", line 1348, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\eng20\miniconda3\Lib\urllib\request.py", line 1323, in do_open
+    r = h.getresponse()
+  File "C:\Users\eng20\miniconda3\Lib\http\client.py", line 1430, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "C:\Users\eng20\miniconda3\Lib\http\client.py", line 331, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\eng20\miniconda3\Lib\http\client.py", line 292, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "C:\Users\eng20\miniconda3\Lib\socket.py", line 719, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+TimeoutError: timed out

@@ -1,0 +1,4 @@
+[   10962ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://geostress-ai.onrender.com/favicon.ico:0
+[ 1295936ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://geostress-ai.onrender.com/:0
+[ 1344116ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://geostress-ai.onrender.com/:0
+[ 1361846ms] [ERROR] Failed to load resource: the server responded with a status of 405 () @ https://geostress-ai.onrender.com/:0

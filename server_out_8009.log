@@ -1,0 +1,20 @@
+SQLite database initialized at data/geostress.db
+Loaded 1022 demo fractures from W:\ws\oil\data\raw
+  Pre-warm 3P: done (15.2s)
+  Pre-warm 6P: done (18.6s)
+  Startup snapshot built: 2 wells, 1022 fractures
+Cache pre-warm complete: 2 wells in 18.7s
+  Deferred classify warm: done (42.1s)
+  Deferred RF classify warm: done (47.2s)
+INFO:     127.0.0.1:6951 - "GET /api/health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:14155 - "GET /health HTTP/1.1" 404 Not Found
+  Deferred model comparison warm: done (241.0s)
+INFO:     127.0.0.1:4442 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:4982 - "GET /api/system/health HTTP/1.1" 200 OK
+SLOW: POST /api/analysis/decision-support took 528.0s
+INFO:     127.0.0.1:11222 - "POST /api/analysis/decision-support HTTP/1.1" 200 OK
+SLOW: POST /api/analysis/decision-support took 550.9s
+SLOW: POST /api/analysis/risk-report took 235.5s
+INFO:     127.0.0.1:9402 - "POST /api/analysis/risk-report HTTP/1.1" 200 OK
+SLOW: POST /api/analysis/transparency-audit took 194.5s
+INFO:     127.0.0.1:4327 - "POST /api/analysis/transparency-audit HTTP/1.1" 200 OK
