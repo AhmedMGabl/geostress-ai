@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.48.0 - Stress Rotation + Hydraulic Conductivity + Trajectory Optimization + Criticality Ranking + Geomech Log)."""
+"""GeoStress AI - FastAPI Web Application (v3.49.0 - Stress Polygon + Fracture Permeability Tensor + Wellbore Breakout Width + Pore Pressure Prediction + Fault Reactivation)."""
 
 import os
 import io
