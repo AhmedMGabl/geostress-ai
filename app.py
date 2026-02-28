@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.63.0 - ECD Profile + Fracture Spacing + Overburden Gradient + Stress Rotation + Tensile Failure)."""
+"""GeoStress AI - FastAPI Web Application (v3.64.0 - Hydraulic Fracture Design + Cap Rock Integrity + Fault Reactivation + Formation Pressure + Thermal Stress)."""
 
 import os
 import io
@@ -48764,3 +48764,727 @@ async def analysis_wellbore_tensile_failure(request: Request):
         return JSONResponse(result, status_code=404)
     _tensile_failure_cache[ck] = _sanitize_for_json(result)
     return JSONResponse(_tensile_failure_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [255] Hydraulic Fracture Design  (v3.64.0)
+# ═══════════════════════════════════════════════════════════════════════
+_hf_design_cache: dict = {}
+
+@app.post("/api/analysis/hydraulic-fracture-design")
+async def analysis_hydraulic_fracture_design(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = body.get("depth_m", 3000)
+    injection_rate_bpm = body.get("injection_rate_bpm", 20)
+    fluid_viscosity_cp = body.get("fluid_viscosity_cp", 100)
+    proppant_conc_ppg = body.get("proppant_conc_ppg", 2)
+
+    ck = f"{source}_{well}_{depth_m}_{injection_rate_bpm}_{fluid_viscosity_cp}_{proppant_conc_ppg}"
+    if ck in _hf_design_cache:
+        return JSONResponse(_hf_design_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        # Stress state at target depth
+        Sv = 0.025 * depth_m  # MPa
+        Pp = 0.0098 * depth_m  # hydrostatic
+        Shmin = 0.6 * Sv + 0.4 * Pp
+        SHmax = 0.8 * Sv + 0.2 * Pp
+
+        # Fracture initiation pressure (breakdown)
+        T0 = 8.0  # tensile strength MPa
+        Pb = 3 * Shmin - SHmax - Pp + T0
+
+        # Closure pressure ~ Shmin
+        Pc = Shmin
+
+        # ISIP (instantaneous shut-in)
+        ISIP = Shmin + 0.5  # slight excess
+
+        # Net pressure (function of rate & viscosity via PKN model)
+        E = 30000  # Young's modulus MPa
+        nu = 0.25  # Poisson's ratio
+        E_prime = E / (1 - nu**2)
+        # PKN half-length estimate (simplified)
+        Q = injection_rate_bpm * 0.002649  # m³/s
+        mu = fluid_viscosity_cp * 1e-3  # Pa·s
+        H = 30  # frac height m
+        t_pump = 60 * 60  # 1 hr pumping
+        # PKN: L = ((Q**3 * E' * t**4)/(mu * H**4))**(1/5) simplified
+        L_half = min(((Q**3 * E_prime * t_pump**4) / (mu * H**4 + 1))**0.2, 500)
+        w_avg = max(0.001, (mu * Q * L_half / (E_prime + 1))**0.25 * 1000)  # mm
+        Pnet = E_prime * w_avg / 1000 / (2 * H) if H > 0 else 0
+
+        # Proppant design
+        prop_mass_kg = proppant_conc_ppg * 119.83 * Q * t_pump / 60  # approximate
+        conductivity_md_ft = max(1, 500 * (w_avg / 5)**2 * (proppant_conc_ppg / 2))
+
+        # Classification
+        if Pnet > 5:
+            design_class = "HIGH_NET_PRESSURE"
+        elif L_half < 100:
+            design_class = "SHORT_FRAC"
+        else:
+            design_class = "STANDARD"
+
+        # Profile: pressure vs time
+        times = np.linspace(0, t_pump / 60, 20)  # minutes
+        pressures = []
+        for t_min in times:
+            t_sec = t_min * 60 + 1
+            L_t = min(((Q**3 * E_prime * t_sec**4) / (mu * H**4 + 1))**0.2, 500)
+            w_t = max(0.001, (mu * Q * L_t / (E_prime + 1))**0.25 * 1000)
+            P_t = Pc + E_prime * w_t / 1000 / (2 * H) if H > 0 else Pc
+            pressures.append({
+                "time_min": round(float(t_min), 1),
+                "pressure_MPa": round(float(P_t), 2),
+                "half_length_m": round(float(L_t), 1),
+                "width_mm": round(float(w_t), 3),
+            })
+
+        recs = []
+        if design_class == "HIGH_NET_PRESSURE":
+            recs.append("High net pressure — consider reducing injection rate or using lower viscosity fluid")
+        if L_half > 300:
+            recs.append(f"Long half-length ({L_half:.0f} m) — verify containment barriers")
+        recs.append(f"Estimated conductivity: {conductivity_md_ft:.0f} md·ft at {proppant_conc_ppg} ppg proppant")
+        recs.append(f"Breakdown pressure: {Pb:.1f} MPa, closure: {Pc:.1f} MPa")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+            ts = [p["time_min"] for p in pressures]
+            ps = [p["pressure_MPa"] for p in pressures]
+            ls = [p["half_length_m"] for p in pressures]
+            ws = [p["width_mm"] for p in pressures]
+
+            axes[0].plot(ts, ps, 'r-', lw=2)
+            axes[0].axhline(Pc, color='blue', ls='--', label=f'Closure={Pc:.1f}')
+            axes[0].axhline(Pb, color='green', ls='--', label=f'Breakdown={Pb:.1f}')
+            axes[0].set_xlabel("Time (min)"); axes[0].set_ylabel("Pressure (MPa)")
+            axes[0].set_title("Treatment Pressure"); axes[0].legend(fontsize=8); axes[0].grid(True, alpha=0.3)
+
+            axes[1].plot(ts, ls, 'b-', lw=2)
+            axes[1].set_xlabel("Time (min)"); axes[1].set_ylabel("Half-length (m)")
+            axes[1].set_title("Fracture Growth"); axes[1].grid(True, alpha=0.3)
+
+            axes[2].plot(ts, ws, 'g-', lw=2)
+            axes[2].set_xlabel("Time (min)"); axes[2].set_ylabel("Width (mm)")
+            axes[2].set_title("Fracture Width"); axes[2].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_m": depth_m,
+            "injection_rate_bpm": injection_rate_bpm,
+            "fluid_viscosity_cp": fluid_viscosity_cp,
+            "proppant_conc_ppg": proppant_conc_ppg,
+            "breakdown_pressure_MPa": round(float(Pb), 2),
+            "closure_pressure_MPa": round(float(Pc), 2),
+            "ISIP_MPa": round(float(ISIP), 2),
+            "net_pressure_MPa": round(float(Pnet), 2),
+            "half_length_m": round(float(L_half), 1),
+            "avg_width_mm": round(float(w_avg), 3),
+            "conductivity_md_ft": round(float(conductivity_md_ft), 1),
+            "design_class": design_class,
+            "profile": pressures,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Hydraulic fracture design: {design_class} for {well}",
+                "risk_level": "HIGH" if design_class == "HIGH_NET_PRESSURE" else "MODERATE" if design_class == "SHORT_FRAC" else "LOW",
+                "what_this_means": f"Half-length {L_half:.0f} m, width {w_avg:.1f} mm, breakdown at {Pb:.1f} MPa",
+                "for_non_experts": "This designs a hydraulic fracture stimulation — pumping fluid to create cracks that improve oil/gas flow from the reservoir."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _hf_design_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_hf_design_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [256] Cap Rock Integrity  (v3.64.0)
+# ═══════════════════════════════════════════════════════════════════════
+_cap_rock_cache: dict = {}
+
+@app.post("/api/analysis/cap-rock-integrity")
+async def analysis_cap_rock_integrity(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    cap_depth_m = body.get("cap_depth_m", 2000)
+    cap_thickness_m = body.get("cap_thickness_m", 50)
+    cap_perm_nD = body.get("cap_perm_nD", 10)
+    cap_UCS_MPa = body.get("cap_UCS_MPa", 60)
+
+    ck = f"{source}_{well}_{cap_depth_m}_{cap_thickness_m}_{cap_perm_nD}_{cap_UCS_MPa}"
+    if ck in _cap_rock_cache:
+        return JSONResponse(_cap_rock_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        # Stress at cap depth
+        Sv = 0.025 * cap_depth_m
+        Pp = 0.0098 * cap_depth_m
+        Shmin = 0.6 * Sv + 0.4 * Pp
+        SHmax = 0.8 * Sv + 0.2 * Pp
+
+        # Fracture count through cap zone
+        valid = dw.dropna(subset=[DEPTH_COL])
+        cap_top = cap_depth_m
+        cap_bot = cap_depth_m + cap_thickness_m
+        cap_fracs = valid[(valid[DEPTH_COL] >= cap_top) & (valid[DEPTH_COL] <= cap_bot)]
+        n_cap_fracs = len(cap_fracs)
+        frac_density = n_cap_fracs / max(cap_thickness_m, 1)
+
+        # Seal capacity: column height supported
+        entry_pressure_MPa = 0.01 * (10 / max(cap_perm_nD, 0.1))**0.5  # simplified
+        buoyancy_gradient = 0.003  # MPa/m (gas-water)
+        max_column_m = entry_pressure_MPa / buoyancy_gradient if buoyancy_gradient > 0 else 0
+
+        # Mechanical integrity
+        diff_stress = SHmax - Shmin
+        strength_ratio = cap_UCS_MPa / max(diff_stress, 0.1)
+
+        # Leak risk score (0-100, higher = more risk)
+        perm_risk = min(100, cap_perm_nD / 10 * 25)
+        frac_risk = min(100, n_cap_fracs * 20)
+        strength_risk = max(0, 100 - strength_ratio * 30)
+        leak_risk = round((perm_risk * 0.3 + frac_risk * 0.4 + strength_risk * 0.3), 1)
+
+        if leak_risk > 60:
+            integrity_class = "COMPROMISED"
+        elif leak_risk > 30:
+            integrity_class = "MARGINAL"
+        else:
+            integrity_class = "INTACT"
+
+        recs = []
+        if n_cap_fracs > 0:
+            recs.append(f"{n_cap_fracs} fractures penetrate cap rock — potential leak paths")
+        if cap_perm_nD > 100:
+            recs.append(f"High cap permeability ({cap_perm_nD} nD) — may not seal effectively")
+        if strength_ratio < 3:
+            recs.append(f"Low strength ratio ({strength_ratio:.1f}) — cap may fail under stress")
+        recs.append(f"Seal capacity: supports ~{max_column_m:.0f} m gas column")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 6))
+            # Risk breakdown
+            labels = ['Permeability', 'Fractures', 'Strength']
+            values = [perm_risk, frac_risk, strength_risk]
+            colors = ['#e74c3c' if v > 50 else '#f39c12' if v > 25 else '#27ae60' for v in values]
+            axes[0].barh(labels, values, color=colors, edgecolor='black')
+            axes[0].set_xlabel("Risk Score")
+            axes[0].set_title(f"Cap Rock Risk: {integrity_class} (score={leak_risk})")
+            axes[0].set_xlim(0, 100)
+            axes[0].grid(True, alpha=0.3)
+
+            # Depth cross-section
+            depths_all = valid[DEPTH_COL].values
+            axes[1].hist(depths_all, bins=30, orientation='horizontal', alpha=0.5, color='gray', label='All fracs')
+            if n_cap_fracs > 0:
+                cap_depths = cap_fracs[DEPTH_COL].values
+                axes[1].hist(cap_depths, bins=max(5, n_cap_fracs // 2), orientation='horizontal', alpha=0.8, color='red', label='Cap zone')
+            axes[1].axhline(cap_top, color='blue', ls='--', lw=2, label=f'Cap top={cap_top}m')
+            axes[1].axhline(cap_bot, color='blue', ls='--', lw=2, label=f'Cap bot={cap_bot}m')
+            axes[1].invert_yaxis()
+            axes[1].set_ylabel("Depth (m)"); axes[1].set_xlabel("Count")
+            axes[1].set_title("Fracture Distribution vs Cap Zone")
+            axes[1].legend(fontsize=7)
+            axes[1].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "cap_depth_m": cap_depth_m,
+            "cap_thickness_m": cap_thickness_m,
+            "cap_perm_nD": cap_perm_nD,
+            "cap_UCS_MPa": cap_UCS_MPa,
+            "n_cap_fractures": n_cap_fracs,
+            "frac_density_per_m": round(float(frac_density), 3),
+            "entry_pressure_MPa": round(float(entry_pressure_MPa), 3),
+            "max_column_m": round(float(max_column_m), 1),
+            "leak_risk_score": leak_risk,
+            "integrity_class": integrity_class,
+            "stress_at_cap": {
+                "Sv_MPa": round(float(Sv), 2),
+                "Shmin_MPa": round(float(Shmin), 2),
+                "SHmax_MPa": round(float(SHmax), 2),
+                "diff_stress_MPa": round(float(diff_stress), 2),
+            },
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Cap rock integrity: {integrity_class} for {well}",
+                "risk_level": "HIGH" if integrity_class == "COMPROMISED" else "MODERATE" if integrity_class == "MARGINAL" else "LOW",
+                "what_this_means": f"Leak risk score {leak_risk}/100, {n_cap_fracs} fractures in cap zone",
+                "for_non_experts": "Cap rock is the impermeable layer above a reservoir that traps hydrocarbons. This assesses whether fractures or stress could compromise the seal."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _cap_rock_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_cap_rock_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [257] Fault Reactivation  (v3.64.0)
+# ═══════════════════════════════════════════════════════════════════════
+_fault_react_pressure_cache: dict = {}
+
+@app.post("/api/analysis/fault-reactivation-pressure")
+async def analysis_fault_reactivation_pressure(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = body.get("depth_m", 3000)
+    fault_strike_deg = body.get("fault_strike_deg", 45)
+    fault_dip_deg = body.get("fault_dip_deg", 60)
+    friction = body.get("friction", 0.6)
+    delta_Pp_MPa = body.get("delta_Pp_MPa", 5)
+
+    ck = f"{source}_{well}_{depth_m}_{fault_strike_deg}_{fault_dip_deg}_{friction}_{delta_Pp_MPa}"
+    if ck in _fault_react_pressure_cache:
+        return JSONResponse(_fault_react_pressure_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        # Stress state
+        Sv = 0.025 * depth_m
+        Pp = 0.0098 * depth_m
+        Shmin = 0.6 * Sv + 0.4 * Pp
+        SHmax = 0.8 * Sv + 0.2 * Pp
+
+        # Resolve stresses on fault plane
+        strike_rad = np.radians(fault_strike_deg)
+        dip_rad = np.radians(fault_dip_deg)
+
+        # Fault normal in stress coordinates (simplified)
+        n1 = np.sin(dip_rad) * np.sin(strike_rad)
+        n2 = np.sin(dip_rad) * np.cos(strike_rad)
+        n3 = np.cos(dip_rad)
+
+        sigma_n = SHmax * n1**2 + Shmin * n2**2 + Sv * n3**2
+        tau = np.sqrt(
+            (SHmax * n1)**2 + (Shmin * n2)**2 + (Sv * n3)**2 - sigma_n**2
+        )
+
+        # Effective normal stress
+        sigma_n_eff = sigma_n - Pp
+
+        # Current slip tendency
+        slip_tendency = tau / max(sigma_n_eff, 0.01)
+
+        # Mohr-Coulomb: reactivation when tau >= mu * sigma_n_eff
+        critical_Pp = sigma_n - tau / max(friction, 0.01)
+        Pp_margin = critical_Pp - Pp
+
+        # After pressure increase
+        new_Pp = Pp + delta_Pp_MPa
+        new_sigma_n_eff = sigma_n - new_Pp
+        new_slip_tendency = tau / max(new_sigma_n_eff, 0.01)
+        reactivated = new_slip_tendency >= friction
+
+        # Pressure sweep
+        pp_values = np.linspace(Pp, Pp + delta_Pp_MPa * 2, 20)
+        sweep = []
+        for pp_val in pp_values:
+            sn_eff = sigma_n - pp_val
+            st = tau / max(sn_eff, 0.01) if sn_eff > 0 else 99.0
+            sweep.append({
+                "Pp_MPa": round(float(pp_val), 2),
+                "sigma_n_eff_MPa": round(float(sn_eff), 2),
+                "slip_tendency": round(float(st), 4),
+                "reactivated": bool(st >= friction),
+            })
+
+        if reactivated:
+            react_class = "CRITICAL"
+        elif Pp_margin < 2:
+            react_class = "HIGH_RISK"
+        elif Pp_margin < 5:
+            react_class = "MODERATE_RISK"
+        else:
+            react_class = "STABLE"
+
+        recs = []
+        if reactivated:
+            recs.append(f"FAULT REACTIVATION predicted at {new_Pp:.1f} MPa pore pressure (+{delta_Pp_MPa} MPa)")
+        recs.append(f"Pore pressure margin to reactivation: {Pp_margin:.1f} MPa")
+        recs.append(f"Current slip tendency: {slip_tendency:.3f} (friction threshold: {friction})")
+        if Pp_margin < 3:
+            recs.append("Limit injection pressure to avoid induced seismicity")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+            # Mohr diagram
+            sigma_vals = [Shmin - Pp, SHmax - Pp, Sv - Pp]
+            s_min, s_max = min(sigma_vals), max(sigma_vals)
+            center = (s_min + s_max) / 2
+            radius = (s_max - s_min) / 2
+            theta = np.linspace(0, np.pi, 100)
+            axes[0].plot(center + radius * np.cos(theta), radius * np.sin(theta), 'b-', lw=2, label='Current')
+            # After pressure increase
+            sigma_vals2 = [Shmin - new_Pp, SHmax - new_Pp, Sv - new_Pp]
+            s_min2, s_max2 = min(sigma_vals2), max(sigma_vals2)
+            c2 = (s_min2 + s_max2) / 2
+            r2 = (s_max2 - s_min2) / 2
+            axes[0].plot(c2 + r2 * np.cos(theta), r2 * np.sin(theta), 'r--', lw=2, label=f'+{delta_Pp_MPa} MPa')
+            # MC line
+            sn_range = np.linspace(0, s_max * 1.2, 50)
+            axes[0].plot(sn_range, friction * sn_range, 'k-', lw=1.5, label=f'μ={friction}')
+            axes[0].plot(sigma_n_eff, tau, 'r*', ms=15, label='Fault point')
+            axes[0].set_xlabel("σn' (MPa)"); axes[0].set_ylabel("τ (MPa)")
+            axes[0].set_title("Mohr Diagram — Fault Reactivation")
+            axes[0].legend(fontsize=7); axes[0].grid(True, alpha=0.3)
+
+            # Slip tendency vs Pp
+            pps = [s["Pp_MPa"] for s in sweep]
+            sts = [min(s["slip_tendency"], 3) for s in sweep]
+            axes[1].plot(pps, sts, 'r-', lw=2)
+            axes[1].axhline(friction, color='black', ls='--', label=f'μ={friction}')
+            axes[1].axvline(Pp, color='blue', ls=':', label=f'Current Pp={Pp:.1f}')
+            if critical_Pp < max(pps):
+                axes[1].axvline(critical_Pp, color='red', ls=':', label=f'Critical={critical_Pp:.1f}')
+            axes[1].set_xlabel("Pore Pressure (MPa)"); axes[1].set_ylabel("Slip Tendency")
+            axes[1].set_title("Fault Stability vs Pressure")
+            axes[1].legend(fontsize=7); axes[1].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_m": depth_m,
+            "fault_strike_deg": fault_strike_deg,
+            "fault_dip_deg": fault_dip_deg,
+            "friction": friction,
+            "delta_Pp_MPa": delta_Pp_MPa,
+            "sigma_n_MPa": round(float(sigma_n), 2),
+            "tau_MPa": round(float(tau), 2),
+            "slip_tendency": round(float(slip_tendency), 4),
+            "critical_Pp_MPa": round(float(critical_Pp), 2),
+            "Pp_margin_MPa": round(float(Pp_margin), 2),
+            "reactivated_at_delta": reactivated,
+            "react_class": react_class,
+            "pressure_sweep": sweep,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fault reactivation: {react_class} for {well}",
+                "risk_level": "HIGH" if react_class in ("CRITICAL", "HIGH_RISK") else "MODERATE" if react_class == "MODERATE_RISK" else "LOW",
+                "what_this_means": f"Pp margin {Pp_margin:.1f} MPa, slip tendency {slip_tendency:.3f}",
+                "for_non_experts": "This assesses whether increasing pore pressure (from injection or depletion) could cause an existing fault to slip — which can trigger induced seismicity."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _fault_react_pressure_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_fault_react_pressure_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [258] Formation Pressure Profile  (v3.64.0)
+# ═══════════════════════════════════════════════════════════════════════
+_formation_pressure_cache: dict = {}
+
+@app.post("/api/analysis/formation-pressure-profile")
+async def analysis_formation_pressure_profile(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 100)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    overpressure_factor = body.get("overpressure_factor", 1.0)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{overpressure_factor}"
+    if ck in _formation_pressure_cache:
+        return JSONResponse(_formation_pressure_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        rho_w = 1025  # kg/m³
+        g = 9.81
+
+        profile = []
+        for d in depths:
+            # Hydrostatic
+            Pp_hydro = rho_w * g * d / 1e6  # MPa
+            # Overpressure
+            Pp_actual = Pp_hydro * overpressure_factor
+            # Overburden
+            rho_bulk = 2200 + 150 * np.log(d / 100 + 1)
+            Sv = rho_bulk * g * d / 1e6
+            # EMW
+            emw_ppg = Pp_actual / (0.052 * d * 3.28084 / 1000) if d > 0 else 0
+            # Pressure gradient
+            grad_psi_ft = Pp_actual * 145.038 / (d * 3.28084) if d > 0 else 0
+            # Effective stress ratio
+            eff_ratio = (Sv - Pp_actual) / max(Sv, 0.01)
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_hydro_MPa": round(float(Pp_hydro), 3),
+                "Pp_actual_MPa": round(float(Pp_actual), 3),
+                "Sv_MPa": round(float(Sv), 2),
+                "emw_ppg": round(float(emw_ppg), 2),
+                "grad_psi_ft": round(float(grad_psi_ft), 4),
+                "effective_ratio": round(float(eff_ratio), 3),
+            })
+
+        # Summary statistics
+        pp_vals = [p["Pp_actual_MPa"] for p in profile]
+        grad_vals = [p["grad_psi_ft"] for p in profile]
+        mean_grad = float(np.mean(grad_vals))
+
+        if overpressure_factor > 1.3:
+            pressure_class = "OVERPRESSURED"
+        elif overpressure_factor > 1.1:
+            pressure_class = "MILDLY_OVERPRESSURED"
+        elif overpressure_factor < 0.9:
+            pressure_class = "UNDERPRESSURED"
+        else:
+            pressure_class = "NORMAL"
+
+        recs = []
+        if pressure_class == "OVERPRESSURED":
+            recs.append(f"Formation is overpressured (factor={overpressure_factor:.2f}) — increase mud weight for kicks")
+        recs.append(f"Mean pressure gradient: {mean_grad:.4f} psi/ft")
+        recs.append(f"Max formation pressure at {depth_to}m: {pp_vals[-1]:.1f} MPa")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 6))
+            ds = [p["depth_m"] for p in profile]
+
+            axes[0].plot([p["Pp_hydro_MPa"] for p in profile], ds, 'b--', lw=1.5, label='Hydrostatic')
+            axes[0].plot([p["Pp_actual_MPa"] for p in profile], ds, 'r-', lw=2, label='Actual Pp')
+            axes[0].plot([p["Sv_MPa"] for p in profile], ds, 'k-', lw=2, label='Overburden')
+            axes[0].set_xlabel("Pressure (MPa)"); axes[0].set_ylabel("Depth (m)")
+            axes[0].invert_yaxis(); axes[0].set_title("Pressure Profile")
+            axes[0].legend(fontsize=8); axes[0].grid(True, alpha=0.3)
+
+            axes[1].plot([p["grad_psi_ft"] for p in profile], ds, 'g-', lw=2)
+            axes[1].axvline(0.433, color='blue', ls='--', label='Normal (0.433)')
+            axes[1].set_xlabel("Gradient (psi/ft)"); axes[1].set_ylabel("Depth (m)")
+            axes[1].invert_yaxis(); axes[1].set_title("Pressure Gradient")
+            axes[1].legend(fontsize=8); axes[1].grid(True, alpha=0.3)
+
+            axes[2].plot([p["effective_ratio"] for p in profile], ds, 'm-', lw=2)
+            axes[2].set_xlabel("Effective Stress Ratio"); axes[2].set_ylabel("Depth (m)")
+            axes[2].invert_yaxis(); axes[2].set_title("Effective Stress Ratio (Sv-Pp)/Sv")
+            axes[2].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "n_points": n_points, "overpressure_factor": overpressure_factor,
+            "mean_gradient_psi_ft": round(mean_grad, 4),
+            "max_Pp_MPa": round(float(pp_vals[-1]), 2),
+            "pressure_class": pressure_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Formation pressure: {pressure_class} for {well}",
+                "risk_level": "HIGH" if pressure_class == "OVERPRESSURED" else "MODERATE" if "MILD" in pressure_class else "LOW",
+                "what_this_means": f"Mean gradient {mean_grad:.4f} psi/ft, max Pp {pp_vals[-1]:.1f} MPa at {depth_to}m",
+                "for_non_experts": "Formation pressure is the fluid pressure in the rock pores at depth. Overpressured zones can cause dangerous kicks during drilling."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _formation_pressure_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_formation_pressure_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [259] Thermal Stress  (v3.64.0)
+# ═══════════════════════════════════════════════════════════════════════
+_thermal_stress_wb_cache: dict = {}
+
+@app.post("/api/analysis/thermal-stress-wellbore")
+async def analysis_thermal_stress_wellbore(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    geothermal_grad_C_km = body.get("geothermal_grad_C_km", 30)
+    delta_T_C = body.get("delta_T_C", -20)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{geothermal_grad_C_km}_{delta_T_C}"
+    if ck in _thermal_stress_wb_cache:
+        return JSONResponse(_thermal_stress_wb_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        T_surface = 25  # °C
+        alpha = 1.2e-5  # thermal expansion coefficient (1/°C)
+        E = 30000  # Young's modulus MPa
+        nu = 0.25
+
+        profile = []
+        for d in depths:
+            T_formation = T_surface + geothermal_grad_C_km * d / 1000
+            T_wellbore = T_formation + delta_T_C  # cooling (negative) or heating
+            dT = T_wellbore - T_formation
+
+            # Thermal stress change: radial and tangential
+            sigma_thermal = -alpha * E * dT / (1 - nu)  # tangential (hoop) change
+            sigma_radial_thermal = alpha * E * dT / (1 - nu)  # radial change
+
+            # Background stresses
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+            SHmax = 0.8 * Sv + 0.2 * Pp
+
+            # Modified hoop stress (min hoop = compression around wellbore)
+            sigma_hoop_orig = 3 * Shmin - SHmax - Pp
+            sigma_hoop_thermal = sigma_hoop_orig + sigma_thermal
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "T_formation_C": round(float(T_formation), 1),
+                "delta_T_C": round(float(dT), 1),
+                "sigma_thermal_MPa": round(float(sigma_thermal), 2),
+                "sigma_hoop_orig_MPa": round(float(sigma_hoop_orig), 2),
+                "sigma_hoop_thermal_MPa": round(float(sigma_hoop_thermal), 2),
+                "Shmin_MPa": round(float(Shmin), 2),
+            })
+
+        thermal_stresses = [abs(p["sigma_thermal_MPa"]) for p in profile]
+        max_thermal = max(thermal_stresses)
+        mean_thermal = float(np.mean(thermal_stresses))
+
+        # Check for thermal fracturing
+        n_frac_risk = sum(1 for p in profile if p["sigma_hoop_thermal_MPa"] < 0)
+        pct_frac_risk = round(100 * n_frac_risk / max(len(profile), 1), 1)
+
+        if pct_frac_risk > 30:
+            thermal_class = "CRITICAL"
+        elif pct_frac_risk > 10:
+            thermal_class = "HIGH_RISK"
+        elif max_thermal > 5:
+            thermal_class = "MODERATE"
+        else:
+            thermal_class = "LOW"
+
+        recs = []
+        if delta_T_C < 0:
+            recs.append(f"Cooling by {abs(delta_T_C)}°C increases hoop stress (stabilizing tangentially, but adds tensile radial)")
+        else:
+            recs.append(f"Heating by {delta_T_C}°C decreases hoop stress (destabilizing, may cause breakouts)")
+        recs.append(f"Max thermal stress perturbation: {max_thermal:.1f} MPa")
+        if pct_frac_risk > 0:
+            recs.append(f"{pct_frac_risk:.0f}% of depth range at risk of thermal fracturing")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(14, 6))
+            ds = [p["depth_m"] for p in profile]
+
+            axes[0].plot([p["T_formation_C"] for p in profile], ds, 'r-', lw=2, label='Formation T')
+            axes[0].plot([p["T_formation_C"] + p["delta_T_C"] for p in profile], ds, 'b--', lw=2, label='Wellbore T')
+            axes[0].set_xlabel("Temperature (°C)"); axes[0].set_ylabel("Depth (m)")
+            axes[0].invert_yaxis(); axes[0].set_title("Temperature Profile")
+            axes[0].legend(fontsize=8); axes[0].grid(True, alpha=0.3)
+
+            axes[1].plot([p["sigma_thermal_MPa"] for p in profile], ds, 'g-', lw=2)
+            axes[1].axvline(0, color='black', ls='-', lw=0.5)
+            axes[1].set_xlabel("Thermal Stress (MPa)"); axes[1].set_ylabel("Depth (m)")
+            axes[1].invert_yaxis(); axes[1].set_title("Thermal Stress Perturbation")
+            axes[1].grid(True, alpha=0.3)
+
+            axes[2].plot([p["sigma_hoop_orig_MPa"] for p in profile], ds, 'b-', lw=2, label='Original')
+            axes[2].plot([p["sigma_hoop_thermal_MPa"] for p in profile], ds, 'r--', lw=2, label='With thermal')
+            axes[2].axvline(0, color='black', ls='-', lw=0.5)
+            axes[2].set_xlabel("Hoop Stress (MPa)"); axes[2].set_ylabel("Depth (m)")
+            axes[2].invert_yaxis(); axes[2].set_title("Hoop Stress Comparison")
+            axes[2].legend(fontsize=8); axes[2].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "n_points": n_points,
+            "geothermal_grad_C_km": geothermal_grad_C_km,
+            "delta_T_C": delta_T_C,
+            "max_thermal_stress_MPa": round(float(max_thermal), 2),
+            "mean_thermal_stress_MPa": round(float(mean_thermal), 2),
+            "pct_frac_risk": pct_frac_risk,
+            "thermal_class": thermal_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Thermal stress: {thermal_class} for {well}",
+                "risk_level": "HIGH" if thermal_class in ("CRITICAL", "HIGH_RISK") else "MODERATE" if thermal_class == "MODERATE" else "LOW",
+                "what_this_means": f"Max thermal perturbation {max_thermal:.1f} MPa, {pct_frac_risk:.0f}% fracture risk",
+                "for_non_experts": "Drilling fluids are often cooler or warmer than formation rock. Temperature differences create thermal stresses that can cause wellbore instability or fracturing."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _thermal_stress_wb_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_thermal_stress_wb_cache[ck])

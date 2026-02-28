@@ -3903,6 +3903,93 @@
                         </div>
                     </div>
 
+                    <!-- [255] Hydraulic Fracture Design -->
+                    <div class="card mb-3 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-lightning-charge-fill"></i> Hydraulic Fracture Design [255]</span>
+                            <button class="btn btn-sm btn-danger" onclick="runHFDesign()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="hf-depth" placeholder="Depth (m)" value="3000"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="hf-rate" placeholder="Rate (bpm)" value="20" step="1"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="hf-visc" placeholder="Viscosity (cp)" value="100" step="10"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="hf-prop" placeholder="Proppant (ppg)" value="2" step="0.5"></div>
+                            </div>
+                            <div id="hfDesignResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [256] Cap Rock Integrity -->
+                    <div class="card mb-3 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-shield-fill-check"></i> Cap Rock Integrity [256]</span>
+                            <button class="btn btn-sm btn-warning" onclick="runCapRock()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="cr-depth" placeholder="Cap depth (m)" value="2000"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="cr-thick" placeholder="Thickness (m)" value="50"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="cr-perm" placeholder="Perm (nD)" value="10" step="1"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="cr-ucs" placeholder="UCS (MPa)" value="60" step="5"></div>
+                            </div>
+                            <div id="capRockResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [257] Fault Reactivation -->
+                    <div class="card mb-3 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-triangle-fill"></i> Fault Reactivation [257]</span>
+                            <button class="btn btn-sm btn-primary" onclick="runFaultReact()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="fr-depth" placeholder="Depth (m)" value="3000"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="fr-strike" placeholder="Strike (°)" value="45" step="5"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="fr-dip" placeholder="Dip (°)" value="60" step="5"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="fr-mu" placeholder="Friction" value="0.6" step="0.05"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="fr-dpp" placeholder="ΔPp (MPa)" value="5" step="1"></div>
+                            </div>
+                            <div id="faultReactResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [258] Formation Pressure Profile -->
+                    <div class="card mb-3 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-speedometer2"></i> Formation Pressure Profile [258]</span>
+                            <button class="btn btn-sm btn-info" onclick="runFormPressure()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="fp-from" placeholder="From (m)" value="100"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="fp-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="fp-npts" placeholder="N pts" value="25"></div>
+                                <div class="col-12"><input type="number" class="form-control form-control-sm" id="fp-op" placeholder="Overpressure factor" value="1.0" step="0.1"></div>
+                            </div>
+                            <div id="formPressureResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [259] Thermal Stress -->
+                    <div class="card mb-3 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-thermometer-half"></i> Thermal Stress [259]</span>
+                            <button class="btn btn-sm btn-success" onclick="runThermalStress()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="ts-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="ts-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="ts-npts" placeholder="N pts" value="25"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="ts-grad" placeholder="Geotherm (°C/km)" value="30" step="5"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="ts-dt" placeholder="ΔT (°C)" value="-20" step="5"></div>
+                            </div>
+                            <div id="thermalStressResult"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

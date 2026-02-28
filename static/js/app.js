@@ -16072,3 +16072,149 @@ async function runTensileFailure() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ============================================================
+// [255] Hydraulic Fracture Design
+// ============================================================
+async function runHFDesign() {
+    var results = document.getElementById('hfDesignResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_m = parseFloat(document.getElementById('hf-depth').value) || 3000;
+        var injection_rate_bpm = parseFloat(document.getElementById('hf-rate').value) || 20;
+        var fluid_viscosity_cp = parseFloat(document.getElementById('hf-visc').value) || 100;
+        var proppant_conc_ppg = parseFloat(document.getElementById('hf-prop').value) || 2;
+        var resp = await fetch('/api/analysis/hydraulic-fracture-design', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth_m,injection_rate_bpm:injection_rate_bpm,fluid_viscosity_cp:fluid_viscosity_cp,proppant_conc_ppg:proppant_conc_ppg})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.design_class+'</strong> — Half-length: '+(r.half_length_m||0).toFixed(0)+' m</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Breakdown</h6><h4>'+(r.breakdown_pressure_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Closure</h6><h4>'+(r.closure_pressure_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Half-length</h6><h4>'+(r.half_length_m||0).toFixed(0)+' m</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Conductivity</h6><h4>'+(r.conductivity_md_ft||0).toFixed(0)+' md·ft</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ============================================================
+// [256] Cap Rock Integrity
+// ============================================================
+async function runCapRock() {
+    var results = document.getElementById('capRockResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var cap_depth_m = parseFloat(document.getElementById('cr-depth').value) || 2000;
+        var cap_thickness_m = parseFloat(document.getElementById('cr-thick').value) || 50;
+        var cap_perm_nD = parseFloat(document.getElementById('cr-perm').value) || 10;
+        var cap_UCS_MPa = parseFloat(document.getElementById('cr-ucs').value) || 60;
+        var resp = await fetch('/api/analysis/cap-rock-integrity', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,cap_depth_m:cap_depth_m,cap_thickness_m:cap_thickness_m,cap_perm_nD:cap_perm_nD,cap_UCS_MPa:cap_UCS_MPa})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.integrity_class+'</strong> — Risk score: '+(r.leak_risk_score||0).toFixed(1)+'/100</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Risk Score</h6><h4>'+(r.leak_risk_score||0).toFixed(1)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Cap Fracs</h6><h4>'+(r.n_cap_fractures||0)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Entry P</h6><h4>'+(r.entry_pressure_MPa||0).toFixed(3)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Column</h6><h4>'+(r.max_column_m||0).toFixed(0)+' m</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ============================================================
+// [257] Fault Reactivation
+// ============================================================
+async function runFaultReact() {
+    var results = document.getElementById('faultReactResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_m = parseFloat(document.getElementById('fr-depth').value) || 3000;
+        var fault_strike_deg = parseFloat(document.getElementById('fr-strike').value) || 45;
+        var fault_dip_deg = parseFloat(document.getElementById('fr-dip').value) || 60;
+        var friction = parseFloat(document.getElementById('fr-mu').value) || 0.6;
+        var delta_Pp_MPa = parseFloat(document.getElementById('fr-dpp').value) || 5;
+        var resp = await fetch('/api/analysis/fault-reactivation-pressure', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth_m,fault_strike_deg:fault_strike_deg,fault_dip_deg:fault_dip_deg,friction:friction,delta_Pp_MPa:delta_Pp_MPa})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.react_class+'</strong> — Pp margin: '+(r.Pp_margin_MPa||0).toFixed(1)+' MPa</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Slip Tendency</h6><h4>'+(r.slip_tendency||0).toFixed(3)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Critical Pp</h6><h4>'+(r.critical_Pp_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Pp Margin</h6><h4>'+(r.Pp_margin_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Reactivated?</h6><h4>'+(r.reactivated_at_delta?'YES':'NO')+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ============================================================
+// [258] Formation Pressure Profile
+// ============================================================
+async function runFormPressure() {
+    var results = document.getElementById('formPressureResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('fp-from').value) || 100;
+        var depth_to = parseFloat(document.getElementById('fp-to').value) || 5000;
+        var n_points = parseInt(document.getElementById('fp-npts').value) || 25;
+        var overpressure_factor = parseFloat(document.getElementById('fp-op').value) || 1.0;
+        var resp = await fetch('/api/analysis/formation-pressure-profile', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:n_points,overpressure_factor:overpressure_factor})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.pressure_class+'</strong> — Mean grad: '+(r.mean_gradient_psi_ft||0).toFixed(4)+' psi/ft</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Mean Gradient</h6><h4>'+(r.mean_gradient_psi_ft||0).toFixed(4)+' psi/ft</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Max Pp</h6><h4>'+(r.max_Pp_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>OP Factor</h6><h4>'+(r.overpressure_factor||1).toFixed(2)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ============================================================
+// [259] Thermal Stress
+// ============================================================
+async function runThermalStress() {
+    var results = document.getElementById('thermalStressResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('ts-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('ts-to').value) || 5000;
+        var n_points = parseInt(document.getElementById('ts-npts').value) || 25;
+        var geothermal_grad = parseFloat(document.getElementById('ts-grad').value) || 30;
+        var delta_T = parseFloat(document.getElementById('ts-dt').value) || -20;
+        var resp = await fetch('/api/analysis/thermal-stress-wellbore', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:n_points,geothermal_grad_C_km:geothermal_grad,delta_T_C:delta_T})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.thermal_class+'</strong> — Max thermal: '+(r.max_thermal_stress_MPa||0).toFixed(1)+' MPa</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Max Thermal</h6><h4>'+(r.max_thermal_stress_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Mean Thermal</h6><h4>'+(r.mean_thermal_stress_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Frac Risk %</h6><h4>'+(r.pct_frac_risk||0).toFixed(1)+'%</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>ΔT</h6><h4>'+(r.delta_T_C||0)+'°C</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
