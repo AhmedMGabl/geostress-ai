@@ -13537,7 +13537,7 @@ async function runApertureDistribution() {
     var results = document.getElementById('aperture-dist-results');
     showLoading();
     try {
-        var r = await apiFetch('/api/analysis/aperture-distribution', {
+        var r = await apiFetch('/api/analysis/aperture-distribution-stats', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({source: currentSource, well: well, model: 'power_law', reference_aperture_mm: 0.5})
@@ -13588,7 +13588,7 @@ async function runStabilityWindow() {
     var results = document.getElementById('stability-window-results');
     showLoading();
     try {
-        var r = await apiFetch('/api/analysis/stability-window', {
+        var r = await apiFetch('/api/analysis/stability-window-map', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({source: currentSource, well: well, depth: 3000, friction: 0.6, ucs_mpa: 80, tensile_strength_mpa: 8, pp_gradient: 10.0, sv_gradient: 25.0})
@@ -14407,5 +14407,141 @@ async function runTrajSensitivity() {
         if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
         results.innerHTML = html;
         if (r.plot) { var plotEl = document.getElementById('traj-sensitivity-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [195] Fracture Aperture Distribution (v3.52.0)
+// ═══════════════════════════════════════════════════════════════
+async function runApertureDistribution() {
+    var results = document.getElementById('apertureDist-result');
+    results.style.display = ''; results.innerHTML = '<div class="text-center"><div class="spinner-border"></div> Analyzing aperture distribution...</div>';
+    showLoading();
+    try {
+        var resp = await fetch('/api/analysis/aperture-distribution-stats', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source: 'demo', well: document.getElementById('apertureDist-well').value, base_aperture_mm: parseFloat(document.getElementById('apertureDist-base').value) || 0.5 }) });
+        var r = await resp.json();
+        if (!resp.ok) { results.innerHTML = '<div class="alert alert-danger">' + (r.error || 'Error') + '</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Mean</strong><br>' + (r.mean_aperture_mm || 0).toFixed(4) + ' mm</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Median</strong><br>' + (r.median_aperture_mm || 0).toFixed(4) + ' mm</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Class</strong><br><span class="badge bg-' + (r.aperture_class === 'WIDE' ? 'danger' : r.aperture_class === 'MODERATE' ? 'warning' : 'success') + '">' + (r.aperture_class || '-') + '</span></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>P10-P90</strong><br>' + (r.p10_mm || 0).toFixed(3) + ' - ' + (r.p90_mm || 0).toFixed(3) + ' mm</div></div>';
+        html += '</div>';
+        html += '<div class="row mb-3"><div class="col-md-4"><div class="card p-2 text-center"><strong>Mean k</strong><br>' + (r.mean_permeability_darcy || 0).toFixed(1) + ' darcy</div></div>';
+        html += '<div class="col-md-4"><div class="card p-2 text-center"><strong>Lognormal μ</strong><br>' + (r.lognormal_mu || 0).toFixed(4) + '</div></div>';
+        html += '<div class="col-md-4"><div class="card p-2 text-center"><strong>Lognormal σ</strong><br>' + (r.lognormal_sigma || 0).toFixed(4) + '</div></div></div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3" id="aperture-dist-plot">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [196] Wellbore Stability Window (v3.52.0)
+// ═══════════════════════════════════════════════════════════════
+async function runStabilityWindow() {
+    var results = document.getElementById('stabWindow-result');
+    results.style.display = ''; results.innerHTML = '<div class="text-center"><div class="spinner-border"></div> Computing stability window...</div>';
+    showLoading();
+    try {
+        var resp = await fetch('/api/analysis/stability-window-map', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source: 'demo', well: document.getElementById('stabWindow-well').value, depth: parseFloat(document.getElementById('stabWindow-depth').value) || 3000, ucs_mpa: parseFloat(document.getElementById('stabWindow-ucs').value) || 80, tensile_mpa: parseFloat(document.getElementById('stabWindow-tensile').value) || 5 }) });
+        var r = await resp.json();
+        if (!resp.ok) { results.innerHTML = '<div class="alert alert-danger">' + (r.error || 'Error') + '</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Stability</strong><br><span class="badge bg-' + (r.stability_class === 'CRITICAL' ? 'danger' : r.stability_class === 'NARROW' ? 'warning' : r.stability_class === 'MODERATE' ? 'info' : 'success') + '">' + (r.stability_class || '-') + '</span></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>% Stable</strong><br>' + (r.pct_stable || 0) + '%</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Min Window</strong><br>' + (r.min_window_SG || 0).toFixed(3) + ' SG</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Max Window</strong><br>' + (r.max_window_SG || 0).toFixed(3) + ' SG</div></div>';
+        html += '</div>';
+        if (r.best_orientation) html += '<div class="alert alert-success">Best: Az=' + r.best_orientation.azimuth_deg + '°, Inc=' + r.best_orientation.inclination_deg + '° (window ' + r.best_orientation.window_SG + ' SG)</div>';
+        if (r.worst_orientation) html += '<div class="alert alert-danger">Worst: Az=' + r.worst_orientation.azimuth_deg + '°, Inc=' + r.worst_orientation.inclination_deg + '° (window ' + r.worst_orientation.window_SG + ' SG)</div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3" id="stab-window-plot">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [197] Stress Anisotropy Index (v3.52.0)
+// ═══════════════════════════════════════════════════════════════
+async function runStressAnisotropy() {
+    var results = document.getElementById('stressAniso-result');
+    results.style.display = ''; results.innerHTML = '<div class="text-center"><div class="spinner-border"></div> Computing stress anisotropy...</div>';
+    showLoading();
+    try {
+        var resp = await fetch('/api/analysis/stress-anisotropy', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source: 'demo', well: document.getElementById('stressAniso-well').value, depth: parseFloat(document.getElementById('stressAniso-depth').value) || 3000 }) });
+        var r = await resp.json();
+        if (!resp.ok) { results.innerHTML = '<div class="alert alert-danger">' + (r.error || 'Error') + '</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>H-Anisotropy</strong><br>' + (r.horizontal_anisotropy || 0).toFixed(4) + '</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Class</strong><br><span class="badge bg-' + (r.anisotropy_class === 'HIGH' ? 'danger' : r.anisotropy_class === 'MODERATE' ? 'warning' : 'success') + '">' + (r.anisotropy_class || '-') + '</span></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>R-ratio</strong><br>' + (r.R_ratio || 0).toFixed(4) + '</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Von Mises</strong><br>' + (r.von_mises_MPa || 0).toFixed(2) + ' MPa</div></div>';
+        html += '</div>';
+        html += '<div class="row mb-3"><div class="col-md-4"><div class="card p-2 text-center"><strong>Sv</strong><br>' + (r.Sv_MPa || 0) + ' MPa</div></div>';
+        html += '<div class="col-md-4"><div class="card p-2 text-center"><strong>SHmax</strong><br>' + (r.SHmax_MPa || 0) + ' MPa</div></div>';
+        html += '<div class="col-md-4"><div class="card p-2 text-center"><strong>Shmin</strong><br>' + (r.Shmin_MPa || 0) + ' MPa</div></div></div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3" id="stress-aniso-plot">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [198] FIT/LOT Prediction (v3.52.0)
+// ═══════════════════════════════════════════════════════════════
+async function runFITPrediction() {
+    var results = document.getElementById('fitPred-result');
+    results.style.display = ''; results.innerHTML = '<div class="text-center"><div class="spinner-border"></div> Predicting FIT/LOT...</div>';
+    showLoading();
+    try {
+        var resp = await fetch('/api/analysis/fit-prediction', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source: 'demo', well: document.getElementById('fitPred-well').value, depth: parseFloat(document.getElementById('fitPred-depth').value) || 3000, tensile_mpa: parseFloat(document.getElementById('fitPred-tensile').value) || 5 }) });
+        var r = await resp.json();
+        if (!resp.ok) { results.innerHTML = '<div class="alert alert-danger">' + (r.error || 'Error') + '</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Pfrac</strong><br>' + (r.Pfrac_MPa || 0) + ' MPa</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Pleak</strong><br>' + (r.Pleak_MPa || 0) + ' MPa</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Safety</strong><br><span class="badge bg-' + (r.safety_class === 'CRITICAL' ? 'danger' : r.safety_class === 'MARGINAL' ? 'warning' : r.safety_class === 'ADEQUATE' ? 'info' : 'success') + '">' + (r.safety_class || '-') + '</span></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Margin</strong><br>' + (r.margin_MPa || 0) + ' MPa</div></div>';
+        html += '</div>';
+        html += '<div class="row mb-3"><div class="col-md-4"><div class="card p-2 text-center"><strong>EMW Frac</strong><br>' + (r.EMW_frac_SG || 0).toFixed(3) + ' SG</div></div>';
+        html += '<div class="col-md-4"><div class="card p-2 text-center"><strong>EMW Leak</strong><br>' + (r.EMW_leak_SG || 0).toFixed(3) + ' SG</div></div>';
+        html += '<div class="col-md-4"><div class="card p-2 text-center"><strong>EMW FIT</strong><br>' + (r.EMW_fit_SG || 0).toFixed(3) + ' SG</div></div></div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3" id="fit-pred-plot">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [199] Fracture Susceptibility Map (v3.52.0)
+// ═══════════════════════════════════════════════════════════════
+async function runSusceptibilityMap() {
+    var results = document.getElementById('suscMap-result');
+    results.style.display = ''; results.innerHTML = '<div class="text-center"><div class="spinner-border"></div> Building susceptibility map...</div>';
+    showLoading();
+    try {
+        var resp = await fetch('/api/analysis/susceptibility-map', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source: 'demo', well: document.getElementById('suscMap-well').value, depth: parseFloat(document.getElementById('suscMap-depth').value) || 3000, friction: parseFloat(document.getElementById('suscMap-friction').value) || 0.6 }) });
+        var r = await resp.json();
+        if (!resp.ok) { results.innerHTML = '<div class="alert alert-danger">' + (r.error || 'Error') + '</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Risk</strong><br><span class="badge bg-' + (r.risk_class === 'HIGH' ? 'danger' : r.risk_class === 'MODERATE' ? 'warning' : 'success') + '">' + (r.risk_class || '-') + '</span></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Grid CS%</strong><br>' + (r.pct_critically_stressed || 0) + '%</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Actual CS%</strong><br>' + (r.pct_actual_cs || 0) + '%</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Max ST</strong><br>' + (r.max_slip_tendency || 0).toFixed(4) + '</div></div>';
+        html += '</div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3" id="susc-map-plot">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's | Grid: ' + (r.n_grid_cells || 0) + ' cells</small>';
+        results.innerHTML = html;
     } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }

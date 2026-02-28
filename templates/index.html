@@ -2910,6 +2910,90 @@
                         </div>
                     </div>
 
+                    <!-- [195] Aperture Distribution (v3.52.0) -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bar-chart"></i> <strong>[195] Fracture Aperture Distribution</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runApertureDistribution()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Statistical distribution of fracture apertures with lognormal fit and permeability estimates.</p>
+                            <div class="row mb-2">
+                                <div class="col-md-4"><label class="form-label">Well</label><select class="form-select form-select-sm" id="apertureDist-well"><option value="3P">3P</option><option value="6P">6P</option></select></div>
+                                <div class="col-md-4"><label class="form-label">Base Aperture (mm)</label><input type="number" class="form-control form-control-sm" id="apertureDist-base" value="0.5" step="0.1"></div>
+                            </div>
+                            <div id="apertureDist-result"></div>
+                        </div>
+                    </div>
+
+                    <!-- [196] Stability Window (v3.52.0) -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-shield-check"></i> <strong>[196] Wellbore Stability Window</strong></span>
+                            <button class="btn btn-sm btn-dark" onclick="runStabilityWindow()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Safe mud weight window across different wellbore orientations.</p>
+                            <div class="row mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select class="form-select form-select-sm" id="stabWindow-well"><option value="3P">3P</option><option value="6P">6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input type="number" class="form-control form-control-sm" id="stabWindow-depth" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">UCS (MPa)</label><input type="number" class="form-control form-control-sm" id="stabWindow-ucs" value="80"></div>
+                                <div class="col-md-3"><label class="form-label">Tensile (MPa)</label><input type="number" class="form-control form-control-sm" id="stabWindow-tensile" value="5"></div>
+                            </div>
+                            <div id="stabWindow-result"></div>
+                        </div>
+                    </div>
+
+                    <!-- [197] Stress Anisotropy (v3.52.0) -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrows-angle-expand"></i> <strong>[197] Stress Anisotropy Index</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runStressAnisotropy()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Quantify horizontal stress anisotropy and its impact on wellbore stability.</p>
+                            <div class="row mb-2">
+                                <div class="col-md-4"><label class="form-label">Well</label><select class="form-select form-select-sm" id="stressAniso-well"><option value="3P">3P</option><option value="6P">6P</option></select></div>
+                                <div class="col-md-4"><label class="form-label">Depth (m)</label><input type="number" class="form-control form-control-sm" id="stressAniso-depth" value="3000"></div>
+                            </div>
+                            <div id="stressAniso-result"></div>
+                        </div>
+                    </div>
+
+                    <!-- [198] FIT Prediction (v3.52.0) -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-up-arrow"></i> <strong>[198] FIT/LOT Prediction</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runFITPrediction()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Predict Formation Integrity Test and Leak-Off Test pressures from stress model.</p>
+                            <div class="row mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select class="form-select form-select-sm" id="fitPred-well"><option value="3P">3P</option><option value="6P">6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input type="number" class="form-control form-control-sm" id="fitPred-depth" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">Tensile (MPa)</label><input type="number" class="form-control form-control-sm" id="fitPred-tensile" value="5"></div>
+                            </div>
+                            <div id="fitPred-result"></div>
+                        </div>
+                    </div>
+
+                    <!-- [199] Susceptibility Map (v3.52.0) -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-grid-3x3"></i> <strong>[199] Fracture Susceptibility Map</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runSusceptibilityMap()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Azimuth×dip map of fracture slip tendency showing which orientations are critically stressed.</p>
+                            <div class="row mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select class="form-select form-select-sm" id="suscMap-well"><option value="3P">3P</option><option value="6P">6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input type="number" class="form-control form-control-sm" id="suscMap-depth" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">Friction (μ)</label><input type="number" class="form-control form-control-sm" id="suscMap-friction" value="0.6" step="0.1"></div>
+                            </div>
+                            <div id="suscMap-result"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
