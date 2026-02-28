@@ -2695,6 +2695,81 @@
                         </div>
                     </div>
 
+                    <!-- Stress Polygon [v3.49.0] -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-pentagon"></i> Stress Polygon</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runStressPolygon()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Allowable stress states diagram with frictional limits.</p>
+                            <div id="stress-polygon-results" style="display:none;"></div>
+                            <img id="stress-polygon-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Fracture Permeability Tensor [v3.49.0] -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-grid-3x3"></i> Fracture Permeability Tensor</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runFracPermTensor()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Full 3D permeability tensor from fracture orientations.</p>
+                            <div id="frac-perm-tensor-results" style="display:none;"></div>
+                            <img id="frac-perm-tensor-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Wellbore Breakout Width [v3.49.0] -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-circle-half"></i> Wellbore Breakout Width</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runBreakoutWidth()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Breakout width vs mud weight with optimization.</p>
+                            <div id="breakout-width-results" style="display:none;"></div>
+                            <img id="breakout-width-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Pore Pressure Prediction [v3.49.0] -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-thermometer-high"></i> Pore Pressure Prediction</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runPorePressurePrediction()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Eaton/Bowers pore pressure profile prediction.</p>
+                            <div id="pp-prediction-results" style="display:none;"></div>
+                            <img id="pp-prediction-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Fault Reactivation [v3.49.0] -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-lightning-charge"></i> Fault Reactivation</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runFaultReactivation()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Fault reactivation risk for dominant orientations.</p>
+                            <div id="fault-reactivation-results" style="display:none;"></div>
+                            <img id="fault-reactivation-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

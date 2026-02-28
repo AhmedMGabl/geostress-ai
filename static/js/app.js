@@ -12828,7 +12828,7 @@ async function runStressPolygon() {
     var results = document.getElementById('stress-polygon-results');
     try {
         var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
-        var r = await apiFetch('/api/analysis/stress-polygon-extended', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, depth:3000, friction:0.6})});
+        var r = await apiFetch('/api/analysis/stress-polygon-diagram-extended', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, depth:3000, friction:0.6})});
         results.style.display = '';
         var html = '<div class="row g-2 mb-2">';
         html += '<div class="col-md-3"><div class="card text-center p-2"><div class="fw-bold">' + r.Sv_MPa + ' MPa</div><small class="text-muted">Sv</small></div></div>';
@@ -14042,5 +14042,133 @@ async function runGeomechLog() {
         if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
         results.innerHTML = html;
         if (r.plot) { var plotEl = document.getElementById('geomech-log-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══ [180] Stress Polygon ═══
+async function runStressPolygon() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('stress-polygon-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/stress-polygon-diagram', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, depth: 3000, friction: 0.6})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Regime</h6><h3>' + r.current_regime + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Stability</h6><h3>' + r.stability_class + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Margin</h6><h3>' + (r.stability_margin * 100).toFixed(1) + '%</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Sv</h6><h3>' + r.Sv_MPa + ' MPa</h3></div></div>';
+        html += '</div>';
+        if (r.current_state) { html += '<p class="mt-2"><strong>Current:</strong> SHmax=' + r.current_state.SHmax_MPa + ' MPa, Shmin=' + r.current_state.Shmin_MPa + ' MPa</p>'; }
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('stress-polygon-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══ [181] Fracture Permeability Tensor ═══
+async function runFracPermTensor() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('frac-perm-tensor-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/fracture-permeability-tensor', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, aperture_mm: 0.5})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>k1 (max)</h6><h3>' + r.k1_darcy.toFixed(4) + ' D</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>k2 (mid)</h6><h3>' + r.k2_darcy.toFixed(4) + ' D</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>k3 (min)</h6><h3>' + r.k3_darcy.toFixed(4) + ' D</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Anisotropy</h6><h3>' + r.anisotropy_ratio.toFixed(1) + ':1</h3></div></div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('frac-perm-tensor-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══ [182] Wellbore Breakout Width ═══
+async function runBreakoutWidth() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('breakout-width-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/breakout-width', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, depth: 3000, ucs_mpa: 80, friction: 0.6})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Optimal MW</h6><h3>' + r.optimal_mud_weight_SG + ' SG</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>MW Tested</h6><h3>' + r.n_mud_weights_tested + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>SHmax</h6><h3>' + r.SHmax_MPa + ' MPa</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Shmin</h6><h3>' + r.Shmin_MPa + ' MPa</h3></div></div>';
+        html += '</div>';
+        if (r.mud_weight_window) { html += '<p class="mt-2"><strong>Safe window:</strong> ' + r.mud_weight_window.min_SG + ' - ' + r.mud_weight_window.max_SG + ' SG</p>'; }
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('breakout-width-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══ [183] Pore Pressure Prediction ═══
+async function runPorePressurePrediction() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('pp-prediction-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/pore-pressure-prediction', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, method: 'eaton', n_points: 30})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Method</h6><h3>' + r.method + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Regime</h6><h3>' + r.pressure_regime + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Max OP Ratio</h6><h3>' + r.max_overpressure_ratio + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Points</h6><h3>' + r.n_points + '</h3></div></div>';
+        html += '</div>';
+        if (r.kick_tolerance_depth_m) { html += '<p class="mt-2"><strong>Kick tolerance depth:</strong> ' + r.kick_tolerance_depth_m + ' m</p>'; }
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('pp-prediction-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══ [184] Fault Reactivation ═══
+async function runFaultReactivation() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('fault-reactivation-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/fault-reactivation', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, depth: 3000, friction: 0.6})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Overall Risk</h6><h3 class="text-' + (r.overall_risk === 'HIGH' ? 'danger' : r.overall_risk === 'MODERATE' ? 'warning' : 'success') + '">' + r.overall_risk + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>High Risk</h6><h3 class="text-danger">' + r.n_high_risk + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Moderate</h6><h3 class="text-warning">' + r.n_moderate_risk + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Low Risk</h6><h3 class="text-success">' + r.n_low_risk + '</h3></div></div>';
+        html += '</div>';
+        if (r.fault_analyses && r.fault_analyses.length) {
+            html += '<h6 class="mt-2">Fault Details</h6><table class="table table-sm"><thead><tr><th>Az/Dip</th><th>Risk</th><th>Slip T</th><th>Margin</th></tr></thead><tbody>';
+            r.fault_analyses.forEach(function(f) { html += '<tr><td>' + f.fault_azimuth_deg + '/' + f.fault_dip_deg + '</td><td class="text-' + (f.reactivation_risk === 'HIGH' ? 'danger' : f.reactivation_risk === 'MODERATE' ? 'warning' : 'success') + '">' + f.reactivation_risk + '</td><td>' + f.slip_tendency.toFixed(3) + '</td><td>' + f.Pp_margin_MPa.toFixed(1) + ' MPa</td></tr>'; });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('fault-reactivation-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
     } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
