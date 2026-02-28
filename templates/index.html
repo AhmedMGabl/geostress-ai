@@ -3827,6 +3827,82 @@
                         </div>
                     </div>
 
+                    <!-- [250] ECD Profile -->
+                    <div class="card mb-3 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-water"></i> ECD Profile [250]</span>
+                            <button class="btn btn-sm btn-info" onclick="runEcdProfile()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="ecd-from" placeholder="Depth from (m)" value="500"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="ecd-to" placeholder="Depth to (m)" value="5000"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="ecd-mw" placeholder="Mud weight (ppg)" value="10" step="0.1"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="ecd-flow" placeholder="Flow rate (gpm)" value="500" step="10"></div>
+                            </div>
+                            <div id="ecdProfileResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [251] Fracture Spacing Analysis -->
+                    <div class="card mb-3 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-rulers"></i> Fracture Spacing Analysis [251]</span>
+                            <button class="btn btn-sm btn-success" onclick="runFracSpacing()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div id="fracSpacingResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [252] Overburden Gradient -->
+                    <div class="card mb-3 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-layers-fill"></i> Overburden Gradient [252]</span>
+                            <button class="btn btn-sm btn-warning" onclick="runOverburdenGrad()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="ob-from" placeholder="Depth from (m)" value="100"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="ob-to" placeholder="Depth to (m)" value="5000"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="ob-npts" placeholder="N points" value="25"></div>
+                            </div>
+                            <div id="overburdenGradResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [253] Principal Stress Rotation -->
+                    <div class="card mb-3 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-repeat"></i> Principal Stress Rotation [253]</span>
+                            <button class="btn btn-sm btn-primary" onclick="runStressRotation()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="sr-nzones" placeholder="N zones" value="3"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="sr-from" placeholder="Depth from (m)" value="500"></div>
+                            </div>
+                            <div id="stressRotationResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [254] Wellbore Tensile Failure -->
+                    <div class="card mb-3 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-lightning-fill"></i> Wellbore Tensile Failure [254]</span>
+                            <button class="btn btn-sm btn-danger" onclick="runTensileFailure()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="tf-from" placeholder="Depth from (m)" value="500"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="tf-to" placeholder="Depth to (m)" value="5000"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="tf-tensile" placeholder="Tensile strength (MPa)" value="10" step="0.5"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="tf-npts" placeholder="N points" value="25"></div>
+                            </div>
+                            <div id="tensileFailureResult"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
