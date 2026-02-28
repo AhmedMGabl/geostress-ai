@@ -16658,3 +16658,98 @@ async function runAPB() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// [280] Injection-Induced Seismicity
+async function runInjSeismicity() {
+    var results = document.getElementById('injSeismicResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('injseis-well').value;
+        var depth = parseFloat(document.getElementById('injseis-depth').value) || 3000;
+        var press = parseFloat(document.getElementById('injseis-press').value) || 35;
+        var vol = parseFloat(document.getElementById('injseis-vol').value) || 5000;
+        var resp = await fetch('/api/analysis/injection-induced-seismicity', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,injection_pressure_MPa:press,injection_volume_m3:vol})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.seismicity_class==='HIGH'||r.seismicity_class==='VERY_HIGH'?'danger':r.seismicity_class==='MODERATE'?'warning':'success')+'"><strong>'+r.seismicity_class+'</strong> — CFS='+r.max_CFS_MPa+' MPa, Mw='+r.estimated_Mw+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [281] Wellbore Trajectory Stress
+async function runTrajStress() {
+    var results = document.getElementById('trajStressResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('trajstress-well').value;
+        var depth = parseFloat(document.getElementById('trajstress-depth').value) || 3000;
+        var ucs = parseFloat(document.getElementById('trajstress-ucs').value) || 50;
+        var step = parseInt(document.getElementById('trajstress-step').value) || 15;
+        var resp = await fetch('/api/analysis/wellbore-trajectory-stress', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,UCS_MPa:ucs,grid_step_deg:step})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.traj_class==='CRITICAL'?'danger':r.traj_class==='CONSTRAINED'?'warning':'success')+'"><strong>'+r.traj_class+'</strong> — Optimal: Az='+r.optimal_azimuth_deg+'° Inc='+r.optimal_inclination_deg+'°, SI='+r.optimal_stability_index+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [282] Reservoir Compaction
+async function runResCompaction() {
+    var results = document.getElementById('resCompResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('rescomp-well').value;
+        var depth = parseFloat(document.getElementById('rescomp-depth').value) || 3000;
+        var thick = parseFloat(document.getElementById('rescomp-thick').value) || 50;
+        var depl = parseFloat(document.getElementById('rescomp-depl').value) || 15;
+        var resp = await fetch('/api/analysis/reservoir-compaction', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,reservoir_thickness_m:thick,depletion_MPa:depl})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.compaction_class==='SEVERE'||r.compaction_class==='SIGNIFICANT'?'danger':r.compaction_class==='MODERATE'?'warning':'success')+'"><strong>'+r.compaction_class+'</strong> — Compaction='+r.compaction_m+' m, Subsidence='+r.surface_subsidence_m+' m</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [283] Perforation Stability
+async function runPerfStability() {
+    var results = document.getElementById('perfStabResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('perfstab-well').value;
+        var depth = parseFloat(document.getElementById('perfstab-depth').value) || 3000;
+        var ucs = parseFloat(document.getElementById('perfstab-ucs').value) || 50;
+        var steps = parseInt(document.getElementById('perfstab-steps').value) || 36;
+        var resp = await fetch('/api/analysis/perforation-stability', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,UCS_MPa:ucs,n_angles:steps})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.perf_class==='CRITICAL'?'danger':r.perf_class==='CONSTRAINED'?'warning':'success')+'"><strong>'+r.perf_class+'</strong> — Optimal: '+r.optimal_angle_deg+'°, SI='+r.optimal_stability_index+', Unstable='+r.pct_unstable+'%</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [284] Critical Drawdown
+async function runCritDrawdown() {
+    var results = document.getElementById('critDDResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('critdd-well').value;
+        var depth = parseFloat(document.getElementById('critdd-depth').value) || 3000;
+        var ucs = parseFloat(document.getElementById('critdd-ucs').value) || 50;
+        var twc = parseFloat(document.getElementById('critdd-twc').value) || 3.0;
+        var resp = await fetch('/api/analysis/critical-drawdown', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,UCS_MPa:ucs,TWC_factor:twc})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.drawdown_class==='CRITICAL'||r.drawdown_class==='HIGH_RISK'?'danger':r.drawdown_class==='MODERATE'?'warning':'success')+'"><strong>'+r.drawdown_class+'</strong> — Max Drawdown='+r.max_drawdown_MPa+' MPa ('+r.max_drawdown_psi+' psi), SF='+r.safety_factor+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}

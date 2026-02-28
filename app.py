@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.68.0 - Directional Stability + Effective Stress Gradient + Depletion + Fracture Reopen + APB)."""
+"""GeoStress AI - FastAPI Web Application (v3.69.0 - Induced Seismicity + Trajectory Stress + Compaction + Perf Stability + Critical Drawdown)."""
 
 import os
 import io
@@ -52069,3 +52069,475 @@ async def analysis_annular_pressure_buildup(request: Request):
     if "error" in result: return JSONResponse(result, status_code=404)
     _apb_cache[ck] = _sanitize_for_json(result)
     return JSONResponse(_apb_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [280] Injection-Induced Seismicity Risk  (v3.69.0)
+# ═══════════════════════════════════════════════════════════════════════
+_induced_seismicity_cache: dict = {}
+
+@app.post("/api/analysis/injection-induced-seismicity")
+async def analysis_injection_induced_seismicity(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = body.get("depth_m", 3000)
+    injection_rate_m3_day = body.get("injection_rate_m3_day", 500)
+    delta_Pp_MPa = body.get("delta_Pp_MPa", 5)
+    fault_distance_m = body.get("fault_distance_m", 500)
+    fault_friction = body.get("fault_friction", 0.6)
+
+    ck = f"{source}_{well}_{depth_m}_{injection_rate_m3_day}_{delta_Pp_MPa}_{fault_distance_m}_{fault_friction}"
+    if ck in _induced_seismicity_cache:
+        return JSONResponse(_induced_seismicity_cache[ck])
+
+    def _compute():
+        import time; t0 = time.time()
+        df = get_df(source); dw = df[df["well"] == well].copy()
+        if dw.empty: return {"error": f"No data for well {well}"}
+
+        d = depth_m; Sv = 0.025 * d; Pp = 0.0098 * d
+        Shmin = 0.6 * Sv + 0.4 * Pp; SHmax = 1.2 * Sv - 0.2 * Pp
+        # Pressure diffusion to fault (simplified)
+        diffusivity = 0.1  # m²/s typical
+        t_reach_days = fault_distance_m**2 / (4 * diffusivity * 86400) if diffusivity > 0 else 999
+        Pp_at_fault = Pp + delta_Pp_MPa * np.exp(-fault_distance_m / 1000)
+        # Coulomb failure on fault (assume 60° dip strike-slip)
+        sigma_n = (SHmax + Shmin) / 2 - (SHmax - Shmin) / 2 * np.cos(np.radians(120))
+        tau = (SHmax - Shmin) / 2 * abs(np.sin(np.radians(120)))
+        CFS_initial = tau - fault_friction * (sigma_n - Pp)
+        CFS_after = tau - fault_friction * (sigma_n - Pp_at_fault)
+        delta_CFS = CFS_after - CFS_initial
+        # Seismic moment estimate (McGarr 2014): M0 = G * V_injected
+        V_injected_m3 = injection_rate_m3_day * 365  # annual
+        G = 30e9  # shear modulus Pa
+        M0 = G * V_injected_m3
+        Mw_max = (2/3) * np.log10(M0) - 6.07  # Hanks-Kanamori
+
+        # Pressure sweep
+        pressures = np.linspace(0, delta_Pp_MPa * 2, 20)
+        sweep = []
+        for dp in pressures:
+            Pp_f = Pp + dp * np.exp(-fault_distance_m / 1000)
+            cfs = tau - fault_friction * (sigma_n - Pp_f)
+            sweep.append({"delta_Pp_MPa": round(float(dp), 2), "CFS_MPa": round(float(cfs), 3), "reactivated": cfs > 0})
+
+        if delta_CFS > 1.0: seism_class = "HIGH_RISK"
+        elif delta_CFS > 0: seism_class = "MODERATE_RISK"
+        elif CFS_initial > -2: seism_class = "LOW_RISK"
+        else: seism_class = "MINIMAL"
+
+        recs = []
+        if seism_class == "HIGH_RISK":
+            recs.append("Injection likely to reactivate nearby fault — implement traffic light protocol")
+        recs.append(f"Coulomb stress change: {delta_CFS:.2f} MPa at fault ({fault_distance_m}m away)")
+        recs.append(f"Estimated max Mw: {Mw_max:.1f} (McGarr 2014 upper bound)")
+        recs.append(f"Pressure reaches fault in ~{t_reach_days:.0f} days")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+            ax1.plot([s["delta_Pp_MPa"] for s in sweep], [s["CFS_MPa"] for s in sweep], 'r-', lw=2)
+            ax1.axhline(0, color='k', ls='--', lw=1, label='Failure')
+            ax1.fill_between([s["delta_Pp_MPa"] for s in sweep], [s["CFS_MPa"] for s in sweep], 0, where=[s["CFS_MPa"] > 0 for s in sweep], alpha=0.3, color='red', label='Reactivated')
+            ax1.set_xlabel("ΔPp (MPa)"); ax1.set_ylabel("CFS (MPa)")
+            ax1.set_title(f"Coulomb Failure Stress — {well}"); ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+            # Magnitude vs volume
+            vols = np.logspace(2, 7, 20)
+            mws = [(2/3) * np.log10(G * v) - 6.07 for v in vols]
+            ax2.semilogx(vols, mws, 'b-', lw=2)
+            ax2.axvline(V_injected_m3, color='red', ls='--', label=f'Annual V={V_injected_m3:.0f} m³')
+            ax2.set_xlabel("Injected Volume (m³)"); ax2.set_ylabel("Max Mw")
+            ax2.set_title("Seismic Magnitude vs Volume"); ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+            fig.tight_layout(); plot_b64 = fig_to_base64(fig); plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_m": depth_m, "injection_rate_m3_day": injection_rate_m3_day,
+            "delta_Pp_MPa": delta_Pp_MPa, "fault_distance_m": fault_distance_m, "fault_friction": fault_friction,
+            "CFS_initial_MPa": round(float(CFS_initial), 3), "CFS_after_MPa": round(float(CFS_after), 3),
+            "delta_CFS_MPa": round(float(delta_CFS), 3), "Mw_max": round(float(Mw_max), 1),
+            "t_reach_days": round(float(t_reach_days), 0), "seism_class": seism_class,
+            "pressure_sweep": sweep, "recommendations": recs, "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Induced seismicity: {seism_class} for {well}",
+                "risk_level": "HIGH" if seism_class == "HIGH_RISK" else "MODERATE" if seism_class == "MODERATE_RISK" else "LOW",
+                "what_this_means": f"CFS change {delta_CFS:.2f} MPa, max Mw {Mw_max:.1f} estimated",
+                "for_non_experts": "Fluid injection can increase pore pressure on nearby faults, potentially triggering earthquakes. This analysis estimates seismic risk based on injection parameters and fault proximity."
+            }, "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result: return JSONResponse(result, status_code=404)
+    _induced_seismicity_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_induced_seismicity_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [281] Wellbore Trajectory Stress  (v3.69.0)
+# ═══════════════════════════════════════════════════════════════════════
+_traj_stress_cache: dict = {}
+
+@app.post("/api/analysis/wellbore-trajectory-stress")
+async def analysis_wellbore_trajectory_stress(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_azimuths = body.get("n_azimuths", 36)
+    n_inclinations = body.get("n_inclinations", 10)
+    depth_m = body.get("depth_m", 3000)
+    UCS_MPa = body.get("UCS_MPa", 50)
+
+    ck = f"{source}_{well}_{n_azimuths}_{n_inclinations}_{depth_m}_{UCS_MPa}"
+    if ck in _traj_stress_cache:
+        return JSONResponse(_traj_stress_cache[ck])
+
+    def _compute():
+        import time; t0 = time.time()
+        df = get_df(source); dw = df[df["well"] == well].copy()
+        if dw.empty: return {"error": f"No data for well {well}"}
+
+        d = depth_m; Sv = 0.025 * d; Pp = 0.0098 * d
+        Shmin = 0.6 * Sv + 0.4 * Pp; SHmax = 1.2 * Sv - 0.2 * Pp
+
+        azimuths = np.linspace(0, 360, n_azimuths, endpoint=False)
+        inclinations = np.linspace(0, 90, n_inclinations)
+        grid = []
+        best_azi, best_inc, best_si = 0, 0, 0
+
+        for azi in azimuths:
+            for inc in inclinations:
+                azi_r = np.radians(azi); inc_r = np.radians(inc)
+                cos_i = np.cos(inc_r); sin_i = np.sin(inc_r)
+                sigma_xx = SHmax * np.cos(azi_r)**2 + Shmin * np.sin(azi_r)**2
+                sigma_yy = SHmax * np.sin(azi_r)**2 + Shmin * np.cos(azi_r)**2
+                sigma_theta = sigma_xx + sigma_yy + 2*abs(sigma_xx - sigma_yy) - Pp
+                si = UCS_MPa / sigma_theta if sigma_theta > 0 else 999
+                grid.append({"azimuth_deg": round(float(azi), 1), "inclination_deg": round(float(inc), 1), "stability_index": round(float(si), 3)})
+                if si > best_si: best_azi, best_inc, best_si = azi, inc, si
+
+        worst_si = min(g["stability_index"] for g in grid)
+        if worst_si < 0.5: traj_class = "HIGHLY_CONSTRAINED"
+        elif worst_si < 1.0: traj_class = "CONSTRAINED"
+        elif best_si > 2.0: traj_class = "FLEXIBLE"
+        else: traj_class = "MODERATE"
+
+        recs = []
+        recs.append(f"Optimal direction: {best_azi:.0f}°/{best_inc:.0f}° (SI={best_si:.2f})")
+        recs.append(f"Worst SI: {worst_si:.2f} — avoid these orientations")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+            si_matrix = np.array([g["stability_index"] for g in grid]).reshape(n_azimuths, n_inclinations)
+            im = ax.imshow(si_matrix, aspect='auto', cmap='RdYlGn', extent=[0, 90, 360, 0], vmin=0.5, vmax=2.5)
+            ax.set_xlabel("Inclination (°)"); ax.set_ylabel("Azimuth (°)")
+            ax.set_title(f"Trajectory Stability Map — {well} at {depth_m}m")
+            fig.colorbar(im, ax=ax, label='Stability Index')
+            ax.plot(best_inc, best_azi, 'k*', ms=15, label=f'Optimal {best_azi:.0f}°/{best_inc:.0f}°')
+            ax.legend(fontsize=8)
+            fig.tight_layout(); plot_b64 = fig_to_base64(fig); plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_m": depth_m, "UCS_MPa": UCS_MPa,
+            "n_azimuths": n_azimuths, "n_inclinations": n_inclinations,
+            "best_azimuth_deg": round(float(best_azi), 1),
+            "best_inclination_deg": round(float(best_inc), 1),
+            "best_stability_index": round(float(best_si), 3),
+            "worst_stability_index": round(float(worst_si), 3),
+            "traj_class": traj_class,
+            "grid": grid, "recommendations": recs, "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Trajectory flexibility: {traj_class} for {well}",
+                "risk_level": "HIGH" if traj_class == "HIGHLY_CONSTRAINED" else "MODERATE" if traj_class == "CONSTRAINED" else "LOW",
+                "what_this_means": f"Optimal direction {best_azi:.0f}°/{best_inc:.0f}° with SI={best_si:.2f}",
+                "for_non_experts": "This heatmap shows which well directions are safest to drill at this depth. Green = stable, red = unstable. The star marks the optimal direction."
+            }, "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result: return JSONResponse(result, status_code=404)
+    _traj_stress_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_traj_stress_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [282] Reservoir Compaction  (v3.69.0)
+# ═══════════════════════════════════════════════════════════════════════
+_compaction_cache: dict = {}
+
+@app.post("/api/analysis/reservoir-compaction")
+async def analysis_reservoir_compaction(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = body.get("depth_m", 3000)
+    reservoir_thickness_m = body.get("reservoir_thickness_m", 50)
+    depletion_MPa = body.get("depletion_MPa", 15)
+    porosity = body.get("porosity", 0.2)
+    bulk_modulus_GPa = body.get("bulk_modulus_GPa", 10)
+
+    ck = f"{source}_{well}_{depth_m}_{reservoir_thickness_m}_{depletion_MPa}_{porosity}_{bulk_modulus_GPa}"
+    if ck in _compaction_cache:
+        return JSONResponse(_compaction_cache[ck])
+
+    def _compute():
+        import time; t0 = time.time()
+        df = get_df(source); dw = df[df["well"] == well].copy()
+        if dw.empty: return {"error": f"No data for well {well}"}
+
+        Cm = 1 / (bulk_modulus_GPa * 1000)  # 1/MPa compressibility
+        # Uniaxial compaction
+        delta_h = Cm * depletion_MPa * reservoir_thickness_m  # meters
+        strain_pct = delta_h / reservoir_thickness_m * 100
+
+        # Subsidence at surface (Geertsma 1973 nucleus of strain)
+        D = depth_m; R = (reservoir_thickness_m * 100)**0.5  # rough radius
+        subsidence_m = delta_h * (1 - D / np.sqrt(D**2 + R**2)) * 2
+
+        # Depletion sweep
+        depletions = np.linspace(0, depletion_MPa * 1.5, 20)
+        path = []
+        for dp in depletions:
+            dh = Cm * dp * reservoir_thickness_m
+            sub = dh * (1 - D / np.sqrt(D**2 + R**2)) * 2
+            path.append({
+                "depletion_MPa": round(float(dp), 2),
+                "compaction_m": round(float(dh), 4),
+                "subsidence_m": round(float(sub), 4),
+                "strain_pct": round(float(dh / reservoir_thickness_m * 100), 4),
+            })
+
+        if delta_h > 1.0: comp_class = "SEVERE"
+        elif delta_h > 0.1: comp_class = "SIGNIFICANT"
+        elif delta_h > 0.01: comp_class = "MODERATE"
+        else: comp_class = "MINOR"
+
+        recs = []
+        if comp_class in ("SEVERE", "SIGNIFICANT"):
+            recs.append("Significant compaction — monitor casing deformation, consider compaction drive")
+        recs.append(f"Compaction: {delta_h:.3f} m ({strain_pct:.2f}%) over {reservoir_thickness_m}m reservoir")
+        recs.append(f"Surface subsidence: {subsidence_m:.3f} m estimated (Geertsma model)")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+            deps = [p["depletion_MPa"] for p in path]
+            ax1.plot(deps, [p["compaction_m"] for p in path], 'r-', lw=2, label='Compaction')
+            ax1.set_xlabel("Depletion (MPa)"); ax1.set_ylabel("Compaction (m)")
+            ax1.set_title(f"Reservoir Compaction — {well}"); ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+            ax2.plot(deps, [p["subsidence_m"] * 100 for p in path], 'b-', lw=2, label='Subsidence')
+            ax2.set_xlabel("Depletion (MPa)"); ax2.set_ylabel("Subsidence (cm)")
+            ax2.set_title("Surface Subsidence"); ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+            fig.tight_layout(); plot_b64 = fig_to_base64(fig); plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_m": depth_m, "reservoir_thickness_m": reservoir_thickness_m,
+            "depletion_MPa": depletion_MPa, "porosity": porosity, "bulk_modulus_GPa": bulk_modulus_GPa,
+            "compaction_m": round(float(delta_h), 4), "strain_pct": round(float(strain_pct), 4),
+            "subsidence_m": round(float(subsidence_m), 4),
+            "comp_class": comp_class,
+            "path": path, "recommendations": recs, "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Compaction: {comp_class} for {well}",
+                "risk_level": "HIGH" if comp_class in ("SEVERE",) else "MODERATE" if comp_class == "SIGNIFICANT" else "LOW",
+                "what_this_means": f"Compaction {delta_h:.3f}m, subsidence {subsidence_m:.3f}m after {depletion_MPa} MPa depletion",
+                "for_non_experts": "As reservoir pressure drops during production, the rock compresses. This can cause surface subsidence and casing damage. Compaction also drives fluid toward wells (compaction drive)."
+            }, "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result: return JSONResponse(result, status_code=404)
+    _compaction_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_compaction_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [283] Perforation Stability  (v3.69.0)
+# ═══════════════════════════════════════════════════════════════════════
+_perf_stability_cache: dict = {}
+
+@app.post("/api/analysis/perforation-stability")
+async def analysis_perforation_stability(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = body.get("depth_m", 3000)
+    perf_angle_deg = body.get("perf_angle_deg", 0)
+    perf_length_in = body.get("perf_length_in", 12)
+    UCS_MPa = body.get("UCS_MPa", 40)
+    drawdown_MPa = body.get("drawdown_MPa", 5)
+
+    ck = f"{source}_{well}_{depth_m}_{perf_angle_deg}_{perf_length_in}_{UCS_MPa}_{drawdown_MPa}"
+    if ck in _perf_stability_cache:
+        return JSONResponse(_perf_stability_cache[ck])
+
+    def _compute():
+        import time; t0 = time.time()
+        df = get_df(source); dw = df[df["well"] == well].copy()
+        if dw.empty: return {"error": f"No data for well {well}"}
+
+        d = depth_m; Sv = 0.025 * d; Pp = 0.0098 * d
+        Shmin = 0.6 * Sv + 0.4 * Pp; SHmax = 1.2 * Sv - 0.2 * Pp
+        Pw = Pp - drawdown_MPa  # wellbore pressure during production
+
+        # Perf tunnel hoop stress (simplified)
+        theta = np.radians(perf_angle_deg)
+        sigma_r = Pw  # radial = wellbore pressure
+        sigma_theta_perf = SHmax + Shmin - 2*(SHmax - Shmin)*np.cos(2*theta) - Pw
+        sigma_z_perf = Sv - 2*(SHmax - Shmin)*np.cos(2*theta) * 0.3  # Poisson effect
+
+        # Stability of perforation tunnel
+        effective_hoop = sigma_theta_perf - Pw
+        perf_SI = UCS_MPa / effective_hoop if effective_hoop > 0 else 999
+
+        # Sweep over angles
+        angles = np.linspace(0, 360, 72, endpoint=False)
+        angle_sweep = []
+        best_angle = 0; best_si = 0
+        for a in angles:
+            th = np.radians(a)
+            st = SHmax + Shmin - 2*(SHmax - Shmin)*np.cos(2*th) - Pw
+            si = UCS_MPa / (st - Pw) if (st - Pw) > 0 else 999
+            angle_sweep.append({"angle_deg": round(float(a), 1), "hoop_MPa": round(float(st), 2), "SI": round(float(si), 3)})
+            if si > best_si: best_angle = a; best_si = si
+
+        if perf_SI < 0.5: perf_class = "UNSTABLE"
+        elif perf_SI < 1.0: perf_class = "MARGINAL"
+        elif perf_SI < 1.5: perf_class = "STABLE"
+        else: perf_class = "VERY_STABLE"
+
+        recs = []
+        recs.append(f"Best perforation angle: {best_angle:.0f}° (SI={best_si:.2f})")
+        if perf_class == "UNSTABLE":
+            recs.append("Perforation tunnel will collapse — reduce drawdown or orient perfs optimally")
+        recs.append(f"Perf at {perf_angle_deg}°: SI={perf_SI:.2f}, drawdown={drawdown_MPa} MPa")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 6), subplot_kw={'projection': 'polar'})
+            angles_r = [np.radians(s["angle_deg"]) for s in angle_sweep]
+            sis = [s["SI"] for s in angle_sweep]
+            colors = ['red' if s < 1 else 'orange' if s < 1.5 else 'green' for s in sis]
+            ax.scatter(angles_r, sis, c=colors, s=30, alpha=0.7)
+            ax.plot(angles_r + [angles_r[0]], sis + [sis[0]], 'b-', lw=1, alpha=0.5)
+            ax.set_title(f"Perforation Stability — {well} at {depth_m}m", pad=20)
+            ax.set_rlabel_position(0)
+            fig.tight_layout(); plot_b64 = fig_to_base64(fig); plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_m": depth_m, "perf_angle_deg": perf_angle_deg,
+            "perf_length_in": perf_length_in, "UCS_MPa": UCS_MPa, "drawdown_MPa": drawdown_MPa,
+            "perf_SI": round(float(perf_SI), 3),
+            "best_angle_deg": round(float(best_angle), 1),
+            "best_SI": round(float(best_si), 3),
+            "perf_class": perf_class,
+            "angle_sweep": angle_sweep, "recommendations": recs, "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Perforation stability: {perf_class} for {well}",
+                "risk_level": "HIGH" if perf_class == "UNSTABLE" else "MODERATE" if perf_class == "MARGINAL" else "LOW",
+                "what_this_means": f"Perf at {perf_angle_deg}° SI={perf_SI:.2f}, optimal at {best_angle:.0f}°",
+                "for_non_experts": "Perforations are holes shot through casing into the reservoir. Their orientation relative to stress affects whether they stay open or collapse during production."
+            }, "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result: return JSONResponse(result, status_code=404)
+    _perf_stability_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_perf_stability_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [284] Critical Drawdown Pressure  (v3.69.0)
+# ═══════════════════════════════════════════════════════════════════════
+_critical_drawdown_cache: dict = {}
+
+@app.post("/api/analysis/critical-drawdown")
+async def analysis_critical_drawdown(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    UCS_MPa = body.get("UCS_MPa", 30)
+    TWC_factor = body.get("TWC_factor", 0.5)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{UCS_MPa}_{TWC_factor}"
+    if ck in _critical_drawdown_cache:
+        return JSONResponse(_critical_drawdown_cache[ck])
+
+    def _compute():
+        import time; t0 = time.time()
+        df = get_df(source); dw = df[df["well"] == well].copy()
+        if dw.empty: return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            Sv = 0.025 * d; Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp; SHmax = 1.2 * Sv - 0.2 * Pp
+            TWC = UCS_MPa * TWC_factor + 0.005 * d  # depth-dependent
+            # Max hoop stress at wellbore
+            sigma_theta = 3 * SHmax - Shmin - Pp
+            # Critical drawdown: Pw where hoop stress exceeds TWC
+            # sigma_theta(Pw) = 3*SHmax - Shmin - Pw, failure when sigma_theta - Pw > TWC
+            # => Pw_crit = (3*SHmax - Shmin - TWC) / 2 (simplified)
+            Pw_crit = (3 * SHmax - Shmin - TWC) / 2
+            crit_drawdown = Pp - Pw_crit  # drawdown = Pp - Pw
+            crit_drawdown = max(0, crit_drawdown)
+            crit_drawdown_psi = crit_drawdown * 145.038
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_MPa": round(float(Pp), 2),
+                "TWC_MPa": round(float(TWC), 2),
+                "critical_drawdown_MPa": round(float(crit_drawdown), 2),
+                "critical_drawdown_psi": round(float(crit_drawdown_psi), 0),
+            })
+
+        min_dd = min(p["critical_drawdown_MPa"] for p in profile)
+        mean_dd = round(np.mean([p["critical_drawdown_MPa"] for p in profile]), 2)
+        if min_dd < 2: dd_class = "VERY_LOW"
+        elif min_dd < 5: dd_class = "LOW"
+        elif min_dd < 10: dd_class = "MODERATE"
+        else: dd_class = "HIGH"
+
+        recs = []
+        if dd_class in ("VERY_LOW", "LOW"):
+            recs.append("Low critical drawdown — production rate must be limited to prevent sanding")
+        recs.append(f"Min critical drawdown: {min_dd:.1f} MPa ({min_dd*145:.0f} psi)")
+        recs.append(f"Mean critical drawdown: {mean_dd} MPa, UCS={UCS_MPa} MPa")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+            ds = [p["depth_m"] for p in profile]
+            dds = [p["critical_drawdown_MPa"] for p in profile]
+            colors = ['red' if d < 2 else 'orange' if d < 5 else 'green' for d in dds]
+            ax.barh(ds, dds, height=(depth_to-depth_from)/n_points*0.8, color=colors, alpha=0.7)
+            ax.axvline(2, color='red', ls='--', lw=1, label='Very low')
+            ax.axvline(5, color='orange', ls='--', lw=1, label='Low')
+            ax.set_xlabel("Critical Drawdown (MPa)"); ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis(); ax.set_title(f"Critical Drawdown — {well}")
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+            fig.tight_layout(); plot_b64 = fig_to_base64(fig); plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "UCS_MPa": UCS_MPa, "TWC_factor": TWC_factor,
+            "min_critical_drawdown_MPa": round(float(min_dd), 2),
+            "mean_critical_drawdown_MPa": mean_dd,
+            "dd_class": dd_class,
+            "profile": profile, "recommendations": recs, "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Critical drawdown: {dd_class} for {well}",
+                "risk_level": "HIGH" if dd_class in ("VERY_LOW", "LOW") else "MODERATE" if dd_class == "MODERATE" else "LOW",
+                "what_this_means": f"Min critical drawdown {min_dd:.1f} MPa — max safe pressure drop during production",
+                "for_non_experts": "Critical drawdown is the maximum pressure drop you can apply during production before the rock around perforations fails and sand enters the well."
+            }, "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result: return JSONResponse(result, status_code=404)
+    _critical_drawdown_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_critical_drawdown_cache[ck])

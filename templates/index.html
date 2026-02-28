@@ -4300,6 +4300,81 @@
                         </div>
                     </div>
 
+                    <!-- [280] Injection-Induced Seismicity -->
+                    <div class="card mb-3" id="injSeismicCard">
+                        <div class="card-header bg-danger text-white"><h6>[280] Injection-Induced Seismicity Risk</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="injseis-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input id="injseis-depth" class="form-control form-control-sm" type="number" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">Inj Press (MPa)</label><input id="injseis-press" class="form-control form-control-sm" type="number" value="35"></div>
+                                <div class="col-md-3"><label class="form-label">Volume (m³)</label><input id="injseis-vol" class="form-control form-control-sm" type="number" value="5000"></div>
+                            </div>
+                            <button class="btn btn-danger" onclick="runInjSeismicity()">Run Seismicity Analysis</button>
+                            <div id="injSeismicResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [281] Wellbore Trajectory Stress -->
+                    <div class="card mb-3" id="trajStressCard">
+                        <div class="card-header bg-info text-white"><h6>[281] Wellbore Trajectory Stress</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="trajstress-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input id="trajstress-depth" class="form-control form-control-sm" type="number" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">UCS (MPa)</label><input id="trajstress-ucs" class="form-control form-control-sm" type="number" value="50"></div>
+                                <div class="col-md-3"><label class="form-label">Grid Step (°)</label><input id="trajstress-step" class="form-control form-control-sm" type="number" value="15"></div>
+                            </div>
+                            <button class="btn btn-info text-white" onclick="runTrajStress()">Run Trajectory Analysis</button>
+                            <div id="trajStressResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [282] Reservoir Compaction -->
+                    <div class="card mb-3" id="resCompCard">
+                        <div class="card-header bg-warning text-dark"><h6>[282] Reservoir Compaction</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="rescomp-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input id="rescomp-depth" class="form-control form-control-sm" type="number" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">Thickness (m)</label><input id="rescomp-thick" class="form-control form-control-sm" type="number" value="50"></div>
+                                <div class="col-md-3"><label class="form-label">Depletion (MPa)</label><input id="rescomp-depl" class="form-control form-control-sm" type="number" value="15"></div>
+                            </div>
+                            <button class="btn btn-warning" onclick="runResCompaction()">Run Compaction Analysis</button>
+                            <div id="resCompResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [283] Perforation Stability -->
+                    <div class="card mb-3" id="perfStabCard">
+                        <div class="card-header bg-primary text-white"><h6>[283] Perforation Stability</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="perfstab-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input id="perfstab-depth" class="form-control form-control-sm" type="number" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">UCS (MPa)</label><input id="perfstab-ucs" class="form-control form-control-sm" type="number" value="50"></div>
+                                <div class="col-md-3"><label class="form-label">Steps</label><input id="perfstab-steps" class="form-control form-control-sm" type="number" value="36"></div>
+                            </div>
+                            <button class="btn btn-primary" onclick="runPerfStability()">Run Perforation Analysis</button>
+                            <div id="perfStabResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [284] Critical Drawdown -->
+                    <div class="card mb-3" id="critDDCard">
+                        <div class="card-header bg-secondary text-white"><h6>[284] Critical Drawdown Pressure</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="critdd-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input id="critdd-depth" class="form-control form-control-sm" type="number" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">UCS (MPa)</label><input id="critdd-ucs" class="form-control form-control-sm" type="number" value="50"></div>
+                                <div class="col-md-3"><label class="form-label">TWC Factor</label><input id="critdd-twc" class="form-control form-control-sm" type="number" step="0.1" value="3.0"></div>
+                            </div>
+                            <button class="btn btn-secondary" onclick="runCritDrawdown()">Run Drawdown Analysis</button>
+                            <div id="critDDResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
