@@ -14672,3 +14672,169 @@ async function runBreakoutAzimuth() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// [205] Fracture Compliance Tensor (v3.54.0)
+// ═══════════════════════════════════════════════════════════════
+async function runFracCompliance() {
+    var results = document.getElementById('results-fracture-compliance');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var bn = parseFloat(document.getElementById('compliance-bn').value) || 1e-10;
+        var bt = parseFloat(document.getElementById('compliance-bt').value) || 5e-11;
+        var resp = await fetch('/api/analysis/fracture-compliance', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,normal_compliance:bn,tangential_compliance:bt})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Fractures</strong><br>' + r.n_fractures + '</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Anisotropy Ratio</strong><br>' + (r.anisotropy_ratio || 0).toFixed(2) + '</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Class</strong><br><span class="badge bg-' + (r.anisotropy_class === 'HIGH' ? 'danger' : r.anisotropy_class === 'MODERATE' ? 'warning' : 'success') + '">' + (r.anisotropy_class||'-') + '</span></div></div>';
+        html += '</div>';
+        if (r.tensor_components) {
+            html += '<h6>Tensor Components</h6><table class="table table-sm"><tr><th>S11</th><th>S22</th><th>S33</th><th>S12</th><th>S13</th><th>S23</th></tr>';
+            var tc = r.tensor_components;
+            html += '<tr><td>'+tc.S11+'</td><td>'+tc.S22+'</td><td>'+tc.S33+'</td><td>'+tc.S12+'</td><td>'+tc.S13+'</td><td>'+tc.S23+'</td></tr></table>';
+        }
+        if (r.principal_compliances) {
+            html += '<h6>Principal Compliances</h6><table class="table table-sm"><tr><th>Axis</th><th>Compliance</th><th>Direction</th></tr>';
+            r.principal_compliances.forEach(function(p){ html += '<tr><td>'+p.axis+'</td><td>'+p.compliance.toExponential(3)+'</td><td>['+p.direction.join(', ')+']</td></tr>'; });
+            html += '</table>';
+        }
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [206] Pore Pressure Depletion Effect (v3.54.0)
+// ═══════════════════════════════════════════════════════════════
+async function runPpDepletion() {
+    var results = document.getElementById('results-pp-depletion');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var depth = parseFloat(document.getElementById('depletion-depth').value) || 3000;
+        var depl = parseFloat(document.getElementById('depletion-mpa').value) || 10;
+        var friction = parseFloat(document.getElementById('depletion-friction').value) || 0.6;
+        var resp = await fetch('/api/analysis/pp-depletion', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth:depth,depletion_mpa:depl,friction:friction})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Initial CS%</strong><br>' + r.initial_cs_pct + '%</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Final CS%</strong><br>' + r.final_cs_pct + '%</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Change</strong><br>' + (r.cs_change_pct > 0 ? '+' : '') + r.cs_change_pct + '%</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Impact</strong><br><span class="badge bg-' + (r.impact_class === 'SEVERE' ? 'danger' : r.impact_class === 'SIGNIFICANT' ? 'warning' : r.impact_class === 'BENEFICIAL' ? 'success' : 'info') + '">' + (r.impact_class||'-') + '</span></div></div>';
+        html += '</div>';
+        html += '<div class="row mb-2"><div class="col-md-4"><small>Stress Path A=' + (r.stress_path_coefficient||0).toFixed(4) + '</small></div>';
+        html += '<div class="col-md-4"><small>Pp: ' + r.Pp_initial_MPa + ' → ' + r.Pp_final_MPa + ' MPa</small></div>';
+        html += '<div class="col-md-4"><small>Sv=' + r.Sv_MPa + ' MPa</small></div></div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [207] Fracture Reactivation Pressure (v3.54.0)
+// ═══════════════════════════════════════════════════════════════
+async function runReactivationPressure() {
+    var results = document.getElementById('results-reactivation-pressure');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var depth = parseFloat(document.getElementById('reactivation-depth').value) || 3000;
+        var friction = parseFloat(document.getElementById('reactivation-friction').value) || 0.6;
+        var resp = await fetch('/api/analysis/reactivation-pressure', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth:depth,friction:friction})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Fractures</strong><br>' + r.n_fractures + '</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Currently Critical</strong><br>' + r.n_currently_critical + '</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Min Margin</strong><br>' + (r.min_Pp_margin_MPa||0).toFixed(2) + ' MPa</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Risk</strong><br><span class="badge bg-' + (r.risk_class === 'CRITICAL' || r.risk_class === 'HIGH' ? 'danger' : r.risk_class === 'MODERATE' ? 'warning' : 'success') + '">' + (r.risk_class||'-') + '</span></div></div>';
+        html += '</div>';
+        html += '<div class="row mb-2"><div class="col-md-4"><small>Min Pp Critical: ' + (r.min_Pp_critical_MPa||0).toFixed(1) + ' MPa</small></div>';
+        html += '<div class="col-md-4"><small>Mean Margin: ' + (r.mean_Pp_margin_MPa||0).toFixed(2) + ' MPa</small></div>';
+        html += '<div class="col-md-4"><small>Current Pp=' + r.Pp_MPa + ' MPa</small></div></div>';
+        if (r.top_vulnerable && r.top_vulnerable.length > 0) {
+            html += '<h6>Top Vulnerable Fractures</h6><table class="table table-sm"><tr><th>Az</th><th>Dip</th><th>σn</th><th>τ</th><th>Pp Crit</th><th>Margin</th><th>Critical</th></tr>';
+            r.top_vulnerable.slice(0,5).forEach(function(f){ html += '<tr><td>'+f.azimuth_deg+'°</td><td>'+f.dip_deg+'°</td><td>'+f.sigma_n_MPa+'</td><td>'+f.tau_MPa+'</td><td>'+f.Pp_critical_MPa+'</td><td>'+f.Pp_margin_MPa+'</td><td>'+(f.currently_critical?'YES':'no')+'</td></tr>'; });
+            html += '</table>';
+        }
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [208] Wellbore Deviation Survey (v3.54.0)
+// ═══════════════════════════════════════════════════════════════
+async function runDeviationSurvey() {
+    var results = document.getElementById('results-deviation-survey');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var depth = parseFloat(document.getElementById('deviation-depth').value) || 3000;
+        var az = parseFloat(document.getElementById('deviation-azimuth').value) || 0;
+        var inc = parseFloat(document.getElementById('deviation-inclination').value) || 60;
+        var ns = parseInt(document.getElementById('deviation-stations').value) || 20;
+        var resp = await fetch('/api/analysis/deviation-survey', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth:depth,azimuth_deg:az,max_inclination:inc,n_stations:ns})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Stations</strong><br>' + r.n_stations + '</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>% Stable</strong><br>' + r.pct_stable + '%</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Min SF</strong><br>' + (r.min_safety_factor||0).toFixed(3) + '</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Stability</strong><br><span class="badge bg-' + (r.stability_class === 'UNSTABLE' || r.stability_class === 'MARGINAL' ? 'danger' : r.stability_class === 'MOSTLY_STABLE' ? 'warning' : 'success') + '">' + (r.stability_class||'-') + '</span></div></div>';
+        html += '</div>';
+        if (r.critical_station) {
+            var cs = r.critical_station;
+            html += '<div class="alert alert-warning"><small>Critical station #' + cs.station + ': TVD=' + cs.TVD_m + 'm, Inc=' + cs.inclination_deg + '°, SF=' + cs.sf_collapse + '</small></div>';
+        }
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [209] Rock Strength Profile (v3.54.0)
+// ═══════════════════════════════════════════════════════════════
+async function runRockStrength() {
+    var results = document.getElementById('results-rock-strength');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('well-select') ? document.getElementById('well-select').value : '3P';
+        var from = parseFloat(document.getElementById('rockstr-from').value) || 2000;
+        var to = parseFloat(document.getElementById('rockstr-to').value) || 4000;
+        var lith = document.getElementById('rockstr-lithology').value || 'sandstone';
+        var np = parseInt(document.getElementById('rockstr-npoints').value) || 30;
+        var resp = await fetch('/api/analysis/rock-strength', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:from,depth_to:to,lithology:lith,n_points:np})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Lithology</strong><br>' + (r.lithology||'-') + '</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Mean UCS</strong><br>' + (r.mean_UCS_MPa||0) + ' MPa</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>UCS/Sv</strong><br>' + (r.mean_strength_ratio||0).toFixed(3) + '</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Strength</strong><br><span class="badge bg-' + (r.strength_class === 'WEAK' || r.strength_class === 'VERY_WEAK' ? 'danger' : r.strength_class === 'ADEQUATE' ? 'warning' : 'success') + '">' + (r.strength_class||'-') + '</span></div></div>';
+        html += '</div>';
+        html += '<div class="row mb-2"><div class="col-md-6"><small>UCS Range: ' + r.min_UCS_MPa + ' - ' + r.max_UCS_MPa + ' MPa</small></div>';
+        html += '<div class="col-md-6"><small>Depth: ' + r.depth_from_m + ' - ' + r.depth_to_m + 'm (' + r.n_points + ' points)</small></div></div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}

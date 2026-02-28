@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.53.0 - Fracture Density Log + Stress Gradient + CFF + Fracture Porosity + Breakout Azimuth)."""
+"""GeoStress AI - FastAPI Web Application (v3.54.0 - Compliance Tensor + Pp Depletion + Reactivation Pressure + Deviation Survey + Rock Strength)."""
 
 import os
 import io
@@ -41511,4 +41511,773 @@ async def analysis_breakout_azimuth(request: Request):
         return JSONResponse(result, code)
     result = _sanitize_for_json(result)
     _breakout_azimuth_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [205] Fracture Compliance Tensor  (v3.54.0)
+# ═══════════════════════════════════════════════════════════════════════
+_frac_compliance_cache = {}
+
+@app.post("/api/analysis/fracture-compliance")
+async def analysis_fracture_compliance(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    normal_compliance = body.get("normal_compliance", 1e-10)
+    tangential_compliance = body.get("tangential_compliance", 5e-11)
+    ck = f"{source}:{well}:{normal_compliance}:{tangential_compliance}"
+    if ck in _frac_compliance_cache:
+        return JSONResponse(_frac_compliance_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        dips = df_well[DIP_COL].dropna().values
+        n = min(len(azimuths), len(dips))
+        azimuths = azimuths[:n]
+        dips = dips[:n]
+
+        # Build excess compliance tensor from fracture orientations
+        # S_ij = sum over fractures of (Bn * ni*nj + Bt * (delta_ij - ni*nj))
+        S_excess = np.zeros((3, 3))
+        for i in range(n):
+            az_rad = np.radians(azimuths[i])
+            dip_rad = np.radians(dips[i])
+            nx = np.sin(dip_rad) * np.sin(az_rad)
+            ny = np.sin(dip_rad) * np.cos(az_rad)
+            nz = np.cos(dip_rad)
+            n_vec = np.array([nx, ny, nz])
+            nn = np.outer(n_vec, n_vec)
+            S_excess += normal_compliance * nn + tangential_compliance * (np.eye(3) - nn)
+
+        # Normalize by number of fractures
+        S_excess /= n if n > 0 else 1
+
+        # Eigenvalues = principal compliances
+        eigvals, eigvecs = np.linalg.eigh(S_excess)
+        eigvals = eigvals[::-1]  # Descending
+        eigvecs = eigvecs[:, ::-1]
+
+        # Anisotropy ratio
+        aniso_ratio = eigvals[0] / eigvals[2] if eigvals[2] > 0 else float('inf')
+
+        if aniso_ratio > 5:
+            anisotropy_class = "HIGH"
+        elif aniso_ratio > 2:
+            anisotropy_class = "MODERATE"
+        else:
+            anisotropy_class = "LOW"
+
+        # Tensor components
+        tensor = {
+            "S11": round(float(S_excess[0, 0]), 14),
+            "S22": round(float(S_excess[1, 1]), 14),
+            "S33": round(float(S_excess[2, 2]), 14),
+            "S12": round(float(S_excess[0, 1]), 14),
+            "S13": round(float(S_excess[0, 2]), 14),
+            "S23": round(float(S_excess[1, 2]), 14)
+        }
+
+        principals = []
+        for i in range(3):
+            principals.append({
+                "axis": f"S{i+1}",
+                "compliance": float(eigvals[i]),
+                "direction": [round(float(eigvecs[j, i]), 4) for j in range(3)]
+            })
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            labels = ['S11', 'S22', 'S33']
+            vals = [S_excess[0,0], S_excess[1,1], S_excess[2,2]]
+            axes[0].bar(labels, vals, color=['#2196F3', '#4CAF50', '#F44336'])
+            axes[0].set_ylabel("Compliance (m/Pa)")
+            axes[0].set_title(f"Diagonal Compliance Components - Well {well}")
+            axes[0].ticklabel_format(axis='y', style='scientific', scilimits=(-10,-10))
+
+            axes[1].bar(['S1', 'S2', 'S3'], eigvals, color=['#FF9800', '#9C27B0', '#00BCD4'])
+            axes[1].set_ylabel("Principal Compliance (m/Pa)")
+            axes[1].set_title(f"Principal Compliances (ratio={aniso_ratio:.1f})")
+            axes[1].ticklabel_format(axis='y', style='scientific', scilimits=(-10,-10))
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Compliance anisotropy ratio: {aniso_ratio:.2f} ({anisotropy_class})")
+        if anisotropy_class == "HIGH":
+            recs.append("High anisotropy — seismic velocity will vary significantly with direction")
+        recs.append(f"Based on {n} fractures with Bn={normal_compliance:.1e}, Bt={tangential_compliance:.1e}")
+
+        result = {
+            "well": well,
+            "n_fractures": n,
+            "normal_compliance": normal_compliance,
+            "tangential_compliance": tangential_compliance,
+            "tensor_components": tensor,
+            "principal_compliances": principals,
+            "anisotropy_ratio": round(aniso_ratio, 4),
+            "anisotropy_class": anisotropy_class,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Compliance anisotropy is {anisotropy_class} (ratio {aniso_ratio:.1f})",
+                "risk_level": "HIGH" if anisotropy_class == "HIGH" else ("MODERATE" if anisotropy_class == "MODERATE" else "LOW"),
+                "what_this_means": f"Fractures create {anisotropy_class.lower()} directional weakness in the rock mass",
+                "for_non_experts": f"Fractures make rock weaker in certain directions. "
+                    + f"The weakness ratio is {aniso_ratio:.1f}x. "
+                    + ("This strongly affects how seismic waves travel and how the rock deforms." if anisotropy_class == "HIGH"
+                       else "This moderately affects rock behavior." if anisotropy_class == "MODERATE"
+                       else "The rock behaves fairly uniformly in all directions.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _frac_compliance_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [206] Pore Pressure Depletion Effect  (v3.54.0)
+# ═══════════════════════════════════════════════════════════════════════
+_pp_depletion_cache = {}
+
+@app.post("/api/analysis/pp-depletion")
+async def analysis_pp_depletion(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = body.get("depth", 3000)
+    depletion_mpa = body.get("depletion_mpa", 10)
+    friction = body.get("friction", 0.6)
+    ck = f"{source}:{well}:{depth}:{depletion_mpa}:{friction}"
+    if ck in _pp_depletion_cache:
+        return JSONResponse(_pp_depletion_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        g = 9.81
+        Sv = rho * g * depth / 1e6
+        Pp_initial = 1020 * g * depth / 1e6
+        SHmax_init = 0.9 * Sv
+        Shmin_init = 0.6 * Sv
+
+        # Stress path coefficient (Engelder & Fischer 1994)
+        poisson = 0.25
+        biot = 0.8
+        A_coeff = biot * (1 - 2 * poisson) / (1 - poisson)
+
+        # Depletion steps
+        steps = np.linspace(0, depletion_mpa, 21)
+        path = []
+        for dp in steps:
+            Pp = Pp_initial - dp
+            # Horizontal stresses decrease with depletion
+            Shmin = Shmin_init - A_coeff * dp
+            SHmax = SHmax_init - A_coeff * dp
+            # Sv stays constant (total overburden unchanged)
+
+            # Count critically stressed at this Pp
+            azimuths = df_well[AZIMUTH_COL].dropna().values
+            dips_arr = df_well[DIP_COL].dropna().values
+            nn = min(len(azimuths), len(dips_arr))
+            S = np.diag([SHmax, Shmin, Sv])
+            n_cs = 0
+            for i in range(nn):
+                az_rad = np.radians(azimuths[i])
+                dip_rad = np.radians(dips_arr[i])
+                nx = np.sin(dip_rad) * np.sin(az_rad)
+                ny = np.sin(dip_rad) * np.cos(az_rad)
+                nz = np.cos(dip_rad)
+                n_vec = np.array([nx, ny, nz])
+                traction = S @ n_vec
+                sigma_n = float(np.dot(traction, n_vec))
+                tau = float(np.sqrt(max(0, np.dot(traction, traction) - sigma_n**2)))
+                sigma_n_eff = sigma_n - Pp
+                if sigma_n_eff > 0.1 and tau / sigma_n_eff > friction:
+                    n_cs += 1
+            cs_pct = round(100.0 * n_cs / nn, 1) if nn > 0 else 0
+
+            path.append({
+                "depletion_MPa": round(float(dp), 2),
+                "Pp_MPa": round(float(Pp), 2),
+                "Shmin_MPa": round(float(Shmin), 2),
+                "SHmax_MPa": round(float(SHmax), 2),
+                "cs_pct": cs_pct,
+                "n_cs": n_cs
+            })
+
+        initial_cs = path[0]["cs_pct"]
+        final_cs = path[-1]["cs_pct"]
+        cs_change = final_cs - initial_cs
+
+        if cs_change > 20:
+            impact_class = "SEVERE"
+        elif cs_change > 5:
+            impact_class = "SIGNIFICANT"
+        elif cs_change > 0:
+            impact_class = "MINOR"
+        else:
+            impact_class = "BENEFICIAL"
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            deps = [p["depletion_MPa"] for p in path]
+            cs_vals = [p["cs_pct"] for p in path]
+            axes[0].plot(deps, cs_vals, 'r-o', markersize=4)
+            axes[0].set_xlabel("Pore Pressure Depletion (MPa)")
+            axes[0].set_ylabel("Critically Stressed (%)")
+            axes[0].set_title(f"Depletion Effect on CS% - Well {well}")
+            axes[0].grid(True, alpha=0.3)
+
+            shmin_vals = [p["Shmin_MPa"] for p in path]
+            shmax_vals = [p["SHmax_MPa"] for p in path]
+            pp_vals = [p["Pp_MPa"] for p in path]
+            axes[1].plot(deps, shmin_vals, 'b-', label='Shmin')
+            axes[1].plot(deps, shmax_vals, 'r-', label='SHmax')
+            axes[1].plot(deps, pp_vals, 'g--', label='Pp')
+            axes[1].axhline(Sv, color='k', linestyle=':', label=f'Sv={Sv:.1f}')
+            axes[1].set_xlabel("Depletion (MPa)")
+            axes[1].set_ylabel("Stress (MPa)")
+            axes[1].set_title("Stress Evolution with Depletion")
+            axes[1].legend()
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"CS% changes from {initial_cs}% to {final_cs}% with {depletion_mpa} MPa depletion ({impact_class})")
+        recs.append(f"Stress path coefficient A={A_coeff:.3f} (Biot={biot}, v={poisson})")
+        if impact_class in ("SEVERE", "SIGNIFICANT"):
+            recs.append("WARNING: Depletion significantly increases fracture reactivation risk")
+
+        result = {
+            "well": well,
+            "depth_m": depth,
+            "depletion_mpa": depletion_mpa,
+            "friction": friction,
+            "Sv_MPa": round(Sv, 2),
+            "Pp_initial_MPa": round(Pp_initial, 2),
+            "Pp_final_MPa": round(Pp_initial - depletion_mpa, 2),
+            "stress_path_coefficient": round(A_coeff, 4),
+            "initial_cs_pct": initial_cs,
+            "final_cs_pct": final_cs,
+            "cs_change_pct": round(cs_change, 1),
+            "impact_class": impact_class,
+            "n_steps": len(path),
+            "path": path,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Depletion impact is {impact_class} (CS% {initial_cs}→{final_cs}%)",
+                "risk_level": "HIGH" if impact_class in ("SEVERE", "SIGNIFICANT") else ("MODERATE" if impact_class == "MINOR" else "LOW"),
+                "what_this_means": f"{depletion_mpa} MPa depletion changes critically stressed fractures from {initial_cs}% to {final_cs}%",
+                "for_non_experts": f"As reservoir pressure drops by {depletion_mpa} MPa during production, "
+                    + f"the fraction of fractures at risk of slipping changes from {initial_cs}% to {final_cs}%. "
+                    + ("This is a serious concern — production could trigger fault slip." if impact_class == "SEVERE"
+                       else "This is notable — monitor fracture behavior during production." if impact_class == "SIGNIFICANT"
+                       else "The effect is minor — depletion poses low risk." if impact_class == "MINOR"
+                       else "Depletion actually stabilizes the fracture network.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _pp_depletion_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [207] Fracture Reactivation Pressure  (v3.54.0)
+# ═══════════════════════════════════════════════════════════════════════
+_reactivation_pressure_cache = {}
+
+@app.post("/api/analysis/reactivation-pressure")
+async def analysis_reactivation_pressure(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = body.get("depth", 3000)
+    friction = body.get("friction", 0.6)
+    ck = f"{source}:{well}:{depth}:{friction}"
+    if ck in _reactivation_pressure_cache:
+        return JSONResponse(_reactivation_pressure_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        g = 9.81
+        Sv = rho * g * depth / 1e6
+        Pp = 1020 * g * depth / 1e6
+        SHmax = 0.9 * Sv
+        Shmin = 0.6 * Sv
+        S = np.diag([SHmax, Shmin, Sv])
+
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        dips_arr = df_well[DIP_COL].dropna().values
+        nn = min(len(azimuths), len(dips_arr))
+
+        fractures = []
+        for i in range(nn):
+            az_rad = np.radians(azimuths[i])
+            dip_rad = np.radians(dips_arr[i])
+            nx = np.sin(dip_rad) * np.sin(az_rad)
+            ny = np.sin(dip_rad) * np.cos(az_rad)
+            nz = np.cos(dip_rad)
+            n_vec = np.array([nx, ny, nz])
+            traction = S @ n_vec
+            sigma_n = float(np.dot(traction, n_vec))
+            tau = float(np.sqrt(max(0, np.dot(traction, traction) - sigma_n**2)))
+
+            # Pp_critical: tau = mu * (sigma_n - Pp_crit) => Pp_crit = sigma_n - tau/mu
+            Pp_crit = sigma_n - tau / friction if friction > 0 else sigma_n
+            margin = Pp_crit - Pp  # Positive = stable, negative = already failed
+
+            fractures.append({
+                "index": i,
+                "azimuth_deg": round(float(azimuths[i]), 1),
+                "dip_deg": round(float(dips_arr[i]), 1),
+                "sigma_n_MPa": round(sigma_n, 3),
+                "tau_MPa": round(tau, 3),
+                "Pp_critical_MPa": round(float(Pp_crit), 3),
+                "Pp_margin_MPa": round(float(margin), 3),
+                "currently_critical": margin <= 0
+            })
+
+        pp_crits = [f["Pp_critical_MPa"] for f in fractures]
+        margins = [f["Pp_margin_MPa"] for f in fractures]
+        n_critical = sum(1 for f in fractures if f["currently_critical"])
+        min_margin = float(np.min(margins)) if margins else 0
+        mean_margin = float(np.mean(margins)) if margins else 0
+        min_pp_crit = float(np.min(pp_crits)) if pp_crits else 0
+
+        # Most vulnerable (lowest margin)
+        top_vulnerable = sorted(fractures, key=lambda x: x["Pp_margin_MPa"])[:10]
+
+        if min_margin < 0:
+            risk_class = "CRITICAL"
+        elif min_margin < 5:
+            risk_class = "HIGH"
+        elif min_margin < 15:
+            risk_class = "MODERATE"
+        else:
+            risk_class = "LOW"
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            axes[0].hist(pp_crits, bins=30, color='steelblue', edgecolor='black', alpha=0.7)
+            axes[0].axvline(Pp, color='red', linestyle='--', linewidth=2, label=f'Current Pp={Pp:.1f}')
+            axes[0].set_xlabel("Critical Pore Pressure (MPa)")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title(f"Reactivation Pressure Distribution - Well {well}")
+            axes[0].legend()
+
+            axes[1].hist(margins, bins=30, color='orange', edgecolor='black', alpha=0.7)
+            axes[1].axvline(0, color='red', linestyle='--', linewidth=2, label='Failure line')
+            axes[1].set_xlabel("Pp Margin (MPa)")
+            axes[1].set_ylabel("Count")
+            axes[1].set_title("Pressure Margin to Failure")
+            axes[1].legend()
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Minimum Pp margin: {min_margin:.2f} MPa ({risk_class})")
+        recs.append(f"{n_critical}/{nn} fractures already at/beyond critical pressure")
+        recs.append(f"Lowest reactivation pressure: {min_pp_crit:.1f} MPa (current Pp={Pp:.1f})")
+        if risk_class in ("CRITICAL", "HIGH"):
+            recs.append("WARNING: Injection could trigger fracture reactivation at relatively low pressures")
+
+        result = {
+            "well": well,
+            "depth_m": depth,
+            "friction": friction,
+            "Sv_MPa": round(Sv, 2),
+            "Pp_MPa": round(Pp, 2),
+            "SHmax_MPa": round(SHmax, 2),
+            "Shmin_MPa": round(Shmin, 2),
+            "n_fractures": nn,
+            "n_currently_critical": n_critical,
+            "min_Pp_critical_MPa": round(min_pp_crit, 3),
+            "min_Pp_margin_MPa": round(min_margin, 3),
+            "mean_Pp_margin_MPa": round(mean_margin, 3),
+            "risk_class": risk_class,
+            "top_vulnerable": top_vulnerable,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Reactivation risk is {risk_class} (min margin {min_margin:.1f} MPa)",
+                "risk_level": risk_class if risk_class in ("HIGH", "MODERATE", "LOW") else "HIGH",
+                "what_this_means": f"{n_critical} fractures already critical, nearest margin {min_margin:.1f} MPa",
+                "for_non_experts": f"Each fracture has a critical pressure threshold where it starts to slip. "
+                    + f"The closest fracture is {abs(min_margin):.1f} MPa {'past' if min_margin < 0 else 'below'} that threshold. "
+                    + (f"{n_critical} fractures are already at risk." if n_critical > 0
+                       else "No fractures are currently at risk.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _reactivation_pressure_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [208] Wellbore Deviation Survey  (v3.54.0)
+# ═══════════════════════════════════════════════════════════════════════
+_deviation_survey_cache = {}
+
+@app.post("/api/analysis/deviation-survey")
+async def analysis_deviation_survey(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = body.get("depth", 3000)
+    azimuth_deg = body.get("azimuth_deg", 0)
+    max_inclination = body.get("max_inclination", 60)
+    n_stations = body.get("n_stations", 20)
+    ck = f"{source}:{well}:{depth}:{azimuth_deg}:{max_inclination}:{n_stations}"
+    if ck in _deviation_survey_cache:
+        return JSONResponse(_deviation_survey_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        g = 9.81
+
+        # Build-up rate (degrees per 30m)
+        inclinations = np.linspace(0, max_inclination, n_stations)
+        md_step = depth / n_stations
+        stations = []
+
+        for i, inc in enumerate(inclinations):
+            md = md_step * (i + 1)
+            tvd = md * np.cos(np.radians(inc / 2))  # Simplified min curvature
+            Sv = rho * g * tvd / 1e6
+            Pp = 1020 * g * tvd / 1e6
+            SHmax = 0.9 * Sv
+            Shmin = 0.6 * Sv
+
+            # Hoop stress at this orientation
+            theta_rad = np.radians(azimuth_deg)
+            cos2t = np.cos(2 * theta_rad)
+            inc_factor = 1.0 + 0.3 * np.sin(np.radians(inc))
+            sigma_hoop_max = ((3 * SHmax - Shmin) * inc_factor - Pp)
+            sigma_hoop_min = ((3 * Shmin - SHmax) / inc_factor - Pp)
+
+            # Safety factor (simplified)
+            ucs_estimate = 80  # MPa assumed
+            sf_collapse = ucs_estimate / sigma_hoop_max if sigma_hoop_max > 0 else 99
+            sf_fracture = sigma_hoop_min / (-5) if sigma_hoop_min < 0 else 99  # tensile = -5 MPa
+
+            stations.append({
+                "station": i + 1,
+                "MD_m": round(float(md), 1),
+                "TVD_m": round(float(tvd), 1),
+                "inclination_deg": round(float(inc), 1),
+                "azimuth_deg": int(azimuth_deg),
+                "Sv_MPa": round(float(Sv), 2),
+                "Pp_MPa": round(float(Pp), 2),
+                "sigma_hoop_max_MPa": round(float(sigma_hoop_max), 2),
+                "sigma_hoop_min_MPa": round(float(sigma_hoop_min), 2),
+                "sf_collapse": round(float(min(sf_collapse, 10)), 3),
+                "sf_fracture": round(float(min(sf_fracture, 10)), 3),
+                "stable": sf_collapse > 1.0 and sf_fracture > 1.0
+            })
+
+        n_stable = sum(1 for s in stations if s["stable"])
+        pct_stable = round(100.0 * n_stable / len(stations), 1)
+        min_sf = min(s["sf_collapse"] for s in stations)
+        critical_station = next((s for s in stations if s["sf_collapse"] == min_sf), stations[0])
+
+        if pct_stable == 100:
+            stability_class = "STABLE"
+        elif pct_stable > 70:
+            stability_class = "MOSTLY_STABLE"
+        elif pct_stable > 30:
+            stability_class = "MARGINAL"
+        else:
+            stability_class = "UNSTABLE"
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+            tvds = [s["TVD_m"] for s in stations]
+            sf_c = [s["sf_collapse"] for s in stations]
+            sf_f = [s["sf_fracture"] for s in stations]
+            incs = [s["inclination_deg"] for s in stations]
+
+            axes[0].plot(sf_c, tvds, 'r-o', markersize=4, label='Collapse SF')
+            axes[0].plot(sf_f, tvds, 'b-s', markersize=4, label='Fracture SF')
+            axes[0].axvline(1.0, color='gray', linestyle='--', label='SF=1.0')
+            axes[0].invert_yaxis()
+            axes[0].set_xlabel("Safety Factor")
+            axes[0].set_ylabel("TVD (m)")
+            axes[0].set_title(f"Safety Factor Along Trajectory - Well {well}")
+            axes[0].legend()
+
+            axes[1].plot(incs, tvds, 'g-o', markersize=4)
+            axes[1].invert_yaxis()
+            axes[1].set_xlabel("Inclination (°)")
+            axes[1].set_ylabel("TVD (m)")
+            axes[1].set_title("Well Trajectory")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Trajectory stability: {stability_class} ({pct_stable}% stations stable)")
+        recs.append(f"Critical point: station {critical_station['station']} at TVD={critical_station['TVD_m']}m, Inc={critical_station['inclination_deg']}° (SF={min_sf:.2f})")
+        if stability_class in ("MARGINAL", "UNSTABLE"):
+            recs.append("WARNING: High inclination sections require enhanced mud weight management")
+
+        result = {
+            "well": well,
+            "depth_m": depth,
+            "azimuth_deg": azimuth_deg,
+            "max_inclination_deg": max_inclination,
+            "n_stations": n_stations,
+            "pct_stable": pct_stable,
+            "stability_class": stability_class,
+            "min_safety_factor": round(min_sf, 3),
+            "critical_station": critical_station,
+            "stations": stations,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Trajectory is {stability_class} ({pct_stable}% stable)",
+                "risk_level": "HIGH" if stability_class in ("UNSTABLE", "MARGINAL") else ("MODERATE" if stability_class == "MOSTLY_STABLE" else "LOW"),
+                "what_this_means": f"Min safety factor {min_sf:.2f} at {critical_station['TVD_m']}m TVD, {critical_station['inclination_deg']}° inclination",
+                "for_non_experts": f"This trajectory from vertical to {max_inclination}° inclination is {stability_class.lower().replace('_', ' ')}. "
+                    + f"{pct_stable}% of survey stations are within safe limits. "
+                    + f"The weakest point is at {critical_station['TVD_m']:.0f}m depth."
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _deviation_survey_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [209] Rock Strength Profile  (v3.54.0)
+# ═══════════════════════════════════════════════════════════════════════
+_rock_strength_cache = {}
+
+@app.post("/api/analysis/rock-strength")
+async def analysis_rock_strength(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 2000)
+    depth_to = body.get("depth_to", 4000)
+    n_points = body.get("n_points", 30)
+    lithology = body.get("lithology", "sandstone")
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{n_points}:{lithology}"
+    if ck in _rock_strength_cache:
+        return JSONResponse(_rock_strength_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        # Empirical UCS correlations (from Chang et al. 2006)
+        # UCS increases with depth (confining pressure effect)
+        depths = np.linspace(depth_from, depth_to, n_points)
+        rho = 2500
+        g = 9.81
+
+        # Lithology-dependent coefficients
+        lith_params = {
+            "sandstone": {"a": 0.02, "b": 30, "t_ratio": 0.1, "friction_base": 0.6},
+            "shale": {"a": 0.015, "b": 20, "t_ratio": 0.08, "friction_base": 0.4},
+            "limestone": {"a": 0.025, "b": 50, "t_ratio": 0.12, "friction_base": 0.7},
+            "granite": {"a": 0.03, "b": 100, "t_ratio": 0.1, "friction_base": 0.75}
+        }
+        params = lith_params.get(lithology.lower(), lith_params["sandstone"])
+
+        profile = []
+        for d in depths:
+            Sv = rho * g * d / 1e6
+            confining = 0.6 * Sv  # Approximate Shmin
+
+            # UCS = a * depth + b + porosity_correction
+            ucs = params["a"] * d + params["b"]
+            # Add some natural variability
+            np.random.seed(int(d * 100) % 2**31)
+            ucs *= (1 + np.random.normal(0, 0.05))
+            ucs = max(ucs, 5)
+
+            tensile = ucs * params["t_ratio"]
+            cohesion = ucs / (2 * np.sqrt(1 + params["friction_base"]**2) + 2 * params["friction_base"])
+            friction_angle = np.degrees(np.arctan(params["friction_base"]))
+
+            # Young's modulus estimate (GPa)
+            E = 0.3 * ucs + 5  # Simplified correlation
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "UCS_MPa": round(float(ucs), 1),
+                "tensile_MPa": round(float(tensile), 1),
+                "cohesion_MPa": round(float(cohesion), 1),
+                "friction_angle_deg": round(friction_angle, 1),
+                "youngs_modulus_GPa": round(float(E), 1),
+                "Sv_MPa": round(float(Sv), 2),
+                "strength_ratio": round(float(ucs / Sv), 3) if Sv > 0 else 0
+            })
+
+        ucs_values = [p["UCS_MPa"] for p in profile]
+        mean_ucs = float(np.mean(ucs_values))
+        min_ucs = float(np.min(ucs_values))
+        max_ucs = float(np.max(ucs_values))
+
+        # Strength-to-stress ratio classification
+        mean_ratio = float(np.mean([p["strength_ratio"] for p in profile]))
+        if mean_ratio > 2:
+            strength_class = "STRONG"
+        elif mean_ratio > 1:
+            strength_class = "ADEQUATE"
+        elif mean_ratio > 0.5:
+            strength_class = "WEAK"
+        else:
+            strength_class = "VERY_WEAK"
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(15, 6))
+            ds = [p["depth_m"] for p in profile]
+
+            axes[0].plot(ucs_values, ds, 'r-o', markersize=3, label='UCS')
+            axes[0].plot([p["tensile_MPa"] for p in profile], ds, 'b--', label='Tensile')
+            axes[0].invert_yaxis()
+            axes[0].set_xlabel("Strength (MPa)")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].set_title(f"Rock Strength - {lithology.title()}")
+            axes[0].legend()
+
+            axes[1].plot([p["youngs_modulus_GPa"] for p in profile], ds, 'g-o', markersize=3)
+            axes[1].invert_yaxis()
+            axes[1].set_xlabel("Young's Modulus (GPa)")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].set_title("Elastic Modulus")
+
+            ratios = [p["strength_ratio"] for p in profile]
+            colors = ['red' if r < 1 else 'orange' if r < 2 else 'green' for r in ratios]
+            axes[2].barh(ds, ratios, height=(depth_to - depth_from) / n_points * 0.8, color=colors)
+            axes[2].axvline(1.0, color='red', linestyle='--', label='UCS/Sv = 1')
+            axes[2].invert_yaxis()
+            axes[2].set_xlabel("UCS/Sv Ratio")
+            axes[2].set_ylabel("Depth (m)")
+            axes[2].set_title("Strength/Stress Ratio")
+            axes[2].legend()
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Rock strength class: {strength_class} (mean UCS/Sv = {mean_ratio:.2f})")
+        recs.append(f"UCS range: {min_ucs:.0f} - {max_ucs:.0f} MPa ({lithology})")
+        if strength_class in ("WEAK", "VERY_WEAK"):
+            recs.append("WARNING: Low strength-to-stress ratio — wellbore instability risk")
+
+        result = {
+            "well": well,
+            "depth_from_m": depth_from,
+            "depth_to_m": depth_to,
+            "n_points": n_points,
+            "lithology": lithology,
+            "mean_UCS_MPa": round(mean_ucs, 1),
+            "min_UCS_MPa": round(min_ucs, 1),
+            "max_UCS_MPa": round(max_ucs, 1),
+            "mean_strength_ratio": round(mean_ratio, 3),
+            "strength_class": strength_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Rock strength is {strength_class} (UCS/Sv={mean_ratio:.2f}, {lithology})",
+                "risk_level": "HIGH" if strength_class in ("WEAK", "VERY_WEAK") else ("MODERATE" if strength_class == "ADEQUATE" else "LOW"),
+                "what_this_means": f"Mean UCS={mean_ucs:.0f} MPa for {lithology}, strength-to-stress ratio {mean_ratio:.2f}",
+                "for_non_experts": f"The {lithology} rock has an average compressive strength of {mean_ucs:.0f} MPa. "
+                    + f"Compared to the stress at depth, the rock is {strength_class.lower().replace('_', ' ')}. "
+                    + ("Careful drilling practices are essential." if strength_class in ("WEAK", "VERY_WEAK")
+                       else "Standard drilling should be safe." if strength_class == "STRONG"
+                       else "Some care is needed in weaker zones.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _rock_strength_cache[ck] = result
     return JSONResponse(result)

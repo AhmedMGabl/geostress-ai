@@ -3078,6 +3078,103 @@
                         </div>
                     </div>
 
+                    <!-- [205] Fracture Compliance Tensor -->
+                    <div class="card mb-3" id="card-fracture-compliance">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-grid-3x3"></i> Fracture Compliance Tensor</span>
+                            <span class="badge bg-primary">v3.54</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Compute excess compliance tensor from fracture network orientations (anisotropy characterization).</p>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-4"><input type="number" class="form-control form-control-sm" id="compliance-bn" value="1e-10" step="1e-11" placeholder="Normal Compliance (Bn)"></div>
+                                <div class="col-md-4"><input type="number" class="form-control form-control-sm" id="compliance-bt" value="5e-11" step="1e-11" placeholder="Tangential Compliance (Bt)"></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="runFracCompliance()">Run Compliance Tensor</button>
+                            <div id="results-fracture-compliance" class="mt-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- [206] Pore Pressure Depletion Effect -->
+                    <div class="card mb-3" id="card-pp-depletion">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-down-circle"></i> Pore Pressure Depletion Effect</span>
+                            <span class="badge bg-primary">v3.54</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Evaluate how reservoir depletion changes effective stresses and critically stressed fractures.</p>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="depletion-depth" value="3000" placeholder="Depth (m)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="depletion-mpa" value="10" step="1" placeholder="Depletion (MPa)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="depletion-friction" value="0.6" step="0.05" placeholder="Friction"></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="runPpDepletion()">Run Depletion Analysis</button>
+                            <div id="results-pp-depletion" class="mt-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- [207] Fracture Reactivation Pressure -->
+                    <div class="card mb-3" id="card-reactivation-pressure">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-diamond"></i> Fracture Reactivation Pressure</span>
+                            <span class="badge bg-primary">v3.54</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Critical pore pressure for each fracture — minimum injection pressure that triggers slip.</p>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="reactivation-depth" value="3000" placeholder="Depth (m)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="reactivation-friction" value="0.6" step="0.05" placeholder="Friction"></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="runReactivationPressure()">Run Reactivation Analysis</button>
+                            <div id="results-reactivation-pressure" class="mt-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- [208] Wellbore Deviation Survey -->
+                    <div class="card mb-3" id="card-deviation-survey">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bezier2"></i> Wellbore Deviation Survey</span>
+                            <span class="badge bg-primary">v3.54</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Safety factor profile along deviated wellbore trajectory (collapse + fracture stability).</p>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="deviation-depth" value="3000" placeholder="Depth (m)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="deviation-azimuth" value="0" placeholder="Azimuth (°)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="deviation-inclination" value="60" placeholder="Max Inclination (°)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="deviation-stations" value="20" placeholder="Stations"></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="runDeviationSurvey()">Run Deviation Survey</button>
+                            <div id="results-deviation-survey" class="mt-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- [209] Rock Strength Profile -->
+                    <div class="card mb-3" id="card-rock-strength">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bricks"></i> Rock Strength Profile</span>
+                            <span class="badge bg-primary">v3.54</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">UCS, tensile strength, and elastic modulus profile with depth for a given lithology.</p>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="rockstr-from" value="2000" placeholder="Depth From (m)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="rockstr-to" value="4000" placeholder="Depth To (m)"></div>
+                                <div class="col-md-3">
+                                    <select class="form-select form-select-sm" id="rockstr-lithology">
+                                        <option value="sandstone" selected>Sandstone</option>
+                                        <option value="shale">Shale</option>
+                                        <option value="limestone">Limestone</option>
+                                        <option value="granite">Granite</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="rockstr-npoints" value="30" placeholder="Points"></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="runRockStrength()">Run Rock Strength</button>
+                            <div id="results-rock-strength" class="mt-2"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
