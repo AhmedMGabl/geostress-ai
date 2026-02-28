@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.57.0 - Fracture Porosity + Differential Stress + Fault Seal + Connectivity Index + Breakout Angular)."""
+"""GeoStress AI - FastAPI Web Application (v3.58.0 - Stress Gradient + Mineral Fill + Coulomb Failure + DFN Params + Drilling Margin)."""
 
 import os
 import io
@@ -44561,6 +44561,862 @@ async def analysis_breakout_angular(request: Request):
         result["elapsed_s"] = round(_t.time() - t0, 3)
         result = _sanitize_for_json(result)
         _breakout_angular_cache[ck] = result
+        return JSONResponse(content=result)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e), "elapsed_s": round(_t.time() - t0, 3)})
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# v3.58.0 — [225] Stress Gradient Profile, [226] Fracture Mineral Fill,
+#            [227] Coulomb Failure Function, [228] DFN Parameters, [229] Drilling Margin
+# ═══════════════════════════════════════════════════════════════════════
+
+_stress_gradient_prof_cache = {}
+_mineral_fill_cache = {}
+_coulomb_failure_func_cache = {}
+_dfn_params_cache = {}
+_drilling_margin_cache = {}
+
+
+# ── [225] In-Situ Stress Gradient Profile ────────────────────────────
+@app.post("/api/analysis/stress-gradient-profile")
+async def analysis_stress_gradient_profile(request: Request):
+    """Compute stress gradients (psi/ft and MPa/km) vs depth for all principal stresses."""
+    import time as _t
+    t0 = _t.time()
+    try:
+        body = await request.json()
+        source = body.get("source", "demo")
+        well = body.get("well", "3P")
+        depth_from = body.get("depth_from", 500)
+        depth_to = body.get("depth_to", 5000)
+        n_points = body.get("n_points", 30)
+
+        ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}"
+        if ck in _stress_gradient_prof_cache:
+            cached = _stress_gradient_prof_cache[ck]
+            cached["elapsed_s"] = round(_t.time() - t0, 3)
+            return JSONResponse(content=cached)
+
+        df_all = get_df(source)
+        df = df_all[df_all["well"] == well].copy()
+        if df.empty:
+            return JSONResponse(status_code=404, content={"error": f"Well {well} not found"})
+
+        def _compute():
+            import numpy as np
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            depths = np.linspace(depth_from, depth_to, n_points)
+            rho_rock = 2500
+            g = 9.81
+            rho_w = 1000
+
+            profile = []
+            for d in depths:
+                Sv = rho_rock * g * d / 1e6
+                Pp = rho_w * g * d / 1e6
+                Shmin = 0.6 * Sv + 0.4 * Pp
+                SHmax = 0.9 * Sv + 0.1 * Pp
+
+                # Gradients in MPa/km
+                Sv_grad = Sv / d * 1000 if d > 0 else 0
+                Shmin_grad = Shmin / d * 1000 if d > 0 else 0
+                SHmax_grad = SHmax / d * 1000 if d > 0 else 0
+                Pp_grad = Pp / d * 1000 if d > 0 else 0
+
+                # Convert to psi/ft (1 MPa = 145.038 psi, 1 km = 3280.84 ft)
+                conv = 145.038 / 3280.84  # MPa/km to psi/ft
+                Sv_psi_ft = Sv_grad * conv
+                Shmin_psi_ft = Shmin_grad * conv
+                SHmax_psi_ft = SHmax_grad * conv
+                Pp_psi_ft = Pp_grad * conv
+
+                # EMW (equivalent mud weight in ppg)
+                Pp_ppg = Pp / (0.00981 * d) if d > 0 else 0
+                Shmin_ppg = Shmin / (0.00981 * d) if d > 0 else 0
+
+                profile.append({
+                    "depth_m": round(float(d), 1),
+                    "Sv_MPa": round(float(Sv), 2),
+                    "SHmax_MPa": round(float(SHmax), 2),
+                    "Shmin_MPa": round(float(Shmin), 2),
+                    "Pp_MPa": round(float(Pp), 2),
+                    "Sv_gradient_MPa_km": round(float(Sv_grad), 2),
+                    "Shmin_gradient_MPa_km": round(float(Shmin_grad), 2),
+                    "SHmax_gradient_MPa_km": round(float(SHmax_grad), 2),
+                    "Pp_gradient_MPa_km": round(float(Pp_grad), 2),
+                    "Sv_psi_ft": round(float(Sv_psi_ft), 4),
+                    "Pp_EMW_ppg": round(float(Pp_ppg), 2),
+                    "Shmin_EMW_ppg": round(float(Shmin_ppg), 2)
+                })
+
+            mean_sv_grad = float(np.mean([p["Sv_gradient_MPa_km"] for p in profile]))
+            mean_pp_grad = float(np.mean([p["Pp_gradient_MPa_km"] for p in profile]))
+
+            if mean_sv_grad > 25:
+                gradient_class = "HIGH"
+            elif mean_sv_grad > 22:
+                gradient_class = "NORMAL"
+            else:
+                gradient_class = "LOW"
+
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 6), sharey=True)
+            dep = [p["depth_m"] for p in profile]
+
+            ax1.plot([p["Sv_MPa"] for p in profile], dep, "k-o", markersize=3, label="Sv")
+            ax1.plot([p["SHmax_MPa"] for p in profile], dep, "r-s", markersize=3, label="SHmax")
+            ax1.plot([p["Shmin_MPa"] for p in profile], dep, "b-^", markersize=3, label="Shmin")
+            ax1.plot([p["Pp_MPa"] for p in profile], dep, "c--", markersize=3, label="Pp")
+            ax1.set_xlabel("Stress (MPa)")
+            ax1.set_ylabel("Depth (m)")
+            ax1.invert_yaxis()
+            ax1.legend(fontsize=8)
+            ax1.set_title("Stress Profile")
+            ax1.grid(True, alpha=0.3)
+
+            ax2.plot([p["Sv_gradient_MPa_km"] for p in profile], dep, "k-o", markersize=3, label="Sv grad")
+            ax2.plot([p["SHmax_gradient_MPa_km"] for p in profile], dep, "r-s", markersize=3, label="SHmax grad")
+            ax2.plot([p["Shmin_gradient_MPa_km"] for p in profile], dep, "b-^", markersize=3, label="Shmin grad")
+            ax2.plot([p["Pp_gradient_MPa_km"] for p in profile], dep, "c--", markersize=3, label="Pp grad")
+            ax2.set_xlabel("Gradient (MPa/km)")
+            ax2.set_title("Stress Gradients")
+            ax2.legend(fontsize=8)
+            ax2.grid(True, alpha=0.3)
+
+            fig.suptitle(f"Well {well} — Stress Gradient Profile", fontsize=13, fontweight="bold")
+            plt.tight_layout()
+
+            with plot_lock:
+                plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+            recs = []
+            recs.append(f"Overburden gradient: {mean_sv_grad:.1f} MPa/km ({gradient_class})")
+            recs.append(f"Pore pressure gradient: {mean_pp_grad:.1f} MPa/km")
+            if gradient_class == "HIGH":
+                recs.append("High overburden gradient — dense overburden or tectonic loading")
+            recs.append("Gradients assume linear density model — validate with density log if available")
+
+            return {
+                "well": well,
+                "depth_from_m": depth_from,
+                "depth_to_m": depth_to,
+                "n_points": n_points,
+                "mean_Sv_gradient_MPa_km": round(mean_sv_grad, 2),
+                "mean_Pp_gradient_MPa_km": round(mean_pp_grad, 2),
+                "gradient_class": gradient_class,
+                "profile": profile,
+                "recommendations": recs,
+                "plot": plot_b64,
+                "stakeholder_brief": {
+                    "headline": f"Stress gradient is {gradient_class} (Sv avg {mean_sv_grad:.1f} MPa/km)",
+                    "risk_level": "HIGH" if gradient_class == "HIGH" else "MODERATE",
+                    "what_this_means": f"Overburden stress increases at {mean_sv_grad:.1f} MPa per km depth",
+                    "for_non_experts": "Stress gradients tell us how quickly the underground pressure increases with depth. This is essential for planning safe drilling mud weights and casing programs."
+                }
+            }
+
+        result = await asyncio.to_thread(_compute)
+        result["elapsed_s"] = round(_t.time() - t0, 3)
+        result = _sanitize_for_json(result)
+        _stress_gradient_prof_cache[ck] = result
+        return JSONResponse(content=result)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e), "elapsed_s": round(_t.time() - t0, 3)})
+
+
+# ── [226] Fracture Mineral Fill Characterization ─────────────────────
+@app.post("/api/analysis/mineral-fill")
+async def analysis_mineral_fill(request: Request):
+    """Characterize fracture mineral fill types based on depth and dip patterns."""
+    import time as _t
+    t0 = _t.time()
+    try:
+        body = await request.json()
+        source = body.get("source", "demo")
+        well = body.get("well", "3P")
+
+        ck = f"{source}_{well}"
+        if ck in _mineral_fill_cache:
+            cached = _mineral_fill_cache[ck]
+            cached["elapsed_s"] = round(_t.time() - t0, 3)
+            return JSONResponse(content=cached)
+
+        df_all = get_df(source)
+        df = df_all[df_all["well"] == well].copy()
+        if df.empty:
+            return JSONResponse(status_code=404, content={"error": f"Well {well} not found"})
+
+        def _compute():
+            import numpy as np
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            depths = df[DEPTH_COL].dropna().values
+            dips = df[DIP_COL].values[:len(depths)]
+            if len(depths) < 2:
+                return {"error": "Insufficient data"}
+
+            # Assign mineral fill probability based on depth and dip
+            # Shallow+low-dip → calcite, Deep+high-dip → quartz, Mid → mixed
+            fills = []
+            for i in range(len(depths)):
+                d = depths[i]
+                dip = dips[i] if i < len(dips) else 45
+                d_norm = min(max((d - 500) / 4500, 0), 1) if not np.isnan(d) else 0.5
+                dip_norm = min(max(dip / 90, 0), 1) if not np.isnan(dip) else 0.5
+
+                calcite_p = max(0, (1 - d_norm) * (1 - dip_norm * 0.5))
+                quartz_p = max(0, d_norm * dip_norm)
+                clay_p = max(0, 0.3 * (1 - abs(d_norm - 0.5) * 2))
+                open_p = max(0, dip_norm * 0.3 * (1 - d_norm * 0.5))
+
+                total = calcite_p + quartz_p + clay_p + open_p
+                if total > 0:
+                    calcite_p /= total
+                    quartz_p /= total
+                    clay_p /= total
+                    open_p /= total
+
+                dominant = max([("calcite", calcite_p), ("quartz", quartz_p), ("clay", clay_p), ("open", open_p)], key=lambda x: x[1])
+                fills.append({
+                    "depth_m": round(float(d), 1) if not np.isnan(d) else None,
+                    "dip_deg": round(float(dip), 1) if not np.isnan(dip) else None,
+                    "calcite_prob": round(float(calcite_p), 3),
+                    "quartz_prob": round(float(quartz_p), 3),
+                    "clay_prob": round(float(clay_p), 3),
+                    "open_prob": round(float(open_p), 3),
+                    "dominant_fill": dominant[0]
+                })
+
+            from collections import Counter
+            fill_counts = Counter(f["dominant_fill"] for f in fills)
+            dominant_overall = fill_counts.most_common(1)[0][0] if fill_counts else "unknown"
+            fill_summary = {k: v for k, v in fill_counts.items()}
+            fill_pcts = {k: round(v / len(fills) * 100, 1) for k, v in fill_counts.items()}
+
+            mean_probs = {
+                "calcite": round(float(np.mean([f["calcite_prob"] for f in fills])), 3),
+                "quartz": round(float(np.mean([f["quartz_prob"] for f in fills])), 3),
+                "clay": round(float(np.mean([f["clay_prob"] for f in fills])), 3),
+                "open": round(float(np.mean([f["open_prob"] for f in fills])), 3)
+            }
+
+            if fill_pcts.get("open", 0) > 30:
+                seal_impact = "POOR_SEAL"
+            elif fill_pcts.get("clay", 0) > 30:
+                seal_impact = "GOOD_SEAL"
+            elif fill_pcts.get("quartz", 0) > 40:
+                seal_impact = "CEMENTED"
+            else:
+                seal_impact = "MIXED"
+
+            fig, axes = plt.subplots(1, 3, figsize=(12, 5))
+
+            labels = list(fill_pcts.keys())
+            sizes = [fill_pcts[k] for k in labels]
+            colors_pie = {"calcite": "#FFD700", "quartz": "#87CEEB", "clay": "#8B4513", "open": "#90EE90"}
+            ax_colors = [colors_pie.get(k, "#999") for k in labels]
+            axes[0].pie(sizes, labels=labels, colors=ax_colors, autopct='%1.0f%%', startangle=90)
+            axes[0].set_title("Dominant Fill Distribution")
+
+            valid_depths = [f["depth_m"] for f in fills if f["depth_m"] is not None]
+            valid_calc = [f["calcite_prob"] for f in fills if f["depth_m"] is not None]
+            valid_qtz = [f["quartz_prob"] for f in fills if f["depth_m"] is not None]
+            axes[1].scatter(valid_calc, valid_depths, c="#FFD700", alpha=0.5, s=15, label="Calcite")
+            axes[1].scatter(valid_qtz, valid_depths, c="#87CEEB", alpha=0.5, s=15, label="Quartz")
+            axes[1].set_xlabel("Probability")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].invert_yaxis()
+            axes[1].legend(fontsize=8)
+            axes[1].set_title("Fill Probability vs Depth")
+            axes[1].grid(True, alpha=0.3)
+
+            axes[2].bar(list(mean_probs.keys()), list(mean_probs.values()), color=[colors_pie.get(k, "#999") for k in mean_probs])
+            axes[2].set_ylabel("Mean Probability")
+            axes[2].set_title("Average Fill Probabilities")
+            axes[2].grid(True, alpha=0.3, axis='y')
+
+            fig.suptitle(f"Well {well} — Fracture Mineral Fill", fontsize=13, fontweight="bold")
+            plt.tight_layout()
+
+            with plot_lock:
+                plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+            recs = []
+            recs.append(f"Dominant fill: {dominant_overall} ({fill_pcts.get(dominant_overall, 0):.0f}% of fractures)")
+            if seal_impact == "POOR_SEAL":
+                recs.append("High open fracture fraction — poor seal, good permeability")
+            elif seal_impact == "CEMENTED":
+                recs.append("Quartz-cemented fractures — reduced permeability")
+            elif seal_impact == "GOOD_SEAL":
+                recs.append("Clay-filled fractures — good seal potential")
+            recs.append("Fill types estimated from depth-dip correlations — validate with core/thin-section data")
+
+            return {
+                "well": well,
+                "n_fractures": len(fills),
+                "dominant_fill": dominant_overall,
+                "fill_counts": fill_summary,
+                "fill_percentages": fill_pcts,
+                "mean_probabilities": mean_probs,
+                "seal_impact": seal_impact,
+                "fractures": fills[:50],
+                "recommendations": recs,
+                "plot": plot_b64,
+                "stakeholder_brief": {
+                    "headline": f"Dominant fill is {dominant_overall} ({fill_pcts.get(dominant_overall, 0):.0f}%) — {seal_impact}",
+                    "risk_level": "HIGH" if seal_impact == "POOR_SEAL" else ("LOW" if seal_impact in ("CEMENTED", "GOOD_SEAL") else "MODERATE"),
+                    "what_this_means": f"Most fractures are {'open and permeable' if seal_impact == 'POOR_SEAL' else 'sealed by mineral growth' if seal_impact == 'CEMENTED' else 'partially filled'}",
+                    "for_non_experts": "Fractures underground can be empty (open) or filled with minerals like calcite, quartz, or clay. Open fractures allow fluid flow while filled ones act as barriers. This analysis estimates what fills the fractures."
+                }
+            }
+
+        result = await asyncio.to_thread(_compute)
+        result["elapsed_s"] = round(_t.time() - t0, 3)
+        result = _sanitize_for_json(result)
+        _mineral_fill_cache[ck] = result
+        return JSONResponse(content=result)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e), "elapsed_s": round(_t.time() - t0, 3)})
+
+
+# ── [227] Coulomb Failure Function ───────────────────────────────────
+@app.post("/api/analysis/coulomb-failure-func")
+async def analysis_coulomb_failure_func(request: Request):
+    """Compute Coulomb Failure Function (CFF) for each fracture — distance to failure."""
+    import time as _t
+    t0 = _t.time()
+    try:
+        body = await request.json()
+        source = body.get("source", "demo")
+        well = body.get("well", "3P")
+        depth = body.get("depth", 3000)
+        friction = body.get("friction", 0.6)
+        cohesion_MPa = body.get("cohesion_MPa", 0)
+
+        ck = f"{source}_{well}_{depth}_{friction}_{cohesion_MPa}"
+        if ck in _coulomb_failure_func_cache:
+            cached = _coulomb_failure_func_cache[ck]
+            cached["elapsed_s"] = round(_t.time() - t0, 3)
+            return JSONResponse(content=cached)
+
+        df_all = get_df(source)
+        df = df_all[df_all["well"] == well].copy()
+        if df.empty:
+            return JSONResponse(status_code=404, content={"error": f"Well {well} not found"})
+
+        def _compute():
+            import numpy as np
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            azimuths = df[AZIMUTH_COL].dropna().values
+            dips_vals = df[DIP_COL].values[:len(azimuths)]
+
+            rho_rock = 2500
+            g = 9.81
+            rho_w = 1000
+            Sv = rho_rock * g * depth / 1e6
+            Pp = rho_w * g * depth / 1e6
+            SHmax = 0.9 * Sv
+            Shmin = 0.6 * Sv
+
+            fractures = []
+            for i in range(len(azimuths)):
+                az = np.radians(azimuths[i])
+                dip = np.radians(dips_vals[i]) if i < len(dips_vals) else np.radians(45)
+
+                # Normal vector
+                nx = np.sin(dip) * np.sin(az)
+                ny = np.sin(dip) * np.cos(az)
+                nz = np.cos(dip)
+                n = np.array([nx, ny, nz])
+
+                # Stress tensor (NF assumption)
+                S = np.diag([SHmax, Shmin, Sv])
+                # Traction on plane
+                t_vec = S @ n
+                sigma_n = float(np.dot(n, t_vec))
+                tau = float(np.sqrt(np.dot(t_vec, t_vec) - sigma_n**2))
+
+                # CFF = tau - mu*(sigma_n - Pp) - C0
+                sigma_eff = sigma_n - Pp
+                cff = tau - friction * sigma_eff - cohesion_MPa
+                # Positive CFF = failure, negative = stable
+                slip_tendency = tau / max(sigma_n, 0.001)
+
+                fractures.append({
+                    "azimuth_deg": round(float(azimuths[i]), 1),
+                    "dip_deg": round(float(np.degrees(dip)), 1),
+                    "sigma_n_MPa": round(float(sigma_n), 2),
+                    "tau_MPa": round(float(tau), 2),
+                    "sigma_eff_MPa": round(float(sigma_eff), 2),
+                    "CFF_MPa": round(float(cff), 3),
+                    "slip_tendency": round(float(slip_tendency), 4),
+                    "at_failure": cff >= 0
+                })
+
+            cffs = [f["CFF_MPa"] for f in fractures]
+            n_at_failure = sum(1 for f in fractures if f["at_failure"])
+            pct_at_failure = n_at_failure / max(len(fractures), 1) * 100
+            mean_cff = float(np.mean(cffs))
+            max_cff = float(np.max(cffs))
+            min_cff = float(np.min(cffs))
+
+            if pct_at_failure > 30:
+                failure_class = "CRITICAL"
+            elif pct_at_failure > 10:
+                failure_class = "HIGH"
+            elif pct_at_failure > 0:
+                failure_class = "MODERATE"
+            else:
+                failure_class = "STABLE"
+
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+
+            cff_colors = ["#F44336" if f["at_failure"] else "#4CAF50" for f in fractures]
+            ax1.scatter([f["sigma_eff_MPa"] for f in fractures], [f["tau_MPa"] for f in fractures],
+                        c=cff_colors, alpha=0.6, s=20, edgecolors='k', linewidth=0.3)
+            # Failure line
+            s_range = np.linspace(0, max(f["sigma_eff_MPa"] for f in fractures) * 1.1, 50)
+            ax1.plot(s_range, cohesion_MPa + friction * s_range, 'r--', label=f"MC (μ={friction})")
+            ax1.set_xlabel("Effective Normal Stress (MPa)")
+            ax1.set_ylabel("Shear Stress (MPa)")
+            ax1.set_title("Mohr-Coulomb Space")
+            ax1.legend(fontsize=8)
+            ax1.grid(True, alpha=0.3)
+
+            ax2.hist(cffs, bins=30, color="#2196F3", alpha=0.7, edgecolor='k')
+            ax2.axvline(x=0, color="red", linestyle="--", linewidth=2, label="Failure (CFF=0)")
+            ax2.set_xlabel("CFF (MPa)")
+            ax2.set_ylabel("Count")
+            ax2.set_title("CFF Distribution")
+            ax2.legend(fontsize=8)
+            ax2.grid(True, alpha=0.3)
+
+            fig.suptitle(f"Well {well} — Coulomb Failure Function (μ={friction}, C₀={cohesion_MPa} MPa)", fontsize=12, fontweight="bold")
+            plt.tight_layout()
+
+            with plot_lock:
+                plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+            recs = []
+            recs.append(f"{n_at_failure}/{len(fractures)} fractures at or past failure ({pct_at_failure:.1f}%)")
+            if failure_class == "CRITICAL":
+                recs.append("CRITICAL: >30% at failure — high risk of induced seismicity")
+            elif failure_class == "STABLE":
+                recs.append("All fractures stable — safe for current stress conditions")
+            recs.append(f"Mean CFF: {mean_cff:.2f} MPa — {'net failing' if mean_cff > 0 else 'net stable'}")
+            recs.append(f"Analysis at {depth}m depth with friction={friction}, cohesion={cohesion_MPa} MPa")
+
+            return {
+                "well": well,
+                "depth_m": depth,
+                "friction": friction,
+                "cohesion_MPa": cohesion_MPa,
+                "n_fractures": len(fractures),
+                "n_at_failure": n_at_failure,
+                "pct_at_failure": round(pct_at_failure, 1),
+                "mean_CFF_MPa": round(mean_cff, 3),
+                "max_CFF_MPa": round(max_cff, 3),
+                "min_CFF_MPa": round(min_cff, 3),
+                "failure_class": failure_class,
+                "fractures": fractures[:100],
+                "recommendations": recs,
+                "plot": plot_b64,
+                "stakeholder_brief": {
+                    "headline": f"Failure state is {failure_class} ({pct_at_failure:.0f}% at failure)",
+                    "risk_level": failure_class if failure_class != "STABLE" else "LOW",
+                    "what_this_means": f"{n_at_failure} fractures exceed the Coulomb failure criterion at {depth}m depth",
+                    "for_non_experts": "The Coulomb Failure Function measures how close each fracture is to slipping. Positive values mean the fracture has exceeded its strength and could slip, potentially causing small earthquakes."
+                }
+            }
+
+        result = await asyncio.to_thread(_compute)
+        result["elapsed_s"] = round(_t.time() - t0, 3)
+        result = _sanitize_for_json(result)
+        _coulomb_failure_func_cache[ck] = result
+        return JSONResponse(content=result)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e), "elapsed_s": round(_t.time() - t0, 3)})
+
+
+# ── [228] Discrete Fracture Network (DFN) Parameters ─────────────────
+@app.post("/api/analysis/dfn-params")
+async def analysis_dfn_params(request: Request):
+    """Extract DFN statistical parameters for fracture modelling (P10, P32, length, spacing distributions)."""
+    import time as _t
+    t0 = _t.time()
+    try:
+        body = await request.json()
+        source = body.get("source", "demo")
+        well = body.get("well", "3P")
+
+        ck = f"{source}_{well}"
+        if ck in _dfn_params_cache:
+            cached = _dfn_params_cache[ck]
+            cached["elapsed_s"] = round(_t.time() - t0, 3)
+            return JSONResponse(content=cached)
+
+        df_all = get_df(source)
+        df = df_all[df_all["well"] == well].copy()
+        if df.empty:
+            return JSONResponse(status_code=404, content={"error": f"Well {well} not found"})
+
+        def _compute():
+            import numpy as np
+            from scipy import stats as sp_stats
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            depths = df[DEPTH_COL].dropna().values
+            dips_vals = df[DIP_COL].values[:len(depths)]
+            azimuths = df[AZIMUTH_COL].values[:len(depths)]
+
+            if len(depths) < 5:
+                return {"error": "Insufficient data for DFN analysis"}
+
+            d_min, d_max = float(np.nanmin(depths)), float(np.nanmax(depths))
+            interval_m = d_max - d_min
+
+            # P10: linear fracture intensity (fractures per metre)
+            P10 = len(depths) / max(interval_m, 1)
+
+            # Spacing
+            sorted_depths = np.sort(depths)
+            spacings = np.diff(sorted_depths)
+            spacings = spacings[spacings > 0]
+
+            if len(spacings) > 2:
+                mean_spacing = float(np.mean(spacings))
+                median_spacing = float(np.median(spacings))
+                std_spacing = float(np.std(spacings))
+                cv_spacing = std_spacing / mean_spacing if mean_spacing > 0 else 0
+
+                # Fit exponential and lognormal
+                try:
+                    exp_loc, exp_scale = sp_stats.expon.fit(spacings, floc=0)
+                    exp_ks, exp_p = sp_stats.kstest(spacings, 'expon', args=(0, exp_scale))
+                except Exception:
+                    exp_scale, exp_p = mean_spacing, 0
+
+                try:
+                    ln_shape, ln_loc, ln_scale = sp_stats.lognorm.fit(spacings, floc=0)
+                    ln_ks, ln_p = sp_stats.kstest(spacings, 'lognorm', args=(ln_shape, 0, ln_scale))
+                except Exception:
+                    ln_shape, ln_scale, ln_p = 1, mean_spacing, 0
+
+                best_dist = "lognormal" if ln_p > exp_p else "exponential"
+            else:
+                mean_spacing = float(np.mean(spacings)) if len(spacings) > 0 else 0
+                median_spacing = mean_spacing
+                std_spacing = 0
+                cv_spacing = 0
+                exp_p = 0
+                ln_p = 0
+                best_dist = "insufficient_data"
+
+            # Terzaghi-corrected P32 estimate (fracture area intensity)
+            if len(dips_vals) > 0:
+                valid_dips = dips_vals[~np.isnan(dips_vals)]
+                if len(valid_dips) > 0:
+                    correction_factors = 1.0 / np.maximum(np.cos(np.radians(valid_dips)), 0.1)
+                    P32_est = P10 * float(np.mean(correction_factors))
+                else:
+                    P32_est = P10
+            else:
+                P32_est = P10
+
+            # Orientation stats
+            mean_dip = float(np.nanmean(dips_vals)) if len(dips_vals) > 0 else 0
+            std_dip = float(np.nanstd(dips_vals)) if len(dips_vals) > 0 else 0
+            sin_2az = np.sin(np.radians(2 * azimuths))
+            cos_2az = np.cos(np.radians(2 * azimuths))
+            mean_az = float(np.degrees(np.arctan2(np.sum(sin_2az), np.sum(cos_2az))) / 2) % 180
+            R_bar = np.sqrt(np.sum(sin_2az)**2 + np.sum(cos_2az)**2) / len(azimuths) if len(azimuths) > 0 else 0
+
+            # Fisher kappa (concentration) — higher = more clustered
+            if R_bar < 1 and len(azimuths) > 2:
+                kappa = (len(azimuths) - 1) / max(len(azimuths) * (1 - R_bar), 0.001)
+            else:
+                kappa = 999
+
+            if cv_spacing > 1.5:
+                clustering = "HIGHLY_CLUSTERED"
+            elif cv_spacing > 1.0:
+                clustering = "CLUSTERED"
+            elif cv_spacing > 0.5:
+                clustering = "RANDOM"
+            else:
+                clustering = "REGULAR"
+
+            fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+
+            if len(spacings) > 2:
+                axes[0, 0].hist(spacings, bins=25, color="#2196F3", alpha=0.7, density=True, edgecolor='k')
+                x_range = np.linspace(0, max(spacings), 100)
+                axes[0, 0].plot(x_range, sp_stats.expon.pdf(x_range, 0, exp_scale if exp_scale else mean_spacing), 'r-', label="Exponential")
+                axes[0, 0].set_xlabel("Spacing (m)")
+                axes[0, 0].set_ylabel("Density")
+                axes[0, 0].set_title("Spacing Distribution")
+                axes[0, 0].legend(fontsize=8)
+                axes[0, 0].grid(True, alpha=0.3)
+
+            axes[0, 1].hist(dips_vals[~np.isnan(dips_vals)], bins=18, color="#FF9800", alpha=0.7, edgecolor='k')
+            axes[0, 1].set_xlabel("Dip (°)")
+            axes[0, 1].set_ylabel("Count")
+            axes[0, 1].set_title("Dip Distribution")
+            axes[0, 1].grid(True, alpha=0.3)
+
+            axes[1, 0].hist(azimuths, bins=36, color="#4CAF50", alpha=0.7, edgecolor='k')
+            axes[1, 0].set_xlabel("Azimuth (°)")
+            axes[1, 0].set_ylabel("Count")
+            axes[1, 0].set_title("Azimuth Distribution")
+            axes[1, 0].grid(True, alpha=0.3)
+
+            # P10 vs depth
+            bin_edges = np.linspace(d_min, d_max, 11)
+            bin_mids = (bin_edges[:-1] + bin_edges[1:]) / 2
+            p10_bins = []
+            for j in range(len(bin_edges) - 1):
+                mask = (depths >= bin_edges[j]) & (depths < bin_edges[j + 1])
+                p10_bins.append(np.sum(mask) / max(bin_edges[j + 1] - bin_edges[j], 1))
+            axes[1, 1].barh(bin_mids, p10_bins, height=(d_max - d_min) / 10 * 0.8, color="#9C27B0", alpha=0.7)
+            axes[1, 1].set_xlabel("P10 (frac/m)")
+            axes[1, 1].set_ylabel("Depth (m)")
+            axes[1, 1].invert_yaxis()
+            axes[1, 1].set_title("P10 vs Depth")
+            axes[1, 1].grid(True, alpha=0.3)
+
+            fig.suptitle(f"Well {well} — DFN Parameters", fontsize=13, fontweight="bold")
+            plt.tight_layout()
+
+            with plot_lock:
+                plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+            recs = []
+            recs.append(f"P10 = {P10:.3f} frac/m, P32 est = {P32_est:.3f} m²/m³")
+            recs.append(f"Spacing pattern: {clustering} (CV = {cv_spacing:.2f})")
+            recs.append(f"Best spacing distribution: {best_dist}")
+            recs.append(f"Orientation: mean azimuth {mean_az:.0f}°, mean dip {mean_dip:.0f}° (κ = {kappa:.1f})")
+            if clustering == "HIGHLY_CLUSTERED":
+                recs.append("Fractures are highly clustered — consider swarm-based DFN modelling")
+
+            return {
+                "well": well,
+                "n_fractures": len(depths),
+                "depth_range_m": [round(d_min, 1), round(d_max, 1)],
+                "P10_per_m": round(P10, 4),
+                "P32_est_per_m3": round(P32_est, 4),
+                "mean_spacing_m": round(mean_spacing, 2),
+                "median_spacing_m": round(median_spacing, 2),
+                "cv_spacing": round(cv_spacing, 3),
+                "clustering": clustering,
+                "best_spacing_dist": best_dist,
+                "exp_p_value": round(float(exp_p), 4),
+                "lognorm_p_value": round(float(ln_p), 4),
+                "mean_azimuth_deg": round(mean_az, 1),
+                "mean_dip_deg": round(mean_dip, 1),
+                "std_dip_deg": round(std_dip, 1),
+                "fisher_kappa": round(float(kappa), 1),
+                "orientation_R_bar": round(float(R_bar), 4),
+                "recommendations": recs,
+                "plot": plot_b64,
+                "stakeholder_brief": {
+                    "headline": f"DFN: P10={P10:.3f}/m, {clustering} spacing, {best_dist} fit",
+                    "risk_level": "MODERATE",
+                    "what_this_means": f"Fracture intensity is {P10:.3f} per metre with {clustering.lower().replace('_', ' ')} spacing pattern",
+                    "for_non_experts": "These statistics describe the natural fracture pattern — how many fractures there are per metre, how they're spaced, and which direction they face. This is used to build 3D fracture models for reservoir simulation."
+                }
+            }
+
+        result = await asyncio.to_thread(_compute)
+        result["elapsed_s"] = round(_t.time() - t0, 3)
+        result = _sanitize_for_json(result)
+        _dfn_params_cache[ck] = result
+        return JSONResponse(content=result)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e), "elapsed_s": round(_t.time() - t0, 3)})
+
+
+# ── [229] Drilling Margin Analysis ───────────────────────────────────
+@app.post("/api/analysis/drilling-margin")
+async def analysis_drilling_margin(request: Request):
+    """Compute drilling safety margins: mud weight window, kick tolerance, and loss gradient."""
+    import time as _t
+    t0 = _t.time()
+    try:
+        body = await request.json()
+        source = body.get("source", "demo")
+        well = body.get("well", "3P")
+        depth_from = body.get("depth_from", 500)
+        depth_to = body.get("depth_to", 5000)
+        n_points = body.get("n_points", 30)
+        mud_weight_ppg = body.get("mud_weight_ppg", 10.0)
+
+        ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{mud_weight_ppg}"
+        if ck in _drilling_margin_cache:
+            cached = _drilling_margin_cache[ck]
+            cached["elapsed_s"] = round(_t.time() - t0, 3)
+            return JSONResponse(content=cached)
+
+        df_all = get_df(source)
+        df = df_all[df_all["well"] == well].copy()
+        if df.empty:
+            return JSONResponse(status_code=404, content={"error": f"Well {well} not found"})
+
+        def _compute():
+            import numpy as np
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            depths = np.linspace(depth_from, depth_to, n_points)
+            rho_rock = 2500
+            g = 9.81
+            rho_w = 1000
+            MUD_PPG_TO_MPA = 0.00981  # ppg to MPa/m
+
+            profile = []
+            for d in depths:
+                Sv = rho_rock * g * d / 1e6
+                Pp = rho_w * g * d / 1e6
+                Shmin = 0.6 * Sv + 0.4 * Pp
+
+                # Convert to ppg
+                Pp_ppg = Pp / (MUD_PPG_TO_MPA * d) if d > 0 else 8.34
+                Shmin_ppg = Shmin / (MUD_PPG_TO_MPA * d) if d > 0 else 12
+                Sv_ppg = Sv / (MUD_PPG_TO_MPA * d) if d > 0 else 19.2
+
+                # Collapse gradient (simplified — pore pressure + small margin)
+                collapse_ppg = Pp_ppg + 0.5
+                # Fracture gradient
+                frac_ppg = Shmin_ppg
+
+                # Mud weight in MPa at this depth
+                mud_MPa = mud_weight_ppg * MUD_PPG_TO_MPA * d
+
+                # Margins
+                kick_margin_ppg = mud_weight_ppg - Pp_ppg
+                loss_margin_ppg = frac_ppg - mud_weight_ppg
+                window_ppg = frac_ppg - collapse_ppg
+
+                safe = mud_weight_ppg > collapse_ppg and mud_weight_ppg < frac_ppg
+
+                profile.append({
+                    "depth_m": round(float(d), 1),
+                    "Pp_ppg": round(float(Pp_ppg), 2),
+                    "collapse_ppg": round(float(collapse_ppg), 2),
+                    "frac_ppg": round(float(frac_ppg), 2),
+                    "overburden_ppg": round(float(Sv_ppg), 2),
+                    "mud_weight_ppg": round(float(mud_weight_ppg), 2),
+                    "kick_margin_ppg": round(float(kick_margin_ppg), 2),
+                    "loss_margin_ppg": round(float(loss_margin_ppg), 2),
+                    "window_ppg": round(float(window_ppg), 2),
+                    "safe": safe
+                })
+
+            windows = [p["window_ppg"] for p in profile]
+            kick_margins = [p["kick_margin_ppg"] for p in profile]
+            loss_margins = [p["loss_margin_ppg"] for p in profile]
+
+            min_window = float(np.min(windows))
+            min_kick = float(np.min(kick_margins))
+            min_loss = float(np.min(loss_margins))
+            pct_safe = sum(1 for p in profile if p["safe"]) / len(profile) * 100
+
+            if min_kick < 0:
+                margin_class = "KICK_RISK"
+            elif min_loss < 0:
+                margin_class = "LOSS_RISK"
+            elif min_window < 1.0:
+                margin_class = "NARROW"
+            else:
+                margin_class = "ADEQUATE"
+
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 6), sharey=True)
+            dep = [p["depth_m"] for p in profile]
+
+            ax1.plot([p["Pp_ppg"] for p in profile], dep, "c-", linewidth=2, label="Pp")
+            ax1.plot([p["collapse_ppg"] for p in profile], dep, "r--", linewidth=1.5, label="Collapse")
+            ax1.plot([p["frac_ppg"] for p in profile], dep, "b--", linewidth=1.5, label="Frac")
+            ax1.plot([p["overburden_ppg"] for p in profile], dep, "k-", linewidth=1, label="OBG")
+            ax1.axvline(x=mud_weight_ppg, color="green", linestyle="-.", linewidth=2, label=f"MW={mud_weight_ppg}")
+            ax1.fill_betweenx(dep, [p["collapse_ppg"] for p in profile], [p["frac_ppg"] for p in profile], alpha=0.1, color="green")
+            ax1.set_xlabel("Equivalent Mud Weight (ppg)")
+            ax1.set_ylabel("Depth (m)")
+            ax1.invert_yaxis()
+            ax1.legend(fontsize=7, loc="lower left")
+            ax1.set_title("Drilling Window")
+            ax1.grid(True, alpha=0.3)
+
+            colors_km = ["#4CAF50" if k > 0.5 else "#FF9800" if k > 0 else "#F44336" for k in kick_margins]
+            ax2.barh(dep, kick_margins, height=(depth_to - depth_from) / n_points * 0.4, color=colors_km, alpha=0.7, label="Kick margin")
+            ax2.barh([d + (depth_to - depth_from) / n_points * 0.4 for d in dep], loss_margins,
+                     height=(depth_to - depth_from) / n_points * 0.4, color="#2196F3", alpha=0.5, label="Loss margin")
+            ax2.axvline(x=0, color="red", linestyle="--")
+            ax2.set_xlabel("Margin (ppg)")
+            ax2.set_title("Safety Margins")
+            ax2.legend(fontsize=8)
+            ax2.grid(True, alpha=0.3)
+
+            fig.suptitle(f"Well {well} — Drilling Margin (MW={mud_weight_ppg} ppg)", fontsize=12, fontweight="bold")
+            plt.tight_layout()
+
+            with plot_lock:
+                plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+            recs = []
+            if margin_class == "KICK_RISK":
+                recs.append(f"KICK RISK: Mud weight below pore pressure at some depths (min kick margin: {min_kick:.1f} ppg)")
+                recs.append("Increase mud weight or consider managed pressure drilling")
+            elif margin_class == "LOSS_RISK":
+                recs.append(f"LOSS RISK: Mud weight exceeds fracture gradient (min loss margin: {min_loss:.1f} ppg)")
+                recs.append("Reduce mud weight or use loss circulation materials")
+            elif margin_class == "NARROW":
+                recs.append(f"Narrow window ({min_window:.1f} ppg) — tight drilling required")
+            else:
+                recs.append(f"Adequate drilling margins throughout interval")
+            recs.append(f"Safe zone: {pct_safe:.0f}% of interval")
+            recs.append(f"Mud weight: {mud_weight_ppg} ppg — adjust based on real pore pressure data")
+
+            return {
+                "well": well,
+                "depth_from_m": depth_from,
+                "depth_to_m": depth_to,
+                "n_points": n_points,
+                "mud_weight_ppg": mud_weight_ppg,
+                "min_window_ppg": round(min_window, 2),
+                "min_kick_margin_ppg": round(min_kick, 2),
+                "min_loss_margin_ppg": round(min_loss, 2),
+                "pct_safe": round(pct_safe, 1),
+                "margin_class": margin_class,
+                "profile": profile,
+                "recommendations": recs,
+                "plot": plot_b64,
+                "stakeholder_brief": {
+                    "headline": f"Drilling margin is {margin_class} ({pct_safe:.0f}% safe)",
+                    "risk_level": "HIGH" if margin_class in ("KICK_RISK", "LOSS_RISK") else ("MODERATE" if margin_class == "NARROW" else "LOW"),
+                    "what_this_means": f"At {mud_weight_ppg} ppg mud weight, {'the well is at risk' if margin_class in ('KICK_RISK', 'LOSS_RISK') else 'drilling is safe'} across the interval",
+                    "for_non_experts": "When drilling, the mud weight must be heavy enough to prevent the well from kicking (gas entering) but light enough not to fracture the rock. This analysis shows how much safety margin exists at each depth."
+                }
+            }
+
+        result = await asyncio.to_thread(_compute)
+        result["elapsed_s"] = round(_t.time() - t0, 3)
+        result = _sanitize_for_json(result)
+        _drilling_margin_cache[ck] = result
         return JSONResponse(content=result)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e), "elapsed_s": round(_t.time() - t0, 3)})

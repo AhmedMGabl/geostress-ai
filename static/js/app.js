@@ -15261,3 +15261,133 @@ async function runBreakoutAngular() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ══════════════════════════════════════════════════════
+// [225] Stress Gradient Profile
+// ══════════════════════════════════════════════════════
+async function runStressGradient() {
+    var results = document.getElementById('stressGradientResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depFrom = parseFloat(document.getElementById('sgrad-from').value) || 500;
+        var depTo = parseFloat(document.getElementById('sgrad-to').value) || 5000;
+        var resp = await fetch('/api/analysis/stress-gradient-profile', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, depth_from:depFrom, depth_to:depTo, n_points:30})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.gradient_class+'</strong> — Sv gradient: '+(r.mean_Sv_gradient_MPa_km||0).toFixed(1)+' MPa/km</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-6"><div class="card text-center p-2"><h6>Sv Gradient</h6><h4>'+(r.mean_Sv_gradient_MPa_km||0).toFixed(1)+' MPa/km</h4></div></div>';
+        html += '<div class="col-md-6"><div class="card text-center p-2"><h6>Pp Gradient</h6><h4>'+(r.mean_Pp_gradient_MPa_km||0).toFixed(1)+' MPa/km</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [226] Fracture Mineral Fill
+// ══════════════════════════════════════════════════════
+async function runMineralFill() {
+    var results = document.getElementById('mineralFillResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/mineral-fill', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.dominant_fill+'</strong> dominant — Seal impact: '+r.seal_impact+'</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-4"><div class="card text-center p-2"><h6>Fractures</h6><h4>'+(r.n_fractures||0)+'</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Dominant</h6><h4>'+r.dominant_fill+'</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Seal</h6><h4>'+r.seal_impact+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [227] Coulomb Failure Function
+// ══════════════════════════════════════════════════════
+async function runCoulombFailure() {
+    var results = document.getElementById('coulombFailureResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth = parseFloat(document.getElementById('cff-depth').value) || 3000;
+        var friction = parseFloat(document.getElementById('cff-friction').value) || 0.6;
+        var cohesion = parseFloat(document.getElementById('cff-cohesion').value) || 0;
+        var resp = await fetch('/api/analysis/coulomb-failure-func', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, depth:depth, friction:friction, cohesion_MPa:cohesion})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.failure_class==='CRITICAL'?'danger':r.failure_class==='HIGH'?'warning':'info')+'"><strong>'+r.failure_class+'</strong> — '+(r.pct_at_failure||0).toFixed(1)+'% at failure</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-3"><div class="card text-center p-2"><h6>At Failure</h6><h4>'+(r.n_at_failure||0)+'/'+r.n_fractures+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Mean CFF</h6><h4>'+(r.mean_CFF_MPa||0).toFixed(2)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Max CFF</h6><h4>'+(r.max_CFF_MPa||0).toFixed(2)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Min CFF</h6><h4>'+(r.min_CFF_MPa||0).toFixed(2)+' MPa</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [228] DFN Parameters
+// ══════════════════════════════════════════════════════
+async function runDfnParams() {
+    var results = document.getElementById('dfnParamsResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/dfn-params', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.clustering+'</strong> — P10: '+(r.P10_per_m||0).toFixed(3)+'/m</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-3"><div class="card text-center p-2"><h6>P10</h6><h4>'+(r.P10_per_m||0).toFixed(3)+'/m</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>P32 est</h6><h4>'+(r.P32_est_per_m3||0).toFixed(3)+'/m³</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Spacing</h6><h4>'+(r.mean_spacing_m||0).toFixed(1)+' m</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>κ</h6><h4>'+(r.fisher_kappa||0).toFixed(1)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [229] Drilling Margin
+// ══════════════════════════════════════════════════════
+async function runDrillingMargin() {
+    var results = document.getElementById('drillingMarginResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depFrom = parseFloat(document.getElementById('dmarg-from').value) || 500;
+        var depTo = parseFloat(document.getElementById('dmarg-to').value) || 5000;
+        var mw = parseFloat(document.getElementById('dmarg-mw').value) || 10.0;
+        var resp = await fetch('/api/analysis/drilling-margin', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, depth_from:depFrom, depth_to:depTo, n_points:30, mud_weight_ppg:mw})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.margin_class==='KICK_RISK'||r.margin_class==='LOSS_RISK'?'danger':r.margin_class==='NARROW'?'warning':'success')+'"><strong>'+r.margin_class+'</strong> — '+(r.pct_safe||0).toFixed(0)+'% safe</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-3"><div class="card text-center p-2"><h6>Min Window</h6><h4>'+(r.min_window_ppg||0).toFixed(1)+' ppg</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Kick Margin</h6><h4>'+(r.min_kick_margin_ppg||0).toFixed(1)+' ppg</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Loss Margin</h6><h4>'+(r.min_loss_margin_ppg||0).toFixed(1)+' ppg</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>MW</h6><h4>'+(r.mud_weight_ppg||0)+' ppg</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
