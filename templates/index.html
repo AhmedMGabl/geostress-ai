@@ -4659,6 +4659,61 @@
                         </div>
                     </div>
 
+                    <!-- [305] Torque-Drag Analysis -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-wrench-adjustable"></i> <strong>[305] Torque-Drag Analysis</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runTorqueDragAnalysis()">Run</button>
+                        </div>
+                        <div class="card-body small" id="torqueDragResult">
+                            <p class="text-muted">Soft-string torque and drag model for drilling/tripping operations.</p>
+                        </div>
+                    </div>
+
+                    <!-- [306] Casing Wear Prediction -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-shield-exclamation"></i> <strong>[306] Casing Wear Prediction</strong></span>
+                            <button class="btn btn-sm btn-dark" onclick="runCasingWearPrediction()">Run</button>
+                        </div>
+                        <div class="card-body small" id="casingWearResult">
+                            <p class="text-muted">Predict casing wear from drill string rotation and contact forces.</p>
+                        </div>
+                    </div>
+
+                    <!-- [307] Kick Margin Profile -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info text-dark d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-speedometer2"></i> <strong>[307] Kick Margin Profile</strong></span>
+                            <button class="btn btn-sm btn-dark" onclick="runKickMarginProfile()">Run</button>
+                        </div>
+                        <div class="card-body small" id="kickMarginResult">
+                            <p class="text-muted">Pore-frac pressure window and kick margin vs depth.</p>
+                        </div>
+                    </div>
+
+                    <!-- [308] Cement Integrity Assessment -->
+                    <div class="card mb-4 border-secondary">
+                        <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-building"></i> <strong>[308] Cement Integrity Assessment</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runCementIntegrity()">Run</button>
+                        </div>
+                        <div class="card-body small" id="cementIntegrityResult">
+                            <p class="text-muted">Cement sheath integrity under thermal and pressure cycling.</p>
+                        </div>
+                    </div>
+
+                    <!-- [309] Swelling Pressure Risk -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-moisture"></i> <strong>[309] Swelling Pressure Risk</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runSwellingPressureRisk()">Run</button>
+                        </div>
+                        <div class="card-body small" id="swellingPressureResult">
+                            <p class="text-muted">Clay swelling risk from water-based mud interaction with shale.</p>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

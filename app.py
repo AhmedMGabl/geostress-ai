@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.73.0 - Sand Failure + Wellbore Breathing + Surge-Swab + Lost Circulation + Hole Cleaning Eff)."""
+"""GeoStress AI - FastAPI Web Application (v3.74.0 - Torque-Drag + Casing Wear + Kick Margin + Cement Integrity + Swelling Pressure)."""
 
 import os
 import io
@@ -55307,4 +55307,710 @@ async def analysis_hole_cleaning_efficiency(request: Request):
     result["elapsed_s"] = round(time.time() - t0, 3)
     result = _sanitize_for_json(result)
     _hole_cleaning_eff_cache[ck] = result
+    return JSONResponse(content=result)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [305] TORQUE-DRAG ANALYSIS  (v3.74.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_torque_drag_cache: dict = {}
+
+@app.post("/api/analysis/torque-drag-analysis")
+async def analysis_torque_drag(request: Request):
+    """Torque and drag analysis for drilling/tripping operations using soft-string model."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 20)
+    friction_factor = body.get("friction_factor", 0.25)
+    wob_klbs = body.get("wob_klbs", 20)
+    pipe_weight_ppf = body.get("pipe_weight_ppf", 19.5)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{friction_factor}_{wob_klbs}_{pipe_weight_ppf}"
+    if ck in _torque_drag_cache:
+        c = _torque_drag_cache[ck]
+        c["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=c)
+
+    df_all = get_df(source)
+    if df_all is None:
+        return JSONResponse(content={"error": "data not loaded"}, status_code=400)
+    df = df_all[df_all["well"] == well].copy()
+    if df.empty:
+        return JSONResponse(content={"error": f"well {well} not found"}, status_code=404)
+
+    def _compute():
+        import numpy as np
+        depths = np.linspace(max(depth_from, 100), depth_to, n_points)
+        BF = 1 - 10 / (65.5)  # buoyancy factor for 10 ppg mud in steel
+
+        profile = []
+        cum_hookload_lbs = 0
+        cum_torque_ftlbs = 0
+        for i, d in enumerate(depths):
+            seg_len = (depths[1] - depths[0]) if len(depths) > 1 else 100
+            incl = min(5, 0.001 * d)  # mild build
+            incl_rad = incl * 3.14159 / 180
+            seg_weight = pipe_weight_ppf * seg_len * 3.2808 * BF
+
+            # Drag (soft-string)
+            normal_force = seg_weight * abs(np.sin(incl_rad))
+            drag_force = friction_factor * normal_force
+            axial_load = seg_weight * np.cos(incl_rad) + drag_force
+
+            cum_hookload_lbs += axial_load
+            # Torque at each depth
+            r_pipe = 2.5  # inches radius
+            seg_torque = friction_factor * normal_force * r_pipe / 12  # ft-lbs
+            cum_torque_ftlbs += seg_torque
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "inclination_deg": round(float(incl), 2),
+                "hookload_klbs": round(float(cum_hookload_lbs / 1000), 1),
+                "torque_kftlbs": round(float(cum_torque_ftlbs / 1000), 2),
+                "drag_force_lbs": round(float(drag_force), 0),
+            })
+
+        max_hookload = max(p["hookload_klbs"] for p in profile)
+        max_torque = max(p["torque_kftlbs"] for p in profile)
+        rig_hookload_limit = 500  # klbs typical
+        rig_torque_limit = 40    # kft-lbs typical
+        hookload_pct = max_hookload / rig_hookload_limit * 100
+        torque_pct = max_torque / rig_torque_limit * 100
+
+        if hookload_pct > 90 or torque_pct > 90:
+            td_class = "CRITICAL"
+        elif hookload_pct > 70 or torque_pct > 70:
+            td_class = "HIGH"
+        elif hookload_pct > 50 or torque_pct > 50:
+            td_class = "MODERATE"
+        else:
+            td_class = "LOW"
+
+        recs = []
+        if td_class in ("CRITICAL", "HIGH"):
+            recs.append("Consider lubricant pills or mechanical friction reducers")
+            recs.append("Evaluate lighter drillstring or shorter BHA")
+        elif td_class == "MODERATE":
+            recs.append("Monitor weight and torque trends for deterioration")
+        else:
+            recs.append("Torque and drag within normal limits")
+        recs.append(f"Friction factor = {friction_factor}, hookload = {max_hookload:.0f} klbs ({hookload_pct:.0f}% of rig limit)")
+
+        fig, plot_b64 = None, ""
+        try:
+            with plot_lock:
+                import matplotlib.pyplot as plt
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+                dd = [p["depth_m"] for p in profile]
+                ax1.plot(dd, [p["hookload_klbs"] for p in profile], "r-o", ms=3, label="Hookload")
+                ax1.axhline(rig_hookload_limit, color="red", ls="--", alpha=0.6, label=f"Rig limit = {rig_hookload_limit} klbs")
+                ax1.set_xlabel("Depth (m)"); ax1.set_ylabel("Hookload (klbs)")
+                ax1.set_title(f"Hookload — {well}"); ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+
+                ax2.plot(dd, [p["torque_kftlbs"] for p in profile], "b-s", ms=3, label="Torque")
+                ax2.axhline(rig_torque_limit, color="red", ls="--", alpha=0.6, label=f"Rig limit = {rig_torque_limit} kft-lbs")
+                ax2.set_xlabel("Depth (m)"); ax2.set_ylabel("Torque (kft-lbs)")
+                ax2.set_title(f"Torque — {well}"); ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+                fig.tight_layout()
+                plot_b64 = fig_to_base64(fig); plt.close(fig)
+        except Exception:
+            if fig:
+                try: import matplotlib.pyplot as plt; plt.close(fig)
+                except: pass
+
+        brief = {
+            "headline": f"Torque-drag is {td_class} for {well}",
+            "risk_level": td_class,
+            "what_this_means": f"Max hookload = {max_hookload:.0f} klbs ({hookload_pct:.0f}% limit), torque = {max_torque:.1f} kft-lbs ({torque_pct:.0f}% limit).",
+            "for_non_experts": "Torque and drag are forces that resist drill string rotation and movement. "
+                              "High values can prevent reaching target depth or cause stuck pipe."
+        }
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "friction_factor": friction_factor, "pipe_weight_ppf": pipe_weight_ppf,
+            "max_hookload_klbs": round(max_hookload, 1), "max_torque_kftlbs": round(max_torque, 2),
+            "hookload_pct": round(hookload_pct, 1), "torque_pct": round(torque_pct, 1),
+            "td_class": td_class, "profile": profile,
+            "recommendations": recs, "plot": plot_b64, "stakeholder_brief": brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    result = _sanitize_for_json(result)
+    _torque_drag_cache[ck] = result
+    return JSONResponse(content=result)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [306] CASING WEAR PREDICTION  (v3.74.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_casing_wear_cache: dict = {}
+
+@app.post("/api/analysis/casing-wear-prediction")
+async def analysis_casing_wear(request: Request):
+    """Predict casing wear from drill string contact force and rotation hours."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    casing_weight_ppf = body.get("casing_weight_ppf", 47)
+    casing_od_in = body.get("casing_od_in", 9.625)
+    rotating_hours = body.get("rotating_hours", 200)
+    rpm = body.get("rpm", 120)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{casing_weight_ppf}_{casing_od_in}_{rotating_hours}_{rpm}"
+    if ck in _casing_wear_cache:
+        c = _casing_wear_cache[ck]
+        c["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=c)
+
+    df_all = get_df(source)
+    if df_all is None:
+        return JSONResponse(content={"error": "data not loaded"}, status_code=400)
+    df = df_all[df_all["well"] == well].copy()
+    if df.empty:
+        return JSONResponse(content={"error": f"well {well} not found"}, status_code=404)
+
+    def _compute():
+        import numpy as np
+        n_points = 20
+        depths = np.linspace(max(depth_from, 100), depth_to, n_points)
+
+        # Casing wall thickness (approx from weight/OD)
+        ID_in = casing_od_in - 2 * (casing_weight_ppf / (10.68 * casing_od_in))
+        wall_thickness = (casing_od_in - ID_in) / 2
+
+        profile = []
+        for d in depths:
+            incl = min(15, 0.003 * d)
+            incl_rad = incl * 3.14159 / 180
+            # Contact force per unit length (simplified)
+            pipe_wt = 19.5  # lbs/ft drill pipe
+            BF = 0.847
+            normal_force = pipe_wt * BF * abs(np.sin(incl_rad))  # lbs/ft
+
+            # Wear depth (White-Dawson model simplified)
+            wear_factor = 1e-8  # typical wear factor
+            total_revolutions = rpm * rotating_hours * 60
+            wear_depth_in = wear_factor * normal_force * total_revolutions / 1000
+            wear_pct = (wear_depth_in / wall_thickness) * 100 if wall_thickness > 0 else 0
+            remaining_pct = max(0, 100 - wear_pct)
+
+            # Burst rating reduction
+            burst_reduction_pct = wear_pct * 1.2  # slightly more than linear
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "inclination_deg": round(float(incl), 2),
+                "contact_force_lbf_ft": round(float(normal_force), 2),
+                "wear_depth_in": round(float(wear_depth_in), 4),
+                "wear_pct": round(float(wear_pct), 1),
+                "remaining_wall_pct": round(float(remaining_pct), 1),
+                "burst_reduction_pct": round(float(burst_reduction_pct), 1),
+            })
+
+        max_wear = max(p["wear_pct"] for p in profile)
+        mean_wear = float(np.mean([p["wear_pct"] for p in profile]))
+        min_remaining = min(p["remaining_wall_pct"] for p in profile)
+
+        if max_wear > 50:
+            cw_class = "SEVERE"
+        elif max_wear > 30:
+            cw_class = "SIGNIFICANT"
+        elif max_wear > 15:
+            cw_class = "MODERATE"
+        else:
+            cw_class = "MINOR"
+
+        recs = []
+        if cw_class in ("SEVERE", "SIGNIFICANT"):
+            recs.append("Install casing wear protectors (non-rotating) in high-dogleg sections")
+            recs.append("Upgrade to wear-resistant casing (chrome or high-alloy)")
+            recs.append("Reduce RPM or use downhole motors to minimize contact")
+        elif cw_class == "MODERATE":
+            recs.append("Monitor wear with caliper logs at next opportunity")
+            recs.append("Consider hardbanding on tool joints")
+        else:
+            recs.append("Casing wear is within acceptable limits")
+        recs.append(f"Max wear = {max_wear:.1f}% after {rotating_hours} hrs at {rpm} RPM")
+
+        fig, plot_b64 = None, ""
+        try:
+            with plot_lock:
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(8, 6))
+                dd = [p["depth_m"] for p in profile]
+                ax.plot(dd, [p["wear_pct"] for p in profile], "r-o", ms=4, label="Wear %")
+                ax.axhline(50, color="red", ls="--", alpha=0.6, label="Severe (50%)")
+                ax.axhline(30, color="orange", ls="--", alpha=0.6, label="Significant (30%)")
+                ax.fill_between(dd, [p["wear_pct"] for p in profile], alpha=0.2, color="red")
+                ax.set_xlabel("Depth (m)"); ax.set_ylabel("Casing Wear (%)")
+                ax.set_title(f"Casing Wear Prediction — {well}")
+                ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+                plot_b64 = fig_to_base64(fig); plt.close(fig)
+        except Exception:
+            if fig:
+                try: import matplotlib.pyplot as plt; plt.close(fig)
+                except: pass
+
+        brief = {
+            "headline": f"Casing wear is {cw_class} for {well}",
+            "risk_level": cw_class,
+            "what_this_means": f"Max wear = {max_wear:.1f}%, min remaining wall = {min_remaining:.1f}%.",
+            "for_non_experts": "Drill string rotation wears away the inside of the casing. Excessive wear weakens the casing, "
+                              "reducing its ability to contain pressure and potentially requiring costly workovers."
+        }
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "casing_weight_ppf": casing_weight_ppf, "casing_od_in": casing_od_in,
+            "rotating_hours": rotating_hours, "rpm": rpm,
+            "max_wear_pct": round(max_wear, 1), "mean_wear_pct": round(mean_wear, 1),
+            "min_remaining_wall_pct": round(min_remaining, 1),
+            "cw_class": cw_class, "profile": profile,
+            "recommendations": recs, "plot": plot_b64, "stakeholder_brief": brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    result = _sanitize_for_json(result)
+    _casing_wear_cache[ck] = result
+    return JSONResponse(content=result)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [307] KICK MARGIN PROFILE  (v3.74.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_kick_margin_cache: dict = {}
+
+@app.post("/api/analysis/kick-margin-profile")
+async def analysis_kick_margin_profile(request: Request):
+    """Compute kick margin vs depth: pore pressure, frac gradient, MW, and safe operating window."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    mud_weight_ppg = body.get("mud_weight_ppg", 10)
+    kick_intensity_ppg = body.get("kick_intensity_ppg", 0.5)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{mud_weight_ppg}_{kick_intensity_ppg}"
+    if ck in _kick_margin_cache:
+        c = _kick_margin_cache[ck]
+        c["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=c)
+
+    df_all = get_df(source)
+    if df_all is None:
+        return JSONResponse(content={"error": "data not loaded"}, status_code=400)
+    df = df_all[df_all["well"] == well].copy()
+    if df.empty:
+        return JSONResponse(content={"error": f"well {well} not found"}, status_code=404)
+
+    def _compute():
+        import numpy as np
+        depths = np.linspace(max(depth_from, 100), depth_to, n_points)
+
+        profile = []
+        for d in depths:
+            Pp = 0.0098 * d
+            Shmin = 0.017 * d
+            pore_grad = Pp / (0.0519 * d) * 8.33 if d > 0 else 8.5
+            frac_grad = Shmin / (0.0519 * d) * 8.33 if d > 0 else 15
+            overbalance = mud_weight_ppg - pore_grad
+            frac_margin = frac_grad - mud_weight_ppg
+            kick_margin = frac_grad - (pore_grad + kick_intensity_ppg)
+            safe_window = frac_grad - pore_grad
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "pore_grad_ppg": round(float(pore_grad), 3),
+                "frac_grad_ppg": round(float(frac_grad), 3),
+                "overbalance_ppg": round(float(overbalance), 3),
+                "frac_margin_ppg": round(float(frac_margin), 3),
+                "kick_margin_ppg": round(float(kick_margin), 3),
+                "safe_window_ppg": round(float(safe_window), 3),
+            })
+
+        margins = [p["kick_margin_ppg"] for p in profile]
+        min_margin = float(np.min(margins))
+        mean_margin = float(np.mean(margins))
+        pct_narrow = float(np.mean([1 for m in margins if m < 0.5]) / len(margins) * 100) if margins else 0
+
+        if min_margin < 0:
+            km_class = "NO_MARGIN"
+        elif min_margin < 0.5:
+            km_class = "TIGHT"
+        elif min_margin < 1.0:
+            km_class = "ADEQUATE"
+        else:
+            km_class = "WIDE"
+
+        recs = []
+        if km_class == "NO_MARGIN":
+            recs.append("CRITICAL: Kick cannot be circulated out without fracturing — use MPD or set intermediate casing")
+            recs.append("Consider reducing kick intensity assumption or adjusting casing program")
+        elif km_class == "TIGHT":
+            recs.append("Tight margins — maintain close surveillance and have MPD contingency")
+            recs.append("Minimize pipe trip speed to avoid surge/swab complications")
+        elif km_class == "ADEQUATE":
+            recs.append("Adequate kick margins — standard well control procedures sufficient")
+        else:
+            recs.append("Wide kick margins — low well control risk")
+        recs.append(f"Min kick margin = {min_margin:.2f} ppg at kick intensity = {kick_intensity_ppg} ppg")
+
+        fig, plot_b64 = None, ""
+        try:
+            with plot_lock:
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(8, 6))
+                dd = [p["depth_m"] for p in profile]
+                ax.fill_betweenx(dd, [p["pore_grad_ppg"] for p in profile], [p["frac_grad_ppg"] for p in profile],
+                                 alpha=0.15, color="green", label="Safe window")
+                ax.plot([p["pore_grad_ppg"] for p in profile], dd, "b-", lw=2, label="Pore grad")
+                ax.plot([p["frac_grad_ppg"] for p in profile], dd, "r-", lw=2, label="Frac grad")
+                ax.axvline(mud_weight_ppg, color="green", ls="--", lw=2, label=f"MW = {mud_weight_ppg} ppg")
+                ax.set_ylabel("Depth (m)"); ax.set_xlabel("Pressure (ppg)")
+                ax.invert_yaxis()
+                ax.set_title(f"Kick Margin Profile — {well}")
+                ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+                plot_b64 = fig_to_base64(fig); plt.close(fig)
+        except Exception:
+            if fig:
+                try: import matplotlib.pyplot as plt; plt.close(fig)
+                except: pass
+
+        brief = {
+            "headline": f"Kick margin is {km_class} for {well}",
+            "risk_level": km_class,
+            "what_this_means": f"Min kick margin = {min_margin:.2f} ppg, mean = {mean_margin:.2f} ppg. {pct_narrow:.0f}% of intervals have tight margins.",
+            "for_non_experts": "Kick margin is the pressure buffer between pore pressure (influx risk) and fracture gradient (lost circulation risk). "
+                              "Narrow margins mean well control events are harder to manage safely."
+        }
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "mud_weight_ppg": mud_weight_ppg, "kick_intensity_ppg": kick_intensity_ppg,
+            "min_kick_margin_ppg": round(min_margin, 3), "mean_kick_margin_ppg": round(mean_margin, 3),
+            "pct_narrow": round(pct_narrow, 1),
+            "km_class": km_class, "profile": profile,
+            "recommendations": recs, "plot": plot_b64, "stakeholder_brief": brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    result = _sanitize_for_json(result)
+    _kick_margin_cache[ck] = result
+    return JSONResponse(content=result)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [308] CEMENT INTEGRITY ASSESSMENT  (v3.74.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_cement_integrity_cache: dict = {}
+
+@app.post("/api/analysis/cement-integrity-assessment")
+async def analysis_cement_integrity(request: Request):
+    """Assess cement sheath integrity under thermal/pressure cycling loads."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = body.get("depth_m", 3000)
+    cement_UCS_MPa = body.get("cement_UCS_MPa", 30)
+    cement_tensile_MPa = body.get("cement_tensile_MPa", 3)
+    delta_T_C = body.get("delta_T_C", 80)
+    delta_P_MPa = body.get("delta_P_MPa", 15)
+
+    ck = f"{source}_{well}_{depth_m}_{cement_UCS_MPa}_{cement_tensile_MPa}_{delta_T_C}_{delta_P_MPa}"
+    if ck in _cement_integrity_cache:
+        c = _cement_integrity_cache[ck]
+        c["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=c)
+
+    df_all = get_df(source)
+    if df_all is None:
+        return JSONResponse(content={"error": "data not loaded"}, status_code=400)
+    df = df_all[df_all["well"] == well].copy()
+    if df.empty:
+        return JSONResponse(content={"error": f"well {well} not found"}, status_code=404)
+
+    def _compute():
+        import numpy as np
+        d = depth_m
+        Sv = 0.025 * d
+        Shmin = 0.017 * d
+        Pp = 0.0098 * d
+
+        # Cement thermal stress
+        alpha_cement = 12e-6  # 1/°C
+        E_cement = 10000  # MPa (10 GPa typical)
+        nu_cement = 0.2
+        thermal_stress = alpha_cement * E_cement * delta_T_C / (1 - nu_cement)
+
+        # Pressure-induced radial stress
+        casing_r = 4.5  # inches inner radius
+        hole_r = 6.0    # inches
+        radial_stress = delta_P_MPa * (casing_r / hole_r) ** 2
+
+        # Hoop stress at cement-formation interface
+        hoop_stress = delta_P_MPa * (1 + (casing_r / hole_r) ** 2) / (1 - (casing_r / hole_r) ** 2 + 0.001)
+
+        # Total tensile stress on cement
+        total_tensile = thermal_stress + max(0, -radial_stress)
+        # Shear stress
+        shear_stress = abs(hoop_stress - radial_stress) / 2
+
+        # Safety factors
+        tensile_SF = cement_tensile_MPa / (total_tensile + 0.001)
+        compressive_SF = cement_UCS_MPa / (shear_stress * 2 + 0.001)
+        min_SF = min(tensile_SF, compressive_SF)
+
+        if min_SF < 1.0:
+            ci_class = "FAILED"
+        elif min_SF < 1.5:
+            ci_class = "MARGINAL"
+        elif min_SF < 2.5:
+            ci_class = "ADEQUATE"
+        else:
+            ci_class = "ROBUST"
+
+        # Delta-T sweep
+        dt_sweep = []
+        for dt in np.arange(0, 160, 10):
+            ts = alpha_cement * E_cement * dt / (1 - nu_cement)
+            tt = ts + max(0, -radial_stress)
+            sf = cement_tensile_MPa / (tt + 0.001)
+            dt_sweep.append({
+                "delta_T_C": round(float(dt), 0),
+                "thermal_stress_MPa": round(float(ts), 2),
+                "tensile_SF": round(float(sf), 3),
+            })
+
+        recs = []
+        if ci_class == "FAILED":
+            recs.append("CRITICAL: Cement sheath will fail under these loads — use flexible/ductile cement systems")
+            recs.append("Consider foam cement or fiber-reinforced cement to increase tensile capacity")
+        elif ci_class == "MARGINAL":
+            recs.append("Marginal cement integrity — use high-performance cement with expansion additives")
+            recs.append("Minimize thermal shock during operations (slow warm-up/cool-down)")
+        elif ci_class == "ADEQUATE":
+            recs.append("Cement integrity acceptable for planned operations")
+        else:
+            recs.append("Robust cement design — good isolation expected")
+        recs.append(f"Min SF = {min_SF:.2f} (tensile SF = {tensile_SF:.2f}, compressive SF = {compressive_SF:.2f})")
+
+        fig, plot_b64 = None, ""
+        try:
+            with plot_lock:
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(8, 6))
+                dts = [s["delta_T_C"] for s in dt_sweep]
+                sfs = [s["tensile_SF"] for s in dt_sweep]
+                ax.plot(dts, sfs, "r-o", ms=4, label="Tensile SF")
+                ax.axhline(1.0, color="red", ls="--", alpha=0.6, label="Failure (SF=1)")
+                ax.axhline(1.5, color="orange", ls="--", alpha=0.6, label="Marginal (SF=1.5)")
+                ax.axvline(delta_T_C, color="green", ls=":", alpha=0.8, label=f"Current ΔT={delta_T_C}°C")
+                ax.set_xlabel("Temperature Change (°C)"); ax.set_ylabel("Safety Factor")
+                ax.set_title(f"Cement Integrity — {well} @ {depth_m}m")
+                ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+                plot_b64 = fig_to_base64(fig); plt.close(fig)
+        except Exception:
+            if fig:
+                try: import matplotlib.pyplot as plt; plt.close(fig)
+                except: pass
+
+        brief = {
+            "headline": f"Cement integrity is {ci_class} for {well} at {depth_m}m",
+            "risk_level": ci_class,
+            "what_this_means": f"Min safety factor = {min_SF:.2f}. Thermal stress = {thermal_stress:.1f} MPa from {delta_T_C}°C change.",
+            "for_non_experts": "Cement between casing and rock provides well isolation. Temperature and pressure changes during production "
+                              "can crack the cement, leading to gas migration, sustained casing pressure, or loss of zonal isolation."
+        }
+
+        return {
+            "well": well, "depth_m": depth_m,
+            "cement_UCS_MPa": cement_UCS_MPa, "cement_tensile_MPa": cement_tensile_MPa,
+            "delta_T_C": delta_T_C, "delta_P_MPa": delta_P_MPa,
+            "thermal_stress_MPa": round(float(thermal_stress), 2),
+            "radial_stress_MPa": round(float(radial_stress), 2),
+            "hoop_stress_MPa": round(float(hoop_stress), 2),
+            "tensile_SF": round(float(tensile_SF), 3),
+            "compressive_SF": round(float(compressive_SF), 3),
+            "min_SF": round(float(min_SF), 3),
+            "ci_class": ci_class, "dt_sweep": dt_sweep,
+            "recommendations": recs, "plot": plot_b64, "stakeholder_brief": brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    result = _sanitize_for_json(result)
+    _cement_integrity_cache[ck] = result
+    return JSONResponse(content=result)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [309] SWELLING PRESSURE RISK  (v3.74.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_swelling_pressure_cache: dict = {}
+
+@app.post("/api/analysis/swelling-pressure-risk")
+async def analysis_swelling_pressure(request: Request):
+    """Assess clay swelling pressure risk from water-based mud interaction with shale."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 20)
+    clay_content_pct = body.get("clay_content_pct", 30)
+    water_activity = body.get("water_activity", 0.9)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{clay_content_pct}_{water_activity}"
+    if ck in _swelling_pressure_cache:
+        c = _swelling_pressure_cache[ck]
+        c["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=c)
+
+    df_all = get_df(source)
+    if df_all is None:
+        return JSONResponse(content={"error": "data not loaded"}, status_code=400)
+    df = df_all[df_all["well"] == well].copy()
+    if df.empty:
+        return JSONResponse(content={"error": f"well {well} not found"}, status_code=404)
+
+    def _compute():
+        import numpy as np
+        depths = np.linspace(max(depth_from, 100), depth_to, n_points)
+
+        profile = []
+        for d in depths:
+            Pp = 0.0098 * d
+            Shmin = 0.017 * d
+            # Swelling pressure (van Oort model simplified)
+            # Osmotic potential drives water into shale
+            shale_aw = 0.95 + 0.001 * (d / 1000)  # increases slightly with depth
+            aw_diff = shale_aw - water_activity
+            # Swelling pressure proportional to clay content and aw difference
+            R = 8.314  # J/mol-K
+            T = 273.15 + 30 + 0.03 * d  # temperature at depth
+            Vm = 18e-6  # molar volume of water m^3/mol
+            osmotic_P_MPa = 0
+            if aw_diff > 0:
+                osmotic_P_MPa = R * T / Vm * abs(np.log(water_activity / shale_aw)) / 1e6
+            swelling_P = osmotic_P_MPa * (clay_content_pct / 100) * 2  # amplification factor
+
+            # Borehole stability impact
+            stability_margin = Shmin - Pp - swelling_P
+            risk_index = min(1.0, max(0, swelling_P / (Shmin - Pp + 0.001)))
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "temperature_C": round(float(T - 273.15), 1),
+                "osmotic_P_MPa": round(float(osmotic_P_MPa), 2),
+                "swelling_P_MPa": round(float(swelling_P), 2),
+                "stability_margin_MPa": round(float(stability_margin), 2),
+                "risk_index": round(float(risk_index), 4),
+            })
+
+        risks = [p["risk_index"] for p in profile]
+        mean_risk = float(np.mean(risks))
+        max_risk = float(np.max(risks))
+        max_swelling = max(p["swelling_P_MPa"] for p in profile)
+
+        if max_risk > 0.7:
+            sw_class = "SEVERE"
+        elif max_risk > 0.4:
+            sw_class = "HIGH"
+        elif max_risk > 0.2:
+            sw_class = "MODERATE"
+        else:
+            sw_class = "LOW"
+
+        # Water activity sweep
+        aw_sweep = []
+        for aw in np.arange(0.6, 1.01, 0.05):
+            mid_d = (depth_from + depth_to) / 2
+            sa = 0.95 + 0.001 * (mid_d / 1000)
+            T_mid = 273.15 + 30 + 0.03 * mid_d
+            diff = sa - aw
+            op = 0
+            if diff > 0:
+                op = R * T_mid / Vm * abs(np.log(aw / sa)) / 1e6
+            sp = op * (clay_content_pct / 100) * 2
+            aw_sweep.append({
+                "water_activity": round(float(aw), 2),
+                "swelling_P_MPa": round(float(sp), 2),
+            })
+
+        recs = []
+        if sw_class in ("SEVERE", "HIGH"):
+            recs.append("Use oil-based or synthetic mud to minimize shale-water interaction")
+            recs.append("Add potassium chloride (KCl) or shale inhibitor to WBM")
+            recs.append("Minimize exposure time — drill reactive sections quickly")
+        elif sw_class == "MODERATE":
+            recs.append("Use inhibitive WBM with adequate salinity")
+            recs.append("Monitor borehole stability for cavings")
+        else:
+            recs.append("Low swelling risk — standard WBM acceptable")
+        recs.append(f"Clay content = {clay_content_pct}%, mud Aw = {water_activity}, max swelling = {max_swelling:.1f} MPa")
+
+        fig, plot_b64 = None, ""
+        try:
+            with plot_lock:
+                import matplotlib.pyplot as plt
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+                dd = [p["depth_m"] for p in profile]
+                ax1.plot(dd, [p["swelling_P_MPa"] for p in profile], "r-o", ms=3, label="Swelling P")
+                ax1.plot(dd, [p["stability_margin_MPa"] for p in profile], "g-s", ms=3, label="Stability margin")
+                ax1.set_xlabel("Depth (m)"); ax1.set_ylabel("Pressure (MPa)")
+                ax1.set_title(f"Swelling Pressure — {well}")
+                ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+
+                aws = [s["water_activity"] for s in aw_sweep]
+                sps = [s["swelling_P_MPa"] for s in aw_sweep]
+                ax2.plot(aws, sps, "b-o", ms=4, label="Swelling P")
+                ax2.axvline(water_activity, color="green", ls=":", alpha=0.8, label=f"Current Aw={water_activity}")
+                ax2.set_xlabel("Mud Water Activity"); ax2.set_ylabel("Swelling Pressure (MPa)")
+                ax2.set_title("Water Activity Sensitivity")
+                ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+                fig.tight_layout()
+                plot_b64 = fig_to_base64(fig); plt.close(fig)
+        except Exception:
+            if fig:
+                try: import matplotlib.pyplot as plt; plt.close(fig)
+                except: pass
+
+        brief = {
+            "headline": f"Swelling pressure risk is {sw_class} for {well}",
+            "risk_level": sw_class,
+            "what_this_means": f"Max swelling pressure = {max_swelling:.1f} MPa, mean risk index = {mean_risk:.3f}.",
+            "for_non_experts": "Clay minerals in shale absorb water from drilling fluid, generating pressure that destabilizes the borehole. "
+                              "This causes hole enlargement, stuck pipe, and poor cement jobs."
+        }
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "clay_content_pct": clay_content_pct, "water_activity": water_activity,
+            "mean_risk_index": round(mean_risk, 4), "max_risk_index": round(max_risk, 4),
+            "max_swelling_MPa": round(max_swelling, 2),
+            "sw_class": sw_class, "profile": profile, "aw_sweep": aw_sweep,
+            "recommendations": recs, "plot": plot_b64, "stakeholder_brief": brief,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    result = _sanitize_for_json(result)
+    _swelling_pressure_cache[ck] = result
     return JSONResponse(content=result)

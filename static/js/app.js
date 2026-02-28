@@ -17138,3 +17138,98 @@ async function runHoleCleaningEfficiency() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// [305] Torque-Drag Analysis
+async function runTorqueDragAnalysis() {
+    var results = document.getElementById('torqueDragResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/torque-drag-analysis', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,friction_factor:0.25})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.td_class==='CRITICAL'||r.td_class==='HIGH'?'danger':r.td_class==='MODERATE'?'warning':'success')+'"><strong>'+r.td_class+'</strong> — Hookload='+r.max_hookload_klbs+' klbs ('+r.hookload_pct+'%), Torque='+r.max_torque_kftlbs+' kft-lbs ('+r.torque_pct+'%)</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [306] Casing Wear Prediction
+async function runCasingWearPrediction() {
+    var results = document.getElementById('casingWearResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/casing-wear-prediction', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,rotating_hours:200,rpm:120})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.cw_class==='SEVERE'||r.cw_class==='SIGNIFICANT'?'danger':r.cw_class==='MODERATE'?'warning':'success')+'"><strong>'+r.cw_class+'</strong> — Max wear='+r.max_wear_pct+'%, Min remaining='+r.min_remaining_wall_pct+'%</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [307] Kick Margin Profile
+async function runKickMarginProfile() {
+    var results = document.getElementById('kickMarginResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/kick-margin-profile', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,mud_weight_ppg:10,kick_intensity_ppg:0.5})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.km_class==='NO_MARGIN'?'danger':r.km_class==='TIGHT'?'warning':'success')+'"><strong>'+r.km_class+'</strong> — Min margin='+r.min_kick_margin_ppg+' ppg, Mean='+r.mean_kick_margin_ppg+' ppg</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [308] Cement Integrity Assessment
+async function runCementIntegrity() {
+    var results = document.getElementById('cementIntegrityResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/cement-integrity-assessment', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,depth_m:3000,cement_UCS_MPa:30,delta_T_C:80})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.ci_class==='FAILED'?'danger':r.ci_class==='MARGINAL'?'warning':'success')+'"><strong>'+r.ci_class+'</strong> — Min SF='+r.min_SF+', Tensile SF='+r.tensile_SF+', Thermal σ='+r.thermal_stress_MPa+' MPa</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [309] Swelling Pressure Risk
+async function runSwellingPressureRisk() {
+    var results = document.getElementById('swellingPressureResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/swelling-pressure-risk', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,clay_content_pct:30,water_activity:0.9})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.sw_class==='SEVERE'||r.sw_class==='HIGH'?'danger':r.sw_class==='MODERATE'?'warning':'success')+'"><strong>'+r.sw_class+'</strong> — Max swelling='+r.max_swelling_MPa+' MPa, Mean risk='+r.mean_risk_index+'</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
