@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.55.0 - Fracture Intersection + Stress Polygon + Mud Weight Window + Spacing Stats + Stress Ratio)."""
+"""GeoStress AI - FastAPI Web Application (v3.56.0 - Aperture Profile + Critical Injection + Stress Path Evolution + Fracture Sets + Pp Prediction)."""
 
 import os
 import io
@@ -43046,4 +43046,715 @@ async def analysis_stress_ratio_profile(request: Request):
         return JSONResponse(result, code)
     result = _sanitize_for_json(result)
     _stress_ratio_v2_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [215] Fracture Aperture Profile  (v3.56.0)
+# ═══════════════════════════════════════════════════════════════════════
+_aperture_profile_cache = {}
+
+@app.post("/api/analysis/aperture-profile")
+async def analysis_aperture_profile(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    aperture_mm = body.get("aperture_mm", 0.5)
+    bin_size_m = body.get("bin_size_m", 50)
+    ck = f"{source}:{well}:{aperture_mm}:{bin_size_m}"
+    if ck in _aperture_profile_cache:
+        return JSONResponse(_aperture_profile_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        depths = df_well[DEPTH_COL].dropna().values
+        dips = df_well[DIP_COL].dropna().values
+        n = min(len(depths), len(dips))
+        depths = depths[:n]
+        dips = dips[:n]
+
+        depth_min = float(np.nanmin(depths)) if n > 0 else 0
+        depth_max = float(np.nanmax(depths)) if n > 0 else 1
+        bins = np.arange(depth_min, depth_max + bin_size_m, bin_size_m)
+        bin_indices = np.digitize(depths, bins) - 1
+
+        profile = []
+        for b in range(len(bins) - 1):
+            mask = bin_indices == b
+            n_frac = int(np.sum(mask))
+            mid_depth = (bins[b] + bins[b + 1]) / 2
+
+            # Aperture decreases with depth (stress closure) and increases with dip
+            depth_factor = max(0.1, 1.0 - (mid_depth - depth_min) / (depth_max - depth_min + 1) * 0.6)
+            mean_dip = float(np.mean(dips[mask])) if n_frac > 0 else 45
+            dip_factor = 0.5 + 0.5 * np.sin(np.radians(mean_dip))
+            apparent_aperture = aperture_mm * depth_factor * dip_factor
+
+            # Hydraulic conductivity (cubic law): K = (n * a^3) / (12 * L)
+            a_m = apparent_aperture / 1000  # mm to m
+            K = n_frac * a_m**3 / (12 * bin_size_m) if bin_size_m > 0 else 0
+
+            profile.append({
+                "depth_from_m": round(float(bins[b]), 1),
+                "depth_to_m": round(float(bins[b + 1]), 1),
+                "n_fractures": n_frac,
+                "mean_aperture_mm": round(apparent_aperture, 4),
+                "hydraulic_conductivity_m_s": round(float(K), 10),
+                "mean_dip_deg": round(mean_dip, 1)
+            })
+
+        apertures = [p["mean_aperture_mm"] for p in profile if p["n_fractures"] > 0]
+        mean_ap = float(np.mean(apertures)) if apertures else 0
+        max_ap = float(np.max(apertures)) if apertures else 0
+        k_values = [p["hydraulic_conductivity_m_s"] for p in profile]
+        max_k = float(np.max(k_values)) if k_values else 0
+
+        if mean_ap > 1:
+            aperture_class = "WIDE"
+        elif mean_ap > 0.3:
+            aperture_class = "MODERATE"
+        else:
+            aperture_class = "NARROW"
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+            ds = [p["depth_from_m"] for p in profile]
+            ap = [p["mean_aperture_mm"] for p in profile]
+            kk = [p["hydraulic_conductivity_m_s"] for p in profile]
+
+            axes[0].barh(ds, ap, height=bin_size_m * 0.8, color='steelblue', edgecolor='black', alpha=0.7)
+            axes[0].invert_yaxis()
+            axes[0].set_xlabel("Apparent Aperture (mm)")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].set_title(f"Aperture Profile - Well {well}")
+
+            axes[1].plot(kk, ds, 'r-o', markersize=4)
+            axes[1].invert_yaxis()
+            axes[1].set_xlabel("Hydraulic Conductivity (m/s)")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].set_title("Hydraulic Conductivity (Cubic Law)")
+            axes[1].ticklabel_format(axis='x', style='scientific', scilimits=(-10,-10))
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Aperture class: {aperture_class} (mean={mean_ap:.3f} mm)")
+        recs.append(f"Max aperture: {max_ap:.3f} mm, max K={max_k:.2e} m/s")
+        if aperture_class == "WIDE":
+            recs.append("Wide apertures suggest high fracture permeability — potential fluid conduits")
+
+        result = {
+            "well": well,
+            "n_fractures": n,
+            "aperture_mm": aperture_mm,
+            "bin_size_m": bin_size_m,
+            "depth_range_m": [round(depth_min, 1), round(depth_max, 1)],
+            "mean_aperture_mm": round(mean_ap, 4),
+            "max_aperture_mm": round(max_ap, 4),
+            "max_conductivity_m_s": round(max_k, 10),
+            "aperture_class": aperture_class,
+            "n_bins": len(profile),
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Aperture is {aperture_class} (mean {mean_ap:.3f} mm)",
+                "risk_level": "HIGH" if aperture_class == "WIDE" else ("MODERATE" if aperture_class == "MODERATE" else "LOW"),
+                "what_this_means": f"Mean fracture opening is {mean_ap:.3f} mm, max hydraulic conductivity {max_k:.2e} m/s",
+                "for_non_experts": f"Fracture aperture (opening width) controls how easily fluids flow through the rock. "
+                    + f"The average opening is {mean_ap:.3f} mm — {aperture_class.lower()} apertures. "
+                    + ("This indicates significant flow potential through fractures." if aperture_class == "WIDE"
+                       else "Moderate flow capacity through the fracture network." if aperture_class == "MODERATE"
+                       else "Limited flow through narrow fractures.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _aperture_profile_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [216] Critical Injection Pressure  (v3.56.0)
+# ═══════════════════════════════════════════════════════════════════════
+_critical_injection_cache = {}
+
+@app.post("/api/analysis/critical-injection")
+async def analysis_critical_injection(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = body.get("depth", 3000)
+    friction = body.get("friction", 0.6)
+    ck = f"{source}:{well}:{depth}:{friction}"
+    if ck in _critical_injection_cache:
+        return JSONResponse(_critical_injection_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        g = 9.81
+        Sv = rho * g * depth / 1e6
+        Pp = 1020 * g * depth / 1e6
+        SHmax = 0.9 * Sv
+        Shmin = 0.6 * Sv
+        S = np.diag([SHmax, Shmin, Sv])
+
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        dips_arr = df_well[DIP_COL].dropna().values
+        nn = min(len(azimuths), len(dips_arr))
+
+        # For each injection pressure increment, count how many fractures reactivate
+        pp_increments = np.linspace(0, 30, 61)  # 0 to 30 MPa above hydrostatic
+        pressure_profile = []
+        fracture_pp_crits = []
+
+        for i in range(nn):
+            az_rad = np.radians(azimuths[i])
+            dip_rad = np.radians(dips_arr[i])
+            nx = np.sin(dip_rad) * np.sin(az_rad)
+            ny = np.sin(dip_rad) * np.cos(az_rad)
+            nz = np.cos(dip_rad)
+            n_vec = np.array([nx, ny, nz])
+            traction = S @ n_vec
+            sigma_n = float(np.dot(traction, n_vec))
+            tau = float(np.sqrt(max(0, np.dot(traction, traction) - sigma_n**2)))
+            Pp_crit = sigma_n - tau / friction if friction > 0 else sigma_n
+            fracture_pp_crits.append(float(Pp_crit))
+
+        for dp in pp_increments:
+            test_pp = Pp + dp
+            n_reactive = sum(1 for pc in fracture_pp_crits if test_pp >= pc)
+            pct = round(100.0 * n_reactive / nn, 1) if nn > 0 else 0
+            pressure_profile.append({
+                "injection_above_hydrostatic_MPa": round(float(dp), 2),
+                "Pp_MPa": round(float(test_pp), 2),
+                "n_reactivated": n_reactive,
+                "pct_reactivated": pct
+            })
+
+        # Find critical pressure: first fracture reactivation
+        first_react = min(fracture_pp_crits) if fracture_pp_crits else Pp
+        margin_to_first = first_react - Pp
+        # Find 10% reactivation threshold
+        thresh_10 = next((p for p in pressure_profile if p["pct_reactivated"] >= 10), pressure_profile[-1])
+        # Fracture initiation pressure (Shmin = least principal stress)
+        frac_init = Shmin
+
+        if margin_to_first < 0:
+            risk_class = "CRITICAL"
+        elif margin_to_first < 5:
+            risk_class = "HIGH"
+        elif margin_to_first < 15:
+            risk_class = "MODERATE"
+        else:
+            risk_class = "LOW"
+
+        # Plot
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+            dpx = [p["injection_above_hydrostatic_MPa"] for p in pressure_profile]
+            pct = [p["pct_reactivated"] for p in pressure_profile]
+            ax.plot(dpx, pct, 'r-o', markersize=3)
+            ax.axhline(10, color='orange', linestyle='--', alpha=0.5, label='10% threshold')
+            ax.axhline(50, color='red', linestyle='--', alpha=0.5, label='50% threshold')
+            ax.axvline(margin_to_first, color='blue', linestyle=':', label=f'First react ({margin_to_first:.1f} MPa)')
+            ax.set_xlabel("Injection Pressure Above Hydrostatic (MPa)")
+            ax.set_ylabel("Fractures Reactivated (%)")
+            ax.set_title(f"Critical Injection Pressure - Well {well}")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"First reactivation at Pp={first_react:.2f} MPa (margin={margin_to_first:.2f} MPa from hydrostatic)")
+        recs.append(f"10% reactivation at +{thresh_10['injection_above_hydrostatic_MPa']:.1f} MPa above hydrostatic")
+        recs.append(f"Fracture initiation (Shmin): {frac_init:.1f} MPa")
+        if risk_class in ("CRITICAL", "HIGH"):
+            recs.append("WARNING: Very low margin to reactivation — injection rates must be carefully controlled")
+
+        result = {
+            "well": well,
+            "depth_m": depth,
+            "friction": friction,
+            "Sv_MPa": round(Sv, 2),
+            "Pp_hydrostatic_MPa": round(Pp, 2),
+            "Shmin_MPa": round(Shmin, 2),
+            "SHmax_MPa": round(SHmax, 2),
+            "n_fractures": nn,
+            "first_reactivation_MPa": round(first_react, 3),
+            "margin_to_first_MPa": round(margin_to_first, 3),
+            "frac_initiation_MPa": round(frac_init, 2),
+            "thresh_10pct_above_hydro_MPa": thresh_10["injection_above_hydrostatic_MPa"],
+            "risk_class": risk_class,
+            "pressure_profile": pressure_profile[:30],
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Injection risk is {risk_class} (margin {margin_to_first:.1f} MPa)",
+                "risk_level": risk_class if risk_class in ("HIGH", "MODERATE", "LOW") else "HIGH",
+                "what_this_means": f"First fracture reactivation at {first_react:.1f} MPa ({margin_to_first:.1f} MPa above hydrostatic)",
+                "for_non_experts": f"When injecting fluid, pressure must stay below {first_react:.1f} MPa to avoid reactivating fractures. "
+                    + f"The safety margin is {margin_to_first:.1f} MPa above normal reservoir pressure. "
+                    + ("This margin is very small — strict pressure controls are essential." if risk_class in ("CRITICAL", "HIGH")
+                       else "Moderate margin — standard monitoring should suffice." if risk_class == "MODERATE"
+                       else "Good margin for safe injection operations.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _critical_injection_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [217] Stress Path Evolution  (v3.56.0)
+# ═══════════════════════════════════════════════════════════════════════
+_stress_path_evo_cache = {}
+
+@app.post("/api/analysis/stress-path-evolution")
+async def analysis_stress_path_evolution(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = body.get("depth", 3000)
+    scenario = body.get("scenario", "depletion")
+    delta_pp = body.get("delta_pp", 20)
+    n_steps = body.get("n_steps", 20)
+    ck = f"{source}:{well}:{depth}:{scenario}:{delta_pp}:{n_steps}"
+    if ck in _stress_path_evo_cache:
+        return JSONResponse(_stress_path_evo_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        g = 9.81
+        Sv = rho * g * depth / 1e6
+        Pp0 = 1020 * g * depth / 1e6
+        SHmax0 = 0.9 * Sv
+        Shmin0 = 0.6 * Sv
+
+        poisson = 0.25
+        biot = 0.8
+        A_coeff = biot * (1 - 2 * poisson) / (1 - poisson)
+
+        sign = -1 if scenario.lower() == "depletion" else 1
+        steps_arr = np.linspace(0, delta_pp, n_steps)
+
+        path = []
+        for dp in steps_arr:
+            actual_dp = sign * dp
+            Pp = Pp0 + actual_dp
+            Shmin = Shmin0 + A_coeff * actual_dp
+            SHmax = SHmax0 + A_coeff * actual_dp
+            # Sv constant
+
+            # Effective stresses
+            Sv_eff = Sv - Pp
+            SHmax_eff = SHmax - Pp
+            Shmin_eff = Shmin - Pp
+
+            # p'-q (mean effective stress, deviatoric stress)
+            p_prime = (SHmax_eff + Shmin_eff + Sv_eff) / 3
+            q = Sv_eff - Shmin_eff  # Simplified deviator
+
+            path.append({
+                "step": len(path) + 1,
+                "delta_Pp_MPa": round(float(actual_dp), 2),
+                "Pp_MPa": round(float(Pp), 2),
+                "Sv_MPa": round(float(Sv), 2),
+                "SHmax_MPa": round(float(SHmax), 2),
+                "Shmin_MPa": round(float(Shmin), 2),
+                "Sv_eff_MPa": round(float(Sv_eff), 2),
+                "SHmax_eff_MPa": round(float(SHmax_eff), 2),
+                "Shmin_eff_MPa": round(float(Shmin_eff), 2),
+                "p_prime_MPa": round(float(p_prime), 2),
+                "q_MPa": round(float(q), 2)
+            })
+
+        # Check regime change
+        initial_regime = "NF" if SHmax0 < Sv else ("RF" if Shmin0 > Sv else "SS")
+        final_shmax = path[-1]["SHmax_MPa"]
+        final_shmin = path[-1]["Shmin_MPa"]
+        final_regime = "NF" if final_shmax < Sv else ("RF" if final_shmin > Sv else "SS")
+        regime_changed = initial_regime != final_regime
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            dps = [p["delta_Pp_MPa"] for p in path]
+
+            axes[0].plot(dps, [p["Sv_MPa"] for p in path], 'k-', linewidth=2, label='Sv')
+            axes[0].plot(dps, [p["SHmax_MPa"] for p in path], 'r-', linewidth=2, label='SHmax')
+            axes[0].plot(dps, [p["Shmin_MPa"] for p in path], 'b-', linewidth=2, label='Shmin')
+            axes[0].plot(dps, [p["Pp_MPa"] for p in path], 'g--', linewidth=2, label='Pp')
+            axes[0].set_xlabel("ΔPp (MPa)")
+            axes[0].set_ylabel("Stress (MPa)")
+            axes[0].set_title(f"Stress Evolution ({scenario.title()}) - Well {well}")
+            axes[0].legend(fontsize=8)
+            axes[0].grid(True, alpha=0.3)
+
+            pp_vals = [p["p_prime_MPa"] for p in path]
+            qq_vals = [p["q_MPa"] for p in path]
+            axes[1].plot(pp_vals, qq_vals, 'ro-', markersize=4)
+            axes[1].set_xlabel("p' (Mean Effective Stress, MPa)")
+            axes[1].set_ylabel("q (Deviatoric Stress, MPa)")
+            axes[1].set_title("Stress Path (p'-q)")
+            axes[1].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Stress path coefficient A={A_coeff:.3f} (Biot={biot}, v={poisson})")
+        recs.append(f"Scenario: {scenario} by {delta_pp} MPa")
+        if regime_changed:
+            recs.append(f"WARNING: Regime changes from {initial_regime} to {final_regime} during {scenario}")
+        else:
+            recs.append(f"Regime stays {initial_regime} throughout {scenario}")
+
+        result = {
+            "well": well,
+            "depth_m": depth,
+            "scenario": scenario.upper(),
+            "delta_pp_mpa": delta_pp,
+            "n_steps": n_steps,
+            "stress_path_coefficient": round(A_coeff, 4),
+            "biot_coefficient": biot,
+            "poisson_ratio": poisson,
+            "initial_regime": initial_regime,
+            "final_regime": final_regime,
+            "regime_changed": regime_changed,
+            "path": path,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stress path: {scenario.upper()}, regime {'CHANGES' if regime_changed else 'STABLE'} ({initial_regime}→{final_regime})",
+                "risk_level": "HIGH" if regime_changed else "LOW",
+                "what_this_means": f"{delta_pp} MPa {scenario} with A={A_coeff:.3f}, regime {initial_regime}→{final_regime}",
+                "for_non_experts": f"During {scenario}, pore pressure changes by {delta_pp} MPa. "
+                    + f"The stress path coefficient A={A_coeff:.3f} controls how horizontal stresses respond. "
+                    + ("The stress regime CHANGES, which could affect wellbore stability." if regime_changed
+                       else "The stress regime remains stable throughout the operation.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _stress_path_evo_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [218] Fracture Set Identification  (v3.56.0)
+# ═══════════════════════════════════════════════════════════════════════
+_fracture_set_id_cache = {}
+
+@app.post("/api/analysis/fracture-set-id")
+async def analysis_fracture_set_id(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_sets = body.get("n_sets", 3)
+    ck = f"{source}:{well}:{n_sets}"
+    if ck in _fracture_set_id_cache:
+        return JSONResponse(_fracture_set_id_cache[ck])
+
+    def _compute():
+        import time
+        from sklearn.cluster import KMeans
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        dips = df_well[DIP_COL].dropna().values
+        n = min(len(azimuths), len(dips))
+        azimuths = azimuths[:n]
+        dips = dips[:n]
+
+        if n < n_sets:
+            return {"error": f"Need at least {n_sets} fractures"}
+
+        # Convert to pole coordinates for clustering
+        az_rad = np.radians(azimuths)
+        dip_rad = np.radians(dips)
+        X = np.column_stack([
+            np.sin(dip_rad) * np.sin(az_rad),
+            np.sin(dip_rad) * np.cos(az_rad),
+            np.cos(dip_rad)
+        ])
+
+        km = KMeans(n_clusters=n_sets, random_state=42, n_init=10)
+        labels = km.fit_predict(X)
+
+        sets = []
+        for s in range(n_sets):
+            mask = labels == s
+            set_az = azimuths[mask]
+            set_dip = dips[mask]
+            n_in_set = int(np.sum(mask))
+
+            # Circular mean for azimuth
+            sin_sum = np.sum(np.sin(np.radians(set_az)))
+            cos_sum = np.sum(np.cos(np.radians(set_az)))
+            mean_az = float(np.degrees(np.arctan2(sin_sum, cos_sum)) % 360)
+            mean_dip = float(np.mean(set_dip))
+            std_az = float(np.std(set_az))
+            std_dip = float(np.std(set_dip))
+
+            # Dispersion (Fisher concentration)
+            R = np.sqrt(sin_sum**2 + cos_sum**2) / n_in_set if n_in_set > 0 else 0
+
+            sets.append({
+                "set_id": s + 1,
+                "n_fractures": n_in_set,
+                "pct_total": round(100.0 * n_in_set / n, 1),
+                "mean_azimuth_deg": round(mean_az, 1),
+                "mean_dip_deg": round(mean_dip, 1),
+                "std_azimuth_deg": round(std_az, 1),
+                "std_dip_deg": round(std_dip, 1),
+                "concentration_R": round(R, 4)
+            })
+
+        sets.sort(key=lambda x: x["n_fractures"], reverse=True)
+        dominant = sets[0] if sets else {}
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            colors = ['#2196F3', '#F44336', '#4CAF50', '#FF9800', '#9C27B0']
+            for s in range(n_sets):
+                mask = labels == s
+                c = colors[s % len(colors)]
+                axes[0].scatter(azimuths[mask], dips[mask], c=c, s=10, alpha=0.6, label=f'Set {s+1}')
+            axes[0].set_xlabel("Azimuth (°)")
+            axes[0].set_ylabel("Dip (°)")
+            axes[0].set_title(f"Fracture Sets - Well {well}")
+            axes[0].legend(fontsize=8)
+
+            set_labels = [f"Set {s['set_id']}" for s in sets]
+            set_counts = [s["n_fractures"] for s in sets]
+            axes[1].bar(set_labels, set_counts, color=colors[:n_sets])
+            axes[1].set_ylabel("Count")
+            axes[1].set_title("Fractures per Set")
+            for i, (label, count) in enumerate(zip(set_labels, set_counts)):
+                axes[1].text(i, count + 1, f'{sets[i]["mean_azimuth_deg"]:.0f}°/{sets[i]["mean_dip_deg"]:.0f}°', ha='center', fontsize=8)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Identified {n_sets} fracture sets from {n} fractures")
+        for s in sets:
+            recs.append(f"Set {s['set_id']}: {s['n_fractures']} fracs, Az={s['mean_azimuth_deg']:.0f}°/Dip={s['mean_dip_deg']:.0f}° (R={s['concentration_R']:.2f})")
+
+        result = {
+            "well": well,
+            "n_fractures": n,
+            "n_sets": n_sets,
+            "dominant_set": dominant,
+            "sets": sets,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"{n_sets} fracture sets identified, dominant: Az={dominant.get('mean_azimuth_deg',0):.0f}°",
+                "risk_level": "MODERATE" if n_sets > 2 else "LOW",
+                "what_this_means": f"Fractures cluster into {n_sets} distinct orientation groups",
+                "for_non_experts": f"The {n} fractures in this well group into {n_sets} distinct orientation families. "
+                    + f"The largest set ({dominant.get('n_fractures',0)} fractures) trends at {dominant.get('mean_azimuth_deg',0):.0f}° azimuth "
+                    + f"with {dominant.get('mean_dip_deg',0):.0f}° dip. This pattern reveals the stress history of the rock."
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _fracture_set_id_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [219] Pore Pressure Prediction  (v3.56.0)
+# ═══════════════════════════════════════════════════════════════════════
+_pp_prediction_cache = {}
+
+@app.post("/api/analysis/pp-prediction")
+async def analysis_pp_prediction(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 30)
+    overpressure_factor = body.get("overpressure_factor", 1.0)
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{n_points}:{overpressure_factor}"
+    if ck in _pp_prediction_cache:
+        return JSONResponse(_pp_prediction_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho_w = 1020
+        rho_rock = 2500
+        g = 9.81
+        depths = np.linspace(depth_from, depth_to, n_points)
+
+        profile = []
+        for d in depths:
+            # Hydrostatic
+            Pp_hydro = rho_w * g * d / 1e6
+            # Overburden
+            Sv = rho_rock * g * d / 1e6
+            # Predicted (with overpressure)
+            Pp_pred = Pp_hydro * overpressure_factor
+            # Lithostatic
+            Pp_litho = Sv
+
+            # Pressure gradient (MPa/km)
+            grad_hydro = Pp_hydro / (d / 1000) if d > 0 else 0
+            grad_pred = Pp_pred / (d / 1000) if d > 0 else 0
+
+            # Equivalent mud weight (ppg)
+            emw = Pp_pred / (0.00981 * d) if d > 0 else 0
+
+            pressure_class = "OVERPRESSURED" if overpressure_factor > 1.1 else ("UNDERPRESSURED" if overpressure_factor < 0.9 else "NORMAL")
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_hydrostatic_MPa": round(float(Pp_hydro), 2),
+                "Pp_predicted_MPa": round(float(Pp_pred), 2),
+                "Pp_lithostatic_MPa": round(float(Pp_litho), 2),
+                "Sv_MPa": round(float(Sv), 2),
+                "gradient_MPa_per_km": round(float(grad_pred), 2),
+                "EMW_ppg": round(float(emw), 2)
+            })
+
+        mean_grad = float(np.mean([p["gradient_MPa_per_km"] for p in profile]))
+        max_pp = float(np.max([p["Pp_predicted_MPa"] for p in profile]))
+        pressure_class = "OVERPRESSURED" if overpressure_factor > 1.1 else ("UNDERPRESSURED" if overpressure_factor < 0.9 else "NORMAL")
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+            ds = [p["depth_m"] for p in profile]
+
+            axes[0].plot([p["Pp_hydrostatic_MPa"] for p in profile], ds, 'b--', linewidth=1.5, label='Hydrostatic')
+            axes[0].plot([p["Pp_predicted_MPa"] for p in profile], ds, 'r-', linewidth=2, label=f'Predicted (×{overpressure_factor})')
+            axes[0].plot([p["Pp_lithostatic_MPa"] for p in profile], ds, 'k:', linewidth=1, label='Lithostatic')
+            axes[0].invert_yaxis()
+            axes[0].set_xlabel("Pressure (MPa)")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].set_title(f"Pore Pressure Prediction - Well {well}")
+            axes[0].legend(fontsize=8)
+            axes[0].grid(True, alpha=0.3)
+
+            axes[1].plot([p["EMW_ppg"] for p in profile], ds, 'g-o', markersize=3)
+            axes[1].invert_yaxis()
+            axes[1].set_xlabel("EMW (ppg)")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].set_title("Equivalent Mud Weight")
+            axes[1].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Pressure class: {pressure_class} (overpressure factor={overpressure_factor})")
+        recs.append(f"Mean gradient: {mean_grad:.2f} MPa/km, max Pp: {max_pp:.1f} MPa at {depth_to}m")
+        if pressure_class == "OVERPRESSURED":
+            recs.append("WARNING: Overpressured zone — heavier mud weight required, kick risk elevated")
+
+        result = {
+            "well": well,
+            "depth_from_m": depth_from,
+            "depth_to_m": depth_to,
+            "n_points": n_points,
+            "overpressure_factor": overpressure_factor,
+            "pressure_class": pressure_class,
+            "mean_gradient_MPa_per_km": round(mean_grad, 2),
+            "max_Pp_MPa": round(max_pp, 2),
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Pore pressure is {pressure_class} (gradient {mean_grad:.1f} MPa/km)",
+                "risk_level": "HIGH" if pressure_class == "OVERPRESSURED" else ("MODERATE" if pressure_class == "UNDERPRESSURED" else "LOW"),
+                "what_this_means": f"Pp gradient {mean_grad:.2f} MPa/km, max Pp={max_pp:.1f} MPa at {depth_to}m",
+                "for_non_experts": f"Pore pressure is the fluid pressure in the rock pores. "
+                    + f"This well's pressure is {pressure_class.lower()} with a gradient of {mean_grad:.1f} MPa/km. "
+                    + ("This means higher-than-normal pressure — extra care needed during drilling." if pressure_class == "OVERPRESSURED"
+                       else "Normal pressure conditions — standard drilling procedures apply." if pressure_class == "NORMAL"
+                       else "Lower-than-normal pressure — possible lost circulation risk.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _pp_prediction_cache[ck] = result
     return JSONResponse(result)
