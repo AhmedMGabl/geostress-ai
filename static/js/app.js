@@ -15391,3 +15391,137 @@ async function runDrillingMargin() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ══════════════════════════════════════════════════════
+// [230] Thermal Stress Effect
+// ══════════════════════════════════════════════════════
+async function runThermalStress() {
+    var results = document.getElementById('thermalStressResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depFrom = parseFloat(document.getElementById('therm-from').value) || 500;
+        var depTo = parseFloat(document.getElementById('therm-to').value) || 5000;
+        var dT = parseFloat(document.getElementById('therm-dt').value) || -20;
+        var resp = await fetch('/api/analysis/thermal-stress-effect', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, depth_from:depFrom, depth_to:depTo, n_points:30, delta_T:dT})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.thermal_class+'</strong> — ΔσT: '+(r.thermal_stress_MPa||0).toFixed(1)+' MPa</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-4"><div class="card text-center p-2"><h6>Thermal ΔS</h6><h4>'+(r.thermal_stress_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Hoop Change</h6><h4>'+(r.mean_hoop_change_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>ΔT</h6><h4>'+(r.delta_T_C||0)+'°C</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [231] Fracture Aperture Distribution
+// ══════════════════════════════════════════════════════
+async function runApertureDist() {
+    var results = document.getElementById('apertureDistResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/fracture-aperture-dist', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.aperture_class+'</strong> — Median: '+(r.median_aperture_mm||0).toFixed(2)+' mm</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-3"><div class="card text-center p-2"><h6>P10</h6><h4>'+(r.P10_mm||0).toFixed(2)+' mm</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>P50</h6><h4>'+(r.P50_mm||0).toFixed(2)+' mm</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>P90</h6><h4>'+(r.P90_mm||0).toFixed(2)+' mm</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Hyd. Eq.</h6><h4>'+(r.hydraulic_eq_mm||0).toFixed(3)+' mm</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [232] Induced Seismicity Risk
+// ══════════════════════════════════════════════════════
+async function runInducedSeismicity() {
+    var results = document.getElementById('inducedSeismicityResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth = parseFloat(document.getElementById('seis-depth').value) || 3000;
+        var rate = parseFloat(document.getElementById('seis-rate').value) || 500;
+        var days = parseFloat(document.getElementById('seis-days').value) || 365;
+        var resp = await fetch('/api/analysis/induced-seismicity', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, depth:depth, injection_rate:rate, duration_days:days})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.risk_class==='HIGH'?'danger':r.risk_class==='MODERATE'?'warning':'info')+'"><strong>'+r.risk_class+'</strong> — Est. Mmax: '+(r.max_magnitude_est||0).toFixed(1)+'</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-3"><div class="card text-center p-2"><h6>Critical</h6><h4>'+(r.pct_critical||0).toFixed(0)+'%</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Events M≥0</h6><h4>'+(r.expected_events_M0||0).toFixed(0)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Est. Mmax</h6><h4>'+(r.max_magnitude_est||0).toFixed(1)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Volume</h6><h4>'+(r.total_volume_m3||0).toLocaleString()+' m³</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [233] Casing Design Check
+// ══════════════════════════════════════════════════════
+async function runCasingDesign() {
+    var results = document.getElementById('casingDesignResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var burst = parseFloat(document.getElementById('casing-burst').value) || 8000;
+        var collapse = parseFloat(document.getElementById('casing-collapse').value) || 6000;
+        var resp = await fetch('/api/analysis/casing-design-check', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, casing_burst_psi:burst, casing_collapse_psi:collapse})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.design_class==='INADEQUATE'?'danger':r.design_class==='MARGINAL'?'warning':'success')+'"><strong>'+r.design_class+'</strong></div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-3"><div class="card text-center p-2"><h6>Burst SF</h6><h4>'+(r.min_burst_SF||0).toFixed(2)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Collapse SF</h6><h4>'+(r.min_collapse_SF||0).toFixed(2)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Burst OK</h6><h4>'+(r.pct_burst_ok||0).toFixed(0)+'%</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Collapse OK</h6><h4>'+(r.pct_collapse_ok||0).toFixed(0)+'%</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [234] Formation Integrity
+// ══════════════════════════════════════════════════════
+async function runFormationIntegrity() {
+    var results = document.getElementById('formationIntegrityResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depFrom = parseFloat(document.getElementById('fit-from').value) || 500;
+        var depTo = parseFloat(document.getElementById('fit-to').value) || 5000;
+        var tensile = parseFloat(document.getElementById('fit-tensile').value) || 5;
+        var resp = await fetch('/api/analysis/formation-integrity', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, depth_from:depFrom, depth_to:depTo, n_points:20, tensile_strength_MPa:tensile})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.integrity_class+'</strong> — Min margin: '+(r.min_margin_MPa||0).toFixed(1)+' MPa</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-4"><div class="card text-center p-2"><h6>Mean FIT</h6><h4>'+(r.mean_FIT_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Mean LOT</h6><h4>'+(r.mean_LOT_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Min Margin</h6><h4>'+(r.min_margin_MPa||0).toFixed(1)+' MPa</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
