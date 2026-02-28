@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.69.0 - Induced Seismicity + Trajectory Stress + Compaction + Perf Stability + Critical Drawdown)."""
+"""GeoStress AI - FastAPI Web Application (v3.70.0 - Thermal Fracture + Fault Slip + Pp Depletion + Wellbore Heating + Caprock Seal)."""
 
 import os
 import io
@@ -52541,3 +52541,667 @@ async def analysis_critical_drawdown(request: Request):
     if "error" in result: return JSONResponse(result, status_code=404)
     _critical_drawdown_cache[ck] = _sanitize_for_json(result)
     return JSONResponse(_critical_drawdown_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [285] THERMAL FRACTURE RISK  (v3.70.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_thermal_fracture_cache: dict = {}
+
+@app.post("/api/analysis/thermal-fracture")
+async def analysis_thermal_fracture(request: Request):
+    """Thermal fracturing risk — cooling-induced tensile fractures from cold fluid injection."""
+    import time, math
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth_m", 3000))
+    injection_temp_C = float(body.get("injection_temp_C", 20))
+    reservoir_temp_C = float(body.get("reservoir_temp_C", 120))
+    thermal_expansion = float(body.get("thermal_expansion", 1.2e-5))
+    youngs_modulus_GPa = float(body.get("youngs_modulus_GPa", 30))
+    poisson = float(body.get("poisson_ratio", 0.25))
+
+    ck = f"{source}:{well}:{depth_m}:{injection_temp_C}:{reservoir_temp_C}"
+    if ck in _thermal_fracture_cache:
+        cached = _thermal_fracture_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        delta_T = reservoir_temp_C - injection_temp_C
+        E_Pa = youngs_modulus_GPa * 1e9
+        # Thermal stress = alpha * E * delta_T / (1 - nu)
+        thermal_stress_MPa = (thermal_expansion * E_Pa * delta_T / (1 - poisson)) / 1e6
+
+        # Pore pressure at depth
+        Pp = 0.0098 * depth_m
+        # Tensile strength ~ 0.1 * UCS, assume UCS from depth
+        UCS_est = 5 + 0.035 * depth_m
+        tensile_strength = 0.1 * UCS_est
+
+        # Shmin estimate
+        Shmin_est = 0.6 * 0.025 * depth_m  # ~60% of overburden
+
+        # Fracture initiation: if thermal_stress > Shmin - Pp + T0
+        frac_margin_MPa = round(Shmin_est - Pp + tensile_strength - thermal_stress_MPa, 2)
+        frac_risk = thermal_stress_MPa / max(Shmin_est - Pp + tensile_strength, 0.1)
+
+        if frac_risk > 1.0:
+            tf_class = "CRITICAL"
+        elif frac_risk > 0.7:
+            tf_class = "HIGH_RISK"
+        elif frac_risk > 0.4:
+            tf_class = "MODERATE"
+        else:
+            tf_class = "LOW"
+
+        # Temperature sweep
+        temps = []
+        n_steps = 20
+        for i in range(n_steps + 1):
+            dt = delta_T * i / n_steps
+            t_inj = reservoir_temp_C - dt
+            ts = (thermal_expansion * E_Pa * dt / (1 - poisson)) / 1e6
+            margin = round(Shmin_est - Pp + tensile_strength - ts, 2)
+            temps.append({"injection_temp_C": round(t_inj, 1), "delta_T_C": round(dt, 1),
+                          "thermal_stress_MPa": round(ts, 2), "margin_MPa": margin,
+                          "fractured": margin < 0})
+
+        recs = []
+        if tf_class == "CRITICAL":
+            recs.append("CRITICAL: thermal fracturing expected — pre-heat injection fluid or reduce rate")
+        elif tf_class == "HIGH_RISK":
+            recs.append("HIGH RISK: near fracture threshold — consider staged injection with gradual cooling")
+        recs.append(f"Thermal stress: {round(thermal_stress_MPa, 2)} MPa from {round(delta_T, 1)}°C cooling")
+        recs.append(f"Fracture margin: {frac_margin_MPa} MPa ({'NEGATIVE — fracture likely' if frac_margin_MPa < 0 else 'positive'})")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+            t_vals = [t["delta_T_C"] for t in temps]
+            s_vals = [t["thermal_stress_MPa"] for t in temps]
+            m_vals = [t["margin_MPa"] for t in temps]
+            ax1.plot(t_vals, s_vals, "r-", lw=2, label="Thermal stress")
+            ax1.axhline(Shmin_est - Pp + tensile_strength, color="blue", ls="--", label="Frac threshold")
+            ax1.set_xlabel("ΔT (°C)")
+            ax1.set_ylabel("Stress (MPa)")
+            ax1.set_title("Thermal Stress vs Cooling")
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            ax2.plot(t_vals, m_vals, "g-", lw=2)
+            ax2.axhline(0, color="red", ls="--")
+            ax2.fill_between(t_vals, m_vals, 0, where=[m < 0 for m in m_vals], alpha=0.3, color="red")
+            ax2.set_xlabel("ΔT (°C)")
+            ax2.set_ylabel("Margin (MPa)")
+            ax2.set_title("Fracture Margin")
+            ax2.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_m": depth_m,
+            "injection_temp_C": injection_temp_C, "reservoir_temp_C": reservoir_temp_C,
+            "delta_T_C": round(delta_T, 1),
+            "thermal_stress_MPa": round(thermal_stress_MPa, 2),
+            "frac_margin_MPa": frac_margin_MPa,
+            "frac_risk_ratio": round(frac_risk, 3),
+            "tf_class": tf_class,
+            "temperature_sweep": temps,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Thermal Fracture Risk: {tf_class}",
+                "risk_level": tf_class,
+                "what_this_means": f"Injecting at {injection_temp_C}°C into {reservoir_temp_C}°C reservoir creates {round(thermal_stress_MPa, 1)} MPa thermal stress",
+                "for_non_experts": f"Cold fluid injection can crack the rock. Risk is {tf_class} with margin {frac_margin_MPa} MPa."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _thermal_fracture_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [286] FAULT SLIP TENDENCY  (v3.70.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_fault_slip_tendency_cache: dict = {}
+
+@app.post("/api/analysis/fault-slip-tendency")
+async def analysis_fault_slip_tendency(request: Request):
+    """Fault slip tendency — Mohr-Coulomb analysis on mapped fault orientations."""
+    import time, math
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth_m", 3000))
+    fault_azimuth_deg = float(body.get("fault_azimuth_deg", 45))
+    fault_dip_deg = float(body.get("fault_dip_deg", 60))
+    friction = float(body.get("friction", 0.6))
+
+    ck = f"{source}:{well}:{depth_m}:{fault_azimuth_deg}:{fault_dip_deg}:{friction}"
+    if ck in _fault_slip_tendency_cache:
+        cached = _fault_slip_tendency_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        Sv = 0.025 * depth_m
+        Pp = 0.0098 * depth_m
+        Shmin = 0.6 * Sv
+        SHmax = 0.8 * Sv
+
+        # Resolve fault normal
+        az_r = math.radians(fault_azimuth_deg)
+        dip_r = math.radians(fault_dip_deg)
+        n = [math.sin(dip_r) * math.sin(az_r),
+             math.sin(dip_r) * math.cos(az_r),
+             math.cos(dip_r)]
+
+        # Stress tensor (NF regime: Sv > SHmax > Shmin)
+        sigma = [Shmin, SHmax, Sv]
+        sigma_eff = [s - Pp for s in sigma]
+
+        # Normal and shear stress on fault
+        sn_eff = sum(ni**2 * si for ni, si in zip(n, sigma_eff))
+        sn_eff = max(sn_eff, 0.01)
+        tau_sq = sum(ni**2 * si**2 for ni, si in zip(n, sigma_eff)) - sn_eff**2
+        tau = math.sqrt(max(tau_sq, 0))
+
+        Ts = tau / sn_eff  # slip tendency
+        Td = (sigma_eff[2] - sn_eff) / max(sigma_eff[2] - sigma_eff[0], 0.01)  # dilation tendency
+        CFS = tau - friction * sn_eff  # Coulomb failure stress
+
+        if Ts > 0.8:
+            slip_class = "CRITICAL"
+        elif Ts > 0.6:
+            slip_class = "HIGH"
+        elif Ts > 0.4:
+            slip_class = "MODERATE"
+        else:
+            slip_class = "STABLE"
+
+        # Dip sweep
+        dip_sweep = []
+        for dip in range(0, 91, 5):
+            dr = math.radians(dip)
+            nn = [math.sin(dr) * math.sin(az_r), math.sin(dr) * math.cos(az_r), math.cos(dr)]
+            sn = max(sum(ni**2 * si for ni, si in zip(nn, sigma_eff)), 0.01)
+            tsq = sum(ni**2 * si**2 for ni, si in zip(nn, sigma_eff)) - sn**2
+            t = math.sqrt(max(tsq, 0))
+            dip_sweep.append({"dip_deg": dip, "slip_tendency": round(t / sn, 3),
+                              "dilation_tendency": round((sigma_eff[2] - sn) / max(sigma_eff[2] - sigma_eff[0], 0.01), 3)})
+
+        recs = []
+        if slip_class == "CRITICAL":
+            recs.append("CRITICAL slip tendency — fault is near failure, reduce injection pressure")
+        elif slip_class == "HIGH":
+            recs.append("HIGH slip tendency — monitor microseismicity during operations")
+        recs.append(f"Slip tendency Ts={round(Ts, 3)}, dilation tendency Td={round(Td, 3)}")
+        recs.append(f"CFS={round(CFS, 2)} MPa ({'POSITIVE — slip possible' if CFS > 0 else 'negative — stable'})")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+            dips = [d["dip_deg"] for d in dip_sweep]
+            ts_vals = [d["slip_tendency"] for d in dip_sweep]
+            td_vals = [d["dilation_tendency"] for d in dip_sweep]
+            ax1.plot(dips, ts_vals, "r-o", ms=3, lw=2, label="Slip tendency")
+            ax1.axhline(friction, color="blue", ls="--", label=f"μ={friction}")
+            ax1.axvline(fault_dip_deg, color="green", ls=":", label=f"Fault dip={fault_dip_deg}°")
+            ax1.set_xlabel("Fault Dip (°)")
+            ax1.set_ylabel("Slip Tendency")
+            ax1.set_title("Slip Tendency vs Dip")
+            ax1.legend(fontsize=8)
+            ax1.grid(True, alpha=0.3)
+            ax2.plot(dips, td_vals, "b-o", ms=3, lw=2)
+            ax2.axvline(fault_dip_deg, color="green", ls=":", label=f"Fault dip={fault_dip_deg}°")
+            ax2.set_xlabel("Fault Dip (°)")
+            ax2.set_ylabel("Dilation Tendency")
+            ax2.set_title("Dilation Tendency vs Dip")
+            ax2.legend(fontsize=8)
+            ax2.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_m": depth_m,
+            "fault_azimuth_deg": fault_azimuth_deg, "fault_dip_deg": fault_dip_deg,
+            "friction": friction,
+            "Sv_MPa": round(Sv, 2), "SHmax_MPa": round(SHmax, 2), "Shmin_MPa": round(Shmin, 2),
+            "Pp_MPa": round(Pp, 2),
+            "sigma_n_eff_MPa": round(sn_eff, 2), "tau_MPa": round(tau, 2),
+            "slip_tendency": round(Ts, 3), "dilation_tendency": round(Td, 3),
+            "CFS_MPa": round(CFS, 2),
+            "slip_class": slip_class,
+            "dip_sweep": dip_sweep,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fault Slip Tendency: {slip_class}",
+                "risk_level": slip_class,
+                "what_this_means": f"Fault at {fault_azimuth_deg}°/{fault_dip_deg}° has slip tendency {round(Ts, 3)} (threshold {friction})",
+                "for_non_experts": f"The fault's tendency to slide is {slip_class}. Ts={round(Ts, 3)} vs friction {friction}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _fault_slip_tendency_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [287] PORE PRESSURE DEPLETION PROFILE  (v3.70.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_pp_depletion_cache: dict = {}
+
+@app.post("/api/analysis/pore-pressure-depletion")
+async def analysis_pore_pressure_depletion(request: Request):
+    """Pore pressure depletion profile — predict Pp decline with production and its stress impact."""
+    import time
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = float(body.get("depth_from", 500))
+    depth_to = float(body.get("depth_to", 5000))
+    n_points = int(body.get("n_points", 25))
+    depletion_pct = float(body.get("depletion_pct", 20))
+
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{n_points}:{depletion_pct}"
+    if ck in _pp_depletion_cache:
+        cached = _pp_depletion_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            Pp_initial = 0.0098 * d
+            Pp_depleted = Pp_initial * (1 - depletion_pct / 100)
+            delta_Pp = Pp_initial - Pp_depleted
+            # Stress path: Shmin decreases with depletion
+            stress_path_coeff = 0.6  # typical
+            Shmin_change = stress_path_coeff * delta_Pp
+            Sv = 0.025 * d
+            Shmin_initial = 0.6 * Sv
+            Shmin_depleted = Shmin_initial - Shmin_change
+            # Effective stress ratio
+            eff_ratio_initial = (Shmin_initial - Pp_initial) / max(Sv - Pp_initial, 0.01)
+            eff_ratio_depleted = (Shmin_depleted - Pp_depleted) / max(Sv - Pp_depleted, 0.01)
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_initial_MPa": round(float(Pp_initial), 2),
+                "Pp_depleted_MPa": round(float(Pp_depleted), 2),
+                "delta_Pp_MPa": round(float(delta_Pp), 2),
+                "Shmin_initial_MPa": round(float(Shmin_initial), 2),
+                "Shmin_depleted_MPa": round(float(Shmin_depleted), 2),
+                "eff_ratio_initial": round(float(eff_ratio_initial), 3),
+                "eff_ratio_depleted": round(float(eff_ratio_depleted), 3)
+            })
+
+        mean_delta = np.mean([p["delta_Pp_MPa"] for p in profile])
+        max_delta = np.max([p["delta_Pp_MPa"] for p in profile])
+        # Classification
+        if depletion_pct > 40:
+            depl_class = "SEVERE"
+        elif depletion_pct > 25:
+            depl_class = "SIGNIFICANT"
+        elif depletion_pct > 10:
+            depl_class = "MODERATE"
+        else:
+            depl_class = "MINOR"
+
+        recs = []
+        if depl_class in ("SEVERE", "SIGNIFICANT"):
+            recs.append(f"{depl_class} depletion — monitor for compaction, subsidence, and fault reactivation")
+        recs.append(f"Mean Pp reduction: {round(float(mean_delta), 1)} MPa ({depletion_pct}% depletion)")
+        recs.append(f"Shmin also decreases — fracture gradient lowered during depletion")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+            dd = [p["depth_m"] for p in profile]
+            ax1.plot([p["Pp_initial_MPa"] for p in profile], dd, "b-", lw=2, label="Initial Pp")
+            ax1.plot([p["Pp_depleted_MPa"] for p in profile], dd, "r--", lw=2, label="Depleted Pp")
+            ax1.invert_yaxis()
+            ax1.set_xlabel("Pore Pressure (MPa)")
+            ax1.set_ylabel("Depth (m)")
+            ax1.set_title("Pore Pressure Profile")
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            ax2.plot([p["Shmin_initial_MPa"] for p in profile], dd, "b-", lw=2, label="Initial Shmin")
+            ax2.plot([p["Shmin_depleted_MPa"] for p in profile], dd, "r--", lw=2, label="Depleted Shmin")
+            ax2.invert_yaxis()
+            ax2.set_xlabel("Shmin (MPa)")
+            ax2.set_ylabel("Depth (m)")
+            ax2.set_title("Min Horizontal Stress")
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "depletion_pct": depletion_pct,
+            "mean_delta_Pp_MPa": round(float(mean_delta), 2),
+            "max_delta_Pp_MPa": round(float(max_delta), 2),
+            "depl_class": depl_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Pore Pressure Depletion: {depl_class}",
+                "risk_level": depl_class,
+                "what_this_means": f"{depletion_pct}% depletion reduces Pp by avg {round(float(mean_delta), 1)} MPa",
+                "for_non_experts": f"Production lowers rock fluid pressure by {depletion_pct}%. Impact is {depl_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _pp_depletion_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [288] WELLBORE HEATING EFFECT  (v3.70.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_wellbore_heating_cache: dict = {}
+
+@app.post("/api/analysis/wellbore-heating")
+async def analysis_wellbore_heating(request: Request):
+    """Wellbore heating effect — thermal stress from hot production fluid on casing/cement."""
+    import time, math
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth_m", 3000))
+    production_temp_C = float(body.get("production_temp_C", 150))
+    initial_temp_C = float(body.get("initial_temp_C", 40))
+    casing_grade = body.get("casing_grade", "L80")
+    cement_strength_MPa = float(body.get("cement_strength_MPa", 30))
+
+    ck = f"{source}:{well}:{depth_m}:{production_temp_C}:{initial_temp_C}:{casing_grade}"
+    if ck in _wellbore_heating_cache:
+        cached = _wellbore_heating_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        delta_T = production_temp_C - initial_temp_C
+        # Casing thermal stress
+        casing_alpha = 1.2e-5  # steel thermal expansion
+        casing_E_GPa = 207  # steel Young's modulus
+        casing_thermal_stress = casing_alpha * casing_E_GPa * 1e3 * delta_T  # MPa
+
+        # Casing yield strength by grade
+        grade_yield = {"J55": 379, "K55": 379, "L80": 552, "N80": 552, "C90": 621, "T95": 655, "P110": 758}
+        yield_MPa = grade_yield.get(casing_grade, 552)
+        casing_SF = yield_MPa / max(casing_thermal_stress, 0.1)
+
+        # Cement thermal stress
+        cement_alpha = 1.0e-5
+        cement_E_GPa = 10
+        cement_thermal_stress = cement_alpha * cement_E_GPa * 1e3 * delta_T
+        cement_SF = cement_strength_MPa / max(cement_thermal_stress, 0.1)
+
+        if casing_SF < 1.2 or cement_SF < 1.0:
+            heat_class = "CRITICAL"
+        elif casing_SF < 1.5 or cement_SF < 1.5:
+            heat_class = "HIGH_RISK"
+        elif casing_SF < 2.0 or cement_SF < 2.0:
+            heat_class = "MODERATE"
+        else:
+            heat_class = "SAFE"
+
+        # Temperature profile along wellbore
+        import numpy as np
+        depths = np.linspace(0, depth_m, 20)
+        geothermal_grad = 0.03  # °C/m
+        temp_profile = []
+        for d in depths:
+            formation_T = initial_temp_C + geothermal_grad * d
+            fluid_T = initial_temp_C + (production_temp_C - initial_temp_C) * (d / depth_m)
+            dT = fluid_T - formation_T if d > 0 else 0
+            c_stress = casing_alpha * casing_E_GPa * 1e3 * max(dT, 0)
+            temp_profile.append({
+                "depth_m": round(float(d), 1),
+                "formation_temp_C": round(float(formation_T), 1),
+                "fluid_temp_C": round(float(fluid_T), 1),
+                "delta_T_C": round(float(dT), 1),
+                "casing_stress_MPa": round(float(c_stress), 1)
+            })
+
+        recs = []
+        if heat_class == "CRITICAL":
+            recs.append("CRITICAL: casing/cement failure risk — consider pre-heating or thermal barrier")
+        elif heat_class == "HIGH_RISK":
+            recs.append("HIGH RISK: monitor casing strain and cement bond logs during production")
+        recs.append(f"Casing thermal stress: {round(casing_thermal_stress, 1)} MPa (SF={round(casing_SF, 2)} for {casing_grade})")
+        recs.append(f"Cement thermal stress: {round(cement_thermal_stress, 1)} MPa (SF={round(cement_SF, 2)})")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+            dd = [p["depth_m"] for p in temp_profile]
+            ax1.plot([p["formation_temp_C"] for p in temp_profile], dd, "b-", lw=2, label="Formation")
+            ax1.plot([p["fluid_temp_C"] for p in temp_profile], dd, "r-", lw=2, label="Fluid")
+            ax1.invert_yaxis()
+            ax1.set_xlabel("Temperature (°C)")
+            ax1.set_ylabel("Depth (m)")
+            ax1.set_title("Temperature Profile")
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            ax2.plot([p["casing_stress_MPa"] for p in temp_profile], dd, "orange", lw=2)
+            ax2.axvline(yield_MPa, color="red", ls="--", label=f"{casing_grade} yield={yield_MPa} MPa")
+            ax2.invert_yaxis()
+            ax2.set_xlabel("Casing Stress (MPa)")
+            ax2.set_ylabel("Depth (m)")
+            ax2.set_title("Casing Thermal Stress")
+            ax2.legend(fontsize=8)
+            ax2.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_m": depth_m,
+            "production_temp_C": production_temp_C, "initial_temp_C": initial_temp_C,
+            "delta_T_C": round(delta_T, 1),
+            "casing_grade": casing_grade,
+            "casing_thermal_stress_MPa": round(casing_thermal_stress, 1),
+            "casing_yield_MPa": yield_MPa,
+            "casing_SF": round(casing_SF, 2),
+            "cement_thermal_stress_MPa": round(cement_thermal_stress, 1),
+            "cement_strength_MPa": cement_strength_MPa,
+            "cement_SF": round(cement_SF, 2),
+            "heat_class": heat_class,
+            "temp_profile": temp_profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Wellbore Heating: {heat_class}",
+                "risk_level": heat_class,
+                "what_this_means": f"ΔT={round(delta_T, 0)}°C creates {round(casing_thermal_stress, 0)} MPa on {casing_grade} casing (SF={round(casing_SF, 2)})",
+                "for_non_experts": f"Hot production fluid stresses the well casing and cement. Risk is {heat_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _wellbore_heating_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [289] CAPROCK SEAL CAPACITY  (v3.70.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_caprock_seal_cache: dict = {}
+
+@app.post("/api/analysis/caprock-seal-capacity")
+async def analysis_caprock_seal_capacity(request: Request):
+    """Caprock seal capacity — estimate max column height and leak-off risk."""
+    import time, math
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth_m", 3000))
+    caprock_thickness_m = float(body.get("caprock_thickness_m", 50))
+    caprock_permeability_mD = float(body.get("caprock_permeability_mD", 0.001))
+    fluid_density_kg_m3 = float(body.get("fluid_density_kg_m3", 800))
+
+    ck = f"{source}:{well}:{depth_m}:{caprock_thickness_m}:{caprock_permeability_mD}:{fluid_density_kg_m3}"
+    if ck in _caprock_seal_cache:
+        cached = _caprock_seal_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np
+        g = 9.81
+        water_density = 1000
+        Pp = 0.0098 * depth_m  # hydrostatic
+        Shmin = 0.6 * 0.025 * depth_m
+
+        # Capillary entry pressure (from permeability using Purcell relationship)
+        # Pc_entry ~ 0.3 / sqrt(k_mD) MPa (approximate)
+        Pc_entry = 0.3 / math.sqrt(max(caprock_permeability_mD, 1e-6))
+        Pc_entry = min(Pc_entry, 50)  # cap at 50 MPa
+
+        # Max column height = Pc_entry / (delta_rho * g) in meters
+        delta_rho = water_density - fluid_density_kg_m3
+        if delta_rho > 0:
+            max_column_m = (Pc_entry * 1e6) / (delta_rho * g)
+        else:
+            max_column_m = 0
+
+        # Fracture leakoff pressure = Shmin - Pp
+        frac_leakoff_MPa = Shmin - Pp
+        # Effective seal = min of capillary and mechanical
+        effective_seal_MPa = min(Pc_entry, frac_leakoff_MPa)
+
+        if effective_seal_MPa < 2:
+            seal_class = "POOR"
+        elif effective_seal_MPa < 5:
+            seal_class = "FAIR"
+        elif effective_seal_MPa < 10:
+            seal_class = "GOOD"
+        else:
+            seal_class = "EXCELLENT"
+
+        # Permeability sweep
+        perm_sweep = []
+        perms = np.logspace(-4, 1, 20)
+        for k in perms:
+            pc = min(0.3 / math.sqrt(k), 50)
+            col = (pc * 1e6) / max(delta_rho * g, 0.01) if delta_rho > 0 else 0
+            perm_sweep.append({
+                "permeability_mD": round(float(k), 6),
+                "Pc_entry_MPa": round(float(pc), 2),
+                "max_column_m": round(float(col), 1)
+            })
+
+        recs = []
+        if seal_class == "POOR":
+            recs.append("POOR seal — caprock may leak; consider cement squeeze or alternative trap")
+        elif seal_class == "FAIR":
+            recs.append("FAIR seal — marginal containment; monitor pressure and run leak-off tests")
+        recs.append(f"Capillary entry pressure: {round(Pc_entry, 2)} MPa (k={caprock_permeability_mD} mD)")
+        recs.append(f"Max hydrocarbon column: {round(max_column_m, 0)} m")
+        recs.append(f"Mechanical seal (Shmin-Pp): {round(frac_leakoff_MPa, 2)} MPa")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+            ax1.bar(["Capillary\nEntry", "Fracture\nLeakoff", "Effective\nSeal"],
+                    [Pc_entry, frac_leakoff_MPa, effective_seal_MPa],
+                    color=["steelblue", "coral", "green" if effective_seal_MPa > 5 else "orange"])
+            ax1.set_ylabel("Pressure (MPa)")
+            ax1.set_title("Seal Capacity Components")
+            ax1.grid(True, alpha=0.3, axis="y")
+            ax2.semilogx([p["permeability_mD"] for p in perm_sweep],
+                         [p["max_column_m"] for p in perm_sweep], "b-", lw=2)
+            ax2.axvline(caprock_permeability_mD, color="red", ls="--",
+                        label=f"k={caprock_permeability_mD} mD")
+            ax2.set_xlabel("Permeability (mD)")
+            ax2.set_ylabel("Max Column (m)")
+            ax2.set_title("Column Height vs Permeability")
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_m": depth_m,
+            "caprock_thickness_m": caprock_thickness_m,
+            "caprock_permeability_mD": caprock_permeability_mD,
+            "fluid_density_kg_m3": fluid_density_kg_m3,
+            "Pc_entry_MPa": round(Pc_entry, 2),
+            "frac_leakoff_MPa": round(frac_leakoff_MPa, 2),
+            "effective_seal_MPa": round(effective_seal_MPa, 2),
+            "max_column_m": round(max_column_m, 1),
+            "seal_class": seal_class,
+            "perm_sweep": perm_sweep,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Caprock Seal: {seal_class}",
+                "risk_level": seal_class,
+                "what_this_means": f"Effective seal capacity {round(effective_seal_MPa, 1)} MPa, max column {round(max_column_m, 0)} m",
+                "for_non_experts": f"The cap rock above the reservoir can hold {round(max_column_m, 0)}m of fluid. Seal quality is {seal_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _caprock_seal_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))

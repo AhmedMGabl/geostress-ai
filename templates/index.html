@@ -4375,6 +4375,83 @@
                         </div>
                     </div>
 
+                    <!-- [285] Thermal Fracture Risk -->
+                    <div class="card mb-3" id="thermalFracCard">
+                        <div class="card-header bg-danger text-white"><h6>[285] Thermal Fracture Risk</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="thermfrac-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input id="thermfrac-depth" class="form-control form-control-sm" type="number" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">Inj Temp (°C)</label><input id="thermfrac-injt" class="form-control form-control-sm" type="number" value="20"></div>
+                                <div class="col-md-3"><label class="form-label">Res Temp (°C)</label><input id="thermfrac-rest" class="form-control form-control-sm" type="number" value="120"></div>
+                            </div>
+                            <button class="btn btn-danger" onclick="runThermalFracture()">Run Thermal Fracture</button>
+                            <div id="thermalFracResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [286] Fault Slip Tendency -->
+                    <div class="card mb-3" id="faultSlipCard">
+                        <div class="card-header bg-warning text-dark"><h6>[286] Fault Slip Tendency</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-2"><label class="form-label">Well</label><select id="faultslip-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-2"><label class="form-label">Depth (m)</label><input id="faultslip-depth" class="form-control form-control-sm" type="number" value="3000"></div>
+                                <div class="col-md-2"><label class="form-label">Fault Az (°)</label><input id="faultslip-az" class="form-control form-control-sm" type="number" value="45"></div>
+                                <div class="col-md-2"><label class="form-label">Fault Dip (°)</label><input id="faultslip-dip" class="form-control form-control-sm" type="number" value="60"></div>
+                                <div class="col-md-2"><label class="form-label">Friction</label><input id="faultslip-mu" class="form-control form-control-sm" type="number" step="0.1" value="0.6"></div>
+                            </div>
+                            <button class="btn btn-warning" onclick="runFaultSlip()">Run Fault Slip</button>
+                            <div id="faultSlipResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [287] Pore Pressure Depletion -->
+                    <div class="card mb-3" id="ppDeplCard">
+                        <div class="card-header bg-info text-white"><h6>[287] Pore Pressure Depletion</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="ppdepl-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth From (m)</label><input id="ppdepl-from" class="form-control form-control-sm" type="number" value="500"></div>
+                                <div class="col-md-3"><label class="form-label">Depth To (m)</label><input id="ppdepl-to" class="form-control form-control-sm" type="number" value="5000"></div>
+                                <div class="col-md-3"><label class="form-label">Depletion (%)</label><input id="ppdepl-pct" class="form-control form-control-sm" type="number" value="20"></div>
+                            </div>
+                            <button class="btn btn-info text-white" onclick="runPpDepletion()">Run Pp Depletion</button>
+                            <div id="ppDeplResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [288] Wellbore Heating -->
+                    <div class="card mb-3" id="wbHeatCard">
+                        <div class="card-header bg-secondary text-white"><h6>[288] Wellbore Heating Effect</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-2"><label class="form-label">Well</label><select id="wbheat-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-2"><label class="form-label">Depth (m)</label><input id="wbheat-depth" class="form-control form-control-sm" type="number" value="3000"></div>
+                                <div class="col-md-2"><label class="form-label">Prod Temp (°C)</label><input id="wbheat-prodt" class="form-control form-control-sm" type="number" value="150"></div>
+                                <div class="col-md-2"><label class="form-label">Init Temp (°C)</label><input id="wbheat-initt" class="form-control form-control-sm" type="number" value="40"></div>
+                                <div class="col-md-2"><label class="form-label">Casing Grade</label><select id="wbheat-grade" class="form-select form-select-sm"><option>L80</option><option>N80</option><option>P110</option><option>J55</option></select></div>
+                            </div>
+                            <button class="btn btn-secondary" onclick="runWbHeating()">Run Heating Analysis</button>
+                            <div id="wbHeatResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [289] Caprock Seal Capacity -->
+                    <div class="card mb-3" id="caprockSealCard">
+                        <div class="card-header bg-success text-white"><h6>[289] Caprock Seal Capacity</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="capseal-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input id="capseal-depth" class="form-control form-control-sm" type="number" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">Thickness (m)</label><input id="capseal-thick" class="form-control form-control-sm" type="number" value="50"></div>
+                                <div class="col-md-3"><label class="form-label">Perm (mD)</label><input id="capseal-perm" class="form-control form-control-sm" type="number" step="0.001" value="0.001"></div>
+                            </div>
+                            <button class="btn btn-success" onclick="runCaprockSeal()">Run Seal Analysis</button>
+                            <div id="caprockSealResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

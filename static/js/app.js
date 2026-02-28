@@ -16753,3 +16753,100 @@ async function runCritDrawdown() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// [285] Thermal Fracture Risk
+async function runThermalFracture() {
+    var results = document.getElementById('thermalFracResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('thermfrac-well').value;
+        var depth = parseFloat(document.getElementById('thermfrac-depth').value) || 3000;
+        var injt = parseFloat(document.getElementById('thermfrac-injt').value) || 20;
+        var rest = parseFloat(document.getElementById('thermfrac-rest').value) || 120;
+        var resp = await fetch('/api/analysis/thermal-fracture', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,injection_temp_C:injt,reservoir_temp_C:rest})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.tf_class==='CRITICAL'||r.tf_class==='HIGH_RISK'?'danger':r.tf_class==='MODERATE'?'warning':'success')+'"><strong>'+r.tf_class+'</strong> — Thermal stress='+r.thermal_stress_MPa+' MPa, Margin='+r.frac_margin_MPa+' MPa</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [286] Fault Slip Tendency
+async function runFaultSlip() {
+    var results = document.getElementById('faultSlipResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('faultslip-well').value;
+        var depth = parseFloat(document.getElementById('faultslip-depth').value) || 3000;
+        var az = parseFloat(document.getElementById('faultslip-az').value) || 45;
+        var dip = parseFloat(document.getElementById('faultslip-dip').value) || 60;
+        var mu = parseFloat(document.getElementById('faultslip-mu').value) || 0.6;
+        var resp = await fetch('/api/analysis/fault-slip-tendency', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,fault_azimuth_deg:az,fault_dip_deg:dip,friction:mu})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.slip_class==='CRITICAL'||r.slip_class==='HIGH'?'danger':r.slip_class==='MODERATE'?'warning':'success')+'"><strong>'+r.slip_class+'</strong> — Ts='+r.slip_tendency+', Td='+r.dilation_tendency+', CFS='+r.CFS_MPa+' MPa</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [287] Pore Pressure Depletion
+async function runPpDepletion() {
+    var results = document.getElementById('ppDeplResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('ppdepl-well').value;
+        var from = parseFloat(document.getElementById('ppdepl-from').value) || 500;
+        var to = parseFloat(document.getElementById('ppdepl-to').value) || 5000;
+        var pct = parseFloat(document.getElementById('ppdepl-pct').value) || 20;
+        var resp = await fetch('/api/analysis/pore-pressure-depletion', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:from,depth_to:to,depletion_pct:pct})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.depl_class==='SEVERE'||r.depl_class==='SIGNIFICANT'?'danger':r.depl_class==='MODERATE'?'warning':'success')+'"><strong>'+r.depl_class+'</strong> — Mean ΔPp='+r.mean_delta_Pp_MPa+' MPa, Max ΔPp='+r.max_delta_Pp_MPa+' MPa</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [288] Wellbore Heating
+async function runWbHeating() {
+    var results = document.getElementById('wbHeatResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wbheat-well').value;
+        var depth = parseFloat(document.getElementById('wbheat-depth').value) || 3000;
+        var prodt = parseFloat(document.getElementById('wbheat-prodt').value) || 150;
+        var initt = parseFloat(document.getElementById('wbheat-initt').value) || 40;
+        var grade = document.getElementById('wbheat-grade').value;
+        var resp = await fetch('/api/analysis/wellbore-heating', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,production_temp_C:prodt,initial_temp_C:initt,casing_grade:grade})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.heat_class==='CRITICAL'||r.heat_class==='HIGH_RISK'?'danger':r.heat_class==='MODERATE'?'warning':'success')+'"><strong>'+r.heat_class+'</strong> — Casing: '+r.casing_thermal_stress_MPa+' MPa (SF='+r.casing_SF+'), Cement: '+r.cement_thermal_stress_MPa+' MPa (SF='+r.cement_SF+')</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [289] Caprock Seal Capacity
+async function runCaprockSeal() {
+    var results = document.getElementById('caprockSealResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('capseal-well').value;
+        var depth = parseFloat(document.getElementById('capseal-depth').value) || 3000;
+        var thick = parseFloat(document.getElementById('capseal-thick').value) || 50;
+        var perm = parseFloat(document.getElementById('capseal-perm').value) || 0.001;
+        var resp = await fetch('/api/analysis/caprock-seal-capacity', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,caprock_thickness_m:thick,caprock_permeability_mD:perm})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.seal_class==='POOR'?'danger':r.seal_class==='FAIR'?'warning':'success')+'"><strong>'+r.seal_class+'</strong> — Seal='+r.effective_seal_MPa+' MPa, Max Column='+r.max_column_m+' m</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
