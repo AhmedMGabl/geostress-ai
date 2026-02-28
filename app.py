@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.65.0 - Wellbore Collapse + Fracture Aperture Stress + Casing Design + Drilling Margin + Geomechanical Facies)."""
+"""GeoStress AI - FastAPI Web Application (v3.66.0 - Sand Production + Breakout Width + Cement Bond + Swab Surge + Rock Strength)."""
 
 import os
 import io
@@ -50119,3 +50119,708 @@ async def analysis_geomechanical_facies(request: Request):
         return JSONResponse(result, status_code=400 if "Need at least" in result.get("error", "") else 404)
     _geomech_facies_cache[ck] = _sanitize_for_json(result)
     return JSONResponse(_geomech_facies_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [265] Sand Production Risk  (v3.66.0)
+# ═══════════════════════════════════════════════════════════════════════
+_sand_production_cache: dict = {}
+
+@app.post("/api/analysis/sand-production-risk")
+async def analysis_sand_production_risk(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    UCS_MPa = body.get("UCS_MPa", 30)
+    TWC_MPa = body.get("TWC_MPa", None)  # thick-wall cylinder strength
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{UCS_MPa}_{TWC_MPa}"
+    if ck in _sand_production_cache:
+        return JSONResponse(_sand_production_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        # TWC defaults to 0.5 * UCS (rule of thumb)
+        twc = TWC_MPa if TWC_MPa is not None else 0.5 * UCS_MPa
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        n_critical = 0
+        for d in depths:
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+            SHmax = 1.2 * Sv - 0.2 * Pp
+
+            # Wellbore effective hoop stress (max at min azimuth)
+            sigma_theta_max = 3 * SHmax - Shmin - Pp
+            drawdown_MPa = 5.0  # assumed production drawdown
+
+            # Sanding onset: sigma_theta_max > TWC + drawdown
+            sanding_load = sigma_theta_max - drawdown_MPa
+            sand_margin = twc - sanding_load
+            at_risk = sand_margin < 0
+
+            if at_risk:
+                n_critical += 1
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Sv_MPa": round(float(Sv), 2),
+                "sigma_theta_max_MPa": round(float(sigma_theta_max), 2),
+                "TWC_MPa": round(float(twc), 2),
+                "sanding_load_MPa": round(float(sanding_load), 2),
+                "sand_margin_MPa": round(float(sand_margin), 2),
+                "at_risk": at_risk,
+            })
+
+        pct_risk = round(100 * n_critical / len(profile), 1)
+        if pct_risk > 50:
+            sand_class = "CRITICAL"
+        elif pct_risk > 20:
+            sand_class = "HIGH_RISK"
+        elif pct_risk > 5:
+            sand_class = "MODERATE"
+        else:
+            sand_class = "STABLE"
+
+        recs = []
+        if sand_class == "CRITICAL":
+            recs.append("Sand control (gravel pack / screen) strongly recommended")
+        elif sand_class == "HIGH_RISK":
+            recs.append("Consider sand exclusion completions in risk zones")
+        recs.append(f"{pct_risk}% of depths exceed sanding threshold")
+        recs.append(f"TWC strength: {twc:.1f} MPa, UCS: {UCS_MPa:.1f} MPa")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+            ds = [p["depth_m"] for p in profile]
+            ax.plot([p["sanding_load_MPa"] for p in profile], ds, 'r-', lw=2, label='Sanding Load')
+            ax.axvline(twc, color='green', ls='--', lw=2, label=f'TWC={twc:.0f} MPa')
+            risk_d = [p["depth_m"] for p in profile if p["at_risk"]]
+            risk_l = [p["sanding_load_MPa"] for p in profile if p["at_risk"]]
+            if risk_d:
+                ax.scatter(risk_l, risk_d, c='red', s=40, zorder=5, label='At Risk')
+            ax.set_xlabel("Stress (MPa)"); ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis(); ax.set_title(f"Sand Production Risk — {well}")
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "UCS_MPa": UCS_MPa, "TWC_MPa": round(float(twc), 2),
+            "n_critical_depths": n_critical, "pct_at_risk": pct_risk,
+            "sand_class": sand_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Sand production risk: {sand_class} for {well}",
+                "risk_level": "HIGH" if sand_class in ("CRITICAL", "HIGH_RISK") else "MODERATE" if sand_class == "MODERATE" else "LOW",
+                "what_this_means": f"{pct_risk}% of evaluated depths exceed sanding threshold (TWC={twc:.0f} MPa)",
+                "for_non_experts": "Sand production means formation sand enters the wellbore during production. It can damage equipment and reduce output. This analysis estimates where sanding is likely."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _sand_production_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_sand_production_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [266] Wellbore Breakout Width  (v3.66.0)
+# ═══════════════════════════════════════════════════════════════════════
+_breakout_width_cache: dict = {}
+
+@app.post("/api/analysis/wellbore-breakout-width")
+async def analysis_wellbore_breakout_width(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    UCS_MPa = body.get("UCS_MPa", 50)
+    friction_angle_deg = body.get("friction_angle_deg", 30)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{UCS_MPa}_{friction_angle_deg}"
+    if ck in _breakout_width_cache:
+        return JSONResponse(_breakout_width_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        phi = np.radians(friction_angle_deg)
+        q_mc = (1 + np.sin(phi)) / (1 - np.sin(phi))
+        C0 = UCS_MPa
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        total_width = 0
+        n_breakout = 0
+
+        for d in depths:
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+            SHmax = 1.2 * Sv - 0.2 * Pp
+
+            # Breakout occurs where hoop stress > rock strength
+            # sigma_theta at azimuth theta from SHmax:
+            # sigma_theta = SHmax + Shmin - 2*(SHmax - Shmin)*cos(2*theta) - Pp
+            # Breakout when sigma_theta > C0 + q*(Pp) (simplified Mohr-Coulomb)
+            strength = C0 + q_mc * Pp
+
+            # Max hoop stress at theta=90 (aligned with Shmin)
+            sigma_theta_max = 3 * SHmax - Shmin - Pp
+            # Min hoop stress at theta=0 (aligned with SHmax)
+            sigma_theta_min = 3 * Shmin - SHmax - Pp
+
+            if sigma_theta_max > strength:
+                # Breakout half-angle: cos(2*theta_b) = (C0 + q*Pp - SHmax - Shmin + Pp) / (2*(SHmax - Shmin))
+                denom = 2 * (SHmax - Shmin)
+                if abs(denom) > 1e-6:
+                    cos2theta = (strength - (SHmax + Shmin - Pp)) / denom
+                    cos2theta = max(-1, min(1, cos2theta))
+                    theta_b = 0.5 * np.arccos(cos2theta)
+                    wbo_deg = 2 * np.degrees(theta_b)
+                else:
+                    wbo_deg = 0
+                has_breakout = True
+                n_breakout += 1
+            else:
+                wbo_deg = 0
+                has_breakout = False
+
+            total_width += wbo_deg
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "sigma_theta_max_MPa": round(float(sigma_theta_max), 2),
+                "strength_MPa": round(float(strength), 2),
+                "breakout_width_deg": round(float(wbo_deg), 1),
+                "has_breakout": has_breakout,
+            })
+
+        mean_width = round(total_width / len(profile), 1)
+        max_width = max(p["breakout_width_deg"] for p in profile)
+        pct_breakout = round(100 * n_breakout / len(profile), 1)
+
+        if max_width > 90:
+            breakout_class = "SEVERE"
+        elif max_width > 60:
+            breakout_class = "MODERATE"
+        elif max_width > 30:
+            breakout_class = "MINOR"
+        else:
+            breakout_class = "NONE"
+
+        recs = []
+        if breakout_class == "SEVERE":
+            recs.append("Wide breakouts (>90°) indicate severe instability — increase MW or reinforce")
+        elif breakout_class == "MODERATE":
+            recs.append("Moderate breakouts — monitor closely with caliper logs")
+        recs.append(f"{pct_breakout}% of depths have breakouts, mean width {mean_width}°")
+        recs.append(f"UCS={UCS_MPa} MPa, friction angle={friction_angle_deg}°")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 7))
+            ds = [p["depth_m"] for p in profile]
+            ax1.plot([p["sigma_theta_max_MPa"] for p in profile], ds, 'r-', lw=2, label='Max Hoop Stress')
+            ax1.plot([p["strength_MPa"] for p in profile], ds, 'g--', lw=2, label='Rock Strength')
+            ax1.set_xlabel("Stress (MPa)"); ax1.set_ylabel("Depth (m)")
+            ax1.invert_yaxis(); ax1.set_title("Hoop Stress vs Strength")
+            ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+
+            widths = [p["breakout_width_deg"] for p in profile]
+            colors = ['red' if w > 60 else 'orange' if w > 30 else 'green' for w in widths]
+            ax2.barh(ds, widths, height=(depth_to-depth_from)/n_points*0.8, color=colors, alpha=0.7)
+            ax2.set_xlabel("Breakout Width (°)"); ax2.set_ylabel("Depth (m)")
+            ax2.invert_yaxis(); ax2.set_title(f"Breakout Width — {well}")
+            ax2.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "UCS_MPa": UCS_MPa, "friction_angle_deg": friction_angle_deg,
+            "mean_breakout_width_deg": mean_width,
+            "max_breakout_width_deg": round(float(max_width), 1),
+            "pct_with_breakout": pct_breakout,
+            "n_breakout_depths": n_breakout,
+            "breakout_class": breakout_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Breakout severity: {breakout_class} for {well}",
+                "risk_level": "HIGH" if breakout_class in ("SEVERE",) else "MODERATE" if breakout_class == "MODERATE" else "LOW",
+                "what_this_means": f"Max breakout width {max_width:.0f}°, {pct_breakout}% of depths affected",
+                "for_non_experts": "Wellbore breakouts are enlargements caused by stress exceeding rock strength. Wide breakouts can cause stuck pipe and poor cement jobs."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _breakout_width_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_breakout_width_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [267] Cement Bond Quality Estimate  (v3.66.0)
+# ═══════════════════════════════════════════════════════════════════════
+_cement_bond_cache: dict = {}
+
+@app.post("/api/analysis/cement-bond-quality")
+async def analysis_cement_bond_quality(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    cement_density_ppg = body.get("cement_density_ppg", 16.0)
+    mud_weight_ppg = body.get("mud_weight_ppg", 10.0)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{cement_density_ppg}_{mud_weight_ppg}"
+    if ck in _cement_bond_cache:
+        return JSONResponse(_cement_bond_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        n_poor = 0
+
+        for d in depths:
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+
+            # Cement hydrostatic pressure (convert ppg to MPa at depth)
+            Pc = cement_density_ppg * 0.052 * d * 3.28084 / 145.038
+            Pm = mud_weight_ppg * 0.052 * d * 3.28084 / 145.038
+
+            # Contact pressure: cement column minus formation min stress
+            contact_pressure = Pc - Shmin
+            # Differential pressure for bonding quality
+            diff_pressure = Pc - Pm
+
+            # Bond quality score (0-100) based on contact pressure and differential
+            score = 50
+            if contact_pressure > 5:
+                score += 25
+            elif contact_pressure > 2:
+                score += 15
+            elif contact_pressure > 0:
+                score += 5
+            else:
+                score -= 20
+
+            if diff_pressure > 3:
+                score += 20
+            elif diff_pressure > 1:
+                score += 10
+            else:
+                score -= 10
+
+            # Depth penalty (deeper = harder to cement)
+            if d > 4000:
+                score -= 10
+            elif d > 3000:
+                score -= 5
+
+            score = max(0, min(100, score))
+            if score < 50:
+                bond_quality = "POOR"
+                n_poor += 1
+            elif score < 70:
+                bond_quality = "FAIR"
+            elif score < 85:
+                bond_quality = "GOOD"
+            else:
+                bond_quality = "EXCELLENT"
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "cement_pressure_MPa": round(float(Pc), 2),
+                "formation_Shmin_MPa": round(float(Shmin), 2),
+                "contact_pressure_MPa": round(float(contact_pressure), 2),
+                "bond_score": round(float(score), 1),
+                "bond_quality": bond_quality,
+            })
+
+        mean_score = round(np.mean([p["bond_score"] for p in profile]), 1)
+        min_score = min(p["bond_score"] for p in profile)
+        pct_poor = round(100 * n_poor / len(profile), 1)
+
+        if mean_score >= 80:
+            cement_class = "EXCELLENT"
+        elif mean_score >= 65:
+            cement_class = "GOOD"
+        elif mean_score >= 50:
+            cement_class = "FAIR"
+        else:
+            cement_class = "POOR"
+
+        recs = []
+        if cement_class in ("POOR", "FAIR"):
+            recs.append("Consider higher density cement or staged cementing for better bond")
+        recs.append(f"Mean bond score: {mean_score}/100, {pct_poor}% poor zones")
+        recs.append(f"Cement density: {cement_density_ppg} ppg, MW: {mud_weight_ppg} ppg")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 7))
+            ds = [p["depth_m"] for p in profile]
+            scores = [p["bond_score"] for p in profile]
+            colors_s = ['red' if s < 50 else 'orange' if s < 70 else 'green' for s in scores]
+            ax1.barh(ds, scores, height=(depth_to-depth_from)/n_points*0.8, color=colors_s, alpha=0.7)
+            ax1.axvline(50, color='red', ls='--', lw=1, label='Poor threshold')
+            ax1.axvline(70, color='orange', ls='--', lw=1, label='Fair threshold')
+            ax1.set_xlabel("Bond Score"); ax1.set_ylabel("Depth (m)")
+            ax1.invert_yaxis(); ax1.set_title(f"Cement Bond Score — {well}")
+            ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+
+            ax2.plot([p["cement_pressure_MPa"] for p in profile], ds, 'b-', lw=2, label='Cement Pressure')
+            ax2.plot([p["formation_Shmin_MPa"] for p in profile], ds, 'r--', lw=2, label='Formation Shmin')
+            ax2.set_xlabel("Pressure (MPa)"); ax2.set_ylabel("Depth (m)")
+            ax2.invert_yaxis(); ax2.set_title("Cement vs Formation Pressure")
+            ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "cement_density_ppg": cement_density_ppg, "mud_weight_ppg": mud_weight_ppg,
+            "mean_bond_score": mean_score, "min_bond_score": round(float(min_score), 1),
+            "pct_poor": pct_poor,
+            "cement_class": cement_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Cement bond quality: {cement_class} for {well}",
+                "risk_level": "HIGH" if cement_class == "POOR" else "MODERATE" if cement_class == "FAIR" else "LOW",
+                "what_this_means": f"Mean bond score {mean_score}/100, {pct_poor}% poor zones",
+                "for_non_experts": "Cement bond quality measures how well the cement seals the space between casing and rock. Poor bonds can lead to fluid leaks and well integrity issues."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _cement_bond_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_cement_bond_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [268] Swab & Surge Pressure  (v3.66.0)
+# ═══════════════════════════════════════════════════════════════════════
+_swab_surge_cache: dict = {}
+
+@app.post("/api/analysis/swab-surge-pressure")
+async def analysis_swab_surge_pressure(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    mud_weight_ppg = body.get("mud_weight_ppg", 10.0)
+    trip_speed_ft_min = body.get("trip_speed_ft_min", 90)
+    pipe_od_in = body.get("pipe_od_in", 5.0)
+    hole_dia_in = body.get("hole_dia_in", 8.5)
+    pv_cp = body.get("pv_cp", 15)  # plastic viscosity
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{mud_weight_ppg}_{trip_speed_ft_min}_{pipe_od_in}_{hole_dia_in}_{pv_cp}"
+    if ck in _swab_surge_cache:
+        return JSONResponse(_swab_surge_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+
+        # Annular velocity factor
+        annular_area = 0.25 * np.pi * (hole_dia_in**2 - pipe_od_in**2)
+        pipe_area = 0.25 * np.pi * pipe_od_in**2
+        clinging_factor = pipe_area / annular_area
+
+        for d in depths:
+            d_ft = d * 3.28084
+            Pp = 0.0098 * d
+            Shmin = 0.6 * 0.025 * d + 0.4 * Pp
+
+            # Pore pressure in ppg equivalent
+            Pp_ppg = Pp * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+            frac_ppg = Shmin * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+
+            # Swab/surge pressure (Burkhardt model simplified)
+            # delta_P (psi) = K * PV * V * L / (D_h - D_p)^2
+            ann_gap = hole_dia_in - pipe_od_in
+            if ann_gap > 0:
+                delta_p_psi = 0.000491 * pv_cp * trip_speed_ft_min * d_ft * clinging_factor / (ann_gap**2 * 100)
+            else:
+                delta_p_psi = 0
+
+            # Convert to ppg
+            delta_emw = delta_p_psi / (0.052 * d_ft) if d_ft > 0 else 0
+
+            swab_emw = mud_weight_ppg - delta_emw  # pulling out
+            surge_emw = mud_weight_ppg + delta_emw  # running in
+
+            kick_margin = swab_emw - Pp_ppg
+            loss_margin = frac_ppg - surge_emw
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_ppg": round(float(Pp_ppg), 2),
+                "frac_ppg": round(float(frac_ppg), 2),
+                "static_mw_ppg": mud_weight_ppg,
+                "swab_emw_ppg": round(float(swab_emw), 2),
+                "surge_emw_ppg": round(float(surge_emw), 2),
+                "delta_emw_ppg": round(float(delta_emw), 3),
+                "kick_margin_ppg": round(float(kick_margin), 2),
+                "loss_margin_ppg": round(float(loss_margin), 2),
+            })
+
+        min_kick = min(p["kick_margin_ppg"] for p in profile)
+        min_loss = min(p["loss_margin_ppg"] for p in profile)
+        max_delta = max(p["delta_emw_ppg"] for p in profile)
+
+        if min_kick < 0 or min_loss < 0:
+            surge_class = "CRITICAL"
+        elif min_kick < 0.5 or min_loss < 0.5:
+            surge_class = "NARROW"
+        elif min_kick < 1.0 or min_loss < 1.0:
+            surge_class = "ADEQUATE"
+        else:
+            surge_class = "SAFE"
+
+        recs = []
+        if min_kick < 0:
+            recs.append("SWAB RISK: Pulling pipe may induce kick — reduce trip speed")
+        if min_loss < 0:
+            recs.append("SURGE RISK: Running pipe may fracture formation — reduce trip speed")
+        recs.append(f"Max swab/surge delta: {max_delta:.3f} ppg at trip speed {trip_speed_ft_min} ft/min")
+        recs.append(f"Kick margin: {min_kick:.2f} ppg, Loss margin: {min_loss:.2f} ppg")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+            ds = [p["depth_m"] for p in profile]
+            ax.plot([p["Pp_ppg"] for p in profile], ds, 'b-', lw=2, label='Pore Pressure')
+            ax.plot([p["frac_ppg"] for p in profile], ds, 'r-', lw=2, label='Frac Gradient')
+            ax.plot([p["swab_emw_ppg"] for p in profile], ds, 'c--', lw=1.5, label='Swab EMW')
+            ax.plot([p["surge_emw_ppg"] for p in profile], ds, 'm--', lw=1.5, label='Surge EMW')
+            ax.axvline(mud_weight_ppg, color='green', ls='-', lw=2, label=f'Static MW={mud_weight_ppg}')
+            ax.fill_betweenx(ds, [p["swab_emw_ppg"] for p in profile], [p["surge_emw_ppg"] for p in profile], alpha=0.1, color='purple')
+            ax.set_xlabel("Equivalent MW (ppg)"); ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis(); ax.set_title(f"Swab & Surge — {well}")
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "mud_weight_ppg": mud_weight_ppg,
+            "trip_speed_ft_min": trip_speed_ft_min,
+            "pipe_od_in": pipe_od_in, "hole_dia_in": hole_dia_in,
+            "pv_cp": pv_cp,
+            "max_delta_emw_ppg": round(float(max_delta), 3),
+            "min_kick_margin_ppg": round(float(min_kick), 2),
+            "min_loss_margin_ppg": round(float(min_loss), 2),
+            "surge_class": surge_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Swab/surge risk: {surge_class} for {well}",
+                "risk_level": "HIGH" if surge_class in ("CRITICAL",) else "MODERATE" if surge_class == "NARROW" else "LOW",
+                "what_this_means": f"Max swab/surge effect {max_delta:.3f} ppg at {trip_speed_ft_min} ft/min trip speed",
+                "for_non_experts": "When pulling or running pipe, mud pressure changes temporarily. Swab (pulling) can cause kicks; surge (running in) can fracture the formation. Controlling trip speed manages this risk."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _swab_surge_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_swab_surge_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [269] Rock Strength Profile  (v3.66.0)
+# ═══════════════════════════════════════════════════════════════════════
+_rock_strength_cache: dict = {}
+
+@app.post("/api/analysis/rock-strength-profile")
+async def analysis_rock_strength_profile(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    surface_UCS_MPa = body.get("surface_UCS_MPa", 20)
+    UCS_gradient_MPa_km = body.get("UCS_gradient_MPa_km", 15)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{surface_UCS_MPa}_{UCS_gradient_MPa_km}"
+    if ck in _rock_strength_cache:
+        return JSONResponse(_rock_strength_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        n_weak = 0
+
+        for d in depths:
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+            SHmax = 1.2 * Sv - 0.2 * Pp
+
+            # Depth-dependent UCS
+            UCS = surface_UCS_MPa + UCS_gradient_MPa_km * d / 1000
+            # Tensile strength ~ 1/10 UCS (Hoek-Brown)
+            T0 = UCS / 10
+            # Internal friction angle from UCS (McNally correlation)
+            phi_deg = 25 + 0.003 * UCS
+            phi = np.radians(min(phi_deg, 55))
+            # Cohesion from Mohr-Coulomb
+            cohesion = UCS / (2 * np.sqrt((1 + np.sin(phi)) / (1 - np.sin(phi))))
+
+            # Wellbore strength ratio
+            sigma_theta_max = 3 * SHmax - Shmin - Pp
+            strength_ratio = UCS / sigma_theta_max if sigma_theta_max > 0 else 999
+
+            is_weak = strength_ratio < 1.0
+            if is_weak:
+                n_weak += 1
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "UCS_MPa": round(float(UCS), 2),
+                "tensile_strength_MPa": round(float(T0), 2),
+                "cohesion_MPa": round(float(cohesion), 2),
+                "friction_angle_deg": round(float(phi_deg), 1),
+                "sigma_theta_max_MPa": round(float(sigma_theta_max), 2),
+                "strength_ratio": round(float(strength_ratio), 3),
+                "is_weak": is_weak,
+            })
+
+        mean_UCS = round(np.mean([p["UCS_MPa"] for p in profile]), 2)
+        min_ratio = min(p["strength_ratio"] for p in profile)
+        pct_weak = round(100 * n_weak / len(profile), 1)
+
+        if min_ratio < 0.5:
+            strength_class = "VERY_WEAK"
+        elif min_ratio < 1.0:
+            strength_class = "WEAK"
+        elif min_ratio < 1.5:
+            strength_class = "MODERATE"
+        else:
+            strength_class = "STRONG"
+
+        recs = []
+        if strength_class in ("VERY_WEAK", "WEAK"):
+            recs.append("Rock is weaker than stress — expect breakouts, consider MW increase")
+        recs.append(f"Mean UCS: {mean_UCS} MPa, min strength ratio: {min_ratio:.2f}")
+        recs.append(f"{pct_weak}% of depths have strength ratio < 1.0 (potential failure)")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 7))
+            ds = [p["depth_m"] for p in profile]
+
+            ax1.plot([p["UCS_MPa"] for p in profile], ds, 'b-', lw=2, label='UCS')
+            ax1.plot([p["tensile_strength_MPa"] for p in profile], ds, 'r--', lw=1.5, label='Tensile T₀')
+            ax1.plot([p["cohesion_MPa"] for p in profile], ds, 'g-.', lw=1.5, label='Cohesion')
+            ax1.set_xlabel("Strength (MPa)"); ax1.set_ylabel("Depth (m)")
+            ax1.invert_yaxis(); ax1.set_title("Rock Strength Profile")
+            ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+
+            ratios = [p["strength_ratio"] for p in profile]
+            colors_r = ['red' if r < 1.0 else 'orange' if r < 1.5 else 'green' for r in ratios]
+            ax2.barh(ds, ratios, height=(depth_to-depth_from)/n_points*0.8, color=colors_r, alpha=0.7)
+            ax2.axvline(1.0, color='red', ls='--', lw=1.5, label='Failure threshold')
+            ax2.set_xlabel("Strength Ratio (UCS / σθ_max)"); ax2.set_ylabel("Depth (m)")
+            ax2.invert_yaxis(); ax2.set_title(f"Strength Ratio — {well}")
+            ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "surface_UCS_MPa": surface_UCS_MPa,
+            "UCS_gradient_MPa_km": UCS_gradient_MPa_km,
+            "mean_UCS_MPa": mean_UCS,
+            "min_strength_ratio": round(float(min_ratio), 3),
+            "pct_weak": pct_weak,
+            "n_weak_depths": n_weak,
+            "strength_class": strength_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Rock strength: {strength_class} for {well}",
+                "risk_level": "HIGH" if strength_class in ("VERY_WEAK", "WEAK") else "MODERATE" if strength_class == "MODERATE" else "LOW",
+                "what_this_means": f"Min strength ratio {min_ratio:.2f}, mean UCS {mean_UCS} MPa",
+                "for_non_experts": "Rock strength profile shows how strong the formation is at different depths. Where stress exceeds strength (ratio < 1), the wellbore may collapse without proper mud weight support."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _rock_strength_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_rock_strength_cache[ck])

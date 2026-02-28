@@ -16354,3 +16354,107 @@ async function runGeomechFacies() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ─── [265] Sand Production Risk ──────────────────────────────────────
+async function runSandProduction() {
+    var results = document.getElementById('sandProductionResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('sp-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('sp-to').value) || 5000;
+        var ucs = parseFloat(document.getElementById('sp-ucs').value) || 30;
+        var twcVal = document.getElementById('sp-twc').value;
+        var payload = {source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:30,UCS_MPa:ucs};
+        if (twcVal) payload.TWC_MPa = parseFloat(twcVal);
+        var resp = await fetch('/api/analysis/sand-production-risk', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.sand_class==='CRITICAL'?'danger':r.sand_class==='HIGH_RISK'?'warning':'success')+'"><strong>'+r.sand_class+'</strong> — '+r.pct_at_risk+'% at risk, TWC='+r.TWC_MPa+' MPa</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ─── [266] Wellbore Breakout Width ──────────────────────────────────────
+async function runBreakoutWidth() {
+    var results = document.getElementById('breakoutWidthResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('bw-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('bw-to').value) || 5000;
+        var ucs = parseFloat(document.getElementById('bw-ucs').value) || 50;
+        var phi = parseFloat(document.getElementById('bw-phi').value) || 30;
+        var resp = await fetch('/api/analysis/wellbore-breakout-width', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:30,UCS_MPa:ucs,friction_angle_deg:phi})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.breakout_class==='SEVERE'?'danger':r.breakout_class==='MODERATE'?'warning':'success')+'"><strong>'+r.breakout_class+'</strong> — Max '+r.max_breakout_width_deg+'°, '+r.pct_with_breakout+'% affected</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ─── [267] Cement Bond Quality ──────────────────────────────────────
+async function runCementBond() {
+    var results = document.getElementById('cementBondResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('cb-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('cb-to').value) || 5000;
+        var cement = parseFloat(document.getElementById('cb-cement').value) || 16.0;
+        var mw = parseFloat(document.getElementById('cb-mw').value) || 10.0;
+        var resp = await fetch('/api/analysis/cement-bond-quality', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:30,cement_density_ppg:cement,mud_weight_ppg:mw})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.cement_class==='POOR'?'danger':r.cement_class==='FAIR'?'warning':'success')+'"><strong>'+r.cement_class+'</strong> — Score '+r.mean_bond_score+'/100, '+r.pct_poor+'% poor</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ─── [268] Swab & Surge Pressure ──────────────────────────────────────
+async function runSwabSurge() {
+    var results = document.getElementById('swabSurgeResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('ss-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('ss-to').value) || 5000;
+        var mw = parseFloat(document.getElementById('ss-mw').value) || 10;
+        var speed = parseFloat(document.getElementById('ss-speed').value) || 90;
+        var pod = parseFloat(document.getElementById('ss-pod').value) || 5.0;
+        var hole = parseFloat(document.getElementById('ss-hole').value) || 8.5;
+        var resp = await fetch('/api/analysis/swab-surge-pressure', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:30,mud_weight_ppg:mw,trip_speed_ft_min:speed,pipe_od_in:pod,hole_dia_in:hole})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.surge_class==='CRITICAL'?'danger':r.surge_class==='NARROW'?'warning':'success')+'"><strong>'+r.surge_class+'</strong> — ΔP='+r.max_delta_emw_ppg+' ppg, kick margin '+r.min_kick_margin_ppg+' ppg</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ─── [269] Rock Strength Profile ──────────────────────────────────────
+async function runRockStrength() {
+    var results = document.getElementById('rockStrengthResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('rs-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('rs-to').value) || 5000;
+        var ucs0 = parseFloat(document.getElementById('rs-ucs0').value) || 20;
+        var grad = parseFloat(document.getElementById('rs-grad').value) || 15;
+        var resp = await fetch('/api/analysis/rock-strength-profile', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:30,surface_UCS_MPa:ucs0,UCS_gradient_MPa_km:grad})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.strength_class==='VERY_WEAK'||r.strength_class==='WEAK'?'danger':r.strength_class==='MODERATE'?'warning':'success')+'"><strong>'+r.strength_class+'</strong> — Min ratio '+r.min_strength_ratio+', mean UCS '+r.mean_UCS_MPa+' MPa</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
