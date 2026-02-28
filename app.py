@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.71.0 - Kill Weight + ECD Sensitivity + Formation Breakdown + Stress Polygon + Frac Gradient Window)."""
+"""GeoStress AI - FastAPI Web Application (v3.72.0 - Washout + Casing Shoe + Diff Sticking + BH Stability Map + HF Containment)."""
 
 import os
 import io
@@ -53825,4 +53825,655 @@ async def analysis_fracture_gradient_window(request: Request):
         return JSONResponse(content=result, status_code=404)
     result["elapsed_s"] = round(time.time() - t0, 3)
     _frac_gradient_window_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [295] WELLBORE WASHOUT RISK  (v3.72.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_wellbore_washout_cache: dict = {}
+
+@app.post("/api/analysis/wellbore-washout")
+async def analysis_wellbore_washout(request: Request):
+    """Wellbore washout risk — predict enlarged hole from shale instability and flow erosion."""
+    import time
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = float(body.get("depth_from", 500))
+    depth_to = float(body.get("depth_to", 5000))
+    n_points = int(body.get("n_points", 25))
+    bit_size_in = float(body.get("bit_size_in", 8.5))
+    mud_weight_ppg = float(body.get("mud_weight_ppg", 10))
+
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{bit_size_in}:{mud_weight_ppg}"
+    if ck in _wellbore_washout_cache:
+        cached = _wellbore_washout_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            Pp_MPa = 0.0098 * d
+            Sv = 0.025 * d
+            Shmin = 0.6 * Sv
+            TVD_ft = d * 3.28084
+            mw_psi = mud_weight_ppg * 0.052 * TVD_ft
+            mw_MPa = mw_psi / 145.038
+            # Overbalance
+            overbalance_MPa = mw_MPa - Pp_MPa
+            # UCS estimate
+            UCS = 5 + 0.035 * d
+            # Washout factor: ratio of stress concentration to rock strength
+            hoop_min = 3 * Shmin - Sv - mw_MPa  # min hoop stress (breakout direction)
+            washout_risk = max(0, (Sv - hoop_min) / max(UCS, 1))
+            # Caliper enlargement estimate (%)
+            if washout_risk > 1.5:
+                enlargement_pct = min(washout_risk * 15, 100)
+            elif washout_risk > 1.0:
+                enlargement_pct = washout_risk * 8
+            else:
+                enlargement_pct = washout_risk * 2
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "overbalance_MPa": round(float(overbalance_MPa), 2),
+                "UCS_MPa": round(float(UCS), 1),
+                "washout_risk": round(float(washout_risk), 3),
+                "enlargement_pct": round(float(enlargement_pct), 1),
+                "caliper_in": round(float(bit_size_in * (1 + enlargement_pct / 100)), 2)
+            })
+
+        mean_risk = float(np.mean([p["washout_risk"] for p in profile]))
+        max_enlargement = float(np.max([p["enlargement_pct"] for p in profile]))
+        pct_washout = sum(1 for p in profile if p["enlargement_pct"] > 10) / len(profile) * 100
+
+        if max_enlargement > 30:
+            wo_class = "SEVERE"
+        elif max_enlargement > 15:
+            wo_class = "MODERATE"
+        elif max_enlargement > 5:
+            wo_class = "MINOR"
+        else:
+            wo_class = "STABLE"
+
+        recs = []
+        if wo_class == "SEVERE":
+            recs.append("SEVERE washout risk — increase MW, use inhibitive mud, or ream/underream")
+        elif wo_class == "MODERATE":
+            recs.append("MODERATE washout — monitor caliper, consider inhibitive additives")
+        recs.append(f"Max caliper enlargement: {round(max_enlargement, 1)}% ({round(pct_washout, 0)}% of hole affected)")
+        recs.append(f"Bit size: {bit_size_in}\" at MW={mud_weight_ppg} ppg")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 7))
+            dd = [p["depth_m"] for p in profile]
+            ax1.plot([p["caliper_in"] for p in profile], dd, "r-", lw=2, label="Predicted caliper")
+            ax1.axvline(bit_size_in, color="blue", ls="--", lw=2, label=f"Bit size={bit_size_in}\"")
+            ax1.invert_yaxis()
+            ax1.set_xlabel("Caliper (in)")
+            ax1.set_ylabel("Depth (m)")
+            ax1.set_title("Predicted Caliper")
+            ax1.legend(fontsize=8)
+            ax1.grid(True, alpha=0.3)
+            colors = ["green" if p["enlargement_pct"] < 5 else "orange" if p["enlargement_pct"] < 15 else "red" for p in profile]
+            ax2.barh(dd, [p["enlargement_pct"] for p in profile], color=colors, height=(depth_to - depth_from) / n_points * 0.8)
+            ax2.invert_yaxis()
+            ax2.set_xlabel("Enlargement (%)")
+            ax2.set_ylabel("Depth (m)")
+            ax2.set_title("Washout Severity")
+            ax2.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "bit_size_in": bit_size_in, "mud_weight_ppg": mud_weight_ppg,
+            "mean_washout_risk": round(mean_risk, 3),
+            "max_enlargement_pct": round(max_enlargement, 1),
+            "pct_washout": round(pct_washout, 1),
+            "wo_class": wo_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Wellbore Washout: {wo_class}",
+                "risk_level": wo_class,
+                "what_this_means": f"Max enlargement {round(max_enlargement, 1)}%, {round(pct_washout, 0)}% of hole affected",
+                "for_non_experts": f"The wellbore may enlarge up to {round(max_enlargement, 0)}% from the bit size. Severity: {wo_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _wellbore_washout_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [296] CASING SHOE STRENGTH  (v3.72.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_casing_shoe_cache: dict = {}
+
+@app.post("/api/analysis/casing-shoe-strength")
+async def analysis_casing_shoe_strength(request: Request):
+    """Casing shoe strength — LOT/FIT estimation at shoe depth for well control."""
+    import time
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    shoe_depth_m = float(body.get("shoe_depth_m", 2000))
+    casing_size_in = float(body.get("casing_size_in", 9.625))
+    mud_weight_ppg = float(body.get("mud_weight_ppg", 10))
+
+    ck = f"{source}:{well}:{shoe_depth_m}:{casing_size_in}:{mud_weight_ppg}"
+    if ck in _casing_shoe_cache:
+        cached = _casing_shoe_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        Sv = 0.025 * shoe_depth_m
+        Pp = 0.0098 * shoe_depth_m
+        Shmin = 0.6 * Sv
+        TVD_ft = shoe_depth_m * 3.28084
+
+        # LOT estimate = Shmin (leak-off test)
+        LOT_MPa = Shmin
+        LOT_ppg = (LOT_MPa * 145.038) / (0.052 * max(TVD_ft, 1))
+        # FIT = conservative test to fraction of Shmin
+        FIT_MPa = 0.9 * Shmin
+        FIT_ppg = (FIT_MPa * 145.038) / (0.052 * max(TVD_ft, 1))
+        # MAASP = (LOT_ppg - MW_ppg) * 0.052 * TVD_ft
+        MAASP_psi = (LOT_ppg - mud_weight_ppg) * 0.052 * TVD_ft
+        MAASP_MPa = MAASP_psi / 145.038
+
+        # Kick tolerance
+        max_kick_ppg = LOT_ppg - mud_weight_ppg
+        if max_kick_ppg < 0.5:
+            shoe_class = "WEAK"
+        elif max_kick_ppg < 1.5:
+            shoe_class = "MARGINAL"
+        elif max_kick_ppg < 3.0:
+            shoe_class = "ADEQUATE"
+        else:
+            shoe_class = "STRONG"
+
+        # MW sweep
+        mw_sweep = []
+        import numpy as np
+        for mw in np.arange(8, 16.5, 0.5):
+            maasp = (LOT_ppg - mw) * 0.052 * TVD_ft
+            mw_sweep.append({
+                "MW_ppg": round(float(mw), 1),
+                "MAASP_psi": round(float(max(maasp, 0)), 0),
+                "kick_tolerance_ppg": round(float(LOT_ppg - mw), 2)
+            })
+
+        recs = []
+        if shoe_class == "WEAK":
+            recs.append("WEAK shoe — set deeper casing or increase shoe depth to improve well control margin")
+        elif shoe_class == "MARGINAL":
+            recs.append("MARGINAL shoe — limited kick tolerance, monitor closely during drilling")
+        recs.append(f"LOT estimate: {round(LOT_ppg, 2)} ppg ({round(LOT_MPa, 1)} MPa)")
+        recs.append(f"MAASP: {round(MAASP_psi, 0)} psi at MW={mud_weight_ppg} ppg")
+        recs.append(f"Kick tolerance: {round(max_kick_ppg, 2)} ppg above current MW")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+            mws = [p["MW_ppg"] for p in mw_sweep]
+            maasps = [p["MAASP_psi"] for p in mw_sweep]
+            ax1.plot(mws, maasps, "b-o", ms=3, lw=2)
+            ax1.axvline(mud_weight_ppg, color="green", ls=":", label=f"MW={mud_weight_ppg}")
+            ax1.axvline(LOT_ppg, color="red", ls="--", label=f"LOT={round(LOT_ppg, 1)}")
+            ax1.set_xlabel("Mud Weight (ppg)")
+            ax1.set_ylabel("MAASP (psi)")
+            ax1.set_title("MAASP vs Mud Weight")
+            ax1.legend(fontsize=8)
+            ax1.grid(True, alpha=0.3)
+            ax2.bar(["Pp", "MW", "FIT", "LOT", "Sv"],
+                    [Pp, Sv * mud_weight_ppg / (0.025 * shoe_depth_m) if shoe_depth_m > 0 else 0, FIT_MPa, LOT_MPa, Sv],
+                    color=["blue", "green", "orange", "red", "gray"])
+            ax2.set_ylabel("Pressure (MPa)")
+            ax2.set_title(f"Shoe at {shoe_depth_m}m")
+            ax2.grid(True, alpha=0.3, axis="y")
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "shoe_depth_m": shoe_depth_m,
+            "casing_size_in": casing_size_in, "mud_weight_ppg": mud_weight_ppg,
+            "LOT_MPa": round(LOT_MPa, 2), "LOT_ppg": round(LOT_ppg, 2),
+            "FIT_MPa": round(FIT_MPa, 2), "FIT_ppg": round(FIT_ppg, 2),
+            "MAASP_psi": round(MAASP_psi, 0), "MAASP_MPa": round(MAASP_MPa, 2),
+            "kick_tolerance_ppg": round(max_kick_ppg, 2),
+            "shoe_class": shoe_class,
+            "mw_sweep": mw_sweep,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Casing Shoe Strength: {shoe_class}",
+                "risk_level": shoe_class,
+                "what_this_means": f"LOT={round(LOT_ppg, 1)} ppg at {shoe_depth_m}m, kick tolerance {round(max_kick_ppg, 2)} ppg",
+                "for_non_experts": f"The casing shoe can handle {round(max_kick_ppg, 1)} ppg above current mud weight. Rating: {shoe_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _casing_shoe_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [297] DIFFERENTIAL STICKING RISK  (v3.72.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_diff_sticking_cache: dict = {}
+
+@app.post("/api/analysis/differential-sticking")
+async def analysis_differential_sticking(request: Request):
+    """Differential sticking risk — overbalance × contact area × time assessment."""
+    import time
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = float(body.get("depth_from", 500))
+    depth_to = float(body.get("depth_to", 5000))
+    n_points = int(body.get("n_points", 25))
+    mud_weight_ppg = float(body.get("mud_weight_ppg", 11))
+    pipe_od_in = float(body.get("pipe_od_in", 5.0))
+    hole_diameter_in = float(body.get("hole_diameter_in", 8.5))
+
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{mud_weight_ppg}:{pipe_od_in}"
+    if ck in _diff_sticking_cache:
+        cached = _diff_sticking_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np, math
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            Pp_MPa = 0.0098 * d
+            TVD_ft = d * 3.28084
+            mw_psi = mud_weight_ppg * 0.052 * TVD_ft
+            mw_MPa = mw_psi / 145.038
+            overbalance_MPa = mw_MPa - Pp_MPa
+            # Contact area per unit length (chord length approximation)
+            if hole_diameter_in > pipe_od_in:
+                standoff = (hole_diameter_in - pipe_od_in) / 2  # in inches
+                contact_width_in = 2 * math.sqrt(max((pipe_od_in / 2)**2 - (pipe_od_in / 2 - standoff * 0.3)**2, 0))
+            else:
+                contact_width_in = 0
+            # Sticking force per meter = overbalance * contact_area * friction
+            mu_cake = 0.15  # mud cake friction
+            stick_force_kN_m = overbalance_MPa * 1e3 * contact_width_in * 0.0254 * mu_cake / 1e3
+            # Risk index
+            risk = overbalance_MPa * contact_width_in * mu_cake
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "overbalance_MPa": round(float(overbalance_MPa), 2),
+                "contact_width_in": round(float(contact_width_in), 2),
+                "stick_force_kN_m": round(float(stick_force_kN_m), 2),
+                "risk_index": round(float(risk), 3)
+            })
+
+        mean_risk = float(np.mean([p["risk_index"] for p in profile]))
+        max_risk = float(np.max([p["risk_index"] for p in profile]))
+        if max_risk > 2.0:
+            ds_class = "HIGH"
+        elif max_risk > 1.0:
+            ds_class = "MODERATE"
+        elif max_risk > 0.3:
+            ds_class = "LOW"
+        else:
+            ds_class = "MINIMAL"
+
+        recs = []
+        if ds_class == "HIGH":
+            recs.append("HIGH diff sticking risk — reduce overbalance, use low-friction mud, minimize static time")
+        elif ds_class == "MODERATE":
+            recs.append("MODERATE risk — keep pipe moving, use wiper trips in permeable zones")
+        recs.append(f"Max overbalance: {round(max([p['overbalance_MPa'] for p in profile]), 1)} MPa")
+        recs.append(f"Mean sticking risk index: {round(mean_risk, 2)}")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 7))
+            dd = [p["depth_m"] for p in profile]
+            ax1.plot([p["overbalance_MPa"] for p in profile], dd, "b-", lw=2, label="Overbalance")
+            ax1.invert_yaxis()
+            ax1.set_xlabel("Overbalance (MPa)")
+            ax1.set_ylabel("Depth (m)")
+            ax1.set_title("Overbalance Profile")
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            colors = ["green" if p["risk_index"] < 0.3 else "orange" if p["risk_index"] < 1.0 else "red" for p in profile]
+            ax2.barh(dd, [p["risk_index"] for p in profile], color=colors, height=(depth_to - depth_from) / n_points * 0.8)
+            ax2.invert_yaxis()
+            ax2.set_xlabel("Risk Index")
+            ax2.set_ylabel("Depth (m)")
+            ax2.set_title("Differential Sticking Risk")
+            ax2.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "mud_weight_ppg": mud_weight_ppg, "pipe_od_in": pipe_od_in,
+            "hole_diameter_in": hole_diameter_in,
+            "mean_risk_index": round(mean_risk, 3),
+            "max_risk_index": round(max_risk, 3),
+            "ds_class": ds_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Diff Sticking Risk: {ds_class}",
+                "risk_level": ds_class,
+                "what_this_means": f"Max risk index {round(max_risk, 2)} at MW={mud_weight_ppg} ppg with {pipe_od_in}\" pipe",
+                "for_non_experts": f"Risk of the drill string getting stuck due to pressure difference is {ds_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _diff_sticking_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [298] BOREHOLE STABILITY MAP  (v3.72.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_bh_stability_map_cache: dict = {}
+
+@app.post("/api/analysis/borehole-stability-map")
+async def analysis_borehole_stability_map(request: Request):
+    """Borehole stability map — MW vs depth heatmap of stability index."""
+    import time
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = float(body.get("depth_from", 500))
+    depth_to = float(body.get("depth_to", 5000))
+    n_depths = int(body.get("n_depths", 20))
+    mw_min_ppg = float(body.get("mw_min_ppg", 8))
+    mw_max_ppg = float(body.get("mw_max_ppg", 16))
+    n_mw = int(body.get("n_mw", 20))
+
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{n_depths}:{mw_min_ppg}:{mw_max_ppg}"
+    if ck in _bh_stability_map_cache:
+        cached = _bh_stability_map_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np
+        depths = np.linspace(depth_from, depth_to, n_depths)
+        mws = np.linspace(mw_min_ppg, mw_max_ppg, n_mw)
+        grid = []
+        si_matrix = np.zeros((n_depths, n_mw))
+
+        for i, d in enumerate(depths):
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv
+            SHmax = 0.8 * Sv
+            UCS = 5 + 0.035 * d
+            TVD_ft = d * 3.28084
+            for j, mw in enumerate(mws):
+                mw_MPa = (mw * 0.052 * TVD_ft) / 145.038
+                # Breakout check: hoop_min = 3*Shmin - SHmax - mw
+                hoop_min = 3 * Shmin - SHmax - mw_MPa
+                si = UCS / max(abs(hoop_min - mw_MPa), 0.1)
+                si = min(si, 5.0)  # cap
+                si_matrix[i, j] = si
+                grid.append({
+                    "depth_m": round(float(d), 1),
+                    "MW_ppg": round(float(mw), 2),
+                    "stability_index": round(float(si), 3)
+                })
+
+        mean_si = float(np.mean(si_matrix))
+        pct_unstable = float(np.sum(si_matrix < 1.0) / si_matrix.size * 100)
+        if pct_unstable > 40:
+            map_class = "CRITICAL"
+        elif pct_unstable > 20:
+            map_class = "CONSTRAINED"
+        elif pct_unstable > 5:
+            map_class = "MODERATE"
+        else:
+            map_class = "FAVORABLE"
+
+        recs = []
+        if map_class == "CRITICAL":
+            recs.append("CRITICAL: large unstable zone — MW selection very constrained")
+        recs.append(f"{round(pct_unstable, 1)}% of depth-MW combinations are unstable (SI<1)")
+        recs.append(f"Grid: {n_depths} depths × {n_mw} MW values")
+
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(8, 7))
+            im = ax.imshow(si_matrix, aspect="auto", origin="lower",
+                          extent=[mw_min_ppg, mw_max_ppg, depth_to, depth_from],
+                          cmap="RdYlGn", vmin=0, vmax=3)
+            ax.set_xlabel("Mud Weight (ppg)")
+            ax.set_ylabel("Depth (m)")
+            ax.set_title("Borehole Stability Map (SI)")
+            plt.colorbar(im, ax=ax, label="Stability Index")
+            cs = ax.contour(mws, depths, si_matrix, levels=[1.0], colors="black", linewidths=2)
+            ax.clabel(cs, fmt="SI=%.1f")
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "mw_min_ppg": mw_min_ppg, "mw_max_ppg": mw_max_ppg,
+            "n_depths": n_depths, "n_mw": n_mw,
+            "mean_SI": round(mean_si, 3),
+            "pct_unstable": round(pct_unstable, 1),
+            "map_class": map_class,
+            "grid": grid[:100],
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stability Map: {map_class}",
+                "risk_level": map_class,
+                "what_this_means": f"{round(pct_unstable, 1)}% of depth-MW combinations are unstable",
+                "for_non_experts": f"A heatmap shows where the wellbore is stable (green) vs unstable (red). Condition: {map_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _bh_stability_map_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [299] HYDRAULIC FRACTURE CONTAINMENT  (v3.72.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_hf_containment_cache: dict = {}
+
+@app.post("/api/analysis/hydraulic-fracture-containment")
+async def analysis_hf_containment(request: Request):
+    """Hydraulic fracture containment — stress contrast barriers and frac height growth."""
+    import time
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth_m", 3000))
+    reservoir_thickness_m = float(body.get("reservoir_thickness_m", 30))
+    net_pressure_MPa = float(body.get("net_pressure_MPa", 5))
+
+    ck = f"{source}:{well}:{depth_m}:{reservoir_thickness_m}:{net_pressure_MPa}"
+    if ck in _hf_containment_cache:
+        cached = _hf_containment_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np
+        Sv = 0.025 * depth_m
+        Pp = 0.0098 * depth_m
+        # Reservoir Shmin
+        Shmin_res = 0.6 * Sv
+        # Barrier Shmin (higher stress in cap/base)
+        barrier_contrast_MPa = 3.0  # typical stress contrast
+        Shmin_barrier = Shmin_res + barrier_contrast_MPa
+
+        # Frac height growth: if net_pressure > barrier_contrast, frac breaks through
+        containment_ratio = barrier_contrast_MPa / max(net_pressure_MPa, 0.01)
+
+        # Estimate frac half-height
+        if containment_ratio > 1.5:
+            frac_half_height = reservoir_thickness_m / 2
+        elif containment_ratio > 1.0:
+            frac_half_height = reservoir_thickness_m / 2 * (1 + (1 - containment_ratio) * 2)
+        else:
+            # Frac grows beyond reservoir
+            excess = net_pressure_MPa - barrier_contrast_MPa
+            frac_half_height = reservoir_thickness_m / 2 + excess * 10  # 10m per MPa excess
+
+        frac_total_height = 2 * frac_half_height
+        height_ratio = frac_total_height / reservoir_thickness_m
+
+        if containment_ratio > 1.5:
+            hf_class = "CONTAINED"
+        elif containment_ratio > 1.0:
+            hf_class = "MARGINAL"
+        elif containment_ratio > 0.5:
+            hf_class = "BREAKTHROUGH"
+        else:
+            hf_class = "UNCONTAINED"
+
+        # Net pressure sweep
+        np_sweep = []
+        for np_val in np.linspace(0.5, 15, 20):
+            cr = barrier_contrast_MPa / max(np_val, 0.01)
+            if cr > 1.5:
+                hh = reservoir_thickness_m / 2
+            elif cr > 1.0:
+                hh = reservoir_thickness_m / 2 * (1 + (1 - cr) * 2)
+            else:
+                hh = reservoir_thickness_m / 2 + (np_val - barrier_contrast_MPa) * 10
+            np_sweep.append({
+                "net_pressure_MPa": round(float(np_val), 1),
+                "frac_height_m": round(float(2 * hh), 1),
+                "height_ratio": round(float(2 * hh / reservoir_thickness_m), 2),
+                "contained": cr > 1.0
+            })
+
+        recs = []
+        if hf_class == "UNCONTAINED":
+            recs.append("UNCONTAINED: frac will grow well beyond reservoir — reduce pump rate/pressure")
+        elif hf_class == "BREAKTHROUGH":
+            recs.append("BREAKTHROUGH: frac extends into barriers — monitor height with microseismic")
+        recs.append(f"Stress contrast: {barrier_contrast_MPa} MPa, net pressure: {net_pressure_MPa} MPa")
+        recs.append(f"Estimated frac height: {round(frac_total_height, 1)} m (reservoir: {reservoir_thickness_m} m)")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 6))
+            nps = [p["net_pressure_MPa"] for p in np_sweep]
+            heights = [p["frac_height_m"] for p in np_sweep]
+            ax1.plot(nps, heights, "r-o", ms=3, lw=2)
+            ax1.axhline(reservoir_thickness_m, color="green", ls="--", lw=2, label=f"Reservoir={reservoir_thickness_m}m")
+            ax1.axvline(net_pressure_MPa, color="blue", ls=":", label=f"Pnet={net_pressure_MPa}")
+            ax1.set_xlabel("Net Pressure (MPa)")
+            ax1.set_ylabel("Frac Height (m)")
+            ax1.set_title("Frac Height Growth")
+            ax1.legend(fontsize=8)
+            ax1.grid(True, alpha=0.3)
+            # Stress profile schematic
+            stress_depths = [depth_m - reservoir_thickness_m, depth_m - reservoir_thickness_m / 2, depth_m, depth_m + reservoir_thickness_m / 2, depth_m + reservoir_thickness_m]
+            stress_vals = [Shmin_barrier, Shmin_res, Shmin_res, Shmin_res, Shmin_barrier]
+            ax2.plot(stress_vals, stress_depths, "b-", lw=3)
+            ax2.axvline(Shmin_res + net_pressure_MPa, color="red", ls="--", label=f"Pfrac={round(Shmin_res + net_pressure_MPa, 1)}")
+            ax2.fill_betweenx([depth_m - reservoir_thickness_m / 2, depth_m + reservoir_thickness_m / 2],
+                              Shmin_res, Shmin_res + net_pressure_MPa, alpha=0.2, color="red")
+            ax2.invert_yaxis()
+            ax2.set_xlabel("Shmin (MPa)")
+            ax2.set_ylabel("Depth (m)")
+            ax2.set_title("Stress Contrast Profile")
+            ax2.legend(fontsize=8)
+            ax2.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_m": depth_m,
+            "reservoir_thickness_m": reservoir_thickness_m,
+            "net_pressure_MPa": net_pressure_MPa,
+            "Shmin_res_MPa": round(Shmin_res, 2),
+            "Shmin_barrier_MPa": round(Shmin_barrier, 2),
+            "barrier_contrast_MPa": barrier_contrast_MPa,
+            "containment_ratio": round(containment_ratio, 3),
+            "frac_height_m": round(frac_total_height, 1),
+            "height_ratio": round(height_ratio, 2),
+            "hf_class": hf_class,
+            "np_sweep": np_sweep,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Frac Containment: {hf_class}",
+                "risk_level": hf_class,
+                "what_this_means": f"Frac height {round(frac_total_height, 0)}m vs {reservoir_thickness_m}m reservoir (ratio {round(height_ratio, 1)}x)",
+                "for_non_experts": f"The hydraulic fracture is {'contained within' if hf_class == 'CONTAINED' else 'extending beyond'} the target reservoir. Status: {hf_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _hf_containment_cache[ck] = result
     return JSONResponse(content=_sanitize_for_json(result))

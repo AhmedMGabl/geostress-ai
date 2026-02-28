@@ -16945,3 +16945,101 @@ async function runFracGradWindow() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// [295] Wellbore Washout
+async function runWashout() {
+    var results = document.getElementById('washoutResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('washout-well').value;
+        var from = parseFloat(document.getElementById('washout-from').value) || 500;
+        var to = parseFloat(document.getElementById('washout-to').value) || 5000;
+        var bit = parseFloat(document.getElementById('washout-bit').value) || 8.5;
+        var mw = parseFloat(document.getElementById('washout-mw').value) || 10;
+        var resp = await fetch('/api/analysis/wellbore-washout', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:from,depth_to:to,bit_size_in:bit,mud_weight_ppg:mw})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.wo_class==='SEVERE'?'danger':r.wo_class==='MODERATE'?'warning':'success')+'"><strong>'+r.wo_class+'</strong> — Max Enlargement='+r.max_enlargement_pct+'%, Washout='+r.pct_washout+'%</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [296] Casing Shoe Strength
+async function runCasingShoe() {
+    var results = document.getElementById('casingShoeResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('shoe-well').value;
+        var depth = parseFloat(document.getElementById('shoe-depth').value) || 2000;
+        var size = parseFloat(document.getElementById('shoe-size').value) || 9.625;
+        var mw = parseFloat(document.getElementById('shoe-mw').value) || 10;
+        var resp = await fetch('/api/analysis/casing-shoe-strength', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,shoe_depth_m:depth,casing_size_in:size,mud_weight_ppg:mw})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.shoe_class==='WEAK'?'danger':r.shoe_class==='MARGINAL'?'warning':'success')+'"><strong>'+r.shoe_class+'</strong> — LOT='+r.LOT_ppg+' ppg, MAASP='+r.MAASP_psi+' psi, Kick Tol='+r.kick_tolerance_ppg+' ppg</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [297] Differential Sticking
+async function runDiffSticking() {
+    var results = document.getElementById('diffStickResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('dstick-well').value;
+        var from = parseFloat(document.getElementById('dstick-from').value) || 500;
+        var to = parseFloat(document.getElementById('dstick-to').value) || 5000;
+        var mw = parseFloat(document.getElementById('dstick-mw').value) || 11;
+        var od = parseFloat(document.getElementById('dstick-od').value) || 5.0;
+        var resp = await fetch('/api/analysis/differential-sticking', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:from,depth_to:to,mud_weight_ppg:mw,pipe_od_in:od})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.ds_class==='HIGH'?'danger':r.ds_class==='MODERATE'?'warning':'success')+'"><strong>'+r.ds_class+'</strong> — Max Risk='+r.max_risk_index+', Mean Risk='+r.mean_risk_index+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [298] Borehole Stability Map
+async function runBhStabMap() {
+    var results = document.getElementById('bhStabMapResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('bhmap-well').value;
+        var from = parseFloat(document.getElementById('bhmap-from').value) || 500;
+        var to = parseFloat(document.getElementById('bhmap-to').value) || 5000;
+        var mwmin = parseFloat(document.getElementById('bhmap-mwmin').value) || 8;
+        var mwmax = parseFloat(document.getElementById('bhmap-mwmax').value) || 16;
+        var resp = await fetch('/api/analysis/borehole-stability-map', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:from,depth_to:to,mw_min_ppg:mwmin,mw_max_ppg:mwmax})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.map_class==='CRITICAL'?'danger':r.map_class==='CONSTRAINED'?'warning':'success')+'"><strong>'+r.map_class+'</strong> — Unstable='+r.pct_unstable+'%, Mean SI='+r.mean_SI+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [299] Hydraulic Fracture Containment
+async function runHfContainment() {
+    var results = document.getElementById('hfContainResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('hfcont-well').value;
+        var depth = parseFloat(document.getElementById('hfcont-depth').value) || 3000;
+        var thick = parseFloat(document.getElementById('hfcont-thick').value) || 30;
+        var np = parseFloat(document.getElementById('hfcont-np').value) || 5;
+        var resp = await fetch('/api/analysis/hydraulic-fracture-containment', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,reservoir_thickness_m:thick,net_pressure_MPa:np})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.hf_class==='UNCONTAINED'||r.hf_class==='BREAKTHROUGH'?'danger':r.hf_class==='MARGINAL'?'warning':'success')+'"><strong>'+r.hf_class+'</strong> — Frac Height='+r.frac_height_m+'m ('+r.height_ratio+'x reservoir), CR='+r.containment_ratio+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}

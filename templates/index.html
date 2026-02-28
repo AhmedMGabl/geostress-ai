@@ -4527,6 +4527,83 @@
                         </div>
                     </div>
 
+                    <!-- [295] Wellbore Washout -->
+                    <div class="card mb-3" id="washoutCard">
+                        <div class="card-header bg-warning text-dark"><h6>[295] Wellbore Washout Risk</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="washout-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-2"><label class="form-label">From (m)</label><input id="washout-from" class="form-control form-control-sm" type="number" value="500"></div>
+                                <div class="col-md-2"><label class="form-label">To (m)</label><input id="washout-to" class="form-control form-control-sm" type="number" value="5000"></div>
+                                <div class="col-md-2"><label class="form-label">Bit (in)</label><input id="washout-bit" class="form-control form-control-sm" type="number" step="0.5" value="8.5"></div>
+                                <div class="col-md-2"><label class="form-label">MW (ppg)</label><input id="washout-mw" class="form-control form-control-sm" type="number" step="0.5" value="10"></div>
+                            </div>
+                            <button class="btn btn-warning" onclick="runWashout()">Run Washout Analysis</button>
+                            <div id="washoutResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [296] Casing Shoe Strength -->
+                    <div class="card mb-3" id="casingShoeCard">
+                        <div class="card-header bg-info text-white"><h6>[296] Casing Shoe Strength</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="shoe-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Shoe Depth (m)</label><input id="shoe-depth" class="form-control form-control-sm" type="number" value="2000"></div>
+                                <div class="col-md-3"><label class="form-label">Casing (in)</label><input id="shoe-size" class="form-control form-control-sm" type="number" step="0.5" value="9.625"></div>
+                                <div class="col-md-3"><label class="form-label">MW (ppg)</label><input id="shoe-mw" class="form-control form-control-sm" type="number" step="0.5" value="10"></div>
+                            </div>
+                            <button class="btn btn-info text-white" onclick="runCasingShoe()">Run Shoe Analysis</button>
+                            <div id="casingShoeResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [297] Differential Sticking -->
+                    <div class="card mb-3" id="diffStickCard">
+                        <div class="card-header bg-danger text-white"><h6>[297] Differential Sticking Risk</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-2"><label class="form-label">Well</label><select id="dstick-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-2"><label class="form-label">From (m)</label><input id="dstick-from" class="form-control form-control-sm" type="number" value="500"></div>
+                                <div class="col-md-2"><label class="form-label">To (m)</label><input id="dstick-to" class="form-control form-control-sm" type="number" value="5000"></div>
+                                <div class="col-md-2"><label class="form-label">MW (ppg)</label><input id="dstick-mw" class="form-control form-control-sm" type="number" step="0.5" value="11"></div>
+                                <div class="col-md-2"><label class="form-label">Pipe OD (in)</label><input id="dstick-od" class="form-control form-control-sm" type="number" step="0.5" value="5.0"></div>
+                            </div>
+                            <button class="btn btn-danger" onclick="runDiffSticking()">Run Sticking Analysis</button>
+                            <div id="diffStickResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [298] Borehole Stability Map -->
+                    <div class="card mb-3" id="bhStabMapCard">
+                        <div class="card-header bg-primary text-white"><h6>[298] Borehole Stability Map</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="bhmap-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">From (m)</label><input id="bhmap-from" class="form-control form-control-sm" type="number" value="500"></div>
+                                <div class="col-md-3"><label class="form-label">To (m)</label><input id="bhmap-to" class="form-control form-control-sm" type="number" value="5000"></div>
+                                <div class="col-md-3"><label class="form-label">MW Range</label><input id="bhmap-mwmin" class="form-control form-control-sm" type="number" value="8" placeholder="Min"> - <input id="bhmap-mwmax" class="form-control form-control-sm" type="number" value="16" placeholder="Max"></div>
+                            </div>
+                            <button class="btn btn-primary" onclick="runBhStabMap()">Run Stability Map</button>
+                            <div id="bhStabMapResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [299] Hydraulic Fracture Containment -->
+                    <div class="card mb-3" id="hfContainCard">
+                        <div class="card-header bg-success text-white"><h6>[299] Hydraulic Fracture Containment</h6></div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><label class="form-label">Well</label><select id="hfcont-well" class="form-select form-select-sm"><option>3P</option><option>6P</option></select></div>
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input id="hfcont-depth" class="form-control form-control-sm" type="number" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">Res Thick (m)</label><input id="hfcont-thick" class="form-control form-control-sm" type="number" value="30"></div>
+                                <div class="col-md-3"><label class="form-label">Net Press (MPa)</label><input id="hfcont-np" class="form-control form-control-sm" type="number" value="5"></div>
+                            </div>
+                            <button class="btn btn-success" onclick="runHfContainment()">Run Containment Analysis</button>
+                            <div id="hfContainResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
