@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.54.0 - Compliance Tensor + Pp Depletion + Reactivation Pressure + Deviation Survey + Rock Strength)."""
+"""GeoStress AI - FastAPI Web Application (v3.55.0 - Fracture Intersection + Stress Polygon + Mud Weight Window + Spacing Stats + Stress Ratio)."""
 
 import os
 import io
@@ -42280,4 +42280,770 @@ async def analysis_rock_strength(request: Request):
         return JSONResponse(result, code)
     result = _sanitize_for_json(result)
     _rock_strength_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [210] Fracture Intersection Density  (v3.55.0)
+# ═══════════════════════════════════════════════════════════════════════
+_frac_intersection_cache = {}
+
+@app.post("/api/analysis/fracture-intersection")
+async def analysis_fracture_intersection(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    bin_size_m = body.get("bin_size_m", 50)
+    ck = f"{source}:{well}:{bin_size_m}"
+    if ck in _frac_intersection_cache:
+        return JSONResponse(_frac_intersection_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        dips = df_well[DIP_COL].dropna().values
+        depths = df_well[DEPTH_COL].dropna().values
+        n = min(len(azimuths), len(dips), len(depths))
+        azimuths = azimuths[:n]
+        dips = dips[:n]
+        depths = depths[:n]
+
+        # Count intersections: two fractures intersect if they are within
+        # the same depth bin and have significantly different orientations (>15°)
+        depth_min = float(np.nanmin(depths)) if n > 0 else 0
+        depth_max = float(np.nanmax(depths)) if n > 0 else 1
+        bins = np.arange(depth_min, depth_max + bin_size_m, bin_size_m)
+        bin_indices = np.digitize(depths, bins) - 1
+
+        total_intersections = 0
+        bin_data = []
+        for b in range(len(bins) - 1):
+            mask = bin_indices == b
+            idx = np.where(mask)[0]
+            n_frac = len(idx)
+            n_int = 0
+            for i in range(n_frac):
+                for j in range(i + 1, n_frac):
+                    az_diff = abs(azimuths[idx[i]] - azimuths[idx[j]])
+                    if az_diff > 180:
+                        az_diff = 360 - az_diff
+                    dip_diff = abs(dips[idx[i]] - dips[idx[j]])
+                    if az_diff > 15 or dip_diff > 10:
+                        n_int += 1
+            total_intersections += n_int
+            density = n_int / bin_size_m if bin_size_m > 0 else 0
+            bin_data.append({
+                "depth_from_m": round(float(bins[b]), 1),
+                "depth_to_m": round(float(bins[b + 1]), 1),
+                "n_fractures": n_frac,
+                "n_intersections": n_int,
+                "intersection_density_per_m": round(density, 4)
+            })
+
+        interval = depth_max - depth_min
+        overall_density = total_intersections / interval if interval > 0 else 0
+        max_bin = max(bin_data, key=lambda x: x["n_intersections"]) if bin_data else {}
+
+        if overall_density > 1:
+            connectivity_class = "HIGH"
+        elif overall_density > 0.3:
+            connectivity_class = "MODERATE"
+        else:
+            connectivity_class = "LOW"
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            bd = [b["depth_from_m"] for b in bin_data]
+            bi = [b["n_intersections"] for b in bin_data]
+            axes[0].barh(bd, bi, height=bin_size_m * 0.8, color='steelblue', edgecolor='black', alpha=0.7)
+            axes[0].invert_yaxis()
+            axes[0].set_xlabel("Intersection Count")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].set_title(f"Fracture Intersections - Well {well}")
+
+            bd2 = [b["intersection_density_per_m"] for b in bin_data]
+            axes[1].plot(bd2, bd, 'r-o', markersize=4)
+            axes[1].invert_yaxis()
+            axes[1].set_xlabel("Intersection Density (per m)")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].set_title("Intersection Density Profile")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Total intersections: {total_intersections}, connectivity: {connectivity_class}")
+        recs.append(f"Overall density: {overall_density:.3f} intersections/m")
+        if max_bin:
+            recs.append(f"Highest activity: {max_bin.get('depth_from_m',0)}-{max_bin.get('depth_to_m',0)}m ({max_bin.get('n_intersections',0)} intersections)")
+
+        result = {
+            "well": well,
+            "n_fractures": n,
+            "bin_size_m": bin_size_m,
+            "depth_range_m": [round(depth_min, 1), round(depth_max, 1)],
+            "total_intersections": total_intersections,
+            "overall_density_per_m": round(overall_density, 4),
+            "connectivity_class": connectivity_class,
+            "n_bins": len(bin_data),
+            "max_intersection_bin": max_bin,
+            "bins": bin_data,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fracture connectivity is {connectivity_class} ({total_intersections} intersections)",
+                "risk_level": "HIGH" if connectivity_class == "HIGH" else ("MODERATE" if connectivity_class == "MODERATE" else "LOW"),
+                "what_this_means": f"{total_intersections} fracture intersections over {interval:.0f}m interval ({overall_density:.3f}/m)",
+                "for_non_experts": f"Fracture intersections create connected pathways for fluid flow. "
+                    + f"This well has {total_intersections} intersections — "
+                    + ("a highly connected network, important for reservoir drainage." if connectivity_class == "HIGH"
+                       else "moderate connectivity, partial fluid pathways exist." if connectivity_class == "MODERATE"
+                       else "low connectivity, fractures are relatively isolated.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _frac_intersection_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [211] Stress Polygon  (v3.55.0)
+# ═══════════════════════════════════════════════════════════════════════
+_stress_polygon_v2_cache = {}
+
+@app.post("/api/analysis/stress-polygon-zoback")
+async def analysis_stress_polygon_zoback(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = body.get("depth", 3000)
+    friction = body.get("friction", 0.6)
+    ck = f"{source}:{well}:{depth}:{friction}"
+    if ck in _stress_polygon_v2_cache:
+        return JSONResponse(_stress_polygon_v2_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        g = 9.81
+        Sv = rho * g * depth / 1e6
+        Pp = 1020 * g * depth / 1e6
+
+        # Frictional equilibrium limits (Zoback 2007)
+        q = ((np.sqrt(friction**2 + 1) + friction)**2)
+
+        # Normal faulting: Sv >= SHmax >= Shmin, constraint: Sv/Shmin <= q
+        # Strike-slip: SHmax >= Sv >= Shmin, constraint: SHmax/Shmin <= q
+        # Reverse: SHmax >= Shmin >= Sv, constraint: SHmax/Sv <= q
+
+        # Polygon vertices (SHmin, SHmax) in effective stress then convert back
+        Sv_eff = Sv - Pp
+
+        # Normal faulting boundary: Shmin_eff = Sv_eff / q
+        nf_shmin_min_eff = Sv_eff / q
+        # Reverse faulting boundary: SHmax_eff = Sv_eff * q
+        rf_shmax_max_eff = Sv_eff * q
+
+        # Build polygon boundary points
+        n_pts = 50
+        polygon_pts = []
+
+        # NF line: SHmax = Shmin (equality), Shmin from nf_shmin_min to Sv
+        for i in range(n_pts):
+            shmin_eff = nf_shmin_min_eff + (Sv_eff - nf_shmin_min_eff) * i / (n_pts - 1)
+            polygon_pts.append({
+                "Shmin_MPa": round(float(shmin_eff + Pp), 2),
+                "SHmax_MPa": round(float(shmin_eff + Pp), 2),
+                "boundary": "NF_lower"
+            })
+
+        # SS line: SHmax = q * Shmin, from Shmin where SHmax=Sv to SHmax limit
+        for i in range(n_pts):
+            shmin_eff = nf_shmin_min_eff + (Sv_eff - nf_shmin_min_eff) * i / (n_pts - 1)
+            shmax_eff = q * shmin_eff
+            if shmax_eff >= shmin_eff:
+                polygon_pts.append({
+                    "Shmin_MPa": round(float(shmin_eff + Pp), 2),
+                    "SHmax_MPa": round(float(min(shmax_eff + Pp, rf_shmax_max_eff + Pp)), 2),
+                    "boundary": "SS_upper"
+                })
+
+        # Current stress estimate
+        SHmax_est = 0.9 * Sv
+        Shmin_est = 0.6 * Sv
+
+        # Check which regime the estimate falls in
+        if SHmax_est <= Sv and Shmin_est <= Sv:
+            current_regime = "NORMAL_FAULT"
+        elif SHmax_est >= Sv and Shmin_est <= Sv:
+            current_regime = "STRIKE_SLIP"
+        else:
+            current_regime = "REVERSE_FAULT"
+
+        # Stress ratio metrics
+        k_hmin = Shmin_est / Sv if Sv > 0 else 0
+        k_hmax = SHmax_est / Sv if Sv > 0 else 0
+
+        # Plot the stress polygon
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+
+            # Frictional limits
+            sh_range = np.linspace(Pp + 1, Sv * 1.5, 100)
+            # NF: SHmax <= Sv, Shmin >= Sv/q + Pp... simplified: plot diagonal + limits
+            ax.plot([Pp, Sv*1.5], [Pp, Sv*1.5], 'k-', linewidth=1, label='SHmax=Shmin')
+            ax.axhline(Sv, color='gray', linestyle=':', alpha=0.5, label=f'Sv={Sv:.1f}')
+            ax.axvline(Sv, color='gray', linestyle=':', alpha=0.5)
+
+            # NF lower bound
+            shmin_nf = np.linspace(nf_shmin_min_eff + Pp, Sv, 50)
+            ax.fill_between(shmin_nf, shmin_nf, Sv, alpha=0.15, color='blue', label='Normal Fault')
+
+            # SS region
+            shmin_ss = np.linspace(nf_shmin_min_eff + Pp, Sv, 50)
+            shmax_ss = q * (shmin_ss - Pp) + Pp
+            ax.fill_between(shmin_ss, Sv, np.minimum(shmax_ss, rf_shmax_max_eff + Pp), alpha=0.15, color='green', label='Strike-Slip')
+
+            # RF region
+            shmin_rf = np.linspace(Sv, rf_shmax_max_eff + Pp, 50)
+            ax.fill_between(shmin_rf, shmin_rf, rf_shmax_max_eff + Pp, alpha=0.15, color='red', label='Reverse Fault')
+
+            # Current estimate
+            ax.plot(Shmin_est, SHmax_est, 'r*', markersize=15, label=f'Estimate ({current_regime})')
+
+            ax.set_xlabel("Shmin (MPa)")
+            ax.set_ylabel("SHmax (MPa)")
+            ax.set_title(f"Stress Polygon at {depth}m - Well {well}")
+            ax.legend(fontsize=8)
+            ax.set_aspect('equal')
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Current regime: {current_regime} at {depth}m depth")
+        recs.append(f"Stress ratios: K_Hmin={k_hmin:.3f}, K_Hmax={k_hmax:.3f}")
+        recs.append(f"Frictional limit factor q={q:.2f} (μ={friction})")
+
+        result = {
+            "well": well,
+            "depth_m": depth,
+            "friction": friction,
+            "Sv_MPa": round(Sv, 2),
+            "Pp_MPa": round(Pp, 2),
+            "SHmax_est_MPa": round(SHmax_est, 2),
+            "Shmin_est_MPa": round(Shmin_est, 2),
+            "current_regime": current_regime,
+            "frictional_limit_q": round(q, 4),
+            "K_Hmin": round(k_hmin, 4),
+            "K_Hmax": round(k_hmax, 4),
+            "nf_shmin_min_MPa": round(float(nf_shmin_min_eff + Pp), 2),
+            "rf_shmax_max_MPa": round(float(rf_shmax_max_eff + Pp), 2),
+            "polygon_points": polygon_pts[:20],
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stress polygon: {current_regime} regime at {depth}m",
+                "risk_level": "MODERATE" if current_regime == "STRIKE_SLIP" else ("HIGH" if current_regime == "REVERSE_FAULT" else "LOW"),
+                "what_this_means": f"Estimated stresses (SHmax={SHmax_est:.1f}, Shmin={Shmin_est:.1f} MPa) plot in the {current_regime} domain",
+                "for_non_experts": f"The stress polygon shows all physically allowed stress states at {depth}m. "
+                    + f"Our estimate falls in the {current_regime.lower().replace('_',' ')} zone, "
+                    + f"with Sv={Sv:.1f} MPa. "
+                    + ("This is the most common regime — normal drilling practices apply." if current_regime == "NORMAL_FAULT"
+                       else "Strike-slip regime requires careful horizontal stress management." if current_regime == "STRIKE_SLIP"
+                       else "Reverse fault regime — highest horizontal stresses, requires extra caution.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _stress_polygon_v2_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [212] Mud Weight Window  (v3.55.0)
+# ═══════════════════════════════════════════════════════════════════════
+_mud_weight_v2_cache = {}
+
+@app.post("/api/analysis/mud-weight-profile")
+async def analysis_mud_weight_profile(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 1000)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 30)
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{n_points}"
+    if ck in _mud_weight_v2_cache:
+        return JSONResponse(_mud_weight_v2_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        rho_w = 1020
+        g = 9.81
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            Sv = rho * g * d / 1e6
+            Pp = rho_w * g * d / 1e6
+            Shmin = 0.6 * Sv
+            SHmax = 0.9 * Sv
+
+            # Pore pressure gradient (ppg equivalent)
+            pp_ppg = Pp / (0.00981 * d) if d > 0 else 0
+
+            # Collapse gradient (Mohr-Coulomb based)
+            # Minimum mud weight to prevent borehole collapse
+            ucs = 0.02 * d + 30  # Empirical UCS
+            poisson = 0.25
+            sigma_theta_max = 3 * SHmax - Shmin - Pp
+            mw_collapse = (sigma_theta_max - ucs) / (g * d / 1e6) if d > 0 else 0
+            mw_collapse_ppg = max(pp_ppg, mw_collapse / (0.00981 * d) if d > 0 else 0)
+
+            # Fracture gradient
+            # Minimum horizontal stress = fracture initiation pressure
+            frac_gradient = Shmin
+            frac_ppg = frac_gradient / (0.00981 * d) if d > 0 else 0
+
+            # Overburden gradient
+            ob_ppg = Sv / (0.00981 * d) if d > 0 else 0
+
+            # Safe window
+            window_ppg = frac_ppg - mw_collapse_ppg
+            safe = window_ppg > 0.5
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_ppg": round(float(pp_ppg), 2),
+                "collapse_ppg": round(float(mw_collapse_ppg), 2),
+                "frac_ppg": round(float(frac_ppg), 2),
+                "overburden_ppg": round(float(ob_ppg), 2),
+                "window_ppg": round(float(window_ppg), 2),
+                "safe": safe
+            })
+
+        n_safe = sum(1 for p in profile if p["safe"])
+        pct_safe = round(100.0 * n_safe / len(profile), 1) if profile else 0
+        min_window = min(p["window_ppg"] for p in profile) if profile else 0
+        narrowest = min(profile, key=lambda x: x["window_ppg"]) if profile else {}
+
+        if min_window > 2:
+            window_class = "WIDE"
+        elif min_window > 0.5:
+            window_class = "ADEQUATE"
+        elif min_window > 0:
+            window_class = "NARROW"
+        else:
+            window_class = "INVERTED"
+
+        # Plot
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+            ds = [p["depth_m"] for p in profile]
+            pp = [p["Pp_ppg"] for p in profile]
+            col = [p["collapse_ppg"] for p in profile]
+            frac = [p["frac_ppg"] for p in profile]
+            ob = [p["overburden_ppg"] for p in profile]
+
+            ax.plot(pp, ds, 'b-', linewidth=2, label='Pore Pressure')
+            ax.plot(col, ds, 'r-', linewidth=2, label='Collapse')
+            ax.plot(frac, ds, 'g-', linewidth=2, label='Fracture')
+            ax.plot(ob, ds, 'k--', linewidth=1, label='Overburden')
+            ax.fill_betweenx(ds, col, frac, alpha=0.2, color='green', label='Safe Window')
+            ax.invert_yaxis()
+            ax.set_xlabel("Mud Weight (ppg equivalent)")
+            ax.set_ylabel("Depth (m)")
+            ax.set_title(f"Mud Weight Window - Well {well}")
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Mud weight window: {window_class} (min={min_window:.2f} ppg)")
+        recs.append(f"{pct_safe}% of depth range has adequate window (>0.5 ppg)")
+        if narrowest:
+            recs.append(f"Narrowest at {narrowest.get('depth_m',0)}m: {narrowest.get('window_ppg',0):.2f} ppg")
+        if window_class in ("NARROW", "INVERTED"):
+            recs.append("WARNING: Narrow/inverted window — managed pressure drilling may be required")
+
+        result = {
+            "well": well,
+            "depth_from_m": depth_from,
+            "depth_to_m": depth_to,
+            "n_points": n_points,
+            "min_window_ppg": round(min_window, 2),
+            "window_class": window_class,
+            "pct_safe": pct_safe,
+            "narrowest_point": narrowest,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Mud weight window is {window_class} (min {min_window:.1f} ppg)",
+                "risk_level": "HIGH" if window_class in ("NARROW", "INVERTED") else ("MODERATE" if window_class == "ADEQUATE" else "LOW"),
+                "what_this_means": f"Minimum drilling window {min_window:.2f} ppg, {pct_safe}% of depth has safe margin",
+                "for_non_experts": f"The mud weight window is the safe range between too-light mud (borehole collapse) "
+                    + f"and too-heavy mud (fracturing the rock). "
+                    + f"This well's window is {window_class.lower()} with minimum margin of {min_window:.1f} ppg. "
+                    + ("Careful mud weight control is essential." if window_class in ("NARROW", "INVERTED")
+                       else "Standard drilling should be manageable.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _mud_weight_v2_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [213] Fracture Spacing Statistics  (v3.55.0)
+# ═══════════════════════════════════════════════════════════════════════
+_frac_spacing_v2_cache = {}
+
+@app.post("/api/analysis/fracture-spacing-stats")
+async def analysis_fracture_spacing_stats(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    ck = f"{source}:{well}"
+    if ck in _frac_spacing_v2_cache:
+        return JSONResponse(_frac_spacing_v2_cache[ck])
+
+    def _compute():
+        import time
+        from scipy import stats as sp_stats
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        depths = df_well[DEPTH_COL].dropna().values
+        if len(depths) < 3:
+            return {"error": "Need at least 3 fractures for spacing analysis"}
+
+        depths_sorted = np.sort(depths)
+        spacings = np.diff(depths_sorted)
+        spacings = spacings[spacings > 0]
+
+        if len(spacings) < 2:
+            return {"error": "Insufficient non-zero spacings"}
+
+        mean_sp = float(np.mean(spacings))
+        median_sp = float(np.median(spacings))
+        std_sp = float(np.std(spacings))
+        min_sp = float(np.min(spacings))
+        max_sp = float(np.max(spacings))
+        cv = std_sp / mean_sp if mean_sp > 0 else 0
+
+        # Fit exponential and log-normal
+        try:
+            exp_loc, exp_scale = sp_stats.expon.fit(spacings, floc=0)
+            exp_ks, exp_p = sp_stats.kstest(spacings, 'expon', args=(0, exp_scale))
+        except Exception:
+            exp_scale = mean_sp
+            exp_ks, exp_p = 1.0, 0.0
+
+        try:
+            ln_shape, ln_loc, ln_scale = sp_stats.lognorm.fit(spacings, floc=0)
+            ln_ks, ln_p = sp_stats.kstest(spacings, 'lognorm', args=(ln_shape, 0, ln_scale))
+        except Exception:
+            ln_shape, ln_scale = 1.0, median_sp
+            ln_ks, ln_p = 1.0, 0.0
+
+        best_fit = "exponential" if exp_p > ln_p else "lognormal"
+
+        # Clustering classification
+        if cv > 1.5:
+            clustering_class = "CLUSTERED"
+        elif cv > 0.8:
+            clustering_class = "RANDOM"
+        else:
+            clustering_class = "REGULAR"
+
+        # Percentiles
+        p10 = float(np.percentile(spacings, 10))
+        p50 = float(np.percentile(spacings, 50))
+        p90 = float(np.percentile(spacings, 90))
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            axes[0].hist(spacings, bins=30, density=True, color='steelblue', edgecolor='black', alpha=0.7, label='Data')
+            x_fit = np.linspace(0, max_sp, 100)
+            axes[0].plot(x_fit, sp_stats.expon.pdf(x_fit, 0, exp_scale), 'r-', linewidth=2, label=f'Exponential (p={exp_p:.3f})')
+            try:
+                axes[0].plot(x_fit, sp_stats.lognorm.pdf(x_fit, ln_shape, 0, ln_scale), 'g-', linewidth=2, label=f'Lognormal (p={ln_p:.3f})')
+            except Exception:
+                pass
+            axes[0].set_xlabel("Spacing (m)")
+            axes[0].set_ylabel("Density")
+            axes[0].set_title(f"Fracture Spacing Distribution - Well {well}")
+            axes[0].legend(fontsize=8)
+
+            axes[1].plot(depths_sorted[:-1], spacings[:len(depths_sorted)-1], 'b.', markersize=3, alpha=0.5)
+            axes[1].axhline(mean_sp, color='red', linestyle='--', label=f'Mean={mean_sp:.2f}m')
+            axes[1].set_xlabel("Depth (m)")
+            axes[1].set_ylabel("Spacing (m)")
+            axes[1].set_title("Spacing vs Depth")
+            axes[1].legend()
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Spacing pattern: {clustering_class} (CV={cv:.2f})")
+        recs.append(f"Best distribution fit: {best_fit}")
+        recs.append(f"Mean spacing: {mean_sp:.2f}m (P10={p10:.2f}, P50={p50:.2f}, P90={p90:.2f})")
+
+        result = {
+            "well": well,
+            "n_fractures": len(depths),
+            "n_spacings": len(spacings),
+            "mean_spacing_m": round(mean_sp, 2),
+            "median_spacing_m": round(median_sp, 2),
+            "std_spacing_m": round(std_sp, 2),
+            "min_spacing_m": round(min_sp, 2),
+            "max_spacing_m": round(max_sp, 2),
+            "cv": round(cv, 4),
+            "P10_m": round(p10, 2),
+            "P50_m": round(p50, 2),
+            "P90_m": round(p90, 2),
+            "clustering_class": clustering_class,
+            "best_fit_distribution": best_fit,
+            "exponential_fit": {
+                "scale": round(float(exp_scale), 4),
+                "ks_statistic": round(float(exp_ks), 4),
+                "p_value": round(float(exp_p), 4)
+            },
+            "lognormal_fit": {
+                "shape": round(float(ln_shape), 4),
+                "scale": round(float(ln_scale), 4),
+                "ks_statistic": round(float(ln_ks), 4),
+                "p_value": round(float(ln_p), 4)
+            },
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Spacing is {clustering_class} (mean {mean_sp:.1f}m, CV={cv:.2f})",
+                "risk_level": "HIGH" if clustering_class == "CLUSTERED" else ("MODERATE" if clustering_class == "RANDOM" else "LOW"),
+                "what_this_means": f"Fractures are spaced {mean_sp:.1f}m apart on average with {clustering_class.lower()} pattern",
+                "for_non_experts": f"How fractures are spaced tells us about the rock's breaking pattern. "
+                    + f"Average spacing is {mean_sp:.1f}m. "
+                    + ("Fractures cluster together — some zones are heavily fractured while others are intact." if clustering_class == "CLUSTERED"
+                       else "Random spacing — fractures are distributed without a clear pattern." if clustering_class == "RANDOM"
+                       else "Regular spacing — fractures are evenly distributed, indicating systematic jointing.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _frac_spacing_v2_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [214] In-Situ Stress Ratio Profile  (v3.55.0)
+# ═══════════════════════════════════════════════════════════════════════
+_stress_ratio_v2_cache = {}
+
+@app.post("/api/analysis/stress-ratio-profile")
+async def analysis_stress_ratio_profile(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 30)
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{n_points}"
+    if ck in _stress_ratio_v2_cache:
+        return JSONResponse(_stress_ratio_v2_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        g = 9.81
+        depths = np.linspace(depth_from, depth_to, n_points)
+
+        profile = []
+        for d in depths:
+            Sv = rho * g * d / 1e6
+            Pp = 1020 * g * d / 1e6
+            SHmax = 0.9 * Sv
+            Shmin = 0.6 * Sv
+
+            # K0 = Shmin / Sv (at-rest earth pressure coefficient)
+            K0 = Shmin / Sv if Sv > 0 else 0
+            # A-value = (SHmax - Shmin) / (Sv - Pp) (stress anisotropy parameter)
+            denom = Sv - Pp
+            A_val = (SHmax - Shmin) / denom if denom > 0 else 0
+            # R ratio
+            R = (SHmax - Shmin) / (Sv - Shmin) if (Sv - Shmin) > 0 else 0
+
+            # Regime at this depth
+            if SHmax <= Sv:
+                regime = "NF"
+            elif Shmin >= Sv:
+                regime = "RF"
+            else:
+                regime = "SS"
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Sv_MPa": round(float(Sv), 2),
+                "SHmax_MPa": round(float(SHmax), 2),
+                "Shmin_MPa": round(float(Shmin), 2),
+                "Pp_MPa": round(float(Pp), 2),
+                "K0": round(float(K0), 4),
+                "A_value": round(float(A_val), 4),
+                "R_ratio": round(float(R), 4),
+                "regime": regime
+            })
+
+        k0_values = [p["K0"] for p in profile]
+        a_values = [p["A_value"] for p in profile]
+        mean_k0 = float(np.mean(k0_values))
+        mean_a = float(np.mean(a_values))
+
+        if mean_k0 > 1.2:
+            k0_class = "HIGH"
+        elif mean_k0 > 0.8:
+            k0_class = "MODERATE"
+        else:
+            k0_class = "LOW"
+
+        regimes = [p["regime"] for p in profile]
+        from collections import Counter
+        regime_counts = Counter(regimes)
+        dominant_regime = regime_counts.most_common(1)[0][0]
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(15, 6))
+            ds = [p["depth_m"] for p in profile]
+
+            axes[0].plot(k0_values, ds, 'b-o', markersize=3, label='K0 = Shmin/Sv')
+            axes[0].axvline(1.0, color='red', linestyle='--', alpha=0.5, label='K0=1')
+            axes[0].invert_yaxis()
+            axes[0].set_xlabel("K0")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].set_title("K0 Profile")
+            axes[0].legend(fontsize=8)
+
+            axes[1].plot(a_values, ds, 'r-o', markersize=3)
+            axes[1].invert_yaxis()
+            axes[1].set_xlabel("A-value")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].set_title("Stress Anisotropy (A)")
+
+            r_values = [p["R_ratio"] for p in profile]
+            axes[2].plot(r_values, ds, 'g-o', markersize=3)
+            axes[2].invert_yaxis()
+            axes[2].set_xlabel("R ratio")
+            axes[2].set_ylabel("Depth (m)")
+            axes[2].set_title("Stress Shape (R)")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"K0 class: {k0_class} (mean={mean_k0:.3f})")
+        recs.append(f"Mean A-value: {mean_a:.3f}")
+        recs.append(f"Dominant regime: {dominant_regime} ({regime_counts[dominant_regime]}/{len(profile)} depths)")
+
+        result = {
+            "well": well,
+            "depth_from_m": depth_from,
+            "depth_to_m": depth_to,
+            "n_points": n_points,
+            "mean_K0": round(mean_k0, 4),
+            "mean_A_value": round(mean_a, 4),
+            "K0_class": k0_class,
+            "dominant_regime": dominant_regime,
+            "regime_counts": dict(regime_counts),
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stress ratio K0={mean_k0:.3f} ({k0_class}), regime {dominant_regime}",
+                "risk_level": "HIGH" if k0_class == "HIGH" else ("MODERATE" if k0_class == "MODERATE" else "LOW"),
+                "what_this_means": f"K0={mean_k0:.3f} means horizontal stress is {mean_k0*100:.0f}% of vertical. Dominant: {dominant_regime}",
+                "for_non_experts": f"The stress ratio K0 compares horizontal to vertical stress. "
+                    + f"K0={mean_k0:.2f} means the rock is {'under more horizontal than vertical stress' if mean_k0 > 1 else 'under more vertical than horizontal stress'}. "
+                    + f"The stress regime is {dominant_regime} (Normal/Strike-slip/Reverse) for the analyzed depth range."
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _stress_ratio_v2_cache[ck] = result
     return JSONResponse(result)

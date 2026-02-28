@@ -3175,6 +3175,88 @@
                         </div>
                     </div>
 
+                    <!-- [210] Fracture Intersection Density -->
+                    <div class="card mb-3" id="card-fracture-intersection">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-diagram-3"></i> Fracture Intersection Density</span>
+                            <span class="badge bg-primary">v3.55</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Count and density of fracture intersections per depth bin (connectivity proxy).</p>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-4"><input type="number" class="form-control form-control-sm" id="intersection-binsize" value="50" placeholder="Bin Size (m)"></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="runFracIntersection()">Run Intersection Analysis</button>
+                            <div id="results-fracture-intersection" class="mt-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- [211] Stress Polygon -->
+                    <div class="card mb-3" id="card-stress-polygon">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-pentagon"></i> Stress Polygon</span>
+                            <span class="badge bg-primary">v3.55</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Zoback stress polygon showing allowable stress domain at depth.</p>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-4"><input type="number" class="form-control form-control-sm" id="polygon-depth" value="3000" placeholder="Depth (m)"></div>
+                                <div class="col-md-4"><input type="number" class="form-control form-control-sm" id="polygon-friction" value="0.6" step="0.05" placeholder="Friction"></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="runStressPolygon()">Run Stress Polygon</button>
+                            <div id="results-stress-polygon" class="mt-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- [212] Mud Weight Window -->
+                    <div class="card mb-3" id="card-mud-weight">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-droplet-half"></i> Mud Weight Window</span>
+                            <span class="badge bg-primary">v3.55</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Safe mud weight range between borehole collapse and fracture initiation gradients.</p>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="mudwt-from" value="1000" placeholder="Depth From (m)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="mudwt-to" value="5000" placeholder="Depth To (m)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="mudwt-npoints" value="30" placeholder="Points"></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="runMudWeight()">Run Mud Weight Window</button>
+                            <div id="results-mud-weight" class="mt-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- [213] Fracture Spacing Statistics -->
+                    <div class="card mb-3" id="card-fracture-spacing">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-rulers"></i> Fracture Spacing Statistics</span>
+                            <span class="badge bg-primary">v3.55</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Spacing distribution fitting (exponential/lognormal) and clustering classification.</p>
+                            <button class="btn btn-primary btn-sm" onclick="runFracSpacing()">Run Spacing Analysis</button>
+                            <div id="results-fracture-spacing" class="mt-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- [214] In-Situ Stress Ratio Profile -->
+                    <div class="card mb-3" id="card-stress-ratio">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-percent"></i> In-Situ Stress Ratio Profile</span>
+                            <span class="badge bg-primary">v3.55</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">K0, A-value, and R-ratio profiles with depth for stress regime characterization.</p>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="sratio-from" value="500" placeholder="Depth From (m)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="sratio-to" value="5000" placeholder="Depth To (m)"></div>
+                                <div class="col-md-3"><input type="number" class="form-control form-control-sm" id="sratio-npoints" value="30" placeholder="Points"></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="runStressRatio()">Run Stress Ratio</button>
+                            <div id="results-stress-ratio" class="mt-2"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
