@@ -17043,3 +17043,98 @@ async function runHfContainment() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// [300] Sand Failure Prediction
+async function runSandFailurePrediction() {
+    var results = document.getElementById('sandFailurePredictionResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/sand-failure-prediction', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,UCS_MPa:30})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.sf_class==='CRITICAL'||r.sf_class==='HIGH_RISK'?'danger':r.sf_class==='MODERATE'?'warning':'success')+'"><strong>'+r.sf_class+'</strong> — Mean risk='+r.mean_sand_risk+', Max='+r.max_sand_risk+', '+r.pct_critical+'% critical</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [301] Wellbore Breathing
+async function runWellboreBreathing() {
+    var results = document.getElementById('wellboreBreathingResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/wellbore-breathing', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,depth_m:3000,mud_weight_ppg:11,pump_on_ecd_ppg:12})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.br_class==='SEVERE'?'danger':r.br_class==='MODERATE'?'warning':'success')+'"><strong>'+r.br_class+'</strong> — Breathing index='+r.breathing_index+', Vol loss='+r.volume_loss_bbl+' bbl, return='+r.volume_return_bbl+' bbl</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [302] Surge-Swab Pressure
+async function runSurgeSwabPressure() {
+    var results = document.getElementById('surgeSwabPressureResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/surge-swab-pressure', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,depth_m:3000,mud_weight_ppg:10,pipe_speed_ft_min:90})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.ss_class==='CRITICAL'?'danger':r.ss_class==='TIGHT'?'warning':'success')+'"><strong>'+r.ss_class+'</strong> — Surge=+'+r.surge_ppg+' ppg, Swab=-'+r.swab_ppg+' ppg, Frac margin='+r.frac_margin_ppg+' ppg</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [303] Lost Circulation Risk
+async function runLostCirculationRisk() {
+    var results = document.getElementById('lostCirculationRiskResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/lost-circulation-risk', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,mud_weight_ppg:11})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.lc_class==='SEVERE'||r.lc_class==='HIGH'?'danger':r.lc_class==='MODERATE'?'warning':'success')+'"><strong>'+r.lc_class+'</strong> — Mean risk='+r.mean_lc_risk+', Max='+r.max_lc_risk+', '+r.pct_high_risk+'% high risk</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [304] Hole Cleaning Efficiency
+async function runHoleCleaningEfficiency() {
+    var results = document.getElementById('holeCleaningEfficiencyResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/hole-cleaning-efficiency', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,flow_rate_gpm:500,inclination_deg:0})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.hc_class==='POOR'?'danger':r.hc_class==='MARGINAL'?'warning':'success')+'"><strong>'+r.hc_class+'</strong> — Mean eff='+r.mean_cleaning_eff+', Min='+r.min_cleaning_eff+', AV='+r.ann_velocity_ft_min+' ft/min</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}

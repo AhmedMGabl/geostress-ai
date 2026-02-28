@@ -4604,6 +4604,61 @@
                         </div>
                     </div>
 
+                    <!-- [300] Sand Failure Prediction -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bricks"></i> <strong>[300] Sand Failure Prediction</strong></span>
+                            <button class="btn btn-sm btn-dark" onclick="runSandFailurePrediction()">Run</button>
+                        </div>
+                        <div class="card-body small" id="sandFailurePredictionResult">
+                            <p class="text-muted">Predict sand failure onset using Mohr-Coulomb and TWC criteria.</p>
+                        </div>
+                    </div>
+
+                    <!-- [301] Wellbore Breathing -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info text-dark d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-lungs"></i> <strong>[301] Wellbore Breathing</strong></span>
+                            <button class="btn btn-sm btn-dark" onclick="runWellboreBreathing()">Run</button>
+                        </div>
+                        <div class="card-body small" id="wellboreBreathingResult">
+                            <p class="text-muted">Analyze fracture open/close cycles (ballooning) during drilling.</p>
+                        </div>
+                    </div>
+
+                    <!-- [302] Surge-Swab Pressure -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-down-up"></i> <strong>[302] Surge-Swab Pressure</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runSurgeSwabPressure()">Run</button>
+                        </div>
+                        <div class="card-body small" id="surgeSwabPressureResult">
+                            <p class="text-muted">Calculate surge and swab pressures during tripping operations.</p>
+                        </div>
+                    </div>
+
+                    <!-- [303] Lost Circulation Risk -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-droplet-half"></i> <strong>[303] Lost Circulation Risk</strong></span>
+                            <button class="btn btn-sm btn-dark" onclick="runLostCirculationRisk()">Run</button>
+                        </div>
+                        <div class="card-body small" id="lostCirculationRiskResult">
+                            <p class="text-muted">Assess lost circulation risk from MW window, fracture density, and stress.</p>
+                        </div>
+                    </div>
+
+                    <!-- [304] Hole Cleaning Efficiency -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-tornado"></i> <strong>[304] Hole Cleaning Efficiency</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runHoleCleaningEfficiency()">Run</button>
+                        </div>
+                        <div class="card-body small" id="holeCleaningEfficiencyResult">
+                            <p class="text-muted">Evaluate cuttings transport and annular velocity adequacy.</p>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
