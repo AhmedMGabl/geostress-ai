@@ -4150,6 +4150,83 @@
                         </div>
                     </div>
 
+                    <!-- [270] Kick Tolerance -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger text-white"><i class="bi bi-shield-exclamation"></i> Kick Tolerance</div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><label class="form-label">Depth From (m)</label><input type="number" class="form-control" id="kt-from" value="500"></div>
+                                <div class="col-md-3"><label class="form-label">Depth To (m)</label><input type="number" class="form-control" id="kt-to" value="5000"></div>
+                                <div class="col-md-3"><label class="form-label">MW (ppg)</label><input type="number" class="form-control" id="kt-mw" value="10" step="0.5"></div>
+                                <div class="col-md-3"><label class="form-label">Kick Int. (ppg)</label><input type="number" class="form-control" id="kt-ki" value="0.5" step="0.1"></div>
+                            </div>
+                            <button class="btn btn-danger" onclick="runKickTolerance()">Run Kick Tolerance</button>
+                            <div id="kickToleranceResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [271] Hole Cleaning Index -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info text-white"><i class="bi bi-funnel"></i> Hole Cleaning Index</div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><label class="form-label">From (m)</label><input type="number" class="form-control" id="hc-from" value="500"></div>
+                                <div class="col-md-2"><label class="form-label">To (m)</label><input type="number" class="form-control" id="hc-to" value="5000"></div>
+                                <div class="col-md-2"><label class="form-label">Flow (gpm)</label><input type="number" class="form-control" id="hc-flow" value="400" step="50"></div>
+                                <div class="col-md-2"><label class="form-label">RPM</label><input type="number" class="form-control" id="hc-rpm" value="120" step="10"></div>
+                                <div class="col-md-2"><label class="form-label">Angle (°)</label><input type="number" class="form-control" id="hc-angle" value="0" step="5"></div>
+                                <div class="col-md-2"><label class="form-label">Hole (in)</label><input type="number" class="form-control" id="hc-hole" value="8.5" step="0.5"></div>
+                            </div>
+                            <button class="btn btn-info" onclick="runHoleCleaning()">Run Hole Cleaning</button>
+                            <div id="holeCleaningResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [272] Formation Integrity Test -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning text-dark"><i class="bi bi-speedometer2"></i> Formation Integrity Test (LOT/FIT)</div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><label class="form-label">Test Depth (m)</label><input type="number" class="form-control" id="fit-depth" value="2000"></div>
+                                <div class="col-md-3"><label class="form-label">MW (ppg)</label><input type="number" class="form-control" id="fit-mw" value="10" step="0.5"></div>
+                                <div class="col-md-3"><label class="form-label">Pump Rate (bpm)</label><input type="number" class="form-control" id="fit-rate" value="0.5" step="0.1"></div>
+                                <div class="col-md-3"><label class="form-label">Test Type</label><select class="form-select" id="fit-type"><option value="LOT">LOT</option><option value="FIT">FIT</option></select></div>
+                            </div>
+                            <button class="btn btn-warning" onclick="runFITSim()">Run FIT Simulation</button>
+                            <div id="fitSimResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [273] Stuck Pipe Risk -->
+                    <div class="card mb-4 border-dark">
+                        <div class="card-header bg-dark text-white"><i class="bi bi-lock-fill"></i> Stuck Pipe Risk</div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><label class="form-label">Depth From (m)</label><input type="number" class="form-control" id="spr-from" value="500"></div>
+                                <div class="col-md-3"><label class="form-label">Depth To (m)</label><input type="number" class="form-control" id="spr-to" value="5000"></div>
+                                <div class="col-md-3"><label class="form-label">MW (ppg)</label><input type="number" class="form-control" id="spr-mw" value="10" step="0.5"></div>
+                                <div class="col-md-3"><label class="form-label">Mud Type</label><select class="form-select" id="spr-mud"><option value="WBM">WBM</option><option value="OBM">OBM</option></select></div>
+                            </div>
+                            <button class="btn btn-dark" onclick="runStuckPipe()">Run Stuck Pipe Analysis</button>
+                            <div id="stuckPipeResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [274] Wellbore Stability Window -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success text-white"><i class="bi bi-window-stack"></i> Wellbore Stability Window</div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><label class="form-label">Depth From (m)</label><input type="number" class="form-control" id="sw-from" value="500"></div>
+                                <div class="col-md-3"><label class="form-label">Depth To (m)</label><input type="number" class="form-control" id="sw-to" value="5000"></div>
+                                <div class="col-md-3"><label class="form-label">UCS (MPa)</label><input type="number" class="form-control" id="sw-ucs" value="40" step="5"></div>
+                                <div class="col-md-3"><label class="form-label">Friction Angle (°)</label><input type="number" class="form-control" id="sw-phi" value="30" step="5"></div>
+                            </div>
+                            <button class="btn btn-success" onclick="runStabilityWindow()">Run Stability Window</button>
+                            <div id="stabilityWindowResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

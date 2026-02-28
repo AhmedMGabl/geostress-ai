@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.66.0 - Sand Production + Breakout Width + Cement Bond + Swab Surge + Rock Strength)."""
+"""GeoStress AI - FastAPI Web Application (v3.67.0 - Kick Tolerance + Hole Cleaning + FIT Simulation + Stuck Pipe + Stability Window)."""
 
 import os
 import io
@@ -50824,3 +50824,710 @@ async def analysis_rock_strength_profile(request: Request):
         return JSONResponse(result, status_code=404)
     _rock_strength_cache[ck] = _sanitize_for_json(result)
     return JSONResponse(_rock_strength_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [270] Kick Tolerance  (v3.67.0)
+# ═══════════════════════════════════════════════════════════════════════
+_kick_tolerance_cache: dict = {}
+
+@app.post("/api/analysis/kick-tolerance")
+async def analysis_kick_tolerance(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    mud_weight_ppg = body.get("mud_weight_ppg", 10.0)
+    kick_intensity_ppg = body.get("kick_intensity_ppg", 0.5)
+    hole_dia_in = body.get("hole_dia_in", 8.5)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{mud_weight_ppg}_{kick_intensity_ppg}_{hole_dia_in}"
+    if ck in _kick_tolerance_cache:
+        return JSONResponse(_kick_tolerance_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+
+        for d in depths:
+            d_ft = d * 3.28084
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+
+            Pp_ppg = Pp * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+            frac_ppg = Shmin * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+
+            # Kick tolerance = (frac_gradient - MW) * shoe_capacity
+            # At each depth, max kick volume before fracturing shoe
+            frac_margin = frac_ppg - mud_weight_ppg
+            kick_margin = mud_weight_ppg - Pp_ppg
+
+            # Annular capacity (bbl/ft) for open hole
+            ann_cap = (hole_dia_in**2) / 1029.4  # simplified
+
+            # Max kick height (ft) before exceeding frac gradient
+            if kick_intensity_ppg > 0:
+                max_kick_height_ft = frac_margin * 0.052 * d_ft / (kick_intensity_ppg * 0.052 * d_ft / d_ft) if d_ft > 0 else 0
+                max_kick_height_ft = min(max_kick_height_ft, d_ft)
+            else:
+                max_kick_height_ft = d_ft
+
+            # Max kick volume (bbl)
+            kick_vol_bbl = ann_cap * max_kick_height_ft
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_ppg": round(float(Pp_ppg), 2),
+                "frac_ppg": round(float(frac_ppg), 2),
+                "frac_margin_ppg": round(float(frac_margin), 2),
+                "kick_margin_ppg": round(float(kick_margin), 2),
+                "max_kick_height_ft": round(float(max_kick_height_ft), 1),
+                "max_kick_vol_bbl": round(float(kick_vol_bbl), 1),
+            })
+
+        min_vol = min(p["max_kick_vol_bbl"] for p in profile)
+        min_margin = min(p["frac_margin_ppg"] for p in profile)
+
+        if min_vol < 20:
+            kick_class = "CRITICAL"
+        elif min_vol < 50:
+            kick_class = "LOW"
+        elif min_vol < 100:
+            kick_class = "MODERATE"
+        else:
+            kick_class = "HIGH"
+
+        recs = []
+        if kick_class == "CRITICAL":
+            recs.append("Very low kick tolerance — consider increasing MW or setting intermediate casing")
+        elif kick_class == "LOW":
+            recs.append("Low kick tolerance — monitor pit volume closely, ensure BOP readiness")
+        recs.append(f"Min kick volume: {min_vol:.0f} bbl at min frac margin {min_margin:.2f} ppg")
+        recs.append(f"Kick intensity: {kick_intensity_ppg} ppg, MW: {mud_weight_ppg} ppg")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 7))
+            ds = [p["depth_m"] for p in profile]
+            ax1.plot([p["Pp_ppg"] for p in profile], ds, 'b-', lw=2, label='Pore Pressure')
+            ax1.plot([p["frac_ppg"] for p in profile], ds, 'r-', lw=2, label='Frac Gradient')
+            ax1.axvline(mud_weight_ppg, color='green', ls='-', lw=2, label=f'MW={mud_weight_ppg}')
+            ax1.set_xlabel("EMW (ppg)"); ax1.set_ylabel("Depth (m)")
+            ax1.invert_yaxis(); ax1.set_title("Pressure Profile"); ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+
+            vols = [p["max_kick_vol_bbl"] for p in profile]
+            colors = ['red' if v < 20 else 'orange' if v < 50 else 'green' for v in vols]
+            ax2.barh(ds, vols, height=(depth_to-depth_from)/n_points*0.8, color=colors, alpha=0.7)
+            ax2.set_xlabel("Max Kick Volume (bbl)"); ax2.set_ylabel("Depth (m)")
+            ax2.invert_yaxis(); ax2.set_title(f"Kick Tolerance — {well}"); ax2.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "mud_weight_ppg": mud_weight_ppg,
+            "kick_intensity_ppg": kick_intensity_ppg,
+            "hole_dia_in": hole_dia_in,
+            "min_kick_vol_bbl": round(float(min_vol), 1),
+            "min_frac_margin_ppg": round(float(min_margin), 2),
+            "kick_class": kick_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Kick tolerance: {kick_class} for {well}",
+                "risk_level": "HIGH" if kick_class in ("CRITICAL", "LOW") else "MODERATE" if kick_class == "MODERATE" else "LOW",
+                "what_this_means": f"Min kick volume {min_vol:.0f} bbl before fracturing the formation",
+                "for_non_experts": "Kick tolerance is the maximum influx volume the well can handle before the formation fractures. Low kick tolerance means less margin for well control events."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _kick_tolerance_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_kick_tolerance_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [271] Hole Cleaning Index  (v3.67.0)
+# ═══════════════════════════════════════════════════════════════════════
+_hole_cleaning_cache: dict = {}
+
+@app.post("/api/analysis/hole-cleaning-index")
+async def analysis_hole_cleaning_index(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    mud_weight_ppg = body.get("mud_weight_ppg", 10.0)
+    flow_rate_gpm = body.get("flow_rate_gpm", 400)
+    rpm = body.get("rpm", 120)
+    hole_angle_deg = body.get("hole_angle_deg", 0)
+    hole_dia_in = body.get("hole_dia_in", 8.5)
+    pipe_od_in = body.get("pipe_od_in", 5.0)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{mud_weight_ppg}_{flow_rate_gpm}_{rpm}_{hole_angle_deg}_{hole_dia_in}_{pipe_od_in}"
+    if ck in _hole_cleaning_cache:
+        return JSONResponse(_hole_cleaning_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+
+        # Annular velocity
+        ann_area = 0.25 * np.pi * (hole_dia_in**2 - pipe_od_in**2)  # in²
+        ann_vel_fpm = flow_rate_gpm / (ann_area / 144 * 7.48)  # ft/min (approx)
+
+        for d in depths:
+            # Transport ratio (empirical)
+            # Higher angle = worse cleaning (30-60° is the worst)
+            angle_factor = 1.0
+            if 30 <= hole_angle_deg <= 60:
+                angle_factor = 0.6  # worst zone
+            elif hole_angle_deg > 60:
+                angle_factor = 0.75
+
+            # RPM helps cleaning
+            rpm_factor = min(1.0, rpm / 150)
+
+            # Flow rate is the primary factor
+            flow_factor = min(1.0, ann_vel_fpm / 150)
+
+            # Depth penalty (deeper = harder)
+            depth_factor = max(0.5, 1.0 - (d - depth_from) / (5 * (depth_to - depth_from)))
+
+            # Hole cleaning index (0-100)
+            hci = 100 * flow_factor * rpm_factor * angle_factor * depth_factor
+            hci = max(0, min(100, hci))
+
+            if hci < 40:
+                quality = "POOR"
+            elif hci < 60:
+                quality = "MARGINAL"
+            elif hci < 80:
+                quality = "ADEQUATE"
+            else:
+                quality = "GOOD"
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "hci": round(float(hci), 1),
+                "ann_velocity_fpm": round(float(ann_vel_fpm), 1),
+                "quality": quality,
+            })
+
+        mean_hci = round(np.mean([p["hci"] for p in profile]), 1)
+        min_hci = min(p["hci"] for p in profile)
+        n_poor = sum(1 for p in profile if p["quality"] == "POOR")
+
+        if mean_hci < 40:
+            cleaning_class = "POOR"
+        elif mean_hci < 60:
+            cleaning_class = "MARGINAL"
+        elif mean_hci < 80:
+            cleaning_class = "ADEQUATE"
+        else:
+            cleaning_class = "GOOD"
+
+        recs = []
+        if cleaning_class in ("POOR", "MARGINAL"):
+            recs.append("Increase flow rate or RPM to improve hole cleaning")
+        if 30 <= hole_angle_deg <= 60:
+            recs.append("30-60° inclination is the worst zone for cuttings transport")
+        recs.append(f"Mean HCI: {mean_hci}/100, annular velocity: {ann_vel_fpm:.0f} ft/min")
+        recs.append(f"Flow: {flow_rate_gpm} gpm, RPM: {rpm}, angle: {hole_angle_deg}°")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+            ds = [p["depth_m"] for p in profile]
+            hcis = [p["hci"] for p in profile]
+            colors = ['red' if h < 40 else 'orange' if h < 60 else 'yellowgreen' if h < 80 else 'green' for h in hcis]
+            ax.barh(ds, hcis, height=(depth_to-depth_from)/n_points*0.8, color=colors, alpha=0.7)
+            ax.axvline(40, color='red', ls='--', lw=1, label='Poor threshold')
+            ax.axvline(60, color='orange', ls='--', lw=1, label='Marginal')
+            ax.set_xlabel("Hole Cleaning Index"); ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis(); ax.set_title(f"Hole Cleaning — {well}")
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "mud_weight_ppg": mud_weight_ppg,
+            "flow_rate_gpm": flow_rate_gpm, "rpm": rpm,
+            "hole_angle_deg": hole_angle_deg,
+            "hole_dia_in": hole_dia_in, "pipe_od_in": pipe_od_in,
+            "mean_hci": mean_hci, "min_hci": round(float(min_hci), 1),
+            "n_poor_zones": n_poor,
+            "cleaning_class": cleaning_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Hole cleaning: {cleaning_class} for {well}",
+                "risk_level": "HIGH" if cleaning_class == "POOR" else "MODERATE" if cleaning_class == "MARGINAL" else "LOW",
+                "what_this_means": f"Mean HCI {mean_hci}/100 at {flow_rate_gpm} gpm, {rpm} RPM",
+                "for_non_experts": "Hole cleaning index measures how effectively drill cuttings are removed from the wellbore. Poor cleaning can cause stuck pipe, pack-offs, and other costly drilling problems."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _hole_cleaning_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_hole_cleaning_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [272] Formation Integrity Test Simulation  (v3.67.0)
+# ═══════════════════════════════════════════════════════════════════════
+_fit_sim_cache: dict = {}
+
+@app.post("/api/analysis/formation-integrity-test")
+async def analysis_formation_integrity_test(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    test_depth_m = body.get("test_depth_m", 2000)
+    mud_weight_ppg = body.get("mud_weight_ppg", 10.0)
+    pump_rate_bpm = body.get("pump_rate_bpm", 0.5)
+    test_type = body.get("test_type", "LOT")  # LOT or FIT
+
+    ck = f"{source}_{well}_{test_depth_m}_{mud_weight_ppg}_{pump_rate_bpm}_{test_type}"
+    if ck in _fit_sim_cache:
+        return JSONResponse(_fit_sim_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        d = test_depth_m
+        d_ft = d * 3.28084
+        Sv = 0.025 * d
+        Pp = 0.0098 * d
+        Shmin = 0.6 * Sv + 0.4 * Pp
+        SHmax = 1.2 * Sv - 0.2 * Pp
+        T0 = 3.0  # tensile strength (MPa)
+
+        # LOT: pump until leak-off (Shmin)
+        # FIT: pump to target and hold (below Shmin)
+        leak_off_MPa = Shmin
+        breakdown_MPa = 3 * Shmin - SHmax - Pp + T0  # Hubbert-Willis
+
+        # Convert to ppg
+        leak_off_ppg = leak_off_MPa * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+        breakdown_ppg = breakdown_MPa * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+
+        # Simulate pressure-time curve
+        n_steps = 40
+        time_points = []
+        pressure_curve = []
+        volume_curve = []
+
+        for i in range(n_steps):
+            t_min = i * 0.5
+            vol = pump_rate_bpm * t_min * 42  # gallons
+
+            if test_type == "LOT":
+                # Linear increase until leak-off, then plateau/decrease
+                if i < n_steps * 0.6:
+                    p_frac = i / (n_steps * 0.6)
+                    p = mud_weight_ppg + (leak_off_ppg - mud_weight_ppg) * p_frac
+                elif i < n_steps * 0.7:
+                    p = leak_off_ppg  # plateau
+                else:
+                    p = leak_off_ppg - (i - n_steps * 0.7) / (n_steps * 0.3) * 2
+            else:  # FIT
+                target = mud_weight_ppg + (leak_off_ppg - mud_weight_ppg) * 0.8
+                if i < n_steps * 0.5:
+                    p = mud_weight_ppg + (target - mud_weight_ppg) * (i / (n_steps * 0.5))
+                elif i < n_steps * 0.8:
+                    p = target  # hold
+                else:
+                    p = target - (i - n_steps * 0.8) / (n_steps * 0.2) * 1.5
+
+            time_points.append(round(t_min, 2))
+            pressure_curve.append(round(float(p), 3))
+            volume_curve.append(round(float(vol), 1))
+
+        max_test_pressure = max(pressure_curve)
+        emw_at_max = max_test_pressure
+
+        if emw_at_max >= breakdown_ppg:
+            fit_class = "BREAKDOWN"
+        elif emw_at_max >= leak_off_ppg:
+            fit_class = "LEAK_OFF"
+        elif emw_at_max >= leak_off_ppg * 0.9:
+            fit_class = "NEAR_LIMIT"
+        else:
+            fit_class = "SAFE"
+
+        recs = []
+        recs.append(f"Leak-off EMW: {leak_off_ppg:.2f} ppg ({leak_off_MPa:.1f} MPa)")
+        recs.append(f"Breakdown EMW: {breakdown_ppg:.2f} ppg ({breakdown_MPa:.1f} MPa)")
+        if fit_class == "BREAKDOWN":
+            recs.append("Test exceeded breakdown pressure — formation fractured")
+        elif fit_class == "LEAK_OFF":
+            recs.append("Leak-off detected — use this as max MW for next section")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+            ax.plot(time_points, pressure_curve, 'b-', lw=2, label='Test Pressure')
+            ax.axhline(leak_off_ppg, color='red', ls='--', lw=1.5, label=f'Leak-off={leak_off_ppg:.1f} ppg')
+            ax.axhline(breakdown_ppg, color='darkred', ls=':', lw=1.5, label=f'Breakdown={breakdown_ppg:.1f} ppg')
+            ax.axhline(mud_weight_ppg, color='green', ls='-', lw=1, label=f'MW={mud_weight_ppg} ppg')
+            ax.set_xlabel("Time (min)"); ax.set_ylabel("Pressure (ppg EMW)")
+            ax.set_title(f"{test_type} Simulation — {well} at {test_depth_m}m")
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "test_depth_m": test_depth_m,
+            "mud_weight_ppg": mud_weight_ppg,
+            "pump_rate_bpm": pump_rate_bpm,
+            "test_type": test_type,
+            "leak_off_ppg": round(float(leak_off_ppg), 2),
+            "leak_off_MPa": round(float(leak_off_MPa), 2),
+            "breakdown_ppg": round(float(breakdown_ppg), 2),
+            "breakdown_MPa": round(float(breakdown_MPa), 2),
+            "max_test_pressure_ppg": round(float(max_test_pressure), 2),
+            "fit_class": fit_class,
+            "pressure_curve": [{"time_min": t, "pressure_ppg": p, "volume_gal": v} for t, p, v in zip(time_points, pressure_curve, volume_curve)],
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"{test_type} result: {fit_class} at {test_depth_m}m for {well}",
+                "risk_level": "HIGH" if fit_class == "BREAKDOWN" else "MODERATE" if fit_class in ("LEAK_OFF", "NEAR_LIMIT") else "LOW",
+                "what_this_means": f"Leak-off at {leak_off_ppg:.1f} ppg, breakdown at {breakdown_ppg:.1f} ppg",
+                "for_non_experts": f"A {test_type} tests how much pressure the formation can handle before it starts to fracture. This determines the maximum mud weight for the next drilling section."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _fit_sim_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_fit_sim_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [273] Stuck Pipe Risk  (v3.67.0)
+# ═══════════════════════════════════════════════════════════════════════
+_stuck_pipe_cache: dict = {}
+
+@app.post("/api/analysis/stuck-pipe-risk")
+async def analysis_stuck_pipe_risk(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    mud_weight_ppg = body.get("mud_weight_ppg", 10.0)
+    mud_type = body.get("mud_type", "WBM")  # WBM or OBM
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{mud_weight_ppg}_{mud_type}"
+    if ck in _stuck_pipe_cache:
+        return JSONResponse(_stuck_pipe_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        n_high_risk = 0
+
+        for d in depths:
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+            SHmax = 1.2 * Sv - 0.2 * Pp
+
+            d_ft = d * 3.28084
+            Pp_ppg = Pp * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+            frac_ppg = Shmin * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+
+            # Risk factors (0-25 each, total 0-100)
+            # 1. Differential sticking risk (overbalance)
+            overbalance = mud_weight_ppg - Pp_ppg
+            diff_risk = min(25, max(0, overbalance * 8))
+
+            # 2. Wellbore instability risk
+            sigma_theta = 3 * SHmax - Shmin - Pp
+            UCS_est = 30 + 0.01 * d  # rough estimate
+            instab_risk = min(25, max(0, (sigma_theta / UCS_est - 0.5) * 25))
+
+            # 3. Keyseating / geometry risk (increases with depth)
+            geom_risk = min(25, d / 200)
+
+            # 4. Mud type penalty (WBM > OBM for stuck pipe)
+            mud_risk = 15 if mud_type == "WBM" else 5
+
+            total_risk = diff_risk + instab_risk + geom_risk + mud_risk
+            total_risk = min(100, max(0, total_risk))
+
+            if total_risk > 70:
+                risk_level = "HIGH"
+                n_high_risk += 1
+            elif total_risk > 40:
+                risk_level = "MODERATE"
+            else:
+                risk_level = "LOW"
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "total_risk": round(float(total_risk), 1),
+                "diff_stick_risk": round(float(diff_risk), 1),
+                "instability_risk": round(float(instab_risk), 1),
+                "geometry_risk": round(float(geom_risk), 1),
+                "mud_risk": round(float(mud_risk), 1),
+                "risk_level": risk_level,
+            })
+
+        mean_risk = round(np.mean([p["total_risk"] for p in profile]), 1)
+        max_risk = max(p["total_risk"] for p in profile)
+        pct_high = round(100 * n_high_risk / len(profile), 1)
+
+        if max_risk > 70:
+            stuck_class = "HIGH_RISK"
+        elif max_risk > 50:
+            stuck_class = "MODERATE_RISK"
+        elif max_risk > 30:
+            stuck_class = "LOW_RISK"
+        else:
+            stuck_class = "MINIMAL"
+
+        recs = []
+        if stuck_class == "HIGH_RISK":
+            recs.append("High stuck pipe risk — consider OBM, reduce overbalance, or use lubricity additives")
+        # Find dominant risk factor
+        dom = max(["diff_stick", "instability", "geometry"], key=lambda x: np.mean([p[f"{x}_risk"] for p in profile]))
+        recs.append(f"Dominant risk factor: {dom.replace('_', ' ')}")
+        recs.append(f"Mean risk: {mean_risk}/100, {pct_high}% high-risk zones")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 7))
+            ds = [p["depth_m"] for p in profile]
+
+            # Stacked risk components
+            ax1.barh(ds, [p["diff_stick_risk"] for p in profile], height=(depth_to-depth_from)/n_points*0.8, color='red', alpha=0.7, label='Diff. Sticking')
+            ax1.barh(ds, [p["instability_risk"] for p in profile], height=(depth_to-depth_from)/n_points*0.8, left=[p["diff_stick_risk"] for p in profile], color='orange', alpha=0.7, label='Instability')
+            ax1.barh(ds, [p["geometry_risk"] for p in profile], height=(depth_to-depth_from)/n_points*0.8, left=[p["diff_stick_risk"]+p["instability_risk"] for p in profile], color='blue', alpha=0.7, label='Geometry')
+            ax1.set_xlabel("Risk Score"); ax1.set_ylabel("Depth (m)")
+            ax1.invert_yaxis(); ax1.set_title("Stuck Pipe Risk Breakdown")
+            ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+
+            total_risks = [p["total_risk"] for p in profile]
+            colors = ['red' if r > 70 else 'orange' if r > 40 else 'green' for r in total_risks]
+            ax2.barh(ds, total_risks, height=(depth_to-depth_from)/n_points*0.8, color=colors, alpha=0.7)
+            ax2.axvline(70, color='red', ls='--', lw=1, label='High threshold')
+            ax2.set_xlabel("Total Risk Score"); ax2.set_ylabel("Depth (m)")
+            ax2.invert_yaxis(); ax2.set_title(f"Total Risk — {well}")
+            ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "mud_weight_ppg": mud_weight_ppg, "mud_type": mud_type,
+            "mean_risk": mean_risk, "max_risk": round(float(max_risk), 1),
+            "pct_high_risk": pct_high,
+            "stuck_class": stuck_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stuck pipe risk: {stuck_class} for {well}",
+                "risk_level": "HIGH" if stuck_class == "HIGH_RISK" else "MODERATE" if stuck_class == "MODERATE_RISK" else "LOW",
+                "what_this_means": f"Mean risk {mean_risk}/100, {pct_high}% high-risk zones with {mud_type} mud",
+                "for_non_experts": "Stuck pipe is when the drill string becomes immobilized. It can cost millions in lost time. This analysis evaluates multiple risk factors including pressure differential, wellbore stability, and well geometry."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _stuck_pipe_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_stuck_pipe_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [274] Wellbore Stability Window  (v3.67.0)
+# ═══════════════════════════════════════════════════════════════════════
+_stability_window_cache: dict = {}
+
+@app.post("/api/analysis/wellbore-stability-window")
+async def analysis_wellbore_stability_window(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    UCS_MPa = body.get("UCS_MPa", 40)
+    friction_angle_deg = body.get("friction_angle_deg", 30)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{UCS_MPa}_{friction_angle_deg}"
+    if ck in _stability_window_cache:
+        return JSONResponse(_stability_window_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        phi = np.radians(friction_angle_deg)
+        q_mc = (1 + np.sin(phi)) / (1 - np.sin(phi))
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+
+        for d in depths:
+            d_ft = d * 3.28084
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+            SHmax = 1.2 * Sv - 0.2 * Pp
+
+            # Collapse MW: min MW to prevent shear failure
+            sigma_theta_max = 3 * SHmax - Shmin  # at Pw=0
+            # Mohr-Coulomb: sigma_theta - Pw >= C0 + q*(Pw - Pp)
+            # => Pw_collapse = (sigma_theta_max - C0 + q*Pp) / (1 + q)
+            C0 = UCS_MPa
+            Pw_collapse = (sigma_theta_max - C0 + q_mc * Pp) / (1 + q_mc)
+            collapse_ppg = Pw_collapse * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+
+            # Breakout MW (more conservative)
+            breakout_ppg = collapse_ppg + 0.3
+
+            # Frac MW: max MW before fracturing
+            frac_ppg = Shmin * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+
+            # Pore pressure
+            Pp_ppg = Pp * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+
+            # Stability window
+            window_ppg = frac_ppg - max(collapse_ppg, Pp_ppg)
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_ppg": round(float(Pp_ppg), 2),
+                "collapse_ppg": round(float(collapse_ppg), 2),
+                "breakout_ppg": round(float(breakout_ppg), 2),
+                "frac_ppg": round(float(frac_ppg), 2),
+                "Sv_ppg": round(float(Sv * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0), 2),
+                "window_ppg": round(float(window_ppg), 2),
+            })
+
+        min_window = min(p["window_ppg"] for p in profile)
+        mean_window = round(np.mean([p["window_ppg"] for p in profile]), 2)
+        optimal_mw = round(np.mean([(p["collapse_ppg"] + p["frac_ppg"]) / 2 for p in profile]), 2)
+
+        if min_window < 0:
+            window_class = "NO_WINDOW"
+        elif min_window < 0.5:
+            window_class = "VERY_NARROW"
+        elif min_window < 1.5:
+            window_class = "NARROW"
+        elif min_window < 3.0:
+            window_class = "ADEQUATE"
+        else:
+            window_class = "WIDE"
+
+        recs = []
+        if window_class == "NO_WINDOW":
+            recs.append("NO SAFE MW EXISTS — formation cannot be drilled conventionally, consider managed pressure drilling")
+        elif window_class == "VERY_NARROW":
+            recs.append("Very narrow window — tight MW control required, consider MPD")
+        recs.append(f"Optimal MW: ~{optimal_mw} ppg (midpoint of stability window)")
+        recs.append(f"Min window: {min_window:.2f} ppg, mean window: {mean_window:.2f} ppg")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+            ds = [p["depth_m"] for p in profile]
+            ax.plot([p["Pp_ppg"] for p in profile], ds, 'b-', lw=2, label='Pore Pressure')
+            ax.plot([p["collapse_ppg"] for p in profile], ds, 'r-', lw=2, label='Collapse MW')
+            ax.plot([p["breakout_ppg"] for p in profile], ds, 'r--', lw=1, label='Breakout MW')
+            ax.plot([p["frac_ppg"] for p in profile], ds, 'm-', lw=2, label='Frac Gradient')
+            ax.plot([p["Sv_ppg"] for p in profile], ds, 'k--', lw=1, label='Overburden')
+            # Shade the safe window
+            safe_low = [max(p["collapse_ppg"], p["Pp_ppg"]) for p in profile]
+            safe_high = [p["frac_ppg"] for p in profile]
+            ax.fill_betweenx(ds, safe_low, safe_high, alpha=0.15, color='green', label='Safe Window')
+            ax.axvline(optimal_mw, color='green', ls='-', lw=2, label=f'Optimal MW={optimal_mw}')
+            ax.set_xlabel("Equivalent MW (ppg)"); ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis(); ax.set_title(f"Wellbore Stability Window — {well}")
+            ax.legend(fontsize=7, loc='upper right'); ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "UCS_MPa": UCS_MPa, "friction_angle_deg": friction_angle_deg,
+            "min_window_ppg": round(float(min_window), 2),
+            "mean_window_ppg": mean_window,
+            "optimal_mw_ppg": optimal_mw,
+            "window_class": window_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stability window: {window_class} for {well}",
+                "risk_level": "HIGH" if window_class in ("NO_WINDOW", "VERY_NARROW") else "MODERATE" if window_class == "NARROW" else "LOW",
+                "what_this_means": f"Min window {min_window:.1f} ppg, optimal MW ~{optimal_mw} ppg",
+                "for_non_experts": "The stability window is the safe range of mud weights between collapse (too light) and fracture (too heavy). A narrow window makes drilling more challenging and expensive."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _stability_window_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_stability_window_cache[ck])

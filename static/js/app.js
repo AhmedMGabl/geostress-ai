@@ -16458,3 +16458,105 @@ async function runRockStrength() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ─── [270] Kick Tolerance ──────────────────────────────────────
+async function runKickTolerance() {
+    var results = document.getElementById('kickToleranceResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('kt-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('kt-to').value) || 5000;
+        var mw = parseFloat(document.getElementById('kt-mw').value) || 10;
+        var ki = parseFloat(document.getElementById('kt-ki').value) || 0.5;
+        var resp = await fetch('/api/analysis/kick-tolerance', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:30,mud_weight_ppg:mw,kick_intensity_ppg:ki})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.kick_class==='CRITICAL'||r.kick_class==='LOW'?'danger':r.kick_class==='MODERATE'?'warning':'success')+'"><strong>'+r.kick_class+'</strong> — Min kick vol '+r.min_kick_vol_bbl+' bbl</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ─── [271] Hole Cleaning Index ──────────────────────────────────────
+async function runHoleCleaning() {
+    var results = document.getElementById('holeCleaningResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('hc-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('hc-to').value) || 5000;
+        var flow = parseFloat(document.getElementById('hc-flow').value) || 400;
+        var rpm = parseFloat(document.getElementById('hc-rpm').value) || 120;
+        var angle = parseFloat(document.getElementById('hc-angle').value) || 0;
+        var hole = parseFloat(document.getElementById('hc-hole').value) || 8.5;
+        var resp = await fetch('/api/analysis/hole-cleaning-index', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:30,flow_rate_gpm:flow,rpm:rpm,hole_angle_deg:angle,hole_dia_in:hole})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.cleaning_class==='POOR'?'danger':r.cleaning_class==='MARGINAL'?'warning':'success')+'"><strong>'+r.cleaning_class+'</strong> — Mean HCI '+r.mean_hci+'/100</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ─── [272] Formation Integrity Test ──────────────────────────────────────
+async function runFITSim() {
+    var results = document.getElementById('fitSimResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth = parseFloat(document.getElementById('fit-depth').value) || 2000;
+        var mw = parseFloat(document.getElementById('fit-mw').value) || 10;
+        var rate = parseFloat(document.getElementById('fit-rate').value) || 0.5;
+        var type = document.getElementById('fit-type').value || 'LOT';
+        var resp = await fetch('/api/analysis/formation-integrity-test', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,test_depth_m:depth,mud_weight_ppg:mw,pump_rate_bpm:rate,test_type:type})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.fit_class==='BREAKDOWN'?'danger':r.fit_class==='LEAK_OFF'?'warning':'success')+'"><strong>'+r.fit_class+'</strong> — LOT='+r.leak_off_ppg+' ppg, Breakdown='+r.breakdown_ppg+' ppg</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ─── [273] Stuck Pipe Risk ──────────────────────────────────────
+async function runStuckPipe() {
+    var results = document.getElementById('stuckPipeResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('spr-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('spr-to').value) || 5000;
+        var mw = parseFloat(document.getElementById('spr-mw').value) || 10;
+        var mud = document.getElementById('spr-mud').value || 'WBM';
+        var resp = await fetch('/api/analysis/stuck-pipe-risk', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:30,mud_weight_ppg:mw,mud_type:mud})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.stuck_class==='HIGH_RISK'?'danger':r.stuck_class==='MODERATE_RISK'?'warning':'success')+'"><strong>'+r.stuck_class+'</strong> — Mean risk '+r.mean_risk+'/100, '+r.pct_high_risk+'% high-risk</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ─── [274] Wellbore Stability Window ──────────────────────────────────────
+async function runStabilityWindow() {
+    var results = document.getElementById('stabilityWindowResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('sw-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('sw-to').value) || 5000;
+        var ucs = parseFloat(document.getElementById('sw-ucs').value) || 40;
+        var phi = parseFloat(document.getElementById('sw-phi').value) || 30;
+        var resp = await fetch('/api/analysis/wellbore-stability-window', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:30,UCS_MPa:ucs,friction_angle_deg:phi})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.window_class==='NO_WINDOW'||r.window_class==='VERY_NARROW'?'danger':r.window_class==='NARROW'?'warning':'success')+'"><strong>'+r.window_class+'</strong> — Min window '+r.min_window_ppg+' ppg, optimal MW '+r.optimal_mw_ppg+' ppg</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
