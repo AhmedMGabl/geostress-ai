@@ -15127,3 +15127,137 @@ async function runPpPrediction() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ══════════════════════════════════════════════════════
+// [220] Fracture Porosity Estimate
+// ══════════════════════════════════════════════════════
+async function runFracPorosityEst() {
+    var results = document.getElementById('fracPorosityEstResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var aperture = parseFloat(document.getElementById('fporosity-aperture').value) || 0.5;
+        var binSize = parseFloat(document.getElementById('fporosity-binsize').value) || 50;
+        var resp = await fetch('/api/analysis/fracture-porosity-estimate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, aperture_mm:aperture, bin_size_m:binSize})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.porosity_class+'</strong> — Mean porosity: '+(r.mean_porosity_pct||0).toFixed(4)+'%, Max: '+(r.max_porosity_pct||0).toFixed(4)+'%</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-4"><div class="card text-center p-2"><h6>Mean Perm</h6><h4>'+(r.mean_permeability_mD||0).toFixed(2)+' mD</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Max Perm</h6><h4>'+(r.max_permeability_mD||0).toFixed(2)+' mD</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Bins</h6><h4>'+(r.n_bins||0)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [221] Differential Stress Profile
+// ══════════════════════════════════════════════════════
+async function runDiffStress() {
+    var results = document.getElementById('diffStressResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depFrom = parseFloat(document.getElementById('diffstr-from').value) || 500;
+        var depTo = parseFloat(document.getElementById('diffstr-to').value) || 5000;
+        var regime = document.getElementById('diffstr-regime').value || 'NF';
+        var resp = await fetch('/api/analysis/differential-stress', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, depth_from:depFrom, depth_to:depTo, n_points:30, regime:regime})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.stress_class+'</strong> — Max differential: '+(r.max_differential_MPa||0).toFixed(1)+' MPa</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-4"><div class="card text-center p-2"><h6>Mean Diff</h6><h4>'+(r.mean_differential_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Gradient</h6><h4>'+(r.gradient_MPa_per_km||0).toFixed(2)+' MPa/km</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Points</h6><h4>'+(r.n_points||0)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [222] Fault Seal Analysis
+// ══════════════════════════════════════════════════════
+async function runFaultSeal() {
+    var results = document.getElementById('faultSealResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var clay = parseFloat(document.getElementById('fseal-clay').value) || 0.2;
+        var throwM = parseFloat(document.getElementById('fseal-throw').value) || 50;
+        var resp = await fetch('/api/analysis/fault-seal-analysis', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, clay_fraction:clay, throw_m:throwM})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.seal_class+'</strong> — Mean SGR: '+(r.mean_SGR_pct||0).toFixed(1)+'%, Min SGR: '+(r.min_SGR_pct||0).toFixed(1)+'%</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-4"><div class="card text-center p-2"><h6>Max Seal</h6><h4>'+(r.max_seal_capacity_m||0).toFixed(1)+' m</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Zones</h6><h4>'+(r.n_zones||0)+'</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Fractures</h6><h4>'+(r.n_fractures||0)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [223] Connectivity Index
+// ══════════════════════════════════════════════════════
+async function runConnectivityIdx() {
+    var results = document.getElementById('connectivityIdxResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var binSize = parseFloat(document.getElementById('cidx-binsize').value) || 50;
+        var dipThresh = parseFloat(document.getElementById('cidx-dipthresh').value) || 30;
+        var resp = await fetch('/api/analysis/connectivity-index', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, bin_size_m:binSize, dip_threshold:dipThresh})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.connectivity_class+'</strong> — Max CI: '+(r.max_connectivity_index||0).toFixed(3)+'</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-4"><div class="card text-center p-2"><h6>Mean CI</h6><h4>'+(r.mean_connectivity_index||0).toFixed(3)+'</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Peak Depth</h6><h4>'+(r.max_ci_depth_m||0)+' m</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Above Perc.</h6><h4>'+(r.pct_above_percolation||0).toFixed(0)+'%</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ══════════════════════════════════════════════════════
+// [224] Breakout Angular Width
+// ══════════════════════════════════════════════════════
+async function runBreakoutAngular() {
+    var results = document.getElementById('breakoutAngularResult');
+    results.innerHTML = '<div class="spinner-border text-info"></div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depFrom = parseFloat(document.getElementById('boang-from').value) || 500;
+        var depTo = parseFloat(document.getElementById('boang-to').value) || 5000;
+        var ucs = parseFloat(document.getElementById('boang-ucs').value) || 80;
+        var regime = document.getElementById('boang-regime').value || 'NF';
+        var resp = await fetch('/api/analysis/breakout-angular', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source:'demo', well:well, depth_from:depFrom, depth_to:depTo, n_points:30, UCS_MPa:ucs, regime:regime})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.risk_class==='CRITICAL'?'danger':r.risk_class==='HIGH'?'warning':'info')+'"><strong>'+r.risk_class+'</strong> — Max breakout: '+(r.max_breakout_width_deg||0).toFixed(1)+'°</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-secondary"><strong>'+r.stakeholder_brief.headline+'</strong><br><small>'+r.stakeholder_brief.for_non_experts+'</small></div>';
+        html += '<div class="row"><div class="col-md-3"><div class="card text-center p-2"><h6>Mean Width</h6><h4>'+(r.mean_breakout_width_deg||0).toFixed(1)+'°</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>First BO</h6><h4>'+(r.first_breakout_depth_m||'N/A')+' m</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>% Affected</h6><h4>'+(r.pct_with_breakout||0).toFixed(0)+'%</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>UCS</h6><h4>'+(r.UCS_MPa||0)+' MPa</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
