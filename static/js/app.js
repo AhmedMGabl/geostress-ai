@@ -15525,3 +15525,141 @@ async function runFormationIntegrity() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// [235] Horizon Stress
+// ═══════════════════════════════════════════════════════════════
+async function runHorizonStress() {
+    var results = document.getElementById('horizonStressResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depthFrom = parseFloat(document.getElementById('hs-from').value) || 500;
+        var depthTo = parseFloat(document.getElementById('hs-to').value) || 5000;
+        var nPts = parseInt(document.getElementById('hs-npts').value) || 25;
+        var regime = document.getElementById('hs-regime').value || 'normal';
+        var resp = await fetch('/api/analysis/horizon-stress', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depthFrom,depth_to:depthTo,n_points:nPts,regime:regime})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.horizon_class+'</strong> — Max ratio: '+(r.max_stress_ratio||0).toFixed(3)+', Mean Sv: '+(r.mean_Sv_MPa||0).toFixed(1)+' MPa</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Max Ratio</h6><h4>'+(r.max_stress_ratio||0).toFixed(3)+'</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Min Eff Shmin</h6><h4>'+(r.min_eff_Shmin_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Mean Sv</h6><h4>'+(r.mean_Sv_MPa||0).toFixed(1)+' MPa</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [236] Fracture Swarm Analysis
+// ═══════════════════════════════════════════════════════════════
+async function runFractureSwarm() {
+    var results = document.getElementById('fractureSwarmResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var windowM = parseFloat(document.getElementById('fsw-window').value) || 10;
+        var minCount = parseInt(document.getElementById('fsw-mincount').value) || 3;
+        var resp = await fetch('/api/analysis/fracture-swarm-analysis', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,window_m:windowM,min_count:minCount})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.swarm_class+'</strong> — '+r.n_swarms+' swarms, '+(r.pct_in_swarms||0).toFixed(1)+'% clustered</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Swarms</h6><h4>'+r.n_swarms+'</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Max Intensity</h6><h4>'+(r.max_intensity_per_m||0).toFixed(3)+'/m</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>In Swarms</h6><h4>'+(r.pct_in_swarms||0).toFixed(1)+'%</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [237] Effective Permeability
+// ═══════════════════════════════════════════════════════════════
+async function runEffPerm() {
+    var results = document.getElementById('effPermResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var aperture = parseFloat(document.getElementById('ep-aperture').value) || 0.1;
+        var matrix = parseFloat(document.getElementById('ep-matrix').value) || 0.01;
+        var resp = await fetch('/api/analysis/effective-permeability', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,aperture_mm:aperture,matrix_perm_mD:matrix})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.perm_class+'</strong> — k_eff: '+(r.k_eff_mD||0).toFixed(3)+' mD, Enhancement: '+(r.enhancement_factor||0).toFixed(1)+'x</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>k_eff</h6><h4>'+(r.k_eff_mD||0).toFixed(3)+' mD</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>k_connected</h6><h4>'+(r.k_connected_mD||0).toFixed(3)+' mD</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Enhancement</h6><h4>'+(r.enhancement_factor||0).toFixed(1)+'x</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Connectivity</h6><h4>'+(r.connectivity_fraction||0).toFixed(3)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [238] Wellbore Trajectory
+// ═══════════════════════════════════════════════════════════════
+async function runWellboreTraj() {
+    var results = document.getElementById('wellboreTrajResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var dev = parseFloat(document.getElementById('wt-dev').value) || 0;
+        var az = parseFloat(document.getElementById('wt-az').value) || 0;
+        var depthFrom = parseFloat(document.getElementById('wt-from').value) || 500;
+        var depthTo = parseFloat(document.getElementById('wt-to').value) || 5000;
+        var resp = await fetch('/api/analysis/wellbore-trajectory', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,deviation_deg:dev,azimuth_well_deg:az,depth_from:depthFrom,depth_to:depthTo})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.traj_class+'</strong> — Optimal azimuth: '+(r.optimal_azimuth_deg||0).toFixed(0)+'°, SHmax est: '+(r.SHmax_est_deg||0).toFixed(1)+'°</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Collapse Margin</h6><h4>'+(r.min_collapse_margin_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Frac Margin</h6><h4>'+(r.min_frac_margin_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Optimal Az</h6><h4>'+(r.optimal_azimuth_deg||0).toFixed(0)+'°</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Worst Az</h6><h4>'+(r.worst_azimuth_deg||0).toFixed(0)+'°</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [239] Stress Anisotropy Ratio
+// ═══════════════════════════════════════════════════════════════
+async function runStressAniso() {
+    var results = document.getElementById('stressAnisoResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depthFrom = parseFloat(document.getElementById('sar-from').value) || 500;
+        var depthTo = parseFloat(document.getElementById('sar-to').value) || 5000;
+        var nPts = parseInt(document.getElementById('sar-npts').value) || 25;
+        var resp = await fetch('/api/analysis/stress-anisotropy-ratio', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depthFrom,depth_to:depthTo,n_points:nPts})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.aniso_class+'</strong> — Max anisotropy: '+(r.max_aniso_ratio||0).toFixed(4)+', Mean diff stress: '+(r.mean_diff_stress_MPa||0).toFixed(1)+' MPa</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Mean Aniso</h6><h4>'+(r.mean_aniso_ratio||0).toFixed(4)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Max Aniso</h6><h4>'+(r.max_aniso_ratio||0).toFixed(4)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Mean Diff</h6><h4>'+(r.mean_diff_stress_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Max Deviatoric</h6><h4>'+(r.max_deviatoric_ratio||0).toFixed(4)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}

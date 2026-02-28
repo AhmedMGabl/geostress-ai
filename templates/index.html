@@ -3588,6 +3588,86 @@
                         </div>
                     </div>
 
+                    <!-- [235] Horizon Stress -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-layers-fill"></i> Horizon Stress [235]</span>
+                            <button class="btn btn-sm btn-info" onclick="runHorizonStress()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="hs-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="hs-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="hs-npts" placeholder="Points" value="25"></div>
+                                <div class="col-3"><select class="form-select form-select-sm" id="hs-regime"><option value="normal">Normal</option><option value="strike_slip">Strike-Slip</option><option value="reverse">Reverse</option></select></div>
+                            </div>
+                            <div id="horizonStressResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [236] Fracture Swarm Analysis -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-collection-fill"></i> Fracture Swarm [236]</span>
+                            <button class="btn btn-sm btn-info" onclick="runFractureSwarm()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="fsw-window" placeholder="Window (m)" value="10"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="fsw-mincount" placeholder="Min Count" value="3"></div>
+                            </div>
+                            <div id="fractureSwarmResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [237] Effective Permeability -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-water"></i> Effective Permeability [237]</span>
+                            <button class="btn btn-sm btn-info" onclick="runEffPerm()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="ep-aperture" placeholder="Aperture (mm)" value="0.1" step="0.01"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="ep-matrix" placeholder="Matrix k (mD)" value="0.01" step="0.001"></div>
+                            </div>
+                            <div id="effPermResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [238] Wellbore Trajectory -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-down-right-circle-fill"></i> Wellbore Trajectory [238]</span>
+                            <button class="btn btn-sm btn-info" onclick="runWellboreTraj()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="wt-dev" placeholder="Deviation (°)" value="0"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="wt-az" placeholder="Well Az (°)" value="0"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="wt-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="wt-to" placeholder="To (m)" value="5000"></div>
+                            </div>
+                            <div id="wellboreTrajResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [239] Stress Anisotropy Ratio -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrows-expand"></i> Stress Anisotropy Ratio [239]</span>
+                            <button class="btn btn-sm btn-info" onclick="runStressAniso()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="sar-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="sar-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="sar-npts" placeholder="Points" value="25"></div>
+                            </div>
+                            <div id="stressAnisoResult"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
