@@ -14545,3 +14545,130 @@ async function runSusceptibilityMap() {
         results.innerHTML = html;
     } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// [200] Fracture Density Log (v3.53.0)
+// ═══════════════════════════════════════════════════════════════
+async function runFracDensityLog() {
+    var results = document.getElementById('fracDensLog-result');
+    results.style.display = ''; results.innerHTML = '<div class="text-center"><div class="spinner-border"></div> Computing density log...</div>';
+    showLoading();
+    try {
+        var resp = await fetch('/api/analysis/fracture-density-log', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source: 'demo', well: document.getElementById('fracDensLog-well').value, bin_size_m: parseFloat(document.getElementById('fracDensLog-bin').value) || 10 }) });
+        var r = await resp.json();
+        if (!resp.ok) { results.innerHTML = '<div class="alert alert-danger">' + (r.error || 'Error') + '</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>P10</strong><br>' + (r.P10_per_m || 0).toFixed(4) + '/m</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Mean</strong><br>' + (r.mean_density_per_m || 0).toFixed(4) + '/m</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Max</strong><br>' + (r.max_density_per_m || 0).toFixed(4) + '/m at ' + (r.max_density_depth_m || 0) + 'm</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Distribution</strong><br><span class="badge bg-' + (r.distribution_class === 'HIGHLY_VARIABLE' ? 'danger' : r.distribution_class === 'VARIABLE' ? 'warning' : 'success') + '">' + (r.distribution_class || '-') + '</span></div></div>';
+        html += '</div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's | ' + (r.n_bins || 0) + ' bins</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [201] Stress Gradient Profile (v3.53.0)
+// ═══════════════════════════════════════════════════════════════
+async function runStressGradient() {
+    var results = document.getElementById('stressGrad-result');
+    results.style.display = ''; results.innerHTML = '<div class="text-center"><div class="spinner-border"></div> Computing stress gradients...</div>';
+    showLoading();
+    try {
+        var resp = await fetch('/api/analysis/stress-gradient', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source: 'demo', well: document.getElementById('stressGrad-well').value, depth_from: parseFloat(document.getElementById('stressGrad-from').value) || 500, depth_to: parseFloat(document.getElementById('stressGrad-to').value) || 5000, n_points: parseInt(document.getElementById('stressGrad-n').value) || 30 }) });
+        var r = await resp.json();
+        if (!resp.ok) { results.innerHTML = '<div class="alert alert-danger">' + (r.error || 'Error') + '</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Sv grad</strong><br>' + (r.Sv_gradient_MPa_per_km || 0) + ' MPa/km</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>SHmax grad</strong><br>' + (r.SHmax_gradient_MPa_per_km || 0) + ' MPa/km</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Shmin grad</strong><br>' + (r.Shmin_gradient_MPa_per_km || 0) + ' MPa/km</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Regime</strong><br>' + (r.stress_regime || '-') + '</div></div>';
+        html += '</div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [202] Coulomb Failure Function (v3.53.0)
+// ═══════════════════════════════════════════════════════════════
+async function runCoulombFailure() {
+    var results = document.getElementById('cff-result');
+    results.style.display = ''; results.innerHTML = '<div class="text-center"><div class="spinner-border"></div> Computing CFF...</div>';
+    showLoading();
+    try {
+        var resp = await fetch('/api/analysis/coulomb-failure', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source: 'demo', well: document.getElementById('cff-well').value, depth: parseFloat(document.getElementById('cff-depth').value) || 3000, friction: parseFloat(document.getElementById('cff-friction').value) || 0.6, cohesion_mpa: parseFloat(document.getElementById('cff-cohesion').value) || 0 }) });
+        var r = await resp.json();
+        if (!resp.ok) { results.innerHTML = '<div class="alert alert-danger">' + (r.error || 'Error') + '</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Failed</strong><br>' + (r.n_failed || 0) + '/' + (r.n_fractures || 0) + ' (' + (r.pct_failed || 0) + '%)</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Class</strong><br><span class="badge bg-' + (r.failure_class === 'EXTENSIVE' ? 'danger' : r.failure_class === 'MODERATE' ? 'warning' : 'success') + '">' + (r.failure_class || '-') + '</span></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Mean CFF</strong><br>' + (r.mean_CFF_MPa || 0).toFixed(3) + ' MPa</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Max CFF</strong><br>' + (r.max_CFF_MPa || 0).toFixed(3) + ' MPa</div></div>';
+        html += '</div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [203] Fracture Porosity (v3.53.0)
+// ═══════════════════════════════════════════════════════════════
+async function runFracPorosity() {
+    var results = document.getElementById('fracPoro-result');
+    results.style.display = ''; results.innerHTML = '<div class="text-center"><div class="spinner-border"></div> Estimating fracture porosity...</div>';
+    showLoading();
+    try {
+        var resp = await fetch('/api/analysis/fracture-porosity', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source: 'demo', well: document.getElementById('fracPoro-well').value, aperture_mm: parseFloat(document.getElementById('fracPoro-aperture').value) || 0.5 }) });
+        var r = await resp.json();
+        if (!resp.ok) { results.innerHTML = '<div class="alert alert-danger">' + (r.error || 'Error') + '</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Porosity</strong><br>' + (r.fracture_porosity_pct || 0).toFixed(4) + '%</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Class</strong><br><span class="badge bg-' + (r.porosity_class === 'HIGH' ? 'danger' : r.porosity_class === 'MODERATE' ? 'warning' : 'success') + '">' + (r.porosity_class || '-') + '</span></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Eq. Perm</strong><br>' + (r.equivalent_permeability_darcy || 0).toFixed(4) + ' darcy</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>P10</strong><br>' + (r.P10_per_m || 0).toFixed(4) + '/m</div></div>';
+        html += '</div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [204] Breakout Azimuth (v3.53.0)
+// ═══════════════════════════════════════════════════════════════
+async function runBreakoutAzimuth() {
+    var results = document.getElementById('breakoutAz-result');
+    results.style.display = ''; results.innerHTML = '<div class="text-center"><div class="spinner-border"></div> Predicting breakout azimuth...</div>';
+    showLoading();
+    try {
+        var resp = await fetch('/api/analysis/breakout-azimuth', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source: 'demo', well: document.getElementById('breakoutAz-well').value, depth: parseFloat(document.getElementById('breakoutAz-depth').value) || 3000 }) });
+        var r = await resp.json();
+        if (!resp.ok) { results.innerHTML = '<div class="alert alert-danger">' + (r.error || 'Error') + '</div>'; return; }
+        var html = '<div class="row mb-3">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>SHmax Az</strong><br>' + (r.SHmax_azimuth_deg || 0).toFixed(1) + '°</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Breakout Az</strong><br>' + (r.breakout_azimuth_deg || 0).toFixed(1) + '°</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>DITF Az</strong><br>' + (r.DITF_azimuth_deg || 0).toFixed(1) + '°</div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><strong>Confidence</strong><br><span class="badge bg-' + (r.confidence === 'LOW' ? 'danger' : r.confidence === 'MODERATE' ? 'warning' : 'success') + '">' + (r.confidence || '-') + '</span></div></div>';
+        html += '</div>';
+        html += '<div class="row mb-3"><div class="col-md-6"><div class="card p-2 text-center"><strong>Max Hoop</strong><br>' + (r.max_hoop_stress_MPa || 0) + ' MPa at ' + (r.max_hoop_azimuth_deg || 0) + '°</div></div>';
+        html += '<div class="col-md-6"><div class="card p-2 text-center"><strong>Min Hoop</strong><br>' + (r.min_hoop_stress_MPa || 0) + ' MPa at ' + (r.min_hoop_azimuth_deg || 0) + '°</div></div></div>';
+        if (r.plot) html += '<img src="' + r.plot + '" class="img-fluid mb-3">';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>' + r.stakeholder_brief.headline + '</strong><br>' + r.stakeholder_brief.for_non_experts + '</div>';
+        if (r.recommendations) html += '<ul class="list-group">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}

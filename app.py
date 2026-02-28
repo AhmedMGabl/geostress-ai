@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.52.0 - Aperture Distribution + Stability Window + Stress Anisotropy + FIT Prediction + Susceptibility Map)."""
+"""GeoStress AI - FastAPI Web Application (v3.53.0 - Fracture Density Log + Stress Gradient + CFF + Fracture Porosity + Breakout Azimuth)."""
 
 import os
 import io
@@ -40817,4 +40817,698 @@ async def analysis_susceptibility_map(request: Request):
         return JSONResponse(result, code)
     result = _sanitize_for_json(result)
     _susceptibility_map_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [200] Fracture Density Log  (v3.53.0)
+# ═══════════════════════════════════════════════════════════════════════
+_frac_density_log_cache = {}
+
+@app.post("/api/analysis/fracture-density-log")
+async def analysis_fracture_density_log(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    bin_size_m = body.get("bin_size_m", 10)
+    ck = f"{source}:{well}:{bin_size_m}"
+    if ck in _frac_density_log_cache:
+        return JSONResponse(_frac_density_log_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        depths = df_well[DEPTH_COL].dropna().values
+        if len(depths) == 0:
+            return {"error": "No depth data available"}
+
+        d_min = float(np.min(depths))
+        d_max = float(np.max(depths))
+        bins = np.arange(d_min, d_max + bin_size_m, bin_size_m)
+        counts, edges = np.histogram(depths, bins=bins)
+        densities = counts / bin_size_m  # fractures per meter
+
+        log_entries = []
+        for i in range(len(counts)):
+            log_entries.append({
+                "depth_from_m": round(float(edges[i]), 1),
+                "depth_to_m": round(float(edges[i+1]), 1),
+                "depth_mid_m": round(float((edges[i] + edges[i+1]) / 2), 1),
+                "count": int(counts[i]),
+                "density_per_m": round(float(densities[i]), 4)
+            })
+
+        mean_density = float(np.mean(densities))
+        max_density = float(np.max(densities))
+        max_density_depth = log_entries[int(np.argmax(densities))]["depth_mid_m"]
+        std_density = float(np.std(densities))
+        cv_density = std_density / mean_density if mean_density > 0 else 0
+
+        # P10 (linear fracture intensity)
+        total_interval = d_max - d_min
+        p10 = len(depths) / total_interval if total_interval > 0 else 0
+
+        if cv_density > 1.0:
+            distribution_class = "HIGHLY_VARIABLE"
+        elif cv_density > 0.5:
+            distribution_class = "VARIABLE"
+        else:
+            distribution_class = "UNIFORM"
+
+        # Plot
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(6, 10))
+            mid_depths = [e["depth_mid_m"] for e in log_entries]
+            dens = [e["density_per_m"] for e in log_entries]
+            ax.barh(mid_depths, dens, height=bin_size_m * 0.9, color='steelblue', edgecolor='black', linewidth=0.3)
+            ax.invert_yaxis()
+            ax.set_xlabel("Fracture Density (per m)")
+            ax.set_ylabel("Depth (m)")
+            ax.set_title(f"Fracture Density Log - Well {well} (bin={bin_size_m}m)")
+            ax.axvline(mean_density, color='red', linestyle='--', label=f'Mean={mean_density:.3f}/m')
+            ax.legend()
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"P10 linear intensity: {p10:.3f} fractures/m over {total_interval:.0f}m interval")
+        recs.append(f"Peak density {max_density:.3f}/m at {max_density_depth}m depth")
+        if distribution_class == "HIGHLY_VARIABLE":
+            recs.append("Highly variable density — possible fracture corridors or swarm zones")
+
+        result = {
+            "well": well,
+            "n_fractures": len(depths),
+            "bin_size_m": bin_size_m,
+            "depth_range_m": [round(d_min, 1), round(d_max, 1)],
+            "n_bins": len(log_entries),
+            "P10_per_m": round(p10, 4),
+            "mean_density_per_m": round(mean_density, 4),
+            "max_density_per_m": round(max_density, 4),
+            "max_density_depth_m": max_density_depth,
+            "std_density_per_m": round(std_density, 4),
+            "cv_density": round(cv_density, 4),
+            "distribution_class": distribution_class,
+            "log": log_entries,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fracture density is {distribution_class} (mean {mean_density:.3f}/m)",
+                "risk_level": "HIGH" if distribution_class == "HIGHLY_VARIABLE" else ("MODERATE" if distribution_class == "VARIABLE" else "LOW"),
+                "what_this_means": f"Average {mean_density:.3f} fractures per meter, peak {max_density:.3f}/m at {max_density_depth}m",
+                "for_non_experts": f"This well has an average of {mean_density:.2f} fractures per meter of rock. "
+                    + f"The densest zone is at {max_density_depth}m depth. "
+                    + ("Fractures are unevenly distributed — some zones are much more fractured than others." if distribution_class != "UNIFORM"
+                       else "Fractures are fairly evenly spread through the well.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _frac_density_log_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [201] Stress Gradient Profile  (v3.53.0)
+# ═══════════════════════════════════════════════════════════════════════
+_stress_gradient_cache = {}
+
+@app.post("/api/analysis/stress-gradient")
+async def analysis_stress_gradient(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 30)
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{n_points}"
+    if ck in _stress_gradient_cache:
+        return JSONResponse(_stress_gradient_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        g = 9.81
+        depths = np.linspace(depth_from, depth_to, n_points)
+
+        profile = []
+        for d in depths:
+            Sv = rho * g * d / 1e6
+            Pp = 1020 * g * d / 1e6
+            SHmax = 0.9 * Sv
+            Shmin = 0.6 * Sv
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Sv_MPa": round(float(Sv), 2),
+                "SHmax_MPa": round(float(SHmax), 2),
+                "Shmin_MPa": round(float(Shmin), 2),
+                "Pp_MPa": round(float(Pp), 2),
+                "Sv_gradient_MPa_per_km": round(float(Sv / d * 1000), 2) if d > 0 else 0,
+                "Pp_gradient_MPa_per_km": round(float(Pp / d * 1000), 2) if d > 0 else 0
+            })
+
+        # Gradients
+        Sv_grad = rho * g / 1e3  # MPa/km
+        Pp_grad = 1020 * g / 1e3
+        SHmax_grad = 0.9 * Sv_grad
+        Shmin_grad = 0.6 * Sv_grad
+
+        # Stress regime at midpoint
+        mid_d = (depth_from + depth_to) / 2
+        mid_Sv = rho * g * mid_d / 1e6
+        mid_SHmax = 0.9 * mid_Sv
+        mid_Shmin = 0.6 * mid_Sv
+        if mid_Sv > mid_SHmax:
+            regime = "NORMAL_FAULT"
+        elif mid_SHmax > mid_Sv > mid_Shmin:
+            regime = "STRIKE_SLIP"
+        else:
+            regime = "REVERSE_FAULT"
+
+        # Plot
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(8, 10))
+            ds = [p["depth_m"] for p in profile]
+            ax.plot([p["Sv_MPa"] for p in profile], ds, 'k-', linewidth=2, label='Sv (overburden)')
+            ax.plot([p["SHmax_MPa"] for p in profile], ds, 'r-', linewidth=2, label='SHmax')
+            ax.plot([p["Shmin_MPa"] for p in profile], ds, 'b-', linewidth=2, label='Shmin')
+            ax.plot([p["Pp_MPa"] for p in profile], ds, 'g--', linewidth=1.5, label='Pp (hydrostatic)')
+            ax.invert_yaxis()
+            ax.set_xlabel("Stress / Pressure (MPa)")
+            ax.set_ylabel("Depth (m)")
+            ax.set_title(f"Stress Gradient Profile - Well {well}")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Overburden gradient: {Sv_grad:.2f} MPa/km")
+        recs.append(f"Pore pressure gradient: {Pp_grad:.2f} MPa/km (hydrostatic)")
+        recs.append(f"Stress regime: {regime} (Sv {'>' if regime == 'NORMAL_FAULT' else '<'} SHmax)")
+
+        result = {
+            "well": well,
+            "depth_from_m": depth_from,
+            "depth_to_m": depth_to,
+            "n_points": n_points,
+            "Sv_gradient_MPa_per_km": round(Sv_grad, 2),
+            "SHmax_gradient_MPa_per_km": round(SHmax_grad, 2),
+            "Shmin_gradient_MPa_per_km": round(Shmin_grad, 2),
+            "Pp_gradient_MPa_per_km": round(Pp_grad, 2),
+            "stress_regime": regime,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stress gradients normal, regime={regime}",
+                "risk_level": "LOW",
+                "what_this_means": f"Overburden gradient {Sv_grad:.1f} MPa/km, pore pressure {Pp_grad:.1f} MPa/km",
+                "for_non_experts": f"Rock stress increases with depth at {Sv_grad:.1f} MPa per kilometer. "
+                    + f"The stress pattern indicates a {regime.replace('_', ' ').lower()} environment. "
+                    + "This is typical and helps plan safe drilling pressures."
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _stress_gradient_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [202] Coulomb Failure Function  (v3.53.0)
+# ═══════════════════════════════════════════════════════════════════════
+_cff_cache = {}
+
+@app.post("/api/analysis/coulomb-failure")
+async def analysis_coulomb_failure(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = body.get("depth", 3000)
+    friction = body.get("friction", 0.6)
+    cohesion_mpa = body.get("cohesion_mpa", 0)
+    ck = f"{source}:{well}:{depth}:{friction}:{cohesion_mpa}"
+    if ck in _cff_cache:
+        return JSONResponse(_cff_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        g = 9.81
+        Sv = rho * g * depth / 1e6
+        Pp = 1020 * g * depth / 1e6
+        SHmax = 0.9 * Sv
+        Shmin = 0.6 * Sv
+        S = np.diag([SHmax, Shmin, Sv])
+
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        dips = df_well[DIP_COL].dropna().values
+        n = min(len(azimuths), len(dips))
+        azimuths = azimuths[:n]
+        dips = dips[:n]
+
+        fractures = []
+        for i in range(n):
+            az_rad = np.radians(azimuths[i])
+            dip_rad = np.radians(dips[i])
+            nx = np.sin(dip_rad) * np.sin(az_rad)
+            ny = np.sin(dip_rad) * np.cos(az_rad)
+            nz = np.cos(dip_rad)
+            n_vec = np.array([nx, ny, nz])
+            traction = S @ n_vec
+            sigma_n = float(np.dot(traction, n_vec))
+            tau = float(np.sqrt(max(0, np.dot(traction, traction) - sigma_n**2)))
+            sigma_n_eff = sigma_n - Pp
+
+            # CFF = tau - mu * sigma_n_eff - cohesion
+            cff = tau - friction * sigma_n_eff - cohesion_mpa
+
+            fractures.append({
+                "index": i,
+                "azimuth_deg": round(float(azimuths[i]), 1),
+                "dip_deg": round(float(dips[i]), 1),
+                "sigma_n_MPa": round(sigma_n, 3),
+                "sigma_n_eff_MPa": round(sigma_n_eff, 3),
+                "tau_MPa": round(tau, 3),
+                "CFF_MPa": round(cff, 3),
+                "failed": cff >= 0
+            })
+
+        n_failed = sum(1 for f in fractures if f["failed"])
+        pct_failed = round(100.0 * n_failed / n, 1) if n > 0 else 0
+        cff_values = [f["CFF_MPa"] for f in fractures]
+        mean_cff = float(np.mean(cff_values)) if cff_values else 0
+        max_cff = float(np.max(cff_values)) if cff_values else 0
+        min_cff = float(np.min(cff_values)) if cff_values else 0
+
+        if pct_failed > 30:
+            failure_class = "EXTENSIVE"
+        elif pct_failed > 10:
+            failure_class = "MODERATE"
+        elif pct_failed > 0:
+            failure_class = "LIMITED"
+        else:
+            failure_class = "STABLE"
+
+        # Top 10 most critical (highest CFF)
+        top_critical = sorted(fractures, key=lambda x: x["CFF_MPa"], reverse=True)[:10]
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            axes[0].hist(cff_values, bins=30, color='steelblue', edgecolor='black', alpha=0.7)
+            axes[0].axvline(0, color='red', linestyle='--', linewidth=2, label='Failure threshold')
+            axes[0].set_xlabel("CFF (MPa)")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title(f"Coulomb Failure Function - Well {well}")
+            axes[0].legend()
+
+            # Mohr diagram
+            sigma_n_vals = [f["sigma_n_eff_MPa"] for f in fractures]
+            tau_vals = [f["tau_MPa"] for f in fractures]
+            colors = ['red' if f["failed"] else 'blue' for f in fractures]
+            axes[1].scatter(sigma_n_vals, tau_vals, c=colors, alpha=0.5, s=10)
+            # Failure line
+            sn_range = np.linspace(0, max(sigma_n_vals) * 1.1, 100) if sigma_n_vals else np.linspace(0, 50, 100)
+            axes[1].plot(sn_range, cohesion_mpa + friction * sn_range, 'r-', linewidth=2, label=f'μ={friction}, c={cohesion_mpa}')
+            axes[1].set_xlabel("σ'n (MPa)")
+            axes[1].set_ylabel("τ (MPa)")
+            axes[1].set_title("Mohr Diagram with Failure Envelope")
+            axes[1].legend()
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"{n_failed}/{n} fractures ({pct_failed}%) exceed Coulomb failure criterion")
+        if failure_class == "EXTENSIVE":
+            recs.append("EXTENSIVE failure — majority of fractures are critically stressed")
+        elif failure_class == "STABLE":
+            recs.append("All fractures are below failure threshold — stable conditions")
+        recs.append(f"CFF range: {min_cff:.2f} to {max_cff:.2f} MPa (mean {mean_cff:.2f})")
+
+        result = {
+            "well": well,
+            "depth_m": depth,
+            "friction": friction,
+            "cohesion_MPa": cohesion_mpa,
+            "Sv_MPa": round(Sv, 2),
+            "SHmax_MPa": round(SHmax, 2),
+            "Shmin_MPa": round(Shmin, 2),
+            "Pp_MPa": round(Pp, 2),
+            "n_fractures": n,
+            "n_failed": n_failed,
+            "pct_failed": pct_failed,
+            "failure_class": failure_class,
+            "mean_CFF_MPa": round(mean_cff, 3),
+            "max_CFF_MPa": round(max_cff, 3),
+            "min_CFF_MPa": round(min_cff, 3),
+            "top_critical": top_critical,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Coulomb failure is {failure_class} ({pct_failed}% failed)",
+                "risk_level": "HIGH" if failure_class == "EXTENSIVE" else ("MODERATE" if failure_class == "MODERATE" else "LOW"),
+                "what_this_means": f"{n_failed} of {n} fractures exceed the failure criterion at μ={friction}",
+                "for_non_experts": f"The Coulomb failure test checks if fractures are likely to slip. "
+                    + f"{pct_failed}% of fractures are at or beyond the failure point. "
+                    + ("This is concerning — many fractures may be actively slipping." if failure_class == "EXTENSIVE"
+                       else "The fracture network is generally stable." if failure_class == "STABLE"
+                       else "Some fractures are close to failure — monitor during operations.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _cff_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [203] Fracture Porosity Estimate  (v3.53.0)
+# ═══════════════════════════════════════════════════════════════════════
+_frac_porosity_cache = {}
+
+@app.post("/api/analysis/fracture-porosity")
+async def analysis_fracture_porosity(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    aperture_mm = body.get("aperture_mm", 0.5)
+    borehole_diameter_m = body.get("borehole_diameter_m", 0.216)
+    ck = f"{source}:{well}:{aperture_mm}:{borehole_diameter_m}"
+    if ck in _frac_porosity_cache:
+        return JSONResponse(_frac_porosity_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        depths = df_well[DEPTH_COL].dropna().values
+        dips = df_well[DIP_COL].dropna().values
+        n = len(depths)
+
+        if n == 0:
+            return {"error": "No fracture data available"}
+
+        d_min = float(np.min(depths))
+        d_max = float(np.max(depths))
+        interval = d_max - d_min
+
+        # True aperture correction for borehole intersection angle
+        # Apparent aperture = true_aperture / sin(dip) for fractures intersecting vertical borehole
+        true_apertures = []
+        for dip in dips:
+            if dip > 5:  # Avoid division by near-zero
+                apparent = aperture_mm / np.sin(np.radians(dip))
+            else:
+                apparent = aperture_mm * 10  # Very flat fractures appear wide
+            true_apertures.append(apparent)
+        true_apertures = np.array(true_apertures)
+
+        # Fracture porosity: sum of apertures / interval length
+        # phi_f = N * mean_aperture / L
+        mean_aperture_m = float(np.mean(true_apertures)) * 1e-3  # mm to m
+        phi_f = n * mean_aperture_m / interval if interval > 0 else 0
+        phi_f_pct = phi_f * 100
+
+        # Permeability from porosity (cubic law): k = phi * a^2 / 12
+        k_frac = phi_f * (mean_aperture_m)**2 / 12  # m^2
+        k_darcy = k_frac / 9.869e-13
+
+        # Depth-binned porosity
+        bin_size = 50  # m
+        bins = np.arange(d_min, d_max + bin_size, bin_size)
+        depth_porosity = []
+        for i in range(len(bins) - 1):
+            mask = (depths >= bins[i]) & (depths < bins[i+1])
+            count_in_bin = int(np.sum(mask))
+            phi_bin = count_in_bin * mean_aperture_m / bin_size if bin_size > 0 else 0
+            depth_porosity.append({
+                "depth_from_m": round(float(bins[i]), 1),
+                "depth_to_m": round(float(bins[i+1]), 1),
+                "n_fractures": count_in_bin,
+                "porosity_pct": round(float(phi_bin * 100), 6)
+            })
+
+        if phi_f_pct > 1.0:
+            porosity_class = "HIGH"
+        elif phi_f_pct > 0.1:
+            porosity_class = "MODERATE"
+        else:
+            porosity_class = "LOW"
+
+        # Plot
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+            dp_depths = [(p["depth_from_m"] + p["depth_to_m"]) / 2 for p in depth_porosity]
+            dp_phi = [p["porosity_pct"] for p in depth_porosity]
+            axes[0].barh(dp_depths, dp_phi, height=bin_size * 0.9, color='teal', edgecolor='black', linewidth=0.3)
+            axes[0].invert_yaxis()
+            axes[0].set_xlabel("Fracture Porosity (%)")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].set_title(f"Fracture Porosity vs Depth - Well {well}")
+
+            axes[1].hist(true_apertures, bins=30, color='orange', edgecolor='black', alpha=0.7)
+            axes[1].set_xlabel("Apparent Aperture (mm)")
+            axes[1].set_ylabel("Count")
+            axes[1].set_title("Aperture Distribution (dip-corrected)")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"Total fracture porosity: {phi_f_pct:.4f}% ({porosity_class})")
+        recs.append(f"Equivalent permeability: {k_darcy:.2f} darcy")
+        if porosity_class == "LOW":
+            recs.append("Low fracture porosity — matrix porosity likely dominates flow")
+
+        result = {
+            "well": well,
+            "n_fractures": n,
+            "aperture_mm": aperture_mm,
+            "borehole_diameter_m": borehole_diameter_m,
+            "depth_range_m": [round(d_min, 1), round(d_max, 1)],
+            "interval_m": round(interval, 1),
+            "mean_apparent_aperture_mm": round(float(np.mean(true_apertures)), 4),
+            "fracture_porosity_pct": round(phi_f_pct, 6),
+            "porosity_class": porosity_class,
+            "equivalent_permeability_darcy": round(k_darcy, 4),
+            "P10_per_m": round(n / interval, 4) if interval > 0 else 0,
+            "depth_porosity": depth_porosity,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fracture porosity is {porosity_class} ({phi_f_pct:.4f}%)",
+                "risk_level": "HIGH" if porosity_class == "HIGH" else ("MODERATE" if porosity_class == "MODERATE" else "LOW"),
+                "what_this_means": f"Total fracture porosity {phi_f_pct:.4f}% from {n} fractures over {interval:.0f}m",
+                "for_non_experts": f"Fractures create {phi_f_pct:.4f}% extra space in the rock for fluids. "
+                    + ("This is significant — fractures are major flow pathways." if porosity_class == "HIGH"
+                       else "This is moderate — fractures contribute to flow." if porosity_class == "MODERATE"
+                       else "This is low — the tiny rock pores dominate fluid flow, not the fractures.")
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _frac_porosity_cache[ck] = result
+    return JSONResponse(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [204] Wellbore Breakout Azimuth Prediction  (v3.53.0)
+# ═══════════════════════════════════════════════════════════════════════
+_breakout_azimuth_cache = {}
+
+@app.post("/api/analysis/breakout-azimuth")
+async def analysis_breakout_azimuth(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = body.get("depth", 3000)
+    ck = f"{source}:{well}:{depth}"
+    if ck in _breakout_azimuth_cache:
+        return JSONResponse(_breakout_azimuth_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        if df is None:
+            return {"error": "No data loaded"}
+        df_well = df[df["well"] == well].copy()
+        if df_well.empty:
+            return {"error": f"Well '{well}' not found"}
+
+        rho = 2500
+        g = 9.81
+        Sv = rho * g * depth / 1e6
+        Pp = 1020 * g * depth / 1e6
+        SHmax = 0.9 * Sv
+        Shmin = 0.6 * Sv
+
+        # SHmax azimuth from fracture data
+        azimuths = df_well[AZIMUTH_COL].dropna().values
+        sin_sum = np.sum(np.sin(np.radians(2 * azimuths)))
+        cos_sum = np.sum(np.cos(np.radians(2 * azimuths)))
+        SHmax_az = (np.degrees(np.arctan2(sin_sum, cos_sum)) / 2) % 180
+
+        # Breakout azimuth: perpendicular to SHmax (Shmin direction)
+        breakout_az = (SHmax_az + 90) % 360
+
+        # DITF (Drilling-Induced Tensile Fracture) azimuth: parallel to SHmax
+        ditf_az = SHmax_az % 360
+
+        # Stress concentration around wellbore (Kirsch solution)
+        theta_range = np.arange(0, 360, 5)
+        hoop_stress = []
+        for theta in theta_range:
+            theta_rad = np.radians(theta - SHmax_az)
+            sigma_theta = (SHmax + Shmin) - 2 * (SHmax - Shmin) * np.cos(2 * theta_rad) - Pp
+            hoop_stress.append({
+                "theta_deg": int(theta),
+                "sigma_theta_MPa": round(float(sigma_theta), 2)
+            })
+
+        max_hoop = max(h["sigma_theta_MPa"] for h in hoop_stress)
+        min_hoop = min(h["sigma_theta_MPa"] for h in hoop_stress)
+        max_hoop_az = [h["theta_deg"] for h in hoop_stress if h["sigma_theta_MPa"] == max_hoop][0]
+        min_hoop_az = [h["theta_deg"] for h in hoop_stress if h["sigma_theta_MPa"] == min_hoop][0]
+
+        # Confidence based on azimuth concentration
+        R_bar = np.sqrt(sin_sum**2 + cos_sum**2) / len(azimuths) if len(azimuths) > 0 else 0
+        if R_bar > 0.7:
+            confidence = "HIGH"
+        elif R_bar > 0.4:
+            confidence = "MODERATE"
+        else:
+            confidence = "LOW"
+
+        # Plot: polar hoop stress
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            # Hoop stress around wellbore
+            thetas = [h["theta_deg"] for h in hoop_stress]
+            sigmas = [h["sigma_theta_MPa"] for h in hoop_stress]
+            axes[0].plot(thetas, sigmas, 'b-', linewidth=2)
+            axes[0].axhline(0, color='gray', linestyle='--')
+            axes[0].axvline(breakout_az, color='red', linestyle='--', label=f'Breakout Az={breakout_az:.0f}°')
+            axes[0].axvline(ditf_az, color='green', linestyle='--', label=f'DITF Az={ditf_az:.0f}°')
+            axes[0].set_xlabel("Azimuth around wellbore (°)")
+            axes[0].set_ylabel("Hoop Stress (MPa)")
+            axes[0].set_title(f"Hoop Stress Distribution - Well {well}")
+            axes[0].legend()
+
+            # Rose of fracture azimuths with SHmax overlay
+            az_hist, az_edges = np.histogram(azimuths % 180, bins=18, range=(0, 180))
+            ax_polar = fig.add_subplot(122, projection='polar')
+            theta_centers = np.radians((az_edges[:-1] + az_edges[1:]) / 2)
+            width = np.radians(10)
+            ax_polar.bar(theta_centers, az_hist, width=width, alpha=0.6, color='steelblue')
+            ax_polar.bar(theta_centers + np.pi, az_hist, width=width, alpha=0.6, color='steelblue')
+            ax_polar.plot([np.radians(SHmax_az), np.radians(SHmax_az + 180)], [max(az_hist)*1.2]*2, 'r-', linewidth=3, label='SHmax')
+            ax_polar.set_title(f"Fracture Rose + SHmax", pad=20)
+            axes[1].set_visible(False)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        recs = []
+        recs.append(f"SHmax azimuth: {SHmax_az:.1f}° (confidence: {confidence})")
+        recs.append(f"Predicted breakout azimuth: {breakout_az:.1f}° (Shmin direction)")
+        recs.append(f"Predicted DITF azimuth: {ditf_az:.1f}° (SHmax direction)")
+        recs.append(f"Hoop stress range: {min_hoop:.1f} to {max_hoop:.1f} MPa")
+
+        result = {
+            "well": well,
+            "depth_m": depth,
+            "Sv_MPa": round(Sv, 2),
+            "SHmax_MPa": round(SHmax, 2),
+            "Shmin_MPa": round(Shmin, 2),
+            "Pp_MPa": round(Pp, 2),
+            "SHmax_azimuth_deg": round(SHmax_az, 1),
+            "breakout_azimuth_deg": round(breakout_az, 1),
+            "DITF_azimuth_deg": round(ditf_az, 1),
+            "max_hoop_stress_MPa": round(max_hoop, 2),
+            "min_hoop_stress_MPa": round(min_hoop, 2),
+            "max_hoop_azimuth_deg": max_hoop_az,
+            "min_hoop_azimuth_deg": min_hoop_az,
+            "azimuth_concentration": round(R_bar, 4),
+            "confidence": confidence,
+            "hoop_stress_profile": hoop_stress,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Breakout predicted at {breakout_az:.0f}° (confidence: {confidence})",
+                "risk_level": "HIGH" if confidence == "LOW" else ("MODERATE" if confidence == "MODERATE" else "LOW"),
+                "what_this_means": f"SHmax={SHmax_az:.0f}°, breakouts at {breakout_az:.0f}°, DITFs at {ditf_az:.0f}°",
+                "for_non_experts": f"The maximum horizontal stress points at {SHmax_az:.0f}°. "
+                    + f"If the wellbore breaks, breakouts will form at {breakout_az:.0f}° "
+                    + f"and tensile fractures at {ditf_az:.0f}°. "
+                    + f"Prediction confidence is {confidence.lower()} based on fracture data consistency."
+            },
+            "elapsed_s": round(time.time() - t0, 3)
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        code = 404 if "not found" in result["error"] else 400
+        return JSONResponse(result, code)
+    result = _sanitize_for_json(result)
+    _breakout_azimuth_cache[ck] = result
     return JSONResponse(result)
