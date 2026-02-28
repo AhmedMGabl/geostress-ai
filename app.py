@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.67.0 - Kick Tolerance + Hole Cleaning + FIT Simulation + Stuck Pipe + Stability Window)."""
+"""GeoStress AI - FastAPI Web Application (v3.68.0 - Directional Stability + Effective Stress Gradient + Depletion + Fracture Reopen + APB)."""
 
 import os
 import io
@@ -51531,3 +51531,541 @@ async def analysis_wellbore_stability_window(request: Request):
         return JSONResponse(result, status_code=404)
     _stability_window_cache[ck] = _sanitize_for_json(result)
     return JSONResponse(_stability_window_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [275] Directional Stability  (v3.68.0)
+# ═══════════════════════════════════════════════════════════════════════
+_directional_stability_cache: dict = {}
+
+@app.post("/api/analysis/directional-stability")
+async def analysis_directional_stability(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    wellbore_azimuth_deg = body.get("wellbore_azimuth_deg", 0)
+    wellbore_inclination_deg = body.get("wellbore_inclination_deg", 0)
+    UCS_MPa = body.get("UCS_MPa", 50)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{wellbore_azimuth_deg}_{wellbore_inclination_deg}_{UCS_MPa}"
+    if ck in _directional_stability_cache:
+        return JSONResponse(_directional_stability_cache[ck])
+
+    def _compute():
+        import time; t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        inc = np.radians(wellbore_inclination_deg)
+        azi = np.radians(wellbore_azimuth_deg)
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        n_unstable = 0
+
+        for d in depths:
+            Sv = 0.025 * d; Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp; SHmax = 1.2 * Sv - 0.2 * Pp
+            # Transform stresses to wellbore coordinate system (simplified Peska & Zoback)
+            cos_i = np.cos(inc); sin_i = np.sin(inc)
+            sigma_zz = Sv * cos_i**2 + Shmin * sin_i**2
+            sigma_xx = SHmax * np.cos(azi)**2 + Shmin * np.sin(azi)**2
+            sigma_yy = SHmax * np.sin(azi)**2 + Shmin * np.cos(azi)**2
+            sigma_theta_max = sigma_xx + sigma_yy + 2 * abs(sigma_xx - sigma_yy) - Pp
+            # Stability index
+            stability_index = UCS_MPa / sigma_theta_max if sigma_theta_max > 0 else 999
+            is_unstable = stability_index < 1.0
+            if is_unstable: n_unstable += 1
+            # Optimal direction comparison
+            optimal_azi = 0  # parallel to SHmax is generally safest for breakout avoidance
+            azi_deviation = abs(wellbore_azimuth_deg - optimal_azi) % 180
+            if azi_deviation > 90: azi_deviation = 180 - azi_deviation
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "sigma_theta_max_MPa": round(float(sigma_theta_max), 2),
+                "stability_index": round(float(stability_index), 3),
+                "is_unstable": is_unstable,
+                "azi_deviation_deg": round(float(azi_deviation), 1),
+            })
+
+        mean_si = round(np.mean([p["stability_index"] for p in profile]), 3)
+        min_si = min(p["stability_index"] for p in profile)
+        pct_unstable = round(100 * n_unstable / len(profile), 1)
+        if min_si < 0.5: dir_class = "CRITICAL"
+        elif min_si < 1.0: dir_class = "UNSTABLE"
+        elif min_si < 1.5: dir_class = "MARGINAL"
+        else: dir_class = "STABLE"
+
+        recs = []
+        if dir_class in ("CRITICAL", "UNSTABLE"):
+            recs.append(f"Wellbore direction {wellbore_azimuth_deg}°/{wellbore_inclination_deg}° is unstable — consider reorientation")
+        recs.append(f"Min stability index: {min_si:.2f}, {pct_unstable}% unstable depths")
+        recs.append(f"Optimal azimuth is parallel to SHmax for vertical wells")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+            ds = [p["depth_m"] for p in profile]
+            sis = [p["stability_index"] for p in profile]
+            colors = ['red' if s < 1.0 else 'orange' if s < 1.5 else 'green' for s in sis]
+            ax.barh(ds, sis, height=(depth_to-depth_from)/n_points*0.8, color=colors, alpha=0.7)
+            ax.axvline(1.0, color='red', ls='--', lw=1.5, label='Failure threshold')
+            ax.set_xlabel("Stability Index"); ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis(); ax.set_title(f"Directional Stability — {well} ({wellbore_azimuth_deg}°/{wellbore_inclination_deg}°)")
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+            fig.tight_layout(); plot_b64 = fig_to_base64(fig); plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "wellbore_azimuth_deg": wellbore_azimuth_deg,
+            "wellbore_inclination_deg": wellbore_inclination_deg,
+            "UCS_MPa": UCS_MPa,
+            "mean_stability_index": mean_si, "min_stability_index": round(float(min_si), 3),
+            "pct_unstable": pct_unstable,
+            "dir_class": dir_class,
+            "profile": profile, "recommendations": recs, "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Directional stability: {dir_class} for {well}",
+                "risk_level": "HIGH" if dir_class in ("CRITICAL", "UNSTABLE") else "MODERATE" if dir_class == "MARGINAL" else "LOW",
+                "what_this_means": f"Wellbore at {wellbore_azimuth_deg}°/{wellbore_inclination_deg}° has min stability index {min_si:.2f}",
+                "for_non_experts": "Directional stability assesses whether the planned well direction can be drilled safely. Some directions are more stable than others depending on the stress field."
+            }, "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result: return JSONResponse(result, status_code=404)
+    _directional_stability_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_directional_stability_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [276] Effective Stress Gradient  (v3.68.0)
+# ═══════════════════════════════════════════════════════════════════════
+_eff_stress_grad_cache: dict = {}
+
+@app.post("/api/analysis/effective-stress-gradient")
+async def analysis_effective_stress_gradient(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    Pp_gradient = body.get("Pp_gradient", 0.45)  # psi/ft
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{Pp_gradient}"
+    if ck in _eff_stress_grad_cache:
+        return JSONResponse(_eff_stress_grad_cache[ck])
+
+    def _compute():
+        import time; t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty: return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            d_ft = d * 3.28084
+            Sv = 0.025 * d
+            Pp = Pp_gradient * d_ft / 145.038  # psi/ft to MPa
+            Shmin = 0.6 * Sv + 0.4 * Pp
+            SHmax = 1.2 * Sv - 0.2 * Pp
+            Sv_eff = Sv - Pp; Shmin_eff = Shmin - Pp; SHmax_eff = SHmax - Pp
+            Sv_grad = Sv_eff / d * 1000 if d > 0 else 0  # MPa/km
+            Shmin_grad = Shmin_eff / d * 1000 if d > 0 else 0
+            SHmax_grad = SHmax_eff / d * 1000 if d > 0 else 0
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Sv_eff_MPa": round(float(Sv_eff), 2),
+                "Shmin_eff_MPa": round(float(Shmin_eff), 2),
+                "SHmax_eff_MPa": round(float(SHmax_eff), 2),
+                "Sv_grad_MPa_km": round(float(Sv_grad), 2),
+                "Shmin_grad_MPa_km": round(float(Shmin_grad), 2),
+                "SHmax_grad_MPa_km": round(float(SHmax_grad), 2),
+                "Pp_MPa": round(float(Pp), 2),
+            })
+
+        mean_Sv_grad = round(np.mean([p["Sv_grad_MPa_km"] for p in profile]), 2)
+        stress_ratio = round(np.mean([p["Shmin_eff_MPa"] / p["Sv_eff_MPa"] if p["Sv_eff_MPa"] > 0 else 0 for p in profile]), 3)
+        if stress_ratio < 0.3: grad_class = "LOW_CONFINING"
+        elif stress_ratio < 0.5: grad_class = "MODERATE"
+        elif stress_ratio < 0.7: grad_class = "NORMAL"
+        else: grad_class = "HIGH_CONFINING"
+
+        recs = []
+        recs.append(f"Mean Sv gradient: {mean_Sv_grad} MPa/km effective")
+        recs.append(f"Shmin/Sv effective ratio: {stress_ratio:.2f}")
+        if grad_class == "LOW_CONFINING":
+            recs.append("Low confining stress — fracture propagation risk is elevated")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+            ds = [p["depth_m"] for p in profile]
+            ax.plot([p["Sv_eff_MPa"] for p in profile], ds, 'k-', lw=2, label='Sv eff')
+            ax.plot([p["SHmax_eff_MPa"] for p in profile], ds, 'r-', lw=2, label='SHmax eff')
+            ax.plot([p["Shmin_eff_MPa"] for p in profile], ds, 'b-', lw=2, label='Shmin eff')
+            ax.plot([p["Pp_MPa"] for p in profile], ds, 'c--', lw=1.5, label='Pp')
+            ax.set_xlabel("Effective Stress (MPa)"); ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis(); ax.set_title(f"Effective Stress Gradient — {well}")
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+            fig.tight_layout(); plot_b64 = fig_to_base64(fig); plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "Pp_gradient_psi_ft": Pp_gradient,
+            "mean_Sv_grad_MPa_km": mean_Sv_grad,
+            "mean_stress_ratio": stress_ratio,
+            "grad_class": grad_class,
+            "profile": profile, "recommendations": recs, "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Effective stress: {grad_class} for {well}",
+                "risk_level": "HIGH" if grad_class == "LOW_CONFINING" else "MODERATE" if grad_class == "MODERATE" else "LOW",
+                "what_this_means": f"Shmin/Sv ratio {stress_ratio:.2f}, Pp gradient {Pp_gradient} psi/ft",
+                "for_non_experts": "Effective stress is the force holding rock together after subtracting pore pressure. Lower effective stress means the rock is easier to fracture."
+            }, "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result: return JSONResponse(result, status_code=404)
+    _eff_stress_grad_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_eff_stress_grad_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [277] Depletion Effect on Stress  (v3.68.0)
+# ═══════════════════════════════════════════════════════════════════════
+_depletion_effect_cache: dict = {}
+
+@app.post("/api/analysis/depletion-effect")
+async def analysis_depletion_effect(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = body.get("depth_m", 3000)
+    initial_Pp_MPa = body.get("initial_Pp_MPa", None)
+    depletion_MPa = body.get("depletion_MPa", 10)
+    n_steps = body.get("n_steps", 20)
+    poisson_ratio = body.get("poisson_ratio", 0.25)
+
+    ck = f"{source}_{well}_{depth_m}_{initial_Pp_MPa}_{depletion_MPa}_{n_steps}_{poisson_ratio}"
+    if ck in _depletion_effect_cache:
+        return JSONResponse(_depletion_effect_cache[ck])
+
+    def _compute():
+        import time; t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty: return {"error": f"No data for well {well}"}
+
+        d = depth_m
+        Sv = 0.025 * d
+        Pp0 = initial_Pp_MPa if initial_Pp_MPa is not None else 0.0098 * d
+        Shmin0 = 0.6 * Sv + 0.4 * Pp0
+        SHmax0 = 1.2 * Sv - 0.2 * Pp0
+
+        # Depletion path coefficient (poroelastic): delta_Sh = alpha * (1-2v)/(1-v) * delta_Pp
+        alpha = 1.0  # Biot coefficient
+        stress_path = alpha * (1 - 2 * poisson_ratio) / (1 - poisson_ratio)
+
+        depletions = np.linspace(0, depletion_MPa, n_steps)
+        path = []
+        for dp in depletions:
+            Pp = Pp0 - dp
+            Shmin = Shmin0 - stress_path * dp
+            SHmax = SHmax0 - stress_path * dp
+            # Frac gradient changes
+            frac_grad_change = -stress_path * dp
+            # CS% estimation (simplified)
+            sigma_n_mean = (Shmin + SHmax) / 2 - Pp
+            tau_mean = (SHmax - Shmin) / 2
+            slip_tend = tau_mean / sigma_n_mean if sigma_n_mean > 0 else 999
+            path.append({
+                "depletion_MPa": round(float(dp), 2),
+                "Pp_MPa": round(float(Pp), 2),
+                "Shmin_MPa": round(float(Shmin), 2),
+                "SHmax_MPa": round(float(SHmax), 2),
+                "Sv_MPa": round(float(Sv), 2),
+                "frac_gradient_change_MPa": round(float(frac_grad_change), 2),
+                "slip_tendency": round(float(slip_tend), 3),
+            })
+
+        final_Shmin = path[-1]["Shmin_MPa"]
+        total_frac_change = path[-1]["frac_gradient_change_MPa"]
+        final_slip = path[-1]["slip_tendency"]
+
+        if abs(total_frac_change) > 5:
+            depl_class = "SEVERE"
+        elif abs(total_frac_change) > 2:
+            depl_class = "SIGNIFICANT"
+        elif abs(total_frac_change) > 0.5:
+            depl_class = "MODERATE"
+        else:
+            depl_class = "MINOR"
+
+        recs = []
+        recs.append(f"Stress path coefficient: {stress_path:.3f} (Poisson={poisson_ratio})")
+        recs.append(f"Frac gradient reduced by {abs(total_frac_change):.1f} MPa after {depletion_MPa} MPa depletion")
+        if depl_class in ("SEVERE", "SIGNIFICANT"):
+            recs.append("Significant stress change — update drilling program for depleted section")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+            deps = [p["depletion_MPa"] for p in path]
+            ax1.plot(deps, [p["Sv_MPa"] for p in path], 'k-', lw=2, label='Sv')
+            ax1.plot(deps, [p["SHmax_MPa"] for p in path], 'r-', lw=2, label='SHmax')
+            ax1.plot(deps, [p["Shmin_MPa"] for p in path], 'b-', lw=2, label='Shmin')
+            ax1.plot(deps, [p["Pp_MPa"] for p in path], 'c--', lw=1.5, label='Pp')
+            ax1.set_xlabel("Depletion (MPa)"); ax1.set_ylabel("Stress (MPa)")
+            ax1.set_title(f"Depletion Path — {well} at {depth_m}m"); ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+
+            ax2.plot(deps, [p["slip_tendency"] for p in path], 'm-', lw=2)
+            ax2.axhline(0.6, color='red', ls='--', label='Critical slip')
+            ax2.set_xlabel("Depletion (MPa)"); ax2.set_ylabel("Slip Tendency")
+            ax2.set_title("Fault Stability During Depletion"); ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+            fig.tight_layout(); plot_b64 = fig_to_base64(fig); plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_m": depth_m,
+            "initial_Pp_MPa": round(float(Pp0), 2),
+            "depletion_MPa": depletion_MPa,
+            "poisson_ratio": poisson_ratio,
+            "stress_path_coeff": round(float(stress_path), 3),
+            "final_Shmin_MPa": round(float(final_Shmin), 2),
+            "total_frac_change_MPa": round(float(total_frac_change), 2),
+            "final_slip_tendency": round(float(final_slip), 3),
+            "depl_class": depl_class,
+            "path": path, "recommendations": recs, "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Depletion effect: {depl_class} for {well}",
+                "risk_level": "HIGH" if depl_class in ("SEVERE",) else "MODERATE" if depl_class == "SIGNIFICANT" else "LOW",
+                "what_this_means": f"Frac gradient drops {abs(total_frac_change):.1f} MPa after {depletion_MPa} MPa depletion",
+                "for_non_experts": "As reservoir pressure drops during production, the horizontal stresses also decrease. This can narrow the safe drilling window for future wells and increase fault slip risk."
+            }, "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result: return JSONResponse(result, status_code=404)
+    _depletion_effect_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_depletion_effect_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [278] Fracture Reopen Pressure  (v3.68.0)
+# ═══════════════════════════════════════════════════════════════════════
+_frac_reopen_cache: dict = {}
+
+@app.post("/api/analysis/fracture-reopen-pressure")
+async def analysis_fracture_reopen_pressure(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}"
+    if ck in _frac_reopen_cache:
+        return JSONResponse(_frac_reopen_cache[ck])
+
+    def _compute():
+        import time; t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty: return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            d_ft = d * 3.28084
+            Sv = 0.025 * d; Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp; SHmax = 1.2 * Sv - 0.2 * Pp
+            T0 = 3.0 + 0.001 * d  # tensile strength
+            # Breakdown pressure (Hubbert-Willis)
+            Pb = 3 * Shmin - SHmax - Pp + T0
+            # Reopen pressure (no tensile strength term)
+            Pr = 3 * Shmin - SHmax - Pp
+            # ISIP ~ Shmin
+            ISIP = Shmin
+            # Convert to ppg
+            Pb_ppg = Pb * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+            Pr_ppg = Pr * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+            ISIP_ppg = ISIP * 145.038 / (0.052 * d_ft) if d_ft > 0 else 0
+            margin = Pb - Pr
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "breakdown_MPa": round(float(Pb), 2),
+                "reopen_MPa": round(float(Pr), 2),
+                "ISIP_MPa": round(float(ISIP), 2),
+                "breakdown_ppg": round(float(Pb_ppg), 2),
+                "reopen_ppg": round(float(Pr_ppg), 2),
+                "margin_MPa": round(float(margin), 2),
+            })
+
+        mean_margin = round(np.mean([p["margin_MPa"] for p in profile]), 2)
+        min_reopen = min(p["reopen_MPa"] for p in profile)
+        if mean_margin < 1: reopen_class = "LOW_MARGIN"
+        elif mean_margin < 3: reopen_class = "MODERATE"
+        else: reopen_class = "SAFE"
+
+        recs = []
+        recs.append(f"Mean breakdown-reopen margin: {mean_margin} MPa (tensile strength effect)")
+        recs.append(f"Min reopen pressure: {min_reopen:.1f} MPa")
+        if reopen_class == "LOW_MARGIN":
+            recs.append("Low margin — existing fractures reopen easily during injection")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+            ds = [p["depth_m"] for p in profile]
+            ax.plot([p["breakdown_MPa"] for p in profile], ds, 'r-', lw=2, label='Breakdown')
+            ax.plot([p["reopen_MPa"] for p in profile], ds, 'b--', lw=2, label='Reopen')
+            ax.plot([p["ISIP_MPa"] for p in profile], ds, 'g-.', lw=1.5, label='ISIP (Shmin)')
+            ax.fill_betweenx(ds, [p["reopen_MPa"] for p in profile], [p["breakdown_MPa"] for p in profile], alpha=0.15, color='orange', label='T₀ margin')
+            ax.set_xlabel("Pressure (MPa)"); ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis(); ax.set_title(f"Fracture Reopen Pressure — {well}")
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+            fig.tight_layout(); plot_b64 = fig_to_base64(fig); plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "mean_margin_MPa": mean_margin,
+            "min_reopen_MPa": round(float(min_reopen), 2),
+            "reopen_class": reopen_class,
+            "profile": profile, "recommendations": recs, "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fracture reopen: {reopen_class} for {well}",
+                "risk_level": "HIGH" if reopen_class == "LOW_MARGIN" else "MODERATE" if reopen_class == "MODERATE" else "LOW",
+                "what_this_means": f"Mean breakdown-reopen margin {mean_margin} MPa",
+                "for_non_experts": "Fracture reopen pressure is lower than breakdown pressure because tensile strength is lost after initial fracturing. This determines injection pressures for re-stimulation."
+            }, "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result: return JSONResponse(result, status_code=404)
+    _frac_reopen_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_frac_reopen_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [279] Annular Pressure Buildup  (v3.68.0)
+# ═══════════════════════════════════════════════════════════════════════
+_apb_cache: dict = {}
+
+@app.post("/api/analysis/annular-pressure-buildup")
+async def analysis_annular_pressure_buildup(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = body.get("depth_m", 3000)
+    production_temp_C = body.get("production_temp_C", 120)
+    initial_temp_C = body.get("initial_temp_C", 40)
+    annulus_fluid = body.get("annulus_fluid", "water")
+    casing_od_in = body.get("casing_od_in", 9.625)
+    n_steps = body.get("n_steps", 20)
+
+    ck = f"{source}_{well}_{depth_m}_{production_temp_C}_{initial_temp_C}_{annulus_fluid}_{casing_od_in}_{n_steps}"
+    if ck in _apb_cache:
+        return JSONResponse(_apb_cache[ck])
+
+    def _compute():
+        import time; t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty: return {"error": f"No data for well {well}"}
+
+        delta_T = production_temp_C - initial_temp_C
+        # Thermal expansion coefficient (1/°C)
+        if annulus_fluid == "oil":
+            beta = 7e-4  # oil
+        else:
+            beta = 2.1e-4  # water
+
+        # Fluid compressibility (1/MPa)
+        if annulus_fluid == "oil":
+            c_f = 1e-3
+        else:
+            c_f = 4.5e-4
+
+        temps = np.linspace(initial_temp_C, production_temp_C, n_steps)
+        profile = []
+        for T in temps:
+            dT = T - initial_temp_C
+            # APB = beta * dT / c_f (simplified isothermal pressure buildup)
+            apb_MPa = beta * dT / c_f if c_f > 0 else 0
+            # Casing burst rating (simplified for given OD)
+            burst_rating_MPa = 50 + (casing_od_in - 7) * 5  # rough correlation
+            safety_factor = burst_rating_MPa / apb_MPa if apb_MPa > 0 else 999
+            profile.append({
+                "temperature_C": round(float(T), 1),
+                "delta_T_C": round(float(dT), 1),
+                "apb_MPa": round(float(apb_MPa), 2),
+                "apb_psi": round(float(apb_MPa * 145.038), 0),
+                "burst_rating_MPa": round(float(burst_rating_MPa), 1),
+                "safety_factor": round(float(safety_factor), 2),
+            })
+
+        max_apb = max(p["apb_MPa"] for p in profile)
+        max_apb_psi = max(p["apb_psi"] for p in profile)
+        min_sf = min(p["safety_factor"] for p in profile)
+
+        if min_sf < 1.0: apb_class = "CRITICAL"
+        elif min_sf < 1.5: apb_class = "HIGH_RISK"
+        elif min_sf < 2.0: apb_class = "MODERATE"
+        else: apb_class = "SAFE"
+
+        recs = []
+        if apb_class == "CRITICAL":
+            recs.append("APB exceeds casing burst rating — install APB mitigation (N₂ cap, rupture disk)")
+        elif apb_class == "HIGH_RISK":
+            recs.append("High APB risk — consider compressible fluids or bleed-off strategy")
+        recs.append(f"Max APB: {max_apb:.1f} MPa ({max_apb_psi:.0f} psi) at ΔT={delta_T}°C")
+        recs.append(f"Annulus fluid: {annulus_fluid}, expansion coeff: {beta:.1e} /°C")
+
+        with plot_lock:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+            temps_p = [p["temperature_C"] for p in profile]
+            ax1.plot(temps_p, [p["apb_MPa"] for p in profile], 'r-', lw=2, label='APB')
+            ax1.plot(temps_p, [p["burst_rating_MPa"] for p in profile], 'g--', lw=2, label='Burst Rating')
+            ax1.set_xlabel("Temperature (°C)"); ax1.set_ylabel("Pressure (MPa)")
+            ax1.set_title(f"Annular Pressure Buildup — {well}"); ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
+
+            sfs = [p["safety_factor"] for p in profile]
+            colors = ['red' if s < 1.0 else 'orange' if s < 1.5 else 'green' for s in sfs]
+            ax2.bar(range(len(sfs)), sfs, color=colors, alpha=0.7)
+            ax2.axhline(1.0, color='red', ls='--', lw=1.5, label='Failure')
+            ax2.axhline(1.5, color='orange', ls='--', lw=1, label='Min SF')
+            ax2.set_xlabel("Step"); ax2.set_ylabel("Safety Factor")
+            ax2.set_title("Casing Safety Factor"); ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+            fig.tight_layout(); plot_b64 = fig_to_base64(fig); plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_m": depth_m,
+            "production_temp_C": production_temp_C,
+            "initial_temp_C": initial_temp_C,
+            "annulus_fluid": annulus_fluid,
+            "casing_od_in": casing_od_in,
+            "max_apb_MPa": round(float(max_apb), 2),
+            "max_apb_psi": round(float(max_apb_psi), 0),
+            "min_safety_factor": round(float(min_sf), 2),
+            "apb_class": apb_class,
+            "profile": profile, "recommendations": recs, "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"APB risk: {apb_class} for {well}",
+                "risk_level": "HIGH" if apb_class in ("CRITICAL", "HIGH_RISK") else "MODERATE" if apb_class == "MODERATE" else "LOW",
+                "what_this_means": f"Max APB {max_apb:.1f} MPa at ΔT={delta_T}°C, min SF={min_sf:.1f}",
+                "for_non_experts": "Annular pressure buildup occurs when trapped fluid in the annulus heats up during production. If pressure exceeds casing rating, it can cause casing failure."
+            }, "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result: return JSONResponse(result, status_code=404)
+    _apb_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_apb_cache[ck])

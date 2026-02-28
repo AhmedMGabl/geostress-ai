@@ -4227,6 +4227,79 @@
                         </div>
                     </div>
 
+                    <!-- [275] Directional Stability -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary text-white"><i class="bi bi-compass"></i> Directional Stability</div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><label class="form-label">From (m)</label><input type="number" class="form-control" id="ds-from" value="500"></div>
+                                <div class="col-md-2"><label class="form-label">To (m)</label><input type="number" class="form-control" id="ds-to" value="5000"></div>
+                                <div class="col-md-2"><label class="form-label">WB Azi (°)</label><input type="number" class="form-control" id="ds-azi" value="0" step="15"></div>
+                                <div class="col-md-2"><label class="form-label">WB Inc (°)</label><input type="number" class="form-control" id="ds-inc" value="0" step="5"></div>
+                                <div class="col-md-2"><label class="form-label">UCS (MPa)</label><input type="number" class="form-control" id="ds-ucs" value="50" step="10"></div>
+                            </div>
+                            <button class="btn btn-primary" onclick="runDirectionalStability()">Run Directional Stability</button>
+                            <div id="directionalStabilityResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [276] Effective Stress Gradient -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info text-white"><i class="bi bi-graph-down-arrow"></i> Effective Stress Gradient</div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><label class="form-label">Depth From (m)</label><input type="number" class="form-control" id="esg-from" value="500"></div>
+                                <div class="col-md-3"><label class="form-label">Depth To (m)</label><input type="number" class="form-control" id="esg-to" value="5000"></div>
+                                <div class="col-md-3"><label class="form-label">Pp Gradient (psi/ft)</label><input type="number" class="form-control" id="esg-ppg" value="0.45" step="0.05"></div>
+                            </div>
+                            <button class="btn btn-info" onclick="runEffStressGrad()">Run Eff. Stress Gradient</button>
+                            <div id="effStressGradResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [277] Depletion Effect -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning text-dark"><i class="bi bi-arrow-down-circle"></i> Depletion Effect on Stress</div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3"><label class="form-label">Depth (m)</label><input type="number" class="form-control" id="dep-depth" value="3000"></div>
+                                <div class="col-md-3"><label class="form-label">Depletion (MPa)</label><input type="number" class="form-control" id="dep-dp" value="10" step="2"></div>
+                                <div class="col-md-3"><label class="form-label">Poisson Ratio</label><input type="number" class="form-control" id="dep-nu" value="0.25" step="0.05"></div>
+                            </div>
+                            <button class="btn btn-warning" onclick="runDepletionEffect()">Run Depletion Analysis</button>
+                            <div id="depletionEffectResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [278] Fracture Reopen Pressure -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger text-white"><i class="bi bi-door-open"></i> Fracture Reopen Pressure</div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-4"><label class="form-label">Depth From (m)</label><input type="number" class="form-control" id="frp-from" value="500"></div>
+                                <div class="col-md-4"><label class="form-label">Depth To (m)</label><input type="number" class="form-control" id="frp-to" value="5000"></div>
+                            </div>
+                            <button class="btn btn-danger" onclick="runFracReopen()">Run Frac Reopen Analysis</button>
+                            <div id="fracReopenResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- [279] Annular Pressure Buildup -->
+                    <div class="card mb-4 border-secondary">
+                        <div class="card-header bg-secondary text-white"><i class="bi bi-thermometer-high"></i> Annular Pressure Buildup (APB)</div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-2"><label class="form-label">Depth (m)</label><input type="number" class="form-control" id="apb-depth" value="3000"></div>
+                                <div class="col-md-2"><label class="form-label">Prod T (°C)</label><input type="number" class="form-control" id="apb-pt" value="120" step="10"></div>
+                                <div class="col-md-2"><label class="form-label">Init T (°C)</label><input type="number" class="form-control" id="apb-it" value="40" step="5"></div>
+                                <div class="col-md-3"><label class="form-label">Fluid</label><select class="form-select" id="apb-fluid"><option value="water">Water</option><option value="oil">Oil</option></select></div>
+                                <div class="col-md-2"><label class="form-label">Csg OD (in)</label><input type="number" class="form-control" id="apb-od" value="9.625" step="0.5"></div>
+                            </div>
+                            <button class="btn btn-secondary" onclick="runAPB()">Run APB Analysis</button>
+                            <div id="apbResult" class="mt-3"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
