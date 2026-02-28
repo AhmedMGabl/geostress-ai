@@ -15801,3 +15801,138 @@ async function runBreakoutDepth() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// [245] Mud Weight Optimization
+// ═══════════════════════════════════════════════════════════════
+async function runMwOptimization() {
+    var results = document.getElementById('mwOptimizationResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depthFrom = parseFloat(document.getElementById('mwo-from').value) || 500;
+        var depthTo = parseFloat(document.getElementById('mwo-to').value) || 5000;
+        var nPts = parseInt(document.getElementById('mwo-npts').value) || 25;
+        var sf = parseFloat(document.getElementById('mwo-sf').value) || 1.1;
+        var resp = await fetch('/api/analysis/mud-weight-optimization', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depthFrom,depth_to:depthTo,n_points:nPts,safety_factor:sf})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.mw_class+'</strong> — Min window: '+(r.min_window_ppg||0).toFixed(2)+' ppg</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Min Window</h6><h4>'+(r.min_window_ppg||0).toFixed(2)+' ppg</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Optimal Range</h6><h4>'+(r.optimal_range_ppg?r.optimal_range_ppg[0].toFixed(1)+'-'+r.optimal_range_ppg[1].toFixed(1):'?')+' ppg</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Kick Margin</h6><h4>'+(r.min_kick_margin_ppg||0).toFixed(2)+' ppg</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [246] Fracture Orientation Bias
+// ═══════════════════════════════════════════════════════════════
+async function runOrientBias() {
+    var results = document.getElementById('orientBiasResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var bhAz = parseFloat(document.getElementById('ob-bhaz').value) || 0;
+        var bhDip = parseFloat(document.getElementById('ob-bhdip').value) || 90;
+        var resp = await fetch('/api/analysis/fracture-orientation-bias', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,borehole_azimuth:bhAz,borehole_dip:bhDip})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.bias_class+'</strong> — '+(r.pct_undersampled||0).toFixed(1)+'% undersampled</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Mean Weight</h6><h4>'+(r.mean_terzaghi_weight||0).toFixed(3)+'</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Max Weight</h6><h4>'+(r.max_terzaghi_weight||0).toFixed(3)+'</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>% Undersampled</h6><h4>'+(r.pct_undersampled||0).toFixed(1)+'%</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [247] Stress Ratio Depth
+// ═══════════════════════════════════════════════════════════════
+async function runStressRatioDepth() {
+    var results = document.getElementById('stressRatioDepthResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depthFrom = parseFloat(document.getElementById('srd-from').value) || 500;
+        var depthTo = parseFloat(document.getElementById('srd-to').value) || 5000;
+        var nPts = parseInt(document.getElementById('srd-npts').value) || 25;
+        var resp = await fetch('/api/analysis/stress-ratio-depth', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depthFrom,depth_to:depthTo,n_points:nPts})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.ratio_class+'</strong> — K0='+(r.mean_K0||0).toFixed(4)+', A='+(r.mean_A_ratio||0).toFixed(4)+'</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Mean K0</h6><h4>'+(r.mean_K0||0).toFixed(4)+'</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Mean A</h6><h4>'+(r.mean_A_ratio||0).toFixed(4)+'</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>K0 Trend</h6><h4>'+(r.K0_trend||0).toFixed(4)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [248] Wellbore Shear Failure
+// ═══════════════════════════════════════════════════════════════
+async function runShearFailure() {
+    var results = document.getElementById('shearFailureResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depthFrom = parseFloat(document.getElementById('sf-from').value) || 500;
+        var depthTo = parseFloat(document.getElementById('sf-to').value) || 5000;
+        var ucs = parseFloat(document.getElementById('sf-ucs').value) || 50;
+        var mu = parseFloat(document.getElementById('sf-mu').value) || 0.6;
+        var resp = await fetch('/api/analysis/wellbore-shear-failure', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depthFrom,depth_to:depthTo,UCS_MPa:ucs,friction:mu})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.shear_class+'</strong> — '+(r.pct_failure||0).toFixed(1)+'% failure, min SF='+(r.min_shear_SF||0).toFixed(3)+'</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Failure Zones</h6><h4>'+r.n_failure_zones+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>% Failure</h6><h4>'+(r.pct_failure||0).toFixed(1)+'%</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Min SF</h6><h4>'+(r.min_shear_SF||0).toFixed(3)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Min Margin</h6><h4>'+(r.min_margin_MPa||0).toFixed(1)+' MPa</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [249] Fracture Permeability Tensor
+// ═══════════════════════════════════════════════════════════════
+async function runPermTensor() {
+    var results = document.getElementById('permTensorResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var aperture = parseFloat(document.getElementById('pt-aperture').value) || 0.1;
+        var resp = await fetch('/api/analysis/fracture-perm-tensor-directional', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,aperture_mm:aperture})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.tensor_class+'</strong> — Anisotropy ratio: '+(r.anisotropy_ratio||0).toFixed(2)+'x</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>k_max</h6><h4>'+(r.k_max_mD||0).toFixed(6)+' mD</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>k_min</h6><h4>'+(r.k_min_mD||0).toFixed(6)+' mD</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Anisotropy</h6><h4>'+(r.anisotropy_ratio||0).toFixed(2)+'x</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}

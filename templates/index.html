@@ -3748,6 +3748,85 @@
                         </div>
                     </div>
 
+                    <!-- [245] Mud Weight Optimization -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-speedometer"></i> Mud Weight Optimization [245]</span>
+                            <button class="btn btn-sm btn-warning" onclick="runMwOptimization()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="mwo-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="mwo-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="mwo-npts" placeholder="Points" value="25"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="mwo-sf" placeholder="SF" value="1.1" step="0.05"></div>
+                            </div>
+                            <div id="mwOptimizationResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [246] Fracture Orientation Bias -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-compass"></i> Orientation Bias [246]</span>
+                            <button class="btn btn-sm btn-warning" onclick="runOrientBias()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="ob-bhaz" placeholder="BH Azimuth (°)" value="0"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="ob-bhdip" placeholder="BH Dip (°)" value="90"></div>
+                            </div>
+                            <div id="orientBiasResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [247] Stress Ratio Depth -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-up-arrow"></i> Stress Ratio Depth [247]</span>
+                            <button class="btn btn-sm btn-warning" onclick="runStressRatioDepth()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="srd-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="srd-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="srd-npts" placeholder="Points" value="25"></div>
+                            </div>
+                            <div id="stressRatioDepthResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [248] Wellbore Shear Failure -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-slash-circle"></i> Shear Failure [248]</span>
+                            <button class="btn btn-sm btn-warning" onclick="runShearFailure()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="sf-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="sf-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="sf-ucs" placeholder="UCS (MPa)" value="50"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="sf-mu" placeholder="μ" value="0.6" step="0.05"></div>
+                            </div>
+                            <div id="shearFailureResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [249] Fracture Permeability Tensor -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-box-fill"></i> Permeability Tensor [249]</span>
+                            <button class="btn btn-sm btn-warning" onclick="runPermTensor()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-12"><input type="number" class="form-control form-control-sm" id="pt-aperture" placeholder="Aperture (mm)" value="0.1" step="0.01"></div>
+                            </div>
+                            <div id="permTensorResult"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

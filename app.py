@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.61.0 - Pore Pressure Window + Fracture Density Profile + Stress Polygon + Rock Strength + Breakout Depth)."""
+"""GeoStress AI - FastAPI Web Application (v3.62.0 - Mud Weight Optimization + Orientation Bias + Stress Ratio Depth + Shear Failure + Perm Tensor)."""
 
 import os
 import io
@@ -47518,3 +47518,635 @@ async def analysis_wellbore_breakout_depth(request: Request):
         return JSONResponse(result, status_code=404)
     _breakout_depth_cache[ck] = _sanitize_for_json(result)
     return JSONResponse(_breakout_depth_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════
+# [245] Mud Weight Optimization
+# ═══════════════════════════════════════════════════════════════
+_mw_optimization_cache = {}
+
+@app.post("/api/analysis/mud-weight-optimization")
+async def analysis_mud_weight_optimization(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    safety_factor = body.get("safety_factor", 1.1)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{safety_factor}"
+    if ck in _mw_optimization_cache:
+        return JSONResponse(_mw_optimization_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = [depth_from + i * (depth_to - depth_from) / max(n_points - 1, 1) for i in range(n_points)]
+        rho = 2500; g = 9.81
+
+        profile = []
+        for d in depths:
+            Sv = rho * g * d / 1e6
+            Pp = 1000 * g * d / 1e6
+            Shmin = Pp + 0.65 * (Sv - Pp)
+            collapse_ppg = (Pp / (0.006895 * d * 3.28084 * 0.052)) if d > 0 else 8.34
+            frac_ppg = (Shmin / (0.006895 * d * 3.28084 * 0.052)) if d > 0 else 16.0
+            Pp_ppg = collapse_ppg
+            optimal_ppg = Pp_ppg * safety_factor
+            window_ppg = frac_ppg - collapse_ppg
+            kick_margin = optimal_ppg - Pp_ppg
+            loss_margin = frac_ppg - optimal_ppg
+
+            profile.append({
+                "depth_m": round(d, 1),
+                "collapse_ppg": round(collapse_ppg, 2),
+                "frac_ppg": round(frac_ppg, 2),
+                "optimal_ppg": round(optimal_ppg, 2),
+                "window_ppg": round(window_ppg, 2),
+                "kick_margin_ppg": round(kick_margin, 2),
+                "loss_margin_ppg": round(loss_margin, 2),
+            })
+
+        min_window = min(p["window_ppg"] for p in profile)
+        optimal_range = [min(p["optimal_ppg"] for p in profile), max(p["optimal_ppg"] for p in profile)]
+        min_kick = min(p["kick_margin_ppg"] for p in profile)
+
+        if min_window < 0.5:
+            mw_class = "CRITICAL"
+        elif min_window < 1.5:
+            mw_class = "NARROW"
+        else:
+            mw_class = "ADEQUATE"
+
+        recs = []
+        if mw_class == "CRITICAL":
+            recs.append("Critical mud weight window — managed pressure drilling recommended")
+        recs.append(f"Optimal MW range: {optimal_range[0]:.1f}-{optimal_range[1]:.1f} ppg (SF={safety_factor})")
+        recs.append(f"Min window: {min_window:.2f} ppg")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+            ds = [p["depth_m"] for p in profile]
+            ax.plot([p["collapse_ppg"] for p in profile], ds, 'r-', lw=2, label='Collapse (min)')
+            ax.plot([p["frac_ppg"] for p in profile], ds, 'b-', lw=2, label='Frac (max)')
+            ax.plot([p["optimal_ppg"] for p in profile], ds, 'g--', lw=2.5, label=f'Optimal (SF={safety_factor})')
+            ax.fill_betweenx(ds, [p["collapse_ppg"] for p in profile], [p["frac_ppg"] for p in profile], alpha=0.1, color='green')
+            ax.set_xlabel("Mud Weight (ppg)")
+            ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis()
+            ax.legend()
+            ax.set_title(f"Mud Weight Optimization — {well}")
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        result = {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "n_points": n_points, "safety_factor": safety_factor,
+            "min_window_ppg": round(min_window, 2),
+            "optimal_range_ppg": [round(optimal_range[0], 2), round(optimal_range[1], 2)],
+            "min_kick_margin_ppg": round(min_kick, 2),
+            "mw_class": mw_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"MW optimization: {mw_class} for {well}",
+                "risk_level": "HIGH" if mw_class == "CRITICAL" else "MODERATE" if mw_class == "NARROW" else "LOW",
+                "what_this_means": f"Min window {min_window:.2f} ppg, optimal range {optimal_range[0]:.1f}-{optimal_range[1]:.1f} ppg",
+                "for_non_experts": "This finds the best drilling fluid weight at each depth — too light risks a blowout, too heavy fractures the rock."
+            },
+            "elapsed_s": elapsed,
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _mw_optimization_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_mw_optimization_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════
+# [246] Fracture Orientation Bias
+# ═══════════════════════════════════════════════════════════════
+_orientation_bias_cache = {}
+
+@app.post("/api/analysis/fracture-orientation-bias")
+async def analysis_fracture_orientation_bias(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    borehole_azimuth = body.get("borehole_azimuth", 0)
+    borehole_dip = body.get("borehole_dip", 90)
+
+    ck = f"{source}_{well}_{borehole_azimuth}_{borehole_dip}"
+    if ck in _orientation_bias_cache:
+        return JSONResponse(_orientation_bias_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        azimuths = dw[AZIMUTH_COL].dropna().values
+        dips = dw[DIP_COL].dropna().values
+        n_fracs = len(dw)
+
+        bh_az_rad = np.radians(borehole_azimuth)
+        bh_dip_rad = np.radians(borehole_dip)
+        bh_normal = np.array([np.sin(bh_dip_rad) * np.sin(bh_az_rad),
+                              np.sin(bh_dip_rad) * np.cos(bh_az_rad),
+                              np.cos(bh_dip_rad)])
+
+        terzaghi_weights = []
+        apparent_angles = []
+        for az, dip in zip(azimuths, dips):
+            az_rad = np.radians(az)
+            dip_rad = np.radians(dip)
+            frac_normal = np.array([np.sin(dip_rad) * np.sin(az_rad),
+                                    np.sin(dip_rad) * np.cos(az_rad),
+                                    np.cos(dip_rad)])
+            cos_alpha = abs(np.dot(bh_normal, frac_normal))
+            cos_alpha = max(cos_alpha, 0.1)
+            weight = 1.0 / cos_alpha
+            terzaghi_weights.append(round(float(weight), 3))
+            apparent_angles.append(round(float(np.degrees(np.arccos(min(cos_alpha, 1.0)))), 1))
+
+        mean_weight = float(np.mean(terzaghi_weights)) if terzaghi_weights else 1.0
+        max_weight = float(np.max(terzaghi_weights)) if terzaghi_weights else 1.0
+        n_undersampled = sum(1 for w in terzaghi_weights if w > 2.0)
+        pct_undersampled = round(100 * n_undersampled / max(n_fracs, 1), 1)
+
+        if pct_undersampled > 40:
+            bias_class = "SEVERE"
+        elif pct_undersampled > 15:
+            bias_class = "MODERATE"
+        else:
+            bias_class = "MINOR"
+
+        bins_az = np.arange(0, 370, 30)
+        az_hist, _ = np.histogram(azimuths, bins=bins_az)
+        dip_bins = np.arange(0, 100, 10)
+        dip_hist, _ = np.histogram(dips, bins=dip_bins)
+
+        recs = []
+        if bias_class == "SEVERE":
+            recs.append(f"Severe orientation bias — {pct_undersampled:.0f}% fractures undersampled by borehole")
+        recs.append(f"Mean Terzaghi weight: {mean_weight:.2f}, max: {max_weight:.2f}")
+        recs.append(f"Borehole azimuth: {borehole_azimuth}°, dip: {borehole_dip}°")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 6))
+            axes[0].hist(terzaghi_weights, bins=20, color='steelblue', alpha=0.7, edgecolor='white')
+            axes[0].axvline(x=2.0, color='r', ls='--', label='Bias threshold')
+            axes[0].set_xlabel("Terzaghi Weight")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title("Sampling Bias Distribution")
+            axes[0].legend()
+            axes[0].grid(True, alpha=0.3)
+
+            axes[1].hist(apparent_angles, bins=18, color='coral', alpha=0.7, edgecolor='white')
+            axes[1].set_xlabel("Apparent Angle (°)")
+            axes[1].set_ylabel("Count")
+            axes[1].set_title("Fracture-Borehole Angle")
+            axes[1].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        result = {
+            "well": well, "n_fractures": n_fracs,
+            "borehole_azimuth": borehole_azimuth, "borehole_dip": borehole_dip,
+            "mean_terzaghi_weight": round(mean_weight, 3),
+            "max_terzaghi_weight": round(max_weight, 3),
+            "n_undersampled": n_undersampled,
+            "pct_undersampled": pct_undersampled,
+            "bias_class": bias_class,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Orientation bias: {bias_class} for {well}",
+                "risk_level": "HIGH" if bias_class == "SEVERE" else "MODERATE" if bias_class == "MODERATE" else "LOW",
+                "what_this_means": f"{pct_undersampled:.0f}% fractures undersampled, mean weight {mean_weight:.2f}",
+                "for_non_experts": "The borehole only sees certain fracture orientations well — this analysis reveals what we might be missing."
+            },
+            "elapsed_s": elapsed,
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _orientation_bias_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_orientation_bias_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════
+# [247] Stress Ratio Depth Profile
+# ═══════════════════════════════════════════════════════════════
+_stress_ratio_depth_cache = {}
+
+@app.post("/api/analysis/stress-ratio-depth")
+async def analysis_stress_ratio_depth(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}"
+    if ck in _stress_ratio_depth_cache:
+        return JSONResponse(_stress_ratio_depth_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = [depth_from + i * (depth_to - depth_from) / max(n_points - 1, 1) for i in range(n_points)]
+        rho = 2500; g = 9.81
+
+        profile = []
+        for d in depths:
+            Sv = rho * g * d / 1e6
+            Pp = 1000 * g * d / 1e6
+            Shmin = Pp + 0.65 * (Sv - Pp)
+            SHmax = Pp + 1.05 * (Sv - Pp)
+
+            K0 = Shmin / max(Sv, 0.01)
+            K_eff = (Shmin - Pp) / max(Sv - Pp, 0.01)
+            A_ratio = (SHmax - Shmin) / max(Sv, 0.01)
+            R_val = (SHmax - Shmin) / max(SHmax - Pp, 0.01) if SHmax > Pp else 0
+
+            profile.append({
+                "depth_m": round(d, 1),
+                "Sv_MPa": round(Sv, 3),
+                "Shmin_MPa": round(Shmin, 3),
+                "SHmax_MPa": round(SHmax, 3),
+                "K0": round(K0, 4),
+                "K_eff": round(K_eff, 4),
+                "A_ratio": round(A_ratio, 4),
+                "R_value": round(R_val, 4),
+            })
+
+        mean_K0 = sum(p["K0"] for p in profile) / len(profile)
+        mean_A = sum(p["A_ratio"] for p in profile) / len(profile)
+        K0_trend = profile[-1]["K0"] - profile[0]["K0"] if len(profile) >= 2 else 0
+
+        if mean_A > 0.3:
+            ratio_class = "HIGH_CONTRAST"
+        elif mean_A > 0.15:
+            ratio_class = "MODERATE_CONTRAST"
+        else:
+            ratio_class = "LOW_CONTRAST"
+
+        recs = []
+        if ratio_class == "HIGH_CONTRAST":
+            recs.append("High stress contrast — strong directionality in fracture behavior")
+        recs.append(f"Mean K0={mean_K0:.3f}, mean anisotropy={mean_A:.3f}")
+        if K0_trend < -0.05:
+            recs.append(f"K0 decreasing with depth (trend={K0_trend:.3f}) — typical of extensional basins")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 3, figsize=(12, 7))
+            ds = [p["depth_m"] for p in profile]
+
+            axes[0].plot([p["K0"] for p in profile], ds, 'b-', lw=2, label='K0 (total)')
+            axes[0].plot([p["K_eff"] for p in profile], ds, 'r--', lw=2, label='K eff')
+            axes[0].set_xlabel("Stress Ratio K")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].invert_yaxis()
+            axes[0].legend()
+            axes[0].set_title("Stress Ratios")
+            axes[0].grid(True, alpha=0.3)
+
+            axes[1].plot([p["A_ratio"] for p in profile], ds, 'g-', lw=2)
+            axes[1].set_xlabel("Anisotropy (SHmax-Shmin)/Sv")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].invert_yaxis()
+            axes[1].set_title("Stress Anisotropy")
+            axes[1].grid(True, alpha=0.3)
+
+            axes[2].plot([p["R_value"] for p in profile], ds, 'm-', lw=2)
+            axes[2].set_xlabel("R value")
+            axes[2].set_ylabel("Depth (m)")
+            axes[2].invert_yaxis()
+            axes[2].set_title("R Ratio Profile")
+            axes[2].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        result = {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "n_points": n_points,
+            "mean_K0": round(mean_K0, 4),
+            "mean_A_ratio": round(mean_A, 4),
+            "K0_trend": round(K0_trend, 4),
+            "ratio_class": ratio_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stress ratios: {ratio_class} for {well}",
+                "risk_level": "HIGH" if ratio_class == "HIGH_CONTRAST" else "MODERATE" if ratio_class == "MODERATE_CONTRAST" else "LOW",
+                "what_this_means": f"Mean K0={mean_K0:.3f}, anisotropy={mean_A:.3f}",
+                "for_non_experts": "This shows how the horizontal and vertical rock pressures compare — it reveals the stress regime and its implications for wellbore design."
+            },
+            "elapsed_s": elapsed,
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _stress_ratio_depth_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_stress_ratio_depth_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════
+# [248] Wellbore Shear Failure
+# ═══════════════════════════════════════════════════════════════
+_wellbore_shear_cache = {}
+
+@app.post("/api/analysis/wellbore-shear-failure")
+async def analysis_wellbore_shear_failure(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    UCS_MPa = body.get("UCS_MPa", 50)
+    friction = body.get("friction", 0.6)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{UCS_MPa}_{friction}"
+    if ck in _wellbore_shear_cache:
+        return JSONResponse(_wellbore_shear_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = [depth_from + i * (depth_to - depth_from) / max(n_points - 1, 1) for i in range(n_points)]
+        rho = 2500; g = 9.81
+        q = ((friction**2 + 1)**0.5 + friction)**2
+        cohesion = UCS_MPa / (2 * ((friction**2 + 1)**0.5 + friction))
+
+        profile = []
+        n_failure = 0
+        for d in depths:
+            Sv = rho * g * d / 1e6
+            Pp = 1000 * g * d / 1e6
+            Shmin = Pp + 0.65 * (Sv - Pp)
+            SHmax = Pp + 1.05 * (Sv - Pp)
+
+            sigma_theta_max = 3 * SHmax - Shmin - Pp
+            sigma_theta_min = 3 * Shmin - SHmax - Pp
+
+            sigma_1_wall = max(sigma_theta_max, Sv)
+            sigma_3_wall = min(sigma_theta_min, Pp) if sigma_theta_min > 0 else 0
+
+            MC_strength = UCS_MPa + q * sigma_3_wall
+            shear_margin = MC_strength - sigma_1_wall
+            shear_SF = MC_strength / max(sigma_1_wall, 0.01)
+            failure = sigma_1_wall > MC_strength
+            if failure:
+                n_failure += 1
+
+            profile.append({
+                "depth_m": round(d, 1),
+                "sigma_1_wall_MPa": round(sigma_1_wall, 3),
+                "sigma_3_wall_MPa": round(sigma_3_wall, 3),
+                "MC_strength_MPa": round(MC_strength, 3),
+                "shear_margin_MPa": round(shear_margin, 3),
+                "shear_SF": round(shear_SF, 3),
+                "failure": failure,
+            })
+
+        pct_failure = round(100 * n_failure / max(len(depths), 1), 1)
+        min_SF = min(p["shear_SF"] for p in profile)
+        min_margin = min(p["shear_margin_MPa"] for p in profile)
+
+        if pct_failure > 50:
+            shear_class = "CRITICAL"
+        elif pct_failure > 20:
+            shear_class = "HIGH_RISK"
+        elif pct_failure > 0:
+            shear_class = "MODERATE_RISK"
+        else:
+            shear_class = "STABLE"
+
+        recs = []
+        if shear_class == "CRITICAL":
+            recs.append(f"Critical shear failure — {pct_failure:.0f}% of interval at risk")
+        if min_SF < 1.0:
+            recs.append(f"Min safety factor {min_SF:.2f} < 1.0 — shear failure expected")
+        recs.append(f"UCS={UCS_MPa} MPa, friction={friction}, cohesion={cohesion:.1f} MPa")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 7))
+            ds = [p["depth_m"] for p in profile]
+
+            axes[0].plot([p["sigma_1_wall_MPa"] for p in profile], ds, 'r-', lw=2, label='σ1 wall')
+            axes[0].plot([p["MC_strength_MPa"] for p in profile], ds, 'k--', lw=2, label='MC Strength')
+            axes[0].set_xlabel("Stress (MPa)")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].invert_yaxis()
+            axes[0].legend()
+            axes[0].set_title("Wall Stress vs Strength")
+            axes[0].grid(True, alpha=0.3)
+            for p in profile:
+                if p["failure"]:
+                    axes[0].axhspan(p["depth_m"] - 50, p["depth_m"] + 50, alpha=0.15, color='red')
+
+            axes[1].plot([p["shear_SF"] for p in profile], ds, 'b-', lw=2)
+            axes[1].axvline(x=1.0, color='r', ls='--', lw=1.5, label='SF=1')
+            axes[1].set_xlabel("Safety Factor")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].invert_yaxis()
+            axes[1].legend()
+            axes[1].set_title("Shear Safety Factor")
+            axes[1].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        result = {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "n_points": n_points, "UCS_MPa": UCS_MPa, "friction": friction,
+            "cohesion_MPa": round(cohesion, 2),
+            "n_failure_zones": n_failure,
+            "pct_failure": pct_failure,
+            "min_shear_SF": round(min_SF, 3),
+            "min_margin_MPa": round(min_margin, 3),
+            "shear_class": shear_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Shear failure: {shear_class} for {well}",
+                "risk_level": "HIGH" if shear_class in ("CRITICAL", "HIGH_RISK") else "MODERATE" if shear_class == "MODERATE_RISK" else "LOW",
+                "what_this_means": f"{pct_failure:.0f}% failure risk, min SF={min_SF:.2f}",
+                "for_non_experts": "This predicts where the wellbore wall might break from squeezing — knowing these zones helps plan casing and mud weight."
+            },
+            "elapsed_s": elapsed,
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _wellbore_shear_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_wellbore_shear_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════
+# [249] Fracture Permeability Tensor
+# ═══════════════════════════════════════════════════════════════
+_perm_tensor_dir_cache = {}
+
+@app.post("/api/analysis/fracture-perm-tensor-directional")
+async def analysis_fracture_perm_tensor_directional(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    aperture_mm = body.get("aperture_mm", 0.1)
+
+    ck = f"{source}_{well}_{aperture_mm}"
+    if ck in _perm_tensor_dir_cache:
+        return JSONResponse(_perm_tensor_dir_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        azimuths = dw[AZIMUTH_COL].dropna().values
+        dips = dw[DIP_COL].dropna().values
+        depths = dw[DEPTH_COL].dropna().values
+        n_fracs = len(dw)
+
+        aperture_m = aperture_mm / 1000.0
+        kf = (aperture_m ** 2) / 12.0
+
+        kxx = 0; kyy = 0; kzz = 0; kxy = 0; kxz = 0; kyz = 0
+        for az, dip in zip(azimuths, dips):
+            az_rad = np.radians(az)
+            dip_rad = np.radians(dip)
+            nx = np.sin(dip_rad) * np.sin(az_rad)
+            ny = np.sin(dip_rad) * np.cos(az_rad)
+            nz = np.cos(dip_rad)
+
+            kxx += kf * (1 - nx * nx)
+            kyy += kf * (1 - ny * ny)
+            kzz += kf * (1 - nz * nz)
+            kxy += kf * (-nx * ny)
+            kxz += kf * (-nx * nz)
+            kyz += kf * (-ny * nz)
+
+        thickness = max(float(np.nanmax(depths) - np.nanmin(depths)), 1.0) if len(depths) >= 2 else 100.0
+        scale = aperture_m / thickness
+
+        kxx *= scale; kyy *= scale; kzz *= scale
+        kxy *= scale; kxz *= scale; kyz *= scale
+
+        mD = 1.0 / 9.869233e-16
+        tensor = {
+            "kxx_mD": round(kxx * mD, 6),
+            "kyy_mD": round(kyy * mD, 6),
+            "kzz_mD": round(kzz * mD, 6),
+            "kxy_mD": round(kxy * mD, 6),
+            "kxz_mD": round(kxz * mD, 6),
+            "kyz_mD": round(kyz * mD, 6),
+        }
+
+        k_max = max(tensor["kxx_mD"], tensor["kyy_mD"], tensor["kzz_mD"])
+        k_min = min(tensor["kxx_mD"], tensor["kyy_mD"], tensor["kzz_mD"])
+        anisotropy_ratio = k_max / max(k_min, 1e-12)
+
+        if anisotropy_ratio > 10:
+            tensor_class = "HIGHLY_ANISOTROPIC"
+        elif anisotropy_ratio > 3:
+            tensor_class = "ANISOTROPIC"
+        else:
+            tensor_class = "ISOTROPIC"
+
+        recs = []
+        if tensor_class == "HIGHLY_ANISOTROPIC":
+            recs.append(f"Highly anisotropic permeability (ratio {anisotropy_ratio:.1f}x) — directional flow expected")
+        recs.append(f"Max perm: {k_max:.6f} mD, Min: {k_min:.6f} mD")
+        recs.append(f"Based on {n_fracs} fractures with {aperture_mm}mm aperture")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 6))
+            dirs = ['kxx (E-W)', 'kyy (N-S)', 'kzz (Vert)']
+            vals = [tensor["kxx_mD"], tensor["kyy_mD"], tensor["kzz_mD"]]
+            colors = ['steelblue', 'coral', 'mediumseagreen']
+            axes[0].bar(dirs, vals, color=colors, alpha=0.7)
+            axes[0].set_ylabel("Permeability (mD)")
+            axes[0].set_title("Directional Permeability")
+            axes[0].grid(True, alpha=0.3, axis='y')
+
+            off = ['kxy', 'kxz', 'kyz']
+            off_vals = [tensor["kxy_mD"], tensor["kxz_mD"], tensor["kyz_mD"]]
+            axes[1].bar(off, off_vals, color='purple', alpha=0.7)
+            axes[1].set_ylabel("Permeability (mD)")
+            axes[1].set_title("Off-diagonal Components")
+            axes[1].grid(True, alpha=0.3, axis='y')
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        result = {
+            "well": well, "n_fractures": n_fracs,
+            "aperture_mm": aperture_mm,
+            "tensor": tensor,
+            "k_max_mD": round(k_max, 6),
+            "k_min_mD": round(k_min, 6),
+            "anisotropy_ratio": round(anisotropy_ratio, 2),
+            "tensor_class": tensor_class,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Perm tensor: {tensor_class} for {well}",
+                "risk_level": "HIGH" if tensor_class == "HIGHLY_ANISOTROPIC" else "MODERATE" if tensor_class == "ANISOTROPIC" else "LOW",
+                "what_this_means": f"Anisotropy ratio {anisotropy_ratio:.1f}x, max perm {k_max:.6f} mD",
+                "for_non_experts": "This shows how easily fluids flow in different directions through the fractured rock — important for predicting where injected water or oil will move."
+            },
+            "elapsed_s": elapsed,
+        }
+        return result
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _perm_tensor_dir_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_perm_tensor_dir_cache[ck])
