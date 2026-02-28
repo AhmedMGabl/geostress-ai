@@ -17233,3 +17233,98 @@ async function runSwellingPressureRisk() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// [310] Annular Pressure Loss
+async function runAnnularPressureLoss() {
+    var results = document.getElementById('annularPressureLossResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/annular-pressure-loss', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,flow_rate_gpm:500,mud_weight_ppg:10})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.apl_class==='HIGH'?'danger':r.apl_class==='MODERATE'?'warning':'success')+'"><strong>'+r.apl_class+'</strong> — Total APL='+r.total_loss_psi+' psi (+'+r.total_loss_ppg+' ppg), ECD='+r.ECD_at_TD_ppg+' ppg</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [311] Stability Window Profile
+async function runStabilityWindowProfile() {
+    var results = document.getElementById('stabilityWindowResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/stability-window-profile', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,UCS_MPa:40})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.sw_class==='NO_WINDOW'?'danger':r.sw_class==='NARROW'?'warning':'success')+'"><strong>'+r.sw_class+'</strong> — Min window='+r.min_window_ppg+' ppg, Mean='+r.mean_window_ppg+' ppg</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [312] Trip Margin Analysis
+async function runTripMarginAnalysis() {
+    var results = document.getElementById('tripMarginResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/trip-margin-analysis', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,mud_weight_ppg:10,connection_time_min:5})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.tm_class==='INSUFFICIENT'?'danger':r.tm_class==='TIGHT'?'warning':'success')+'"><strong>'+r.tm_class+'</strong> — Min margin='+r.min_effective_margin_ppg+' ppg, '+r.pct_negative+'% negative</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [313] Pack-Off Risk
+async function runPackOffRisk() {
+    var results = document.getElementById('packOffRiskResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/pack-off-risk', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,flow_rate_gpm:500,rop_ft_hr:60})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.po_class==='HIGH'?'danger':r.po_class==='MODERATE'?'warning':'success')+'"><strong>'+r.po_class+'</strong> — Mean risk='+r.mean_pack_risk+', Max='+r.max_pack_risk+'</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [314] ECD Profile (Comprehensive)
+async function runECDProfile() {
+    var results = document.getElementById('ecdProfileResult');
+    results.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Running...';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var resp = await fetch('/api/analysis/equivalent-circulating-density', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:currentSource,well:well,mud_weight_ppg:10,flow_rate_gpm:500,rop_ft_hr:60})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-danger">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-'+(r.ecd_class==='CRITICAL'?'danger':r.ecd_class==='TIGHT'?'warning':'success')+'"><strong>'+r.ecd_class+'</strong> — ECD at TD='+r.ECD_at_TD_ppg+' ppg, Frac margin='+r.min_frac_margin_ppg+' ppg</div>';
+        if (r.stakeholder_brief) html += '<div class="alert alert-info"><strong>'+r.stakeholder_brief.headline+'</strong><br>'+r.stakeholder_brief.for_non_experts+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}

@@ -4714,6 +4714,61 @@
                         </div>
                     </div>
 
+                    <!-- [310] Annular Pressure Loss -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info text-dark d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-up-circle"></i> <strong>[310] Annular Pressure Loss</strong></span>
+                            <button class="btn btn-sm btn-dark" onclick="runAnnularPressureLoss()">Run</button>
+                        </div>
+                        <div class="card-body small" id="annularPressureLossResult">
+                            <p class="text-muted">Bingham plastic annular pressure loss and ECD profile.</p>
+                        </div>
+                    </div>
+
+                    <!-- [311] Stability Window Profile -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-rulers"></i> <strong>[311] Stability Window Profile</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runStabilityWindowProfile()">Run</button>
+                        </div>
+                        <div class="card-body small" id="stabilityWindowResult">
+                            <p class="text-muted">Breakout/breakdown MW window for safe drilling.</p>
+                        </div>
+                    </div>
+
+                    <!-- [312] Trip Margin Analysis -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-clock-history"></i> <strong>[312] Trip Margin Analysis</strong></span>
+                            <button class="btn btn-sm btn-dark" onclick="runTripMarginAnalysis()">Run</button>
+                        </div>
+                        <div class="card-body small" id="tripMarginResult">
+                            <p class="text-muted">MW increment needed during pipe connections and trips.</p>
+                        </div>
+                    </div>
+
+                    <!-- [313] Pack-Off Risk -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-box-seam"></i> <strong>[313] Pack-Off Risk</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runPackOffRisk()">Run</button>
+                        </div>
+                        <div class="card-body small" id="packOffRiskResult">
+                            <p class="text-muted">Cuttings accumulation and pack-off risk assessment.</p>
+                        </div>
+                    </div>
+
+                    <!-- [314] ECD Profile (Comprehensive) -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-up-arrow"></i> <strong>[314] ECD Profile</strong></span>
+                            <button class="btn btn-sm btn-light" onclick="runECDProfile()">Run</button>
+                        </div>
+                        <div class="card-body small" id="ecdProfileResult">
+                            <p class="text-muted">Comprehensive ECD with friction, cuttings, and temperature effects.</p>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
