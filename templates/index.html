@@ -2770,6 +2770,81 @@
                         </div>
                     </div>
 
+                    <!-- In-Situ Stress Ratio [v3.50.0] -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bar-chart-steps"></i> In-Situ Stress Ratio</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runStressRatio()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">K0/Kh stress ratio analysis with depth trend.</p>
+                            <div id="stress-ratio-results" style="display:none;"></div>
+                            <img id="stress-ratio-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Fracture Corridor Detection [v3.50.0] -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-signpost-split"></i> Fracture Corridor Detection</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runFractureCorridor()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">High-density fracture zone identification.</p>
+                            <div id="fracture-corridor-results" style="display:none;"></div>
+                            <img id="fracture-corridor-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Drilling Hazard Assessment [v3.50.0] -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-diamond"></i> Drilling Hazard Assessment</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runDrillingHazard()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Comprehensive 6-hazard drilling risk evaluation.</p>
+                            <div id="drilling-hazard-results" style="display:none;"></div>
+                            <img id="drilling-hazard-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Thermal Stress [v3.50.0] -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-thermometer-half"></i> Thermal Stress</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runThermalStress()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Thermal stress effects on borehole stability.</p>
+                            <div id="thermal-stress-results" style="display:none;"></div>
+                            <img id="thermal-stress-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- DFN Statistics [v3.50.0] -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-diagram-3"></i> DFN Statistics</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runDFNStatistics()">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Discrete Fracture Network statistics and connectivity.</p>
+                            <div id="dfn-stats-results" style="display:none;"></div>
+                            <img id="dfn-stats-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

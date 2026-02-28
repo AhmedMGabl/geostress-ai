@@ -14172,3 +14172,135 @@ async function runFaultReactivation() {
         if (r.plot) { var plotEl = document.getElementById('fault-reactivation-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
     } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ═══ [185] In-Situ Stress Ratio ═══
+async function runStressRatio() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('stress-ratio-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/stress-ratio', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, n_points: 25})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Mean Kh</h6><h3>' + r.mean_Kh + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>K0 (elastic)</h6><h3>' + r.K0_elastic + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Trend</h6><h3>' + r.K_trend + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Regime</h6><h3>' + r.regime_indication + '</h3></div></div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('stress-ratio-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══ [186] Fracture Corridor Detection ═══
+async function runFractureCorridor() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('fracture-corridor-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/fracture-corridor', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, window_m: 5, threshold_factor: 2.0})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Corridors</h6><h3>' + r.n_corridors + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>% in Corridors</h6><h3>' + r.pct_fractures_in_corridors + '%</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Thickness</h6><h3>' + r.total_corridor_thickness_m + 'm</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Threshold</h6><h3>' + r.threshold_count + '</h3></div></div>';
+        html += '</div>';
+        if (r.corridors && r.corridors.length) {
+            html += '<h6 class="mt-2">Corridors</h6><table class="table table-sm"><thead><tr><th>Depth</th><th>Fracs</th><th>Density</th></tr></thead><tbody>';
+            r.corridors.forEach(function(c) { html += '<tr><td>' + c.depth_from_m + '-' + c.depth_to_m + 'm</td><td>' + c.n_fractures + '</td><td>' + c.density_per_m + '/m</td></tr>'; });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('fracture-corridor-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══ [187] Drilling Hazard Assessment ═══
+async function runDrillingHazard() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('drilling-hazard-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/drilling-hazard', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, depth: 3000, mud_weight_sg: 1.2})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Overall</h6><h3 class="text-' + (r.overall_risk === 'HIGH' ? 'danger' : r.overall_risk === 'MODERATE' ? 'warning' : 'success') + '">' + r.overall_risk + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>High Risk</h6><h3 class="text-danger">' + r.n_high_risk + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Moderate</h6><h3 class="text-warning">' + r.n_moderate_risk + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>MW Window</h6><h3>' + (r.mud_weight_window ? r.mud_weight_window.min_SG + '-' + r.mud_weight_window.max_SG : 'N/A') + '</h3></div></div>';
+        html += '</div>';
+        if (r.hazards && r.hazards.length) {
+            html += '<h6 class="mt-2">Hazards</h6><table class="table table-sm"><thead><tr><th>Hazard</th><th>Risk</th><th>SF</th><th>Detail</th></tr></thead><tbody>';
+            r.hazards.forEach(function(h) { html += '<tr><td>' + h.hazard + '</td><td class="text-' + (h.risk_level === 'HIGH' ? 'danger' : h.risk_level === 'MODERATE' ? 'warning' : 'success') + '">' + h.risk_level + '</td><td>' + h.safety_factor + '</td><td class="small">' + h.detail + '</td></tr>'; });
+            html += '</tbody></table>';
+        }
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('drilling-hazard-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══ [188] Thermal Stress ═══
+async function runThermalStress() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('thermal-stress-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/thermal-stress', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well, depth: 3000, geothermal_gradient: 30})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Thermal Stress</h6><h3>' + r.thermal_stress_MPa + ' MPa</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Impact</h6><h3>' + r.thermal_impact + '</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>Formation T</h6><h3>' + r.formation_temp_C + ' C</h3></div></div>';
+        html += '<div class="col-md-3"><div class="card p-2 text-center"><h6>SF (thermal)</h6><h3>' + r.sf_with_thermal + '</h3></div></div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('thermal-stress-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══ [189] DFN Statistics ═══
+async function runDFNStatistics() {
+    var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+    var results = document.getElementById('dfn-stats-results');
+    showLoading();
+    try {
+        var r = await apiFetch('/api/analysis/dfn-statistics', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: currentSource, well: well})
+        });
+        results.style.display = '';
+        var html = '<div class="row">';
+        html += '<div class="col-md-2"><div class="card p-2 text-center"><h6>P10</h6><h3>' + r.P10_per_m + '/m</h3></div></div>';
+        html += '<div class="col-md-2"><div class="card p-2 text-center"><h6>Spacing</h6><h3>' + r.mean_spacing_m + 'm</h3></div></div>';
+        html += '<div class="col-md-2"><div class="card p-2 text-center"><h6>Distribution</h6><h3>' + r.spacing_distribution + '</h3></div></div>';
+        html += '<div class="col-md-2"><div class="card p-2 text-center"><h6>Fisher K</h6><h3>' + r.fisher_kappa + '</h3></div></div>';
+        html += '<div class="col-md-2"><div class="card p-2 text-center"><h6>Sets</h6><h3>' + r.n_dominant_sets + '</h3></div></div>';
+        html += '<div class="col-md-2"><div class="card p-2 text-center"><h6>Connect.</h6><h3>' + r.connectivity_class + '</h3></div></div>';
+        html += '</div>';
+        if (r.recommendations && r.recommendations.length) { html += '<h6 class="mt-2">Recommendations</h6><ul>'; r.recommendations.forEach(function(rec) { html += '<li>' + rec + '</li>'; }); html += '</ul>'; }
+        if (r.stakeholder_brief) { var brief = r.stakeholder_brief; html += '<div class="alert alert-' + (brief.risk_level === 'RED' ? 'danger' : brief.risk_level === 'AMBER' ? 'warning' : 'success') + ' mt-2"><strong>' + (brief.headline || '') + '</strong><br>' + (brief.what_this_means || '') + '<br><em>' + (brief.for_non_experts || '') + '</em></div>'; }
+        results.innerHTML = html;
+        if (r.plot) { var plotEl = document.getElementById('dfn-stats-plot'); if (plotEl) { plotEl.src = r.plot; plotEl.style.display = ''; } }
+    } catch (e) { results.style.display = ''; results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
