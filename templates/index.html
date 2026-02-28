@@ -3668,6 +3668,86 @@
                         </div>
                     </div>
 
+                    <!-- [240] Pore Pressure Window -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-thermometer-half"></i> Pore Pressure Window [240]</span>
+                            <button class="btn btn-sm btn-info" onclick="runPpWindow()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="ppw-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="ppw-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="ppw-npts" placeholder="Points" value="25"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="ppw-mw" placeholder="MW (ppg)" value="10.0" step="0.1"></div>
+                            </div>
+                            <div id="ppWindowResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [241] Fracture Density Profile -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bar-chart-steps"></i> Fracture Density Profile [241]</span>
+                            <button class="btn btn-sm btn-info" onclick="runFracDensityProf()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-12"><input type="number" class="form-control form-control-sm" id="fdp-bin" placeholder="Bin Size (m)" value="50"></div>
+                            </div>
+                            <div id="fracDensityProfResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [242] Stress Polygon -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-pentagon-fill"></i> Stress Polygon [242]</span>
+                            <button class="btn btn-sm btn-info" onclick="runStressPolygon()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="sp-depth" placeholder="Depth (m)" value="3000"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="sp-friction" placeholder="μ" value="0.6" step="0.05"></div>
+                            </div>
+                            <div id="stressPolygonResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [243] Rock Strength -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-gem"></i> Rock Strength [243]</span>
+                            <button class="btn btn-sm btn-info" onclick="runRockStrength()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="rs-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="rs-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="rs-npts" placeholder="Points" value="25"></div>
+                                <div class="col-3"><select class="form-select form-select-sm" id="rs-lith"><option value="sandstone">Sandstone</option><option value="shale">Shale</option><option value="limestone">Limestone</option><option value="granite">Granite</option></select></div>
+                            </div>
+                            <div id="rockStrengthResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [244] Wellbore Breakout Depth -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-exclamation-diamond-fill"></i> Breakout Depth [244]</span>
+                            <button class="btn btn-sm btn-info" onclick="runBreakoutDepth()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="bd-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="bd-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="bd-npts" placeholder="Points" value="25"></div>
+                                <div class="col-3"><input type="number" class="form-control form-control-sm" id="bd-ucs" placeholder="UCS (MPa)" value="50"></div>
+                            </div>
+                            <div id="breakoutDepthResult"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

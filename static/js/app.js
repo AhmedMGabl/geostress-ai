@@ -15663,3 +15663,141 @@ async function runStressAniso() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// [240] Pore Pressure Window
+// ═══════════════════════════════════════════════════════════════
+async function runPpWindow() {
+    var results = document.getElementById('ppWindowResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depthFrom = parseFloat(document.getElementById('ppw-from').value) || 500;
+        var depthTo = parseFloat(document.getElementById('ppw-to').value) || 5000;
+        var nPts = parseInt(document.getElementById('ppw-npts').value) || 25;
+        var mw = parseFloat(document.getElementById('ppw-mw').value) || 10.0;
+        var resp = await fetch('/api/analysis/pore-pressure-window', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depthFrom,depth_to:depthTo,n_points:nPts,mud_weight_ppg:mw})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.pp_class+'</strong> — Min window: '+(r.min_window_MPa||0).toFixed(1)+' MPa</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Min Window</h6><h4>'+(r.min_window_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Min Kick Margin</h6><h4>'+(r.min_kick_margin_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Min Loss Margin</h6><h4>'+(r.min_loss_margin_MPa||0).toFixed(1)+' MPa</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [241] Fracture Density Profile
+// ═══════════════════════════════════════════════════════════════
+async function runFracDensityProf() {
+    var results = document.getElementById('fracDensityProfResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var binSize = parseFloat(document.getElementById('fdp-bin').value) || 50;
+        var resp = await fetch('/api/analysis/fracture-density-profile', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,bin_size_m:binSize})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.density_class+'</strong> — Max: '+(r.max_density_per_m||0).toFixed(4)+'/m, Mean: '+(r.mean_density_per_m||0).toFixed(4)+'/m</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Bins</h6><h4>'+r.n_bins+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Max Density</h6><h4>'+(r.max_density_per_m||0).toFixed(4)+'/m</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Mean Density</h6><h4>'+(r.mean_density_per_m||0).toFixed(4)+'/m</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>CV</h6><h4>'+(r.cv_density||0).toFixed(3)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [242] Stress Polygon
+// ═══════════════════════════════════════════════════════════════
+async function runStressPolygon() {
+    var results = document.getElementById('stressPolygonResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth = parseFloat(document.getElementById('sp-depth').value) || 3000;
+        var friction = parseFloat(document.getElementById('sp-friction').value) || 0.6;
+        var resp = await fetch('/api/analysis/stress-polygon-frictional', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth:depth,friction:friction})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.current_regime+'</strong> — Sv='+(r.Sv_MPa||0).toFixed(1)+', Shmin='+(r.Shmin_est_MPa||0).toFixed(1)+', SHmax='+(r.SHmax_est_MPa||0).toFixed(1)+' MPa</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Sv</h6><h4>'+(r.Sv_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Shmin</h6><h4>'+(r.Shmin_est_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>SHmax</h6><h4>'+(r.SHmax_est_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>q</h6><h4>'+(r.frictional_limit_q||0).toFixed(3)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [243] Rock Strength
+// ═══════════════════════════════════════════════════════════════
+async function runRockStrength() {
+    var results = document.getElementById('rockStrengthResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depthFrom = parseFloat(document.getElementById('rs-from').value) || 500;
+        var depthTo = parseFloat(document.getElementById('rs-to').value) || 5000;
+        var nPts = parseInt(document.getElementById('rs-npts').value) || 25;
+        var lith = document.getElementById('rs-lith').value || 'sandstone';
+        var resp = await fetch('/api/analysis/rock-strength-lithology', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depthFrom,depth_to:depthTo,n_points:nPts,lithology:lith})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.strength_class+'</strong> ('+r.lithology+') — UCS range: '+(r.min_UCS_MPa||0).toFixed(0)+'-'+(r.max_UCS_MPa||0).toFixed(0)+' MPa</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Mean UCS</h6><h4>'+(r.mean_UCS_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Min UCS</h6><h4>'+(r.min_UCS_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Max UCS</h6><h4>'+(r.max_UCS_MPa||0).toFixed(1)+' MPa</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// [244] Wellbore Breakout Depth
+// ═══════════════════════════════════════════════════════════════
+async function runBreakoutDepth() {
+    var results = document.getElementById('breakoutDepthResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depthFrom = parseFloat(document.getElementById('bd-from').value) || 500;
+        var depthTo = parseFloat(document.getElementById('bd-to').value) || 5000;
+        var nPts = parseInt(document.getElementById('bd-npts').value) || 25;
+        var ucs = parseFloat(document.getElementById('bd-ucs').value) || 50;
+        var resp = await fetch('/api/analysis/wellbore-breakout-depth', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depthFrom,depth_to:depthTo,n_points:nPts,UCS_MPa:ucs})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.breakout_class+'</strong> — '+(r.pct_breakout||0).toFixed(1)+'% affected, min margin: '+(r.min_margin_MPa||0).toFixed(1)+' MPa</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Breakout Zones</h6><h4>'+r.n_breakout_zones+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>% Affected</h6><h4>'+(r.pct_breakout||0).toFixed(1)+'%</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Min Margin</h6><h4>'+(r.min_margin_MPa||0).toFixed(1)+' MPa</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Min SF</h6><h4>'+(r.min_stability_factor||0).toFixed(3)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
