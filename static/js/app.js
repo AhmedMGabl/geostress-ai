@@ -16850,3 +16850,98 @@ async function runCaprockSeal() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// [290] Hydrostatic Kill Weight
+async function runKillWeight() {
+    var results = document.getElementById('killWeightResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('killwt-well').value;
+        var from = parseFloat(document.getElementById('killwt-from').value) || 500;
+        var to = parseFloat(document.getElementById('killwt-to').value) || 5000;
+        var margin = parseFloat(document.getElementById('killwt-margin').value) || 0.5;
+        var resp = await fetch('/api/analysis/hydrostatic-kill-weight', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:from,depth_to:to,kick_margin_ppg:margin})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.kw_class==='CRITICAL'||r.kw_class==='TIGHT'?'danger':r.kw_class==='ADEQUATE'?'warning':'success')+'"><strong>'+r.kw_class+'</strong> — Max Kill='+r.max_kill_ppg+' ppg, Min Margin='+r.min_margin_ppg+' ppg</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [291] ECD Sensitivity
+async function runEcdSensitivity() {
+    var results = document.getElementById('ecdSensResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('ecdsens-well').value;
+        var depth = parseFloat(document.getElementById('ecdsens-depth').value) || 3000;
+        var mw = parseFloat(document.getElementById('ecdsens-mw').value) || 10;
+        var flow = parseFloat(document.getElementById('ecdsens-flow').value) || 500;
+        var hole = parseFloat(document.getElementById('ecdsens-hole').value) || 8.5;
+        var resp = await fetch('/api/analysis/ecd-sensitivity', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,mud_weight_ppg:mw,flow_rate_gpm:flow,hole_diameter_in:hole})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.ecd_class==='CRITICAL'||r.ecd_class==='TIGHT'?'danger':r.ecd_class==='ADEQUATE'?'warning':'success')+'"><strong>'+r.ecd_class+'</strong> — ECD='+r.ECD_ppg+' ppg, Margin='+r.ecd_margin_ppg+' ppg</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [292] Formation Breakdown
+async function runFmBreakdown() {
+    var results = document.getElementById('fmBreakdownResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('fmbd-well').value;
+        var from = parseFloat(document.getElementById('fmbd-from').value) || 500;
+        var to = parseFloat(document.getElementById('fmbd-to').value) || 5000;
+        var t0 = parseFloat(document.getElementById('fmbd-t0').value) || 5;
+        var resp = await fetch('/api/analysis/formation-breakdown', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:from,depth_to:to,tensile_strength_MPa:t0})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.bd_class==='LOW_PRESSURE'?'danger':r.bd_class==='MODERATE'?'warning':'success')+'"><strong>'+r.bd_class+'</strong> — Min Pb='+r.min_Pb_HW_MPa+' MPa, Mean Pb='+r.mean_Pb_HW_MPa+' MPa</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [293] Stress Regime Polygon
+async function runStressPoly() {
+    var results = document.getElementById('stressPolyResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('stresspoly-well').value;
+        var depth = parseFloat(document.getElementById('stresspoly-depth').value) || 3000;
+        var mu = parseFloat(document.getElementById('stresspoly-mu').value) || 0.6;
+        var resp = await fetch('/api/analysis/stress-regime-polygon', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_m:depth,friction:mu})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-info"><strong>'+r.reg_class+'</strong> — Sv='+r.Sv_MPa+' MPa, Shmin='+r.Shmin_est_MPa+', SHmax='+r.SHmax_est_MPa+' MPa, q='+r.frictional_limit_q+'</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// [294] Fracture Gradient Window
+async function runFracGradWindow() {
+    var results = document.getElementById('fracGradWinResult');
+    showLoading(); results.innerHTML = '';
+    try {
+        var well = document.getElementById('fracgw-well').value;
+        var from = parseFloat(document.getElementById('fracgw-from').value) || 500;
+        var to = parseFloat(document.getElementById('fracgw-to').value) || 5000;
+        var mw = parseFloat(document.getElementById('fracgw-mw').value) || 10;
+        var resp = await fetch('/api/analysis/fracture-gradient-window', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:from,depth_to:to,mud_weight_ppg:mw})});
+        var r = await resp.json();
+        var html = '<div class="alert alert-'+(r.fw_class==='NO_WINDOW'||r.fw_class==='NARROW'?'danger':r.fw_class==='ADEQUATE'?'warning':'success')+'"><strong>'+r.fw_class+'</strong> — Min Window='+r.min_window_ppg+' ppg, Safe='+r.pct_safe+'%</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}

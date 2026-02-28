@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.70.0 - Thermal Fracture + Fault Slip + Pp Depletion + Wellbore Heating + Caprock Seal)."""
+"""GeoStress AI - FastAPI Web Application (v3.71.0 - Kill Weight + ECD Sensitivity + Formation Breakdown + Stress Polygon + Frac Gradient Window)."""
 
 import os
 import io
@@ -53204,4 +53204,625 @@ async def analysis_caprock_seal_capacity(request: Request):
         return JSONResponse(content=result, status_code=404)
     result["elapsed_s"] = round(time.time() - t0, 3)
     _caprock_seal_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [290] HYDROSTATIC KILL WEIGHT  (v3.71.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_kill_weight_cache: dict = {}
+
+@app.post("/api/analysis/hydrostatic-kill-weight")
+async def analysis_hydrostatic_kill_weight(request: Request):
+    """Kill weight mud density — required to balance formation pressure."""
+    import time
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = float(body.get("depth_from", 500))
+    depth_to = float(body.get("depth_to", 5000))
+    n_points = int(body.get("n_points", 25))
+    kick_margin_ppg = float(body.get("kick_margin_ppg", 0.5))
+
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{n_points}:{kick_margin_ppg}"
+    if ck in _kill_weight_cache:
+        cached = _kill_weight_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            Pp_MPa = 0.0098 * d
+            # Convert to ppg: MW = Pp / (0.052 * TVD_ft)
+            TVD_ft = d * 3.28084
+            if TVD_ft > 0:
+                MW_ppg = (Pp_MPa * 145.038) / (0.052 * TVD_ft)  # Pp in psi / (0.052*TVD)
+            else:
+                MW_ppg = 8.33
+            kill_ppg = MW_ppg + kick_margin_ppg
+            Sv_MPa = 0.025 * d
+            frac_grad_ppg = (0.7 * Sv_MPa * 145.038) / (0.052 * max(TVD_ft, 1))
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_MPa": round(float(Pp_MPa), 2),
+                "MW_ppg": round(float(MW_ppg), 2),
+                "kill_ppg": round(float(kill_ppg), 2),
+                "frac_grad_ppg": round(float(frac_grad_ppg), 2),
+                "margin_ppg": round(float(frac_grad_ppg - kill_ppg), 2)
+            })
+
+        min_margin = min(p["margin_ppg"] for p in profile)
+        max_kill = max(p["kill_ppg"] for p in profile)
+        if min_margin < 0:
+            kw_class = "CRITICAL"
+        elif min_margin < 0.5:
+            kw_class = "TIGHT"
+        elif min_margin < 1.5:
+            kw_class = "ADEQUATE"
+        else:
+            kw_class = "WIDE"
+
+        recs = []
+        if kw_class == "CRITICAL":
+            recs.append("CRITICAL: kill weight exceeds fracture gradient — managed pressure drilling required")
+        elif kw_class == "TIGHT":
+            recs.append("TIGHT margin — consider ECD management, MPD, or casing point optimization")
+        recs.append(f"Max kill weight: {max_kill} ppg with {kick_margin_ppg} ppg kick margin")
+        recs.append(f"Min drilling margin: {round(min_margin, 2)} ppg")
+
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(6, 8))
+            dd = [p["depth_m"] for p in profile]
+            ax.plot([p["MW_ppg"] for p in profile], dd, "b-", lw=2, label="Pore pressure (ppg)")
+            ax.plot([p["kill_ppg"] for p in profile], dd, "r-", lw=2, label=f"Kill weight (+{kick_margin_ppg})")
+            ax.plot([p["frac_grad_ppg"] for p in profile], dd, "g--", lw=2, label="Frac gradient")
+            ax.fill_betweenx(dd, [p["kill_ppg"] for p in profile],
+                             [p["frac_grad_ppg"] for p in profile], alpha=0.15, color="green")
+            ax.invert_yaxis()
+            ax.set_xlabel("Mud Weight (ppg)")
+            ax.set_ylabel("Depth (m)")
+            ax.set_title("Kill Weight Window")
+            ax.legend(loc="lower left", fontsize=8)
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "kick_margin_ppg": kick_margin_ppg,
+            "max_kill_ppg": round(float(max_kill), 2),
+            "min_margin_ppg": round(float(min_margin), 2),
+            "kw_class": kw_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Kill Weight Window: {kw_class}",
+                "risk_level": kw_class,
+                "what_this_means": f"Kill weight {max_kill} ppg, margin {round(min_margin, 2)} ppg to frac gradient",
+                "for_non_experts": f"The mud weight needed to control the well is {max_kill} ppg. Margin is {kw_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _kill_weight_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [291] ECD SENSITIVITY  (v3.71.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_ecd_sensitivity_cache: dict = {}
+
+@app.post("/api/analysis/ecd-sensitivity")
+async def analysis_ecd_sensitivity(request: Request):
+    """ECD sensitivity — equivalent circulating density vs flow rate and mud weight."""
+    import time
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth_m", 3000))
+    mud_weight_ppg = float(body.get("mud_weight_ppg", 10))
+    flow_rate_gpm = float(body.get("flow_rate_gpm", 500))
+    hole_diameter_in = float(body.get("hole_diameter_in", 8.5))
+    pipe_od_in = float(body.get("pipe_od_in", 5.0))
+
+    ck = f"{source}:{well}:{depth_m}:{mud_weight_ppg}:{flow_rate_gpm}:{hole_diameter_in}"
+    if ck in _ecd_sensitivity_cache:
+        cached = _ecd_sensitivity_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np
+        # Annular pressure loss (simplified Bingham plastic)
+        annulus_area = 3.14159 * (hole_diameter_in**2 - pipe_od_in**2) / 4
+        velocity_ft_s = (flow_rate_gpm * 0.002228) / (annulus_area / 144)  # convert to ft/s
+        TVD_ft = depth_m * 3.28084
+        # Simplified APL: dP_annulus ~ f * rho * L * v^2 / (2 * D_h)
+        D_h_ft = (hole_diameter_in - pipe_od_in) / 12
+        f_friction = 0.02  # Fanning friction
+        rho_slug = mud_weight_ppg * 0.052 / 32.174  # approximate
+        dP_psi = f_friction * mud_weight_ppg * 0.052 * TVD_ft * velocity_ft_s**2 / (2 * 32.174 * max(D_h_ft, 0.01))
+        dP_psi = min(dP_psi, 5000)  # cap
+        ECD_ppg = mud_weight_ppg + dP_psi / (0.052 * max(TVD_ft, 1))
+
+        # Frac gradient
+        Sv_MPa = 0.025 * depth_m
+        frac_grad_ppg = (0.7 * Sv_MPa * 145.038) / (0.052 * max(TVD_ft, 1))
+        ecd_margin = frac_grad_ppg - ECD_ppg
+
+        if ecd_margin < 0:
+            ecd_class = "CRITICAL"
+        elif ecd_margin < 0.3:
+            ecd_class = "TIGHT"
+        elif ecd_margin < 1.0:
+            ecd_class = "ADEQUATE"
+        else:
+            ecd_class = "WIDE"
+
+        # Flow rate sweep
+        flow_sweep = []
+        rates = np.linspace(100, 1000, 20)
+        for q in rates:
+            v = (q * 0.002228) / (annulus_area / 144)
+            dp = f_friction * mud_weight_ppg * 0.052 * TVD_ft * v**2 / (2 * 32.174 * max(D_h_ft, 0.01))
+            dp = min(dp, 5000)
+            ecd = mud_weight_ppg + dp / (0.052 * max(TVD_ft, 1))
+            flow_sweep.append({
+                "flow_rate_gpm": round(float(q), 0),
+                "ECD_ppg": round(float(ecd), 2),
+                "margin_ppg": round(float(frac_grad_ppg - ecd), 2)
+            })
+
+        recs = []
+        if ecd_class == "CRITICAL":
+            recs.append("CRITICAL: ECD exceeds frac gradient — reduce flow rate or use MPD")
+        elif ecd_class == "TIGHT":
+            recs.append("TIGHT ECD margin — monitor returns for losses, consider reducing pump rate")
+        recs.append(f"ECD={round(ECD_ppg, 2)} ppg at {flow_rate_gpm} gpm (MW={mud_weight_ppg} ppg)")
+        recs.append(f"Frac gradient: {round(frac_grad_ppg, 2)} ppg, margin: {round(ecd_margin, 2)} ppg")
+
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(8, 5))
+            rates_plot = [p["flow_rate_gpm"] for p in flow_sweep]
+            ecds = [p["ECD_ppg"] for p in flow_sweep]
+            ax.plot(rates_plot, ecds, "b-o", ms=3, lw=2, label="ECD")
+            ax.axhline(frac_grad_ppg, color="red", ls="--", lw=2, label=f"Frac grad={round(frac_grad_ppg, 1)} ppg")
+            ax.axhline(mud_weight_ppg, color="green", ls=":", lw=1, label=f"MW={mud_weight_ppg} ppg")
+            ax.axvline(flow_rate_gpm, color="orange", ls=":", label=f"Current={flow_rate_gpm} gpm")
+            ax.set_xlabel("Flow Rate (gpm)")
+            ax.set_ylabel("ECD (ppg)")
+            ax.set_title("ECD Sensitivity to Flow Rate")
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_m": depth_m,
+            "mud_weight_ppg": mud_weight_ppg,
+            "flow_rate_gpm": flow_rate_gpm,
+            "hole_diameter_in": hole_diameter_in,
+            "pipe_od_in": pipe_od_in,
+            "ECD_ppg": round(float(ECD_ppg), 2),
+            "frac_grad_ppg": round(float(frac_grad_ppg), 2),
+            "ecd_margin_ppg": round(float(ecd_margin), 2),
+            "ecd_class": ecd_class,
+            "flow_sweep": flow_sweep,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"ECD Sensitivity: {ecd_class}",
+                "risk_level": ecd_class,
+                "what_this_means": f"ECD={round(ECD_ppg, 2)} ppg at {flow_rate_gpm} gpm, margin {round(ecd_margin, 2)} ppg to frac gradient",
+                "for_non_experts": f"Circulating mud pressure is {round(ECD_ppg, 1)} ppg vs max safe {round(frac_grad_ppg, 1)} ppg. Margin is {ecd_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _ecd_sensitivity_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [292] FORMATION BREAKDOWN PRESSURE  (v3.71.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_formation_breakdown_cache: dict = {}
+
+@app.post("/api/analysis/formation-breakdown")
+async def analysis_formation_breakdown(request: Request):
+    """Formation breakdown pressure — Hubbert-Willis and Haimson-Fairhurst models."""
+    import time
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = float(body.get("depth_from", 500))
+    depth_to = float(body.get("depth_to", 5000))
+    n_points = int(body.get("n_points", 25))
+    tensile_strength_MPa = float(body.get("tensile_strength_MPa", 5))
+
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{n_points}:{tensile_strength_MPa}"
+    if ck in _formation_breakdown_cache:
+        cached = _formation_breakdown_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            Pp = 0.0098 * d
+            Sv = 0.025 * d
+            Shmin = 0.6 * Sv
+            SHmax = 0.8 * Sv
+            # Hubbert-Willis: Pb = 3*Shmin - SHmax - Pp + T0
+            Pb_HW = 3 * Shmin - SHmax - Pp + tensile_strength_MPa
+            # Haimson-Fairhurst (impermeable): Pb = 3*Shmin - SHmax + T0
+            Pb_HF = 3 * Shmin - SHmax + tensile_strength_MPa
+            # Reopening: Pr = 3*Shmin - SHmax - Pp (no tensile)
+            Pr = 3 * Shmin - SHmax - Pp
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_MPa": round(float(Pp), 2),
+                "Pb_HW_MPa": round(float(Pb_HW), 2),
+                "Pb_HF_MPa": round(float(Pb_HF), 2),
+                "Pr_MPa": round(float(Pr), 2),
+                "Shmin_MPa": round(float(Shmin), 2)
+            })
+
+        mean_Pb = float(np.mean([p["Pb_HW_MPa"] for p in profile]))
+        min_Pb = float(np.min([p["Pb_HW_MPa"] for p in profile]))
+        if min_Pb < 5:
+            bd_class = "LOW_PRESSURE"
+        elif min_Pb < 15:
+            bd_class = "MODERATE"
+        elif min_Pb < 30:
+            bd_class = "HIGH"
+        else:
+            bd_class = "VERY_HIGH"
+
+        recs = []
+        recs.append(f"Min breakdown (Hubbert-Willis): {round(min_Pb, 1)} MPa at max depth")
+        recs.append(f"Mean breakdown: {round(mean_Pb, 1)} MPa, tensile strength T0={tensile_strength_MPa} MPa")
+        if bd_class == "LOW_PRESSURE":
+            recs.append("LOW breakdown pressure — risk of unintended fracturing during drilling")
+
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(7, 7))
+            dd = [p["depth_m"] for p in profile]
+            ax.plot([p["Pp_MPa"] for p in profile], dd, "b-", lw=2, label="Pore pressure")
+            ax.plot([p["Pb_HW_MPa"] for p in profile], dd, "r-", lw=2, label="Breakdown (H-W)")
+            ax.plot([p["Pb_HF_MPa"] for p in profile], dd, "r--", lw=1.5, label="Breakdown (H-F)")
+            ax.plot([p["Pr_MPa"] for p in profile], dd, "g:", lw=1.5, label="Reopen pressure")
+            ax.plot([p["Shmin_MPa"] for p in profile], dd, "k--", lw=1, label="Shmin (ISIP)")
+            ax.invert_yaxis()
+            ax.set_xlabel("Pressure (MPa)")
+            ax.set_ylabel("Depth (m)")
+            ax.set_title("Formation Breakdown Pressure Profile")
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "tensile_strength_MPa": tensile_strength_MPa,
+            "mean_Pb_HW_MPa": round(mean_Pb, 2),
+            "min_Pb_HW_MPa": round(min_Pb, 2),
+            "bd_class": bd_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Formation Breakdown: {bd_class}",
+                "risk_level": bd_class,
+                "what_this_means": f"Min breakdown {round(min_Pb, 1)} MPa (Hubbert-Willis), T0={tensile_strength_MPa} MPa",
+                "for_non_experts": f"The pressure to create a new fracture is {round(min_Pb, 1)} MPa minimum. Level: {bd_class}."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _formation_breakdown_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [293] STRESS REGIME POLYGON  (v3.71.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_stress_regime_polygon_cache: dict = {}
+
+@app.post("/api/analysis/stress-regime-polygon")
+async def analysis_stress_regime_polygon(request: Request):
+    """Stress regime polygon — Zoback regime boundaries with frictional limits."""
+    import time, math
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_m = float(body.get("depth_m", 3000))
+    friction = float(body.get("friction", 0.6))
+
+    ck = f"{source}:{well}:{depth_m}:{friction}"
+    if ck in _stress_regime_polygon_cache:
+        cached = _stress_regime_polygon_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np
+        Sv = 0.025 * depth_m
+        Pp = 0.0098 * depth_m
+
+        # Frictional limit: sigma1/sigma3 <= ((mu^2+1)^0.5 + mu)^2
+        q = (math.sqrt(friction**2 + 1) + friction)**2
+
+        # Effective stresses
+        Sv_eff = Sv - Pp
+
+        # Polygon boundaries (Shmin_eff vs SHmax_eff)
+        # NF: Sv > SHmax > Shmin, limit: Sv_eff/Shmin_eff <= q
+        Shmin_min_NF = Sv_eff / q
+        # RF: SHmax > Shmin > Sv, limit: SHmax_eff/Sv_eff <= q
+        SHmax_max_RF = q * Sv_eff
+        # SS: SHmax > Sv > Shmin, limit: SHmax_eff/Shmin_eff <= q
+
+        # Generate polygon vertices
+        n_pts = 50
+        polygon = []
+        # NF line (Shmin_eff from Shmin_min to Sv_eff, SHmax_eff = Shmin_eff to Sv_eff)
+        for i in range(n_pts):
+            sh = Shmin_min_NF + (Sv_eff - Shmin_min_NF) * i / (n_pts - 1)
+            polygon.append({"Shmin_eff_MPa": round(float(sh + Pp), 2),
+                           "SHmax_eff_MPa": round(float(min(sh, Sv_eff) + Pp), 2),
+                           "regime": "NF"})
+
+        # Current state estimate
+        Shmin_est = 0.6 * Sv
+        SHmax_est = 0.8 * Sv
+        if SHmax_est > Sv and SHmax_est > Shmin_est:
+            if Shmin_est > Sv:
+                regime_est = "RF"
+            else:
+                regime_est = "SS"
+        else:
+            regime_est = "NF"
+
+        # Regime boundaries
+        boundaries = {
+            "NF_Shmin_min_MPa": round(float(Shmin_min_NF + Pp), 2),
+            "RF_SHmax_max_MPa": round(float(SHmax_max_RF + Pp), 2),
+            "SS_ratio_limit": round(float(q), 3),
+            "Sv_MPa": round(float(Sv), 2),
+            "Pp_MPa": round(float(Pp), 2),
+            "Sv_eff_MPa": round(float(Sv_eff), 2)
+        }
+
+        if regime_est == "NF":
+            reg_class = "NORMAL_FAULT"
+        elif regime_est == "SS":
+            reg_class = "STRIKE_SLIP"
+        else:
+            reg_class = "REVERSE_FAULT"
+
+        recs = []
+        recs.append(f"Estimated regime: {reg_class} at {depth_m}m")
+        recs.append(f"Frictional limit ratio: {round(q, 2)} (μ={friction})")
+        recs.append(f"NF: Shmin ≥ {boundaries['NF_Shmin_min_MPa']} MPa, RF: SHmax ≤ {boundaries['RF_SHmax_max_MPa']} MPa")
+
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(7, 7))
+            # Draw polygon
+            sh_range = np.linspace(Shmin_min_NF, Sv_eff, 50) + Pp
+            # NF boundary
+            ax.plot(sh_range, [Sv] * len(sh_range), "b-", lw=2, label="NF limit (SHmax=Sv)")
+            # RF boundary
+            ax.plot([Sv] * 50, np.linspace(Sv, SHmax_max_RF + Pp, 50), "r-", lw=2, label="RF limit (Shmin=Sv)")
+            # SS boundaries
+            ss_sh = np.linspace(Shmin_min_NF + Pp, Sv, 50)
+            ss_SH = q * (ss_sh - Pp) + Pp
+            ax.plot(ss_sh, ss_SH, "g-", lw=2, label=f"SS fric limit (μ={friction})")
+            # Diagonal
+            diag = np.linspace(0, SHmax_max_RF + Pp, 50)
+            ax.plot(diag, diag, "k:", lw=1, alpha=0.5)
+            # Current point
+            ax.plot(Shmin_est, SHmax_est, "r*", ms=15, label=f"Current ({reg_class})")
+            ax.set_xlabel("Shmin (MPa)")
+            ax.set_ylabel("SHmax (MPa)")
+            ax.set_title(f"Stress Regime Polygon at {depth_m}m")
+            ax.legend(fontsize=8, loc="upper left")
+            ax.grid(True, alpha=0.3)
+            ax.set_aspect("equal")
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_m": depth_m, "friction": friction,
+            "Sv_MPa": round(float(Sv), 2), "Pp_MPa": round(float(Pp), 2),
+            "Shmin_est_MPa": round(float(Shmin_est), 2),
+            "SHmax_est_MPa": round(float(SHmax_est), 2),
+            "regime_est": reg_class,
+            "frictional_limit_q": round(float(q), 3),
+            "boundaries": boundaries,
+            "reg_class": reg_class,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stress Regime: {reg_class}",
+                "risk_level": reg_class,
+                "what_this_means": f"At {depth_m}m the stress regime is {reg_class} with frictional limit q={round(q, 2)}",
+                "for_non_experts": f"The underground stress pattern is {reg_class}. This determines how faults and fractures behave."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _stress_regime_polygon_cache[ck] = result
+    return JSONResponse(content=_sanitize_for_json(result))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [294] FRACTURE GRADIENT WINDOW  (v3.71.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+_frac_gradient_window_cache: dict = {}
+
+@app.post("/api/analysis/fracture-gradient-window")
+async def analysis_fracture_gradient_window(request: Request):
+    """Fracture gradient window — safe mud weight window between pore pressure and fracture gradient."""
+    import time
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = float(body.get("depth_from", 500))
+    depth_to = float(body.get("depth_to", 5000))
+    n_points = int(body.get("n_points", 25))
+    mud_weight_ppg = float(body.get("mud_weight_ppg", 10))
+
+    ck = f"{source}:{well}:{depth_from}:{depth_to}:{n_points}:{mud_weight_ppg}"
+    if ck in _frac_gradient_window_cache:
+        cached = _frac_gradient_window_cache[ck]
+        cached["elapsed_s"] = round(time.time() - t0, 3)
+        return JSONResponse(content=cached)
+
+    def _compute():
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        import numpy as np
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            Pp_MPa = 0.0098 * d
+            Sv_MPa = 0.025 * d
+            Shmin_MPa = 0.6 * Sv_MPa
+            TVD_ft = d * 3.28084
+            pp_ppg = (Pp_MPa * 145.038) / (0.052 * max(TVD_ft, 1))
+            frac_ppg = (Shmin_MPa * 145.038) / (0.052 * max(TVD_ft, 1))
+            collapse_ppg = pp_ppg + 0.3  # simplified collapse gradient
+            ob_ppg = (Sv_MPa * 145.038) / (0.052 * max(TVD_ft, 1))
+            window = frac_ppg - collapse_ppg
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "pore_ppg": round(float(pp_ppg), 2),
+                "collapse_ppg": round(float(collapse_ppg), 2),
+                "frac_ppg": round(float(frac_ppg), 2),
+                "overburden_ppg": round(float(ob_ppg), 2),
+                "window_ppg": round(float(window), 2),
+                "mw_in_window": collapse_ppg <= mud_weight_ppg <= frac_ppg
+            })
+
+        min_window = float(np.min([p["window_ppg"] for p in profile]))
+        mean_window = float(np.mean([p["window_ppg"] for p in profile]))
+        pct_safe = sum(1 for p in profile if p["mw_in_window"]) / len(profile) * 100
+
+        if min_window < 0:
+            fw_class = "NO_WINDOW"
+        elif min_window < 0.5:
+            fw_class = "NARROW"
+        elif min_window < 1.5:
+            fw_class = "ADEQUATE"
+        else:
+            fw_class = "WIDE"
+
+        recs = []
+        if fw_class == "NO_WINDOW":
+            recs.append("NO WINDOW: collapse and frac gradients overlap — casing point or MPD required")
+        elif fw_class == "NARROW":
+            recs.append("NARROW window — tight margins, real-time ECD monitoring recommended")
+        recs.append(f"Min window: {round(min_window, 2)} ppg, mean: {round(mean_window, 2)} ppg")
+        recs.append(f"MW {mud_weight_ppg} ppg is safe at {round(pct_safe, 0)}% of depth range")
+
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(7, 8))
+            dd = [p["depth_m"] for p in profile]
+            ax.plot([p["pore_ppg"] for p in profile], dd, "b-", lw=2, label="Pore pressure")
+            ax.plot([p["collapse_ppg"] for p in profile], dd, "b--", lw=1.5, label="Collapse gradient")
+            ax.plot([p["frac_ppg"] for p in profile], dd, "r-", lw=2, label="Frac gradient")
+            ax.plot([p["overburden_ppg"] for p in profile], dd, "k--", lw=1, label="Overburden")
+            ax.axvline(mud_weight_ppg, color="green", ls=":", lw=2, label=f"MW={mud_weight_ppg} ppg")
+            ax.fill_betweenx(dd, [p["collapse_ppg"] for p in profile],
+                             [p["frac_ppg"] for p in profile], alpha=0.1, color="green")
+            ax.invert_yaxis()
+            ax.set_xlabel("Mud Weight (ppg)")
+            ax.set_ylabel("Depth (m)")
+            ax.set_title("Fracture Gradient Window")
+            ax.legend(loc="lower left", fontsize=8)
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "mud_weight_ppg": mud_weight_ppg,
+            "min_window_ppg": round(min_window, 2),
+            "mean_window_ppg": round(mean_window, 2),
+            "pct_safe": round(pct_safe, 1),
+            "fw_class": fw_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fracture Gradient Window: {fw_class}",
+                "risk_level": fw_class,
+                "what_this_means": f"Safe drilling window is {round(min_window, 2)} ppg minimum, MW safe at {round(pct_safe, 0)}% of depths",
+                "for_non_experts": f"The safe mud weight range is {fw_class}. Current MW works at {round(pct_safe, 0)}% of planned depth."
+            },
+            "elapsed_s": 0
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(content=result, status_code=404)
+    result["elapsed_s"] = round(time.time() - t0, 3)
+    _frac_gradient_window_cache[ck] = result
     return JSONResponse(content=_sanitize_for_json(result))
