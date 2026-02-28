@@ -2845,6 +2845,71 @@
                         </div>
                     </div>
 
+                    <!-- Fracture Swarm [v3.51.0] -->
+                    <div class="card mb-4 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-cloud-fill"></i> Fracture Swarm Analysis</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="runFractureSwarm()"><i class="bi bi-play-fill"></i> Run</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Identify spatial fracture swarms via clustering.</p>
+                            <div id="fracture-swarm-results" style="display:none;"></div>
+                            <img id="fracture-swarm-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- CS Leakage [v3.51.0] -->
+                    <div class="card mb-4 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-droplet-half"></i> Critically Stressed Leakage</span>
+                            <button class="btn btn-sm btn-outline-danger" onclick="runCSLeakage()"><i class="bi bi-play-fill"></i> Run</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Leakage potential of critically stressed fractures.</p>
+                            <div id="cs-leakage-results" style="display:none;"></div>
+                            <img id="cs-leakage-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Effective Stress Path [v3.51.0] -->
+                    <div class="card mb-4 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-graph-up-arrow"></i> Effective Stress Path</span>
+                            <button class="btn btn-sm btn-outline-info" onclick="runEffStressPath()"><i class="bi bi-play-fill"></i> Run</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Stress path during depletion/injection scenarios.</p>
+                            <div id="eff-stress-path-results" style="display:none;"></div>
+                            <img id="eff-stress-path-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Fracture Mineralization [v3.51.0] -->
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-gem"></i> Fracture Mineralization</span>
+                            <button class="btn btn-sm btn-outline-primary" onclick="runMineralization()"><i class="bi bi-play-fill"></i> Run</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Cementation effects on fracture permeability.</p>
+                            <div id="mineralization-results" style="display:none;"></div>
+                            <img id="mineralization-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
+                    <!-- Trajectory Sensitivity [v3.51.0] -->
+                    <div class="card mb-4 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bezier2"></i> Trajectory Sensitivity</span>
+                            <button class="btn btn-sm btn-outline-success" onclick="runTrajSensitivity()"><i class="bi bi-play-fill"></i> Run</button>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small">Stability sensitivity to wellbore trajectory.</p>
+                            <div id="traj-sensitivity-results" style="display:none;"></div>
+                            <img id="traj-sensitivity-plot" class="img-fluid mt-2" style="display:none;">
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

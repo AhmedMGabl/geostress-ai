@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.50.0 - In-Situ Stress Ratio + Fracture Corridor + Drilling Hazard + Thermal Stress + DFN Statistics)."""
+"""GeoStress AI - FastAPI Web Application (v3.51.0 - Fracture Swarm + CS Leakage + Effective Stress Path + Mineralization + Trajectory Sensitivity)."""
 
 import os
 import io
@@ -39282,4 +39282,769 @@ async def analysis_dfn_statistics(request: Request):
     elapsed = round(time.time() - t0, 2)
     result["elapsed_s"] = elapsed
     _dfn_stats_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [190] Fracture Swarm Analysis
+# ═══════════════════════════════════════════════════════════════════
+_fracture_swarm_cache = {}
+
+
+@app.post("/api/analysis/fracture-swarm")
+async def analysis_fracture_swarm(request: Request):
+    """Identify spatial fracture swarms (clusters in depth-orientation space)."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_clusters = int(body.get("n_clusters", 3))
+
+    cache_key = f"{source}:{well}:{n_clusters}"
+    if cache_key in _fracture_swarm_cache:
+        cached = _fracture_swarm_cache[cache_key]
+        cached["elapsed_s"] = round(time.time() - t0, 2)
+        return _sanitize_for_json(cached)
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well '{well}' not found"}, 404)
+
+    def _compute():
+        depths = df_well[DEPTH_COL].dropna().values.astype(float)
+        azimuths = df_well[AZIMUTH_COL].dropna().values.astype(float)
+        dips = df_well[DIP_COL].dropna().values.astype(float)
+        n = min(len(depths), len(azimuths), len(dips))
+        depths = depths[:n]
+        azimuths = azimuths[:n]
+        dips = dips[:n]
+
+        if n < 10:
+            return {
+                "well": well, "n_fractures": n, "n_swarms": 0, "swarms": [],
+                "recommendations": ["Insufficient data for swarm analysis"],
+                "plot": "", "stakeholder_brief": {"headline": "Insufficient data",
+                "risk_level": "AMBER", "what_this_means": "Need more fractures.",
+                "for_non_experts": "Not enough data for swarm detection."},
+            }
+
+        from sklearn.cluster import KMeans
+        from sklearn.preprocessing import StandardScaler
+
+        # Feature matrix: depth, sin(az), cos(az), dip
+        X = np.column_stack([
+            depths, np.sin(np.radians(azimuths)), np.cos(np.radians(azimuths)), dips
+        ])
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        nc = min(n_clusters, n // 3)
+        km = KMeans(n_clusters=nc, random_state=42, n_init=10)
+        labels = km.fit_predict(X_scaled)
+
+        swarms = []
+        for c in range(nc):
+            mask = labels == c
+            c_depths = depths[mask]
+            c_az = azimuths[mask]
+            c_dips = dips[mask]
+            nc_count = int(np.sum(mask))
+
+            sin_s = np.sum(np.sin(np.radians(c_az)))
+            cos_s = np.sum(np.cos(np.radians(c_az)))
+            mean_az = float(np.degrees(np.arctan2(sin_s, cos_s)) % 360)
+
+            swarms.append({
+                "swarm_id": c,
+                "n_fractures": nc_count,
+                "pct_total": round(100 * nc_count / n, 1),
+                "depth_range_m": [round(float(np.min(c_depths)), 1), round(float(np.max(c_depths)), 1)],
+                "mean_depth_m": round(float(np.mean(c_depths)), 1),
+                "mean_azimuth_deg": round(mean_az, 1),
+                "mean_dip_deg": round(float(np.mean(c_dips)), 1),
+                "std_dip_deg": round(float(np.std(c_dips)), 1),
+                "depth_span_m": round(float(np.max(c_depths) - np.min(c_depths)), 1),
+            })
+
+        swarms.sort(key=lambda x: x["n_fractures"], reverse=True)
+
+        # Inertia as clustering quality
+        inertia = float(km.inertia_)
+        separation = "GOOD" if inertia < n * 2 else ("MODERATE" if inertia < n * 5 else "POOR")
+
+        recommendations = []
+        recommendations.append(f"{nc} swarms identified from {n} fractures")
+        for s in swarms[:3]:
+            recommendations.append(f"Swarm {s['swarm_id']}: {s['n_fractures']} fracs, {s['mean_depth_m']:.0f}m, az={s['mean_azimuth_deg']:.0f} deg")
+        recommendations.append(f"Cluster separation: {separation}")
+        if swarms[0]["pct_total"] > 60:
+            recommendations.append("Dominant swarm contains >60% of fractures -- single deformation event likely")
+
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+            colors_sw = plt.cm.Set1(np.linspace(0, 1, nc))
+            for c in range(nc):
+                mask = labels == c
+                axes[0].scatter(azimuths[mask], depths[mask], c=[colors_sw[c]], s=15, alpha=0.6, label=f"Swarm {c}")
+            axes[0].invert_yaxis()
+            axes[0].set_xlabel("Azimuth (deg)")
+            axes[0].set_ylabel("Depth (m)")
+            axes[0].set_title("Swarms: Azimuth vs Depth")
+            axes[0].legend(fontsize=8)
+            axes[0].grid(True, alpha=0.3)
+
+            for c in range(nc):
+                mask = labels == c
+                axes[1].scatter(dips[mask], depths[mask], c=[colors_sw[c]], s=15, alpha=0.6, label=f"Swarm {c}")
+            axes[1].invert_yaxis()
+            axes[1].set_xlabel("Dip (deg)")
+            axes[1].set_ylabel("Depth (m)")
+            axes[1].set_title("Swarms: Dip vs Depth")
+            axes[1].legend(fontsize=8)
+            axes[1].grid(True, alpha=0.3)
+
+            fig.suptitle(f"Fracture Swarm Analysis — Well {well} ({n} fracs, {nc} swarms)", fontsize=13, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_fractures": int(n),
+            "n_swarms": nc,
+            "cluster_separation": separation,
+            "inertia": round(inertia, 2),
+            "swarms": swarms,
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"{nc} swarms, separation: {separation}",
+                "risk_level": "AMBER" if separation == "POOR" else "GREEN",
+                "what_this_means": f"Identified {nc} distinct fracture swarms from {n} fractures.",
+                "for_non_experts": "Swarms are groups of fractures that formed together. Different swarms may represent different geological events.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _fracture_swarm_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [191] Critically Stressed Leakage
+# ═══════════════════════════════════════════════════════════════════
+_cs_leakage_cache = {}
+
+
+@app.post("/api/analysis/cs-leakage")
+async def analysis_cs_leakage(request: Request):
+    """Leakage potential of critically stressed fractures."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = float(body.get("depth", 3000))
+    friction = float(body.get("friction", 0.6))
+    aperture_mm = float(body.get("aperture_mm", 0.5))
+
+    cache_key = f"{source}:{well}:{depth}:{friction}:{aperture_mm}"
+    if cache_key in _cs_leakage_cache:
+        cached = _cs_leakage_cache[cache_key]
+        cached["elapsed_s"] = round(time.time() - t0, 2)
+        return _sanitize_for_json(cached)
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well '{well}' not found"}, 404)
+
+    def _compute():
+        azimuths = df_well[AZIMUTH_COL].dropna().values.astype(float)
+        dips = df_well[DIP_COL].dropna().values.astype(float)
+        n = min(len(azimuths), len(dips))
+        azimuths = azimuths[:n]
+        dips = dips[:n]
+
+        rho_rock = 2500
+        g = 9.81
+        Sv = rho_rock * g * depth / 1e6
+        Pp = 1000 * g * depth / 1e6
+
+        try:
+            from src.geostress import invert_stress
+            inv = invert_stress(df_well, regime="NF", depth=depth, pore_pressure=Pp)
+            sigma1 = float(inv.get("sigma1", Sv))
+            sigma3 = float(inv.get("sigma3", Sv * 0.6))
+        except Exception:
+            sigma1 = Sv
+            sigma3 = Sv * 0.6
+
+        aperture_m = aperture_mm / 1000.0
+        single_T = (aperture_m ** 3) / 12.0
+
+        fracture_results = []
+        for i in range(n):
+            az_r = np.radians(azimuths[i])
+            dip_r = np.radians(dips[i])
+            nx = np.sin(dip_r) * np.sin(az_r)
+            ny = np.sin(dip_r) * np.cos(az_r)
+            nz = np.cos(dip_r)
+
+            sigma_n = sigma1 * nz**2 + sigma3 * (nx**2 + ny**2)
+            tau = abs(sigma1 - sigma3) * abs(nz) * (nx**2 + ny**2)**0.5
+            sigma_n_eff = sigma_n - Pp
+
+            slip_tendency = tau / max(sigma_n_eff, 0.01) if sigma_n_eff > 0 else 999
+            critically_stressed = slip_tendency >= friction
+
+            # Barton-Bandis: aperture under normal stress
+            JRC = 10
+            JCS = 100
+            closure = 0.5 * sigma_n_eff / max(JCS, 1)
+            effective_aperture = max(aperture_m * (1 - min(closure, 0.9)), aperture_m * 0.1)
+            T_eff = (effective_aperture ** 3) / 12.0
+
+            # Leakage rate (Q = T * gradient, assume unit gradient)
+            Q_m3_per_s_per_m = T_eff * 1.0
+
+            fracture_results.append({
+                "index": i,
+                "azimuth_deg": round(float(azimuths[i]), 1),
+                "dip_deg": round(float(dips[i]), 1),
+                "slip_tendency": round(float(slip_tendency), 4),
+                "critically_stressed": bool(critically_stressed),
+                "sigma_n_eff_MPa": round(float(sigma_n_eff), 3),
+                "effective_aperture_mm": round(float(effective_aperture * 1000), 4),
+                "transmissivity_m2_per_s": round(float(T_eff), 10),
+                "leakage_potential": "HIGH" if critically_stressed and T_eff > 1e-8 else ("MODERATE" if critically_stressed else "LOW"),
+            })
+
+        n_cs = sum(1 for f in fracture_results if f["critically_stressed"])
+        n_high_leak = sum(1 for f in fracture_results if f["leakage_potential"] == "HIGH")
+        n_mod_leak = sum(1 for f in fracture_results if f["leakage_potential"] == "MODERATE")
+        total_T = sum(f["transmissivity_m2_per_s"] for f in fracture_results if f["critically_stressed"])
+        mean_eff_ap = float(np.mean([f["effective_aperture_mm"] for f in fracture_results])) if fracture_results else 0
+
+        overall_leakage = "HIGH" if n_high_leak > n * 0.1 else ("MODERATE" if n_cs > n * 0.05 else "LOW")
+
+        # Sort by leakage potential
+        fracture_results.sort(key=lambda x: x["transmissivity_m2_per_s"], reverse=True)
+
+        recommendations = []
+        recommendations.append(f"{n_cs}/{n} fractures critically stressed ({100*n_cs/max(n,1):.0f}%)")
+        recommendations.append(f"{n_high_leak} with HIGH leakage potential, {n_mod_leak} MODERATE")
+        recommendations.append(f"Total CS transmissivity: {total_T:.2e} m2/s")
+        if overall_leakage == "HIGH":
+            recommendations.append("Significant leakage risk -- consider cement or casing for seal integrity")
+        recommendations.append(f"Mean effective aperture: {mean_eff_ap:.3f} mm (stress-reduced from {aperture_mm} mm)")
+
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            slip_vals = [f["slip_tendency"] for f in fracture_results[:n]]
+            T_vals = [f["transmissivity_m2_per_s"] for f in fracture_results[:n]]
+            cs_mask = [f["critically_stressed"] for f in fracture_results[:n]]
+
+            colors_leak = ["red" if c else "blue" for c in cs_mask]
+            axes[0].scatter(slip_vals, T_vals, c=colors_leak, s=15, alpha=0.6)
+            axes[0].axvline(friction, color="red", linestyle="--", label=f"mu={friction}")
+            axes[0].set_xlabel("Slip Tendency")
+            axes[0].set_ylabel("Transmissivity (m2/s)")
+            axes[0].set_yscale("log")
+            axes[0].set_title("Slip Tendency vs Transmissivity")
+            axes[0].legend(fontsize=9)
+            axes[0].grid(True, alpha=0.3)
+
+            leak_cats = ["HIGH", "MODERATE", "LOW"]
+            leak_counts = [n_high_leak, n_mod_leak, n - n_high_leak - n_mod_leak]
+            axes[1].bar(leak_cats, leak_counts, color=["red", "orange", "green"])
+            axes[1].set_ylabel("Number of Fractures")
+            axes[1].set_title("Leakage Potential Distribution")
+            axes[1].grid(True, alpha=0.3, axis="y")
+
+            fig.suptitle(f"Critically Stressed Leakage — Well {well} ({n} fracs)", fontsize=13, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_fractures": int(n),
+            "depth_m": depth,
+            "friction": friction,
+            "aperture_mm": aperture_mm,
+            "n_critically_stressed": n_cs,
+            "pct_critically_stressed": round(100 * n_cs / max(n, 1), 1),
+            "n_high_leakage": n_high_leak,
+            "n_moderate_leakage": n_mod_leak,
+            "overall_leakage": overall_leakage,
+            "total_cs_transmissivity": round(total_T, 12),
+            "mean_effective_aperture_mm": round(mean_eff_ap, 4),
+            "top_fractures": fracture_results[:10],
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"CS leakage: {overall_leakage} ({n_high_leak} high, {n_cs} CS)",
+                "risk_level": "RED" if overall_leakage == "HIGH" else ("AMBER" if overall_leakage == "MODERATE" else "GREEN"),
+                "what_this_means": f"{n_cs} critically stressed fractures with {n_high_leak} showing high leakage potential.",
+                "for_non_experts": "Critically stressed fractures can act as fluid conduits. This analysis estimates how much fluid could leak through them.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _cs_leakage_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [192] Effective Stress Path
+# ═══════════════════════════════════════════════════════════════════
+_eff_stress_path_cache = {}
+
+
+@app.post("/api/analysis/effective-stress-path")
+async def analysis_effective_stress_path(request: Request):
+    """Effective stress path during depletion or injection."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = float(body.get("depth", 3000))
+    pp_change_mpa = float(body.get("pp_change_mpa", 10))
+    n_steps = int(body.get("n_steps", 20))
+
+    cache_key = f"{source}:{well}:{depth}:{pp_change_mpa}:{n_steps}"
+    if cache_key in _eff_stress_path_cache:
+        cached = _eff_stress_path_cache[cache_key]
+        cached["elapsed_s"] = round(time.time() - t0, 2)
+        return _sanitize_for_json(cached)
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well '{well}' not found"}, 404)
+
+    def _compute():
+        rho_rock = 2500
+        g = 9.81
+        Sv = rho_rock * g * depth / 1e6
+        Pp0 = 1000 * g * depth / 1e6
+        nu = 0.25
+        alpha_biot = 0.8
+
+        Shmin0 = Sv * 0.6 + Pp0 * 0.4
+        SHmax0 = Sv * 0.9 + Pp0 * 0.1
+
+        # Stress path coefficient (poroelastic)
+        A_coeff = alpha_biot * (1 - 2 * nu) / (1 - nu)
+
+        path = []
+        pp_values = np.linspace(0, pp_change_mpa, n_steps + 1)
+        for dp in pp_values:
+            Pp_new = Pp0 + dp
+            Shmin_new = Shmin0 + A_coeff * dp
+            SHmax_new = SHmax0 + A_coeff * dp
+
+            sigma_v_eff = Sv - Pp_new
+            sigma_h_eff = Shmin_new - Pp_new
+            sigma_H_eff = SHmax_new - Pp_new
+
+            # Mean effective stress
+            p_prime = (sigma_v_eff + sigma_h_eff + sigma_H_eff) / 3
+            # Deviatoric stress
+            q = ((sigma_v_eff - sigma_h_eff)**2 + (sigma_v_eff - sigma_H_eff)**2 + (sigma_h_eff - sigma_H_eff)**2)**0.5 / (2**0.5)
+
+            path.append({
+                "delta_Pp_MPa": round(float(dp), 2),
+                "Pp_MPa": round(float(Pp_new), 2),
+                "Sv_eff_MPa": round(float(sigma_v_eff), 3),
+                "Shmin_eff_MPa": round(float(sigma_h_eff), 3),
+                "SHmax_eff_MPa": round(float(sigma_H_eff), 3),
+                "p_prime_MPa": round(float(p_prime), 3),
+                "q_MPa": round(float(q), 3),
+            })
+
+        # Check if path crosses failure envelope
+        mu = 0.6
+        failure_crossed = False
+        failure_dp = None
+        for pt in path:
+            if pt["q_MPa"] > mu * pt["p_prime_MPa"] * 2:
+                failure_crossed = True
+                failure_dp = pt["delta_Pp_MPa"]
+                break
+
+        scenario = "DEPLETION" if pp_change_mpa < 0 else "INJECTION"
+        path_slope = A_coeff
+
+        recommendations = []
+        recommendations.append(f"Stress path coefficient A = {A_coeff:.3f} (Biot={alpha_biot}, nu={nu})")
+        recommendations.append(f"Scenario: {scenario} with dPp = {pp_change_mpa:+.1f} MPa")
+        if failure_crossed:
+            recommendations.append(f"FAILURE envelope crossed at dPp = {failure_dp:.1f} MPa -- limit pressure change")
+        else:
+            recommendations.append("Stress path stays within failure envelope for this pressure range")
+        recommendations.append(f"Initial effective stresses: Sv'={path[0]['Sv_eff_MPa']:.1f}, Sh'={path[0]['Shmin_eff_MPa']:.1f}, SH'={path[0]['SHmax_eff_MPa']:.1f} MPa")
+
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+            pp_arr = [pt["delta_Pp_MPa"] for pt in path]
+            sv_arr = [pt["Sv_eff_MPa"] for pt in path]
+            sh_arr = [pt["Shmin_eff_MPa"] for pt in path]
+            sH_arr = [pt["SHmax_eff_MPa"] for pt in path]
+
+            axes[0].plot(pp_arr, sv_arr, "k-", linewidth=2, label="Sv'")
+            axes[0].plot(pp_arr, sh_arr, "b-", linewidth=2, label="Shmin'")
+            axes[0].plot(pp_arr, sH_arr, "r-", linewidth=2, label="SHmax'")
+            axes[0].set_xlabel("Delta Pp (MPa)")
+            axes[0].set_ylabel("Effective Stress (MPa)")
+            axes[0].set_title("Effective Stress vs Pressure Change")
+            axes[0].legend(fontsize=9)
+            axes[0].grid(True, alpha=0.3)
+
+            p_arr = [pt["p_prime_MPa"] for pt in path]
+            q_arr = [pt["q_MPa"] for pt in path]
+            axes[1].plot(p_arr, q_arr, "b-o", markersize=3, label="Stress Path")
+            p_fail = np.linspace(0, max(p_arr) * 1.5, 50)
+            q_fail = mu * p_fail * 2
+            axes[1].plot(p_fail, q_fail, "r--", label=f"Failure (mu={mu})")
+            axes[1].plot(p_arr[0], q_arr[0], "gs", markersize=10, label="Initial")
+            axes[1].plot(p_arr[-1], q_arr[-1], "r^", markersize=10, label="Final")
+            axes[1].set_xlabel("p' (MPa)")
+            axes[1].set_ylabel("q (MPa)")
+            axes[1].set_title("p'-q Stress Path")
+            axes[1].legend(fontsize=8)
+            axes[1].grid(True, alpha=0.3)
+
+            fig.suptitle(f"Effective Stress Path — Well {well} ({scenario})", fontsize=13, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "depth_m": depth,
+            "pp_change_mpa": pp_change_mpa,
+            "scenario": scenario,
+            "stress_path_coefficient": round(A_coeff, 4),
+            "biot_coefficient": alpha_biot,
+            "poisson_ratio": nu,
+            "failure_crossed": failure_crossed,
+            "failure_at_delta_pp": failure_dp,
+            "n_steps": n_steps,
+            "path": path[:10],
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Stress path: A={A_coeff:.3f}, {'FAILURE at dPp={:.1f}'.format(failure_dp) if failure_crossed else 'SAFE'}",
+                "risk_level": "RED" if failure_crossed else "GREEN",
+                "what_this_means": f"{'Injection' if pp_change_mpa > 0 else 'Depletion'} of {abs(pp_change_mpa):.0f} MPa {'crosses failure envelope' if failure_crossed else 'stays safe'}.",
+                "for_non_experts": "This shows how underground stresses change when we inject or extract fluid. If the stress path hits the failure line, fractures could slip.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _eff_stress_path_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [193] Fracture Mineralization
+# ═══════════════════════════════════════════════════════════════════
+_mineralization_cache = {}
+
+
+@app.post("/api/analysis/fracture-mineralization")
+async def analysis_fracture_mineralization(request: Request):
+    """Estimate mineralization/cementation effects on fracture permeability."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    aperture_mm = float(body.get("aperture_mm", 0.5))
+    cement_fraction = float(body.get("cement_fraction", 0.3))
+
+    cache_key = f"{source}:{well}:{aperture_mm}:{cement_fraction}"
+    if cache_key in _mineralization_cache:
+        cached = _mineralization_cache[cache_key]
+        cached["elapsed_s"] = round(time.time() - t0, 2)
+        return _sanitize_for_json(cached)
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well '{well}' not found"}, 404)
+
+    def _compute():
+        azimuths = df_well[AZIMUTH_COL].dropna().values.astype(float)
+        dips = df_well[DIP_COL].dropna().values.astype(float)
+        n = min(len(azimuths), len(dips))
+        azimuths = azimuths[:n]
+        dips = dips[:n]
+
+        aperture_m = aperture_mm / 1000.0
+        eff_aperture_m = aperture_m * (1 - cement_fraction)
+        k_open = (aperture_m ** 2) / 12.0
+        k_cemented = (eff_aperture_m ** 2) / 12.0
+        k_to_darcy = 1.0 / 9.869e-13
+
+        perm_reduction = 1 - (k_cemented / max(k_open, 1e-30))
+        T_open = (aperture_m ** 3) / 12.0
+        T_cemented = (eff_aperture_m ** 3) / 12.0
+        T_reduction = 1 - (T_cemented / max(T_open, 1e-30))
+
+        # Dip-dependent mineralization model
+        cement_variations = []
+        for i in range(n):
+            # Low dip = more cemented (horizontal fractures trap minerals)
+            dip_factor = 1.0 - 0.5 * np.sin(np.radians(dips[i]))
+            local_cement = cement_fraction * dip_factor
+            local_eff_ap = aperture_m * (1 - local_cement)
+            local_k = (local_eff_ap ** 2) / 12.0
+
+            cement_variations.append({
+                "index": i,
+                "azimuth_deg": round(float(azimuths[i]), 1),
+                "dip_deg": round(float(dips[i]), 1),
+                "cement_fraction": round(float(local_cement), 3),
+                "effective_aperture_mm": round(float(local_eff_ap * 1000), 4),
+                "permeability_darcy": round(float(local_k * k_to_darcy), 6),
+            })
+
+        mean_eff_ap = float(np.mean([c["effective_aperture_mm"] for c in cement_variations]))
+        mean_k = float(np.mean([c["permeability_darcy"] for c in cement_variations]))
+
+        cement_impact = "SEVERE" if perm_reduction > 0.8 else ("SIGNIFICANT" if perm_reduction > 0.5 else ("MODERATE" if perm_reduction > 0.2 else "MINOR"))
+
+        recommendations = []
+        recommendations.append(f"Cement fraction: {cement_fraction*100:.0f}% -- permeability reduced by {perm_reduction*100:.0f}%")
+        recommendations.append(f"Transmissivity reduced by {T_reduction*100:.0f}% (cubic law sensitivity)")
+        recommendations.append(f"Mean effective aperture: {mean_eff_ap:.3f} mm (from {aperture_mm} mm open)")
+        if cement_impact == "SEVERE":
+            recommendations.append("Severe cementation -- fractures likely non-transmissive, matrix flow dominates")
+        elif cement_impact == "SIGNIFICANT":
+            recommendations.append("Significant cementation -- reduced but still transmissive fractures")
+        recommendations.append(f"Impact class: {cement_impact}")
+
+        plot_b64 = ""
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+            cf_range = np.linspace(0, 0.95, 20)
+            k_vals = [(aperture_m * (1 - cf)) ** 2 / 12.0 * k_to_darcy for cf in cf_range]
+            T_vals_plot = [(aperture_m * (1 - cf)) ** 3 / 12.0 for cf in cf_range]
+            axes[0].semilogy(cf_range * 100, k_vals, "b-", linewidth=2, label="Permeability")
+            axes[0].axvline(cement_fraction * 100, color="red", linestyle="--", label=f"Current ({cement_fraction*100:.0f}%)")
+            axes[0].set_xlabel("Cement Fraction (%)")
+            axes[0].set_ylabel("Permeability (darcy)")
+            axes[0].set_title("Permeability vs Cementation")
+            axes[0].legend(fontsize=9)
+            axes[0].grid(True, alpha=0.3)
+
+            dip_bins = np.linspace(0, 90, 10)
+            dip_means_k = []
+            dip_mids = []
+            for b in range(len(dip_bins) - 1):
+                mask_d = [c for c in cement_variations if dip_bins[b] <= c["dip_deg"] < dip_bins[b + 1]]
+                if mask_d:
+                    dip_means_k.append(float(np.mean([c["permeability_darcy"] for c in mask_d])))
+                    dip_mids.append((dip_bins[b] + dip_bins[b + 1]) / 2)
+            if dip_means_k:
+                axes[1].bar(dip_mids, dip_means_k, width=8, color="steelblue", alpha=0.7)
+            axes[1].set_xlabel("Dip (deg)")
+            axes[1].set_ylabel("Mean Permeability (darcy)")
+            axes[1].set_title("Permeability by Dip (mineralization effect)")
+            axes[1].grid(True, alpha=0.3)
+
+            fig.suptitle(f"Fracture Mineralization — Well {well}", fontsize=13, fontweight="bold")
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "n_fractures": int(n),
+            "aperture_mm": aperture_mm,
+            "cement_fraction": cement_fraction,
+            "effective_aperture_mm": round(float(eff_aperture_m * 1000), 4),
+            "k_open_darcy": round(float(k_open * k_to_darcy), 6),
+            "k_cemented_darcy": round(float(k_cemented * k_to_darcy), 6),
+            "perm_reduction_pct": round(perm_reduction * 100, 1),
+            "T_reduction_pct": round(T_reduction * 100, 1),
+            "cement_impact": cement_impact,
+            "mean_effective_aperture_mm": round(mean_eff_ap, 4),
+            "mean_permeability_darcy": round(mean_k, 6),
+            "top_fractures": cement_variations[:10],
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Mineralization: {cement_impact} ({perm_reduction*100:.0f}% perm reduction)",
+                "risk_level": "RED" if cement_impact == "SEVERE" else ("AMBER" if cement_impact == "SIGNIFICANT" else "GREEN"),
+                "what_this_means": f"{cement_fraction*100:.0f}% cementation reduces permeability by {perm_reduction*100:.0f}%.",
+                "for_non_experts": "Minerals can fill fractures over time, reducing their ability to carry fluid. This estimates how much flow is blocked.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _mineralization_cache[cache_key] = result
+    return _sanitize_for_json(result)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [194] Wellbore Trajectory Sensitivity
+# ═══════════════════════════════════════════════════════════════════
+_traj_sensitivity_cache = {}
+
+
+@app.post("/api/analysis/trajectory-sensitivity")
+async def analysis_trajectory_sensitivity(request: Request):
+    """How wellbore trajectory changes affect stability."""
+    t0 = time.time()
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth = float(body.get("depth", 3000))
+
+    cache_key = f"{source}:{well}:{depth}"
+    if cache_key in _traj_sensitivity_cache:
+        cached = _traj_sensitivity_cache[cache_key]
+        cached["elapsed_s"] = round(time.time() - t0, 2)
+        return _sanitize_for_json(cached)
+
+    df = get_df(source)
+    if df is None:
+        return JSONResponse({"error": "No data loaded"}, 400)
+    df_well = df[df["well"] == well].copy()
+    if df_well.empty:
+        return JSONResponse({"error": f"Well '{well}' not found"}, 404)
+
+    def _compute():
+        n = len(df_well)
+        rho_rock = 2500
+        g = 9.81
+        Sv = rho_rock * g * depth / 1e6
+        Pp = 1000 * g * depth / 1e6
+        Shmin = Sv * 0.6 + Pp * 0.4
+        SHmax = Sv * 0.9 + Pp * 0.1
+        UCS = 80
+
+        azimuths_wb = np.linspace(0, 350, 36)
+        dips_wb = np.linspace(0, 85, 18)
+
+        grid_results = []
+        best_sf = -1
+        best_az = 0
+        best_dip = 0
+        worst_sf = 999
+        worst_az = 0
+        worst_dip = 0
+
+        for az_wb in azimuths_wb:
+            for dip_wb in dips_wb:
+                az_r = np.radians(az_wb)
+                dip_r = np.radians(dip_wb)
+
+                # Simplified hoop stress for deviated well
+                cos_d = np.cos(dip_r)
+                sin_d = np.sin(dip_r)
+                cos_a = np.cos(az_r)
+                sin_a = np.sin(az_r)
+
+                sigma_zz = Sv * cos_d**2 + Shmin * sin_d**2 * cos_a**2 + SHmax * sin_d**2 * sin_a**2
+                sigma_tt = SHmax + Shmin - 2 * (SHmax - Shmin) * np.cos(2 * az_r) * cos_d**2 - sigma_zz
+                Pw = 1.2 * 1000 * g * depth / 1e6
+
+                hoop_max = 3 * max(sigma_tt, SHmax) - min(sigma_tt, Shmin) - Pw - Pp
+                sf = UCS / max(hoop_max, 0.01)
+
+                if sf > best_sf:
+                    best_sf = sf
+                    best_az = az_wb
+                    best_dip = dip_wb
+                if sf < worst_sf:
+                    worst_sf = sf
+                    worst_az = az_wb
+                    worst_dip = dip_wb
+
+                grid_results.append({
+                    "azimuth_deg": round(float(az_wb), 0),
+                    "dip_deg": round(float(dip_wb), 0),
+                    "safety_factor": round(float(sf), 3),
+                })
+
+        # Sensitivity: how much does SF change per degree?
+        sf_range = best_sf - worst_sf
+        sensitivity = sf_range / 360.0  # per degree of azimuth change
+
+        # Stable trajectories (SF > 1.3)
+        n_stable = sum(1 for r in grid_results if r["safety_factor"] > 1.3)
+        pct_stable = 100 * n_stable / len(grid_results)
+
+        recommendations = []
+        recommendations.append(f"Best trajectory: {best_az:.0f} deg / {best_dip:.0f} deg (SF={best_sf:.2f})")
+        recommendations.append(f"Worst trajectory: {worst_az:.0f} deg / {worst_dip:.0f} deg (SF={worst_sf:.2f})")
+        recommendations.append(f"{pct_stable:.0f}% of trajectories are stable (SF>1.3)")
+        recommendations.append(f"SF range: {sf_range:.2f} -- {'HIGH' if sf_range > 1 else 'MODERATE' if sf_range > 0.3 else 'LOW'} sensitivity to trajectory")
+        if pct_stable < 30:
+            recommendations.append("Limited stable trajectories -- careful planning required")
+
+        plot_b64 = ""
+        with plot_lock:
+            fig, ax = plt.subplots(figsize=(10, 8))
+            az_grid = np.array([r["azimuth_deg"] for r in grid_results]).reshape(36, 18)
+            dip_grid = np.array([r["dip_deg"] for r in grid_results]).reshape(36, 18)
+            sf_grid = np.array([r["safety_factor"] for r in grid_results]).reshape(36, 18)
+
+            im = ax.contourf(az_grid, dip_grid, sf_grid, levels=20, cmap="RdYlGn")
+            ax.contour(az_grid, dip_grid, sf_grid, levels=[1.0, 1.3], colors=["red", "orange"], linewidths=[2, 1.5])
+            ax.plot(best_az, best_dip, "g*", markersize=15, label=f"Best ({best_sf:.2f})")
+            ax.plot(worst_az, worst_dip, "rx", markersize=12, markeredgewidth=3, label=f"Worst ({worst_sf:.2f})")
+            fig.colorbar(im, ax=ax, label="Safety Factor")
+            ax.set_xlabel("Wellbore Azimuth (deg)")
+            ax.set_ylabel("Wellbore Dip (deg)")
+            ax.set_title(f"Trajectory Sensitivity — Well {well} @ {depth:.0f}m")
+            ax.legend(fontsize=9)
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+
+        return {
+            "well": well,
+            "depth_m": depth,
+            "n_trajectories_tested": len(grid_results),
+            "best_trajectory": {"azimuth_deg": round(best_az, 0), "dip_deg": round(best_dip, 0), "safety_factor": round(best_sf, 3)},
+            "worst_trajectory": {"azimuth_deg": round(worst_az, 0), "dip_deg": round(worst_dip, 0), "safety_factor": round(worst_sf, 3)},
+            "sf_range": round(sf_range, 3),
+            "pct_stable": round(pct_stable, 1),
+            "sensitivity_per_deg": round(sensitivity, 5),
+            "recommendations": recommendations,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Trajectory: {pct_stable:.0f}% stable, SF {worst_sf:.2f}-{best_sf:.2f}",
+                "risk_level": "RED" if pct_stable < 30 else ("AMBER" if pct_stable < 60 else "GREEN"),
+                "what_this_means": f"Tested {len(grid_results)} trajectories: {pct_stable:.0f}% are stable (SF>1.3).",
+                "for_non_experts": "This map shows which drilling directions are safe and which are risky. Green areas are safe; red areas could cause borehole problems.",
+            },
+        }
+
+    result = await asyncio.to_thread(_compute)
+    elapsed = round(time.time() - t0, 2)
+    result["elapsed_s"] = elapsed
+    _traj_sensitivity_cache[cache_key] = result
     return _sanitize_for_json(result)
