@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.64.0 - Hydraulic Fracture Design + Cap Rock Integrity + Fault Reactivation + Formation Pressure + Thermal Stress)."""
+"""GeoStress AI - FastAPI Web Application (v3.65.0 - Wellbore Collapse + Fracture Aperture Stress + Casing Design + Drilling Margin + Geomechanical Facies)."""
 
 import os
 import io
@@ -49488,3 +49488,634 @@ async def analysis_thermal_stress_wellbore(request: Request):
         return JSONResponse(result, status_code=404)
     _thermal_stress_wb_cache[ck] = _sanitize_for_json(result)
     return JSONResponse(_thermal_stress_wb_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [260] Wellbore Collapse Pressure  (v3.65.0)
+# ═══════════════════════════════════════════════════════════════════════
+_collapse_pressure_cache: dict = {}
+
+@app.post("/api/analysis/wellbore-collapse-pressure")
+async def analysis_wellbore_collapse_pressure(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    UCS_MPa = body.get("UCS_MPa", 50)
+    friction_angle_deg = body.get("friction_angle_deg", 30)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{UCS_MPa}_{friction_angle_deg}"
+    if ck in _collapse_pressure_cache:
+        return JSONResponse(_collapse_pressure_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        phi_rad = np.radians(friction_angle_deg)
+        q = (1 + np.sin(phi_rad)) / (1 - np.sin(phi_rad))  # passive earth pressure coefficient
+
+        profile = []
+        for d in depths:
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+            SHmax = 0.8 * Sv + 0.2 * Pp
+
+            # Max hoop stress (at Shmin direction)
+            sigma_theta_max = 3 * SHmax - Shmin - Pp
+            # Mohr-Coulomb collapse: sigma_theta_max >= UCS + q*(Pw)
+            # Critical wellbore pressure for collapse
+            Pw_collapse = (sigma_theta_max - UCS_MPa) / max(q, 1.01)
+            # Collapse MW in ppg
+            collapse_ppg = Pw_collapse * 145.038 / (0.052 * d * 3.28084) if d > 0 else 0
+            # Hydrostatic MW
+            hydro_ppg = Pp * 145.038 / (0.052 * d * 3.28084) if d > 0 else 0
+            # Collapse margin
+            margin_ppg = hydro_ppg - collapse_ppg
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Sv_MPa": round(float(Sv), 2),
+                "sigma_theta_max_MPa": round(float(sigma_theta_max), 2),
+                "collapse_pressure_MPa": round(float(Pw_collapse), 2),
+                "collapse_mw_ppg": round(float(collapse_ppg), 2),
+                "hydro_mw_ppg": round(float(hydro_ppg), 2),
+                "margin_ppg": round(float(margin_ppg), 2),
+            })
+
+        collapse_mws = [p["collapse_mw_ppg"] for p in profile]
+        max_collapse_ppg = max(collapse_mws)
+        n_critical = sum(1 for p in profile if p["margin_ppg"] < 0.5)
+        pct_critical = round(100 * n_critical / max(len(profile), 1), 1)
+
+        if pct_critical > 30:
+            collapse_class = "CRITICAL"
+        elif pct_critical > 10:
+            collapse_class = "HIGH_RISK"
+        elif max_collapse_ppg > 12:
+            collapse_class = "MODERATE"
+        else:
+            collapse_class = "STABLE"
+
+        recs = []
+        recs.append(f"Max collapse MW: {max_collapse_ppg:.1f} ppg at maximum depth")
+        if pct_critical > 0:
+            recs.append(f"{pct_critical:.0f}% of depth range has margin < 0.5 ppg")
+        recs.append(f"UCS = {UCS_MPa} MPa, friction angle = {friction_angle_deg}°")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+            ds = [p["depth_m"] for p in profile]
+            ax.plot([p["collapse_mw_ppg"] for p in profile], ds, 'r-', lw=2, label='Collapse MW')
+            ax.plot([p["hydro_mw_ppg"] for p in profile], ds, 'b--', lw=1.5, label='Hydrostatic MW')
+            ax.fill_betweenx(ds, [p["collapse_mw_ppg"] for p in profile], [p["hydro_mw_ppg"] for p in profile], alpha=0.2, color='orange', label='Margin')
+            ax.set_xlabel("Mud Weight (ppg)"); ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis(); ax.set_title(f"Collapse Pressure — {well} (UCS={UCS_MPa} MPa)")
+            ax.legend(); ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "n_points": n_points, "UCS_MPa": UCS_MPa, "friction_angle_deg": friction_angle_deg,
+            "max_collapse_ppg": round(float(max_collapse_ppg), 2),
+            "pct_critical": pct_critical,
+            "collapse_class": collapse_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Collapse pressure: {collapse_class} for {well}",
+                "risk_level": "HIGH" if collapse_class in ("CRITICAL", "HIGH_RISK") else "MODERATE" if collapse_class == "MODERATE" else "LOW",
+                "what_this_means": f"Max collapse MW {max_collapse_ppg:.1f} ppg, {pct_critical:.0f}% critical zones",
+                "for_non_experts": "Collapse pressure is the minimum mud weight needed to prevent the wellbore from caving in. If drilling mud is too light, the hole can collapse."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _collapse_pressure_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_collapse_pressure_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [261] Fracture Aperture vs Stress  (v3.65.0)
+# ═══════════════════════════════════════════════════════════════════════
+_frac_aperture_stress_cache: dict = {}
+
+@app.post("/api/analysis/fracture-aperture-stress")
+async def analysis_fracture_aperture_stress(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    initial_aperture_mm = body.get("initial_aperture_mm", 0.5)
+    stiffness_GPa_m = body.get("stiffness_GPa_m", 50)
+
+    ck = f"{source}_{well}_{initial_aperture_mm}_{stiffness_GPa_m}"
+    if ck in _frac_aperture_stress_cache:
+        return JSONResponse(_frac_aperture_stress_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        valid = dw.dropna(subset=[DEPTH_COL, DIP_COL, AZIMUTH_COL])
+        n_fracs = len(valid)
+
+        results_list = []
+        for _, row in valid.iterrows():
+            d = row[DEPTH_COL]
+            az = row[AZIMUTH_COL]
+            dip = row[DIP_COL]
+
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+            SHmax = 0.8 * Sv + 0.2 * Pp
+
+            # Normal stress on fracture
+            dip_rad = np.radians(dip)
+            az_rad = np.radians(az)
+            n1 = np.sin(dip_rad) * np.sin(az_rad)
+            n2 = np.sin(dip_rad) * np.cos(az_rad)
+            n3 = np.cos(dip_rad)
+            sigma_n = SHmax * n1**2 + Shmin * n2**2 + Sv * n3**2
+            sigma_n_eff = max(0, sigma_n - Pp)
+
+            # Barton-Bandis: aperture = a0 * exp(-sigma_n_eff / Kn)
+            Kn = stiffness_GPa_m * 1000  # MPa/m
+            aperture = initial_aperture_mm * np.exp(-sigma_n_eff / max(Kn * initial_aperture_mm / 1000, 0.1))
+            # Cubic law permeability
+            k_mD = (aperture / 1000)**2 / 12 * 1e15  # m² to mD
+
+            results_list.append({
+                "depth_m": round(float(d), 1),
+                "azimuth_deg": round(float(az), 1),
+                "dip_deg": round(float(dip), 1),
+                "sigma_n_eff_MPa": round(float(sigma_n_eff), 2),
+                "aperture_mm": round(float(aperture), 4),
+                "perm_mD": round(float(k_mD), 6),
+            })
+
+        apertures = [r["aperture_mm"] for r in results_list]
+        perms = [r["perm_mD"] for r in results_list]
+        mean_aperture = float(np.mean(apertures)) if apertures else 0
+        mean_perm = float(np.mean(perms)) if perms else 0
+        n_open = sum(1 for a in apertures if a > 0.01)
+
+        if mean_aperture < 0.01:
+            aperture_class = "CLOSED"
+        elif mean_aperture < 0.1:
+            aperture_class = "TIGHT"
+        else:
+            aperture_class = "OPEN"
+
+        recs = []
+        recs.append(f"Mean aperture: {mean_aperture:.3f} mm (initial: {initial_aperture_mm} mm)")
+        recs.append(f"Mean permeability: {mean_perm:.4f} mD")
+        recs.append(f"{n_open}/{n_fracs} fractures remain open (>0.01 mm)")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 6))
+            sn_vals = [r["sigma_n_eff_MPa"] for r in results_list]
+            ap_vals = [r["aperture_mm"] for r in results_list]
+            pm_vals = [r["perm_mD"] for r in results_list]
+
+            axes[0].scatter(sn_vals, ap_vals, c='steelblue', alpha=0.6, s=20)
+            axes[0].set_xlabel("Effective Normal Stress (MPa)")
+            axes[0].set_ylabel("Aperture (mm)")
+            axes[0].set_title("Aperture vs Stress (Barton-Bandis)")
+            axes[0].grid(True, alpha=0.3)
+
+            axes[1].scatter(ap_vals, pm_vals, c='darkorange', alpha=0.6, s=20)
+            axes[1].set_xlabel("Aperture (mm)")
+            axes[1].set_ylabel("Permeability (mD)")
+            axes[1].set_title("Permeability vs Aperture (Cubic Law)")
+            axes[1].set_yscale('log')
+            axes[1].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "n_fractures": n_fracs,
+            "initial_aperture_mm": initial_aperture_mm,
+            "stiffness_GPa_m": stiffness_GPa_m,
+            "mean_aperture_mm": round(mean_aperture, 4),
+            "mean_perm_mD": round(mean_perm, 6),
+            "n_open": n_open,
+            "aperture_class": aperture_class,
+            "fractures": results_list[:50],
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Fracture aperture: {aperture_class} for {well}",
+                "risk_level": "HIGH" if aperture_class == "CLOSED" else "MODERATE" if aperture_class == "TIGHT" else "LOW",
+                "what_this_means": f"Mean aperture {mean_aperture:.3f} mm, {n_open}/{n_fracs} open fractures",
+                "for_non_experts": "Fracture aperture is the opening width of a crack. Stress squeezes fractures shut — this analysis shows which remain open and permeable."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _frac_aperture_stress_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_frac_aperture_stress_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [262] Casing Design Check  (v3.65.0)
+# ═══════════════════════════════════════════════════════════════════════
+_casing_design_grade_cache: dict = {}
+
+@app.post("/api/analysis/casing-design-grade")
+async def analysis_casing_design_grade(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 20)
+    casing_grade = body.get("casing_grade", "N80")
+    casing_od_in = body.get("casing_od_in", 9.625)
+    casing_wt_ppf = body.get("casing_wt_ppf", 47)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{casing_grade}_{casing_od_in}_{casing_wt_ppf}"
+    if ck in _casing_design_grade_cache:
+        return JSONResponse(_casing_design_grade_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        # Casing properties by grade
+        grade_yield = {"J55": 55000, "K55": 55000, "N80": 80000, "L80": 80000, "P110": 110000, "Q125": 125000}
+        yield_psi = grade_yield.get(casing_grade, 80000)
+
+        # Casing geometry
+        wall_t = casing_wt_ppf / (2.67 * casing_od_in)  # approximate wall thickness inches
+        casing_id = casing_od_in - 2 * wall_t
+
+        # Collapse resistance (API simplified)
+        D_t_ratio = casing_od_in / max(wall_t, 0.1)
+        collapse_resist_psi = yield_psi * (1 - 0.67 * (D_t_ratio / 30)) if D_t_ratio < 30 else yield_psi * 0.3
+        collapse_resist_MPa = collapse_resist_psi / 145.038
+
+        # Burst resistance
+        burst_resist_psi = 0.875 * 2 * yield_psi * wall_t / casing_od_in
+        burst_resist_MPa = burst_resist_psi / 145.038
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+            SHmax = 0.8 * Sv + 0.2 * Pp
+
+            # External pressure = formation pressure
+            P_ext = Pp
+            # Internal pressure = mud hydrostatic
+            P_int = 0.0098 * d * 1.1  # 1.1x hydrostatic MW
+
+            collapse_load = P_ext - P_int  # net collapse
+            burst_load = P_int - P_ext  # net burst
+
+            collapse_SF = collapse_resist_MPa / max(abs(collapse_load), 0.01)
+            burst_SF = burst_resist_MPa / max(abs(burst_load), 0.01)
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "P_ext_MPa": round(float(P_ext), 2),
+                "P_int_MPa": round(float(P_int), 2),
+                "collapse_load_MPa": round(float(collapse_load), 2),
+                "burst_load_MPa": round(float(burst_load), 2),
+                "collapse_SF": round(float(min(collapse_SF, 99)), 2),
+                "burst_SF": round(float(min(burst_SF, 99)), 2),
+            })
+
+        min_collapse_SF = min(p["collapse_SF"] for p in profile)
+        min_burst_SF = min(p["burst_SF"] for p in profile)
+        min_SF = min(min_collapse_SF, min_burst_SF)
+
+        if min_SF < 1.0:
+            casing_class = "FAIL"
+        elif min_SF < 1.25:
+            casing_class = "MARGINAL"
+        elif min_SF < 1.5:
+            casing_class = "ADEQUATE"
+        else:
+            casing_class = "SAFE"
+
+        recs = []
+        recs.append(f"Grade {casing_grade}: yield={yield_psi} psi, collapse resist={collapse_resist_MPa:.1f} MPa, burst resist={burst_resist_MPa:.1f} MPa")
+        recs.append(f"Min collapse SF: {min_collapse_SF:.2f}, Min burst SF: {min_burst_SF:.2f}")
+        if min_SF < 1.25:
+            recs.append("Consider upgrading casing grade or wall thickness")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 7))
+            ds = [p["depth_m"] for p in profile]
+            axes[0].plot([p["collapse_SF"] for p in profile], ds, 'r-', lw=2, label='Collapse SF')
+            axes[0].plot([p["burst_SF"] for p in profile], ds, 'b-', lw=2, label='Burst SF')
+            axes[0].axvline(1.0, color='red', ls='--', lw=1, label='SF=1.0')
+            axes[0].axvline(1.25, color='orange', ls='--', lw=1, label='SF=1.25')
+            axes[0].set_xlabel("Safety Factor"); axes[0].set_ylabel("Depth (m)")
+            axes[0].invert_yaxis(); axes[0].set_title(f"Casing SF — {casing_grade}")
+            axes[0].legend(fontsize=7); axes[0].grid(True, alpha=0.3)
+            axes[0].set_xlim(0, min(max(min_collapse_SF, min_burst_SF) * 1.5, 10))
+
+            axes[1].plot([p["P_ext_MPa"] for p in profile], ds, 'k-', lw=2, label='External')
+            axes[1].plot([p["P_int_MPa"] for p in profile], ds, 'g--', lw=2, label='Internal')
+            axes[1].set_xlabel("Pressure (MPa)"); axes[1].set_ylabel("Depth (m)")
+            axes[1].invert_yaxis(); axes[1].set_title("Pressure Loading")
+            axes[1].legend(); axes[1].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "casing_grade": casing_grade,
+            "casing_od_in": casing_od_in, "casing_wt_ppf": casing_wt_ppf,
+            "collapse_resist_MPa": round(float(collapse_resist_MPa), 2),
+            "burst_resist_MPa": round(float(burst_resist_MPa), 2),
+            "min_collapse_SF": round(float(min_collapse_SF), 2),
+            "min_burst_SF": round(float(min_burst_SF), 2),
+            "casing_class": casing_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Casing design: {casing_class} for {well}",
+                "risk_level": "HIGH" if casing_class in ("FAIL", "MARGINAL") else "MODERATE" if casing_class == "ADEQUATE" else "LOW",
+                "what_this_means": f"Min SF {min_SF:.2f} ({casing_grade} casing)",
+                "for_non_experts": "Casing is the steel pipe lining a wellbore. This checks whether the selected casing can withstand the pressures at depth without collapsing or bursting."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _casing_design_grade_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_casing_design_grade_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [263] Drilling Margin  (v3.65.0)
+# ═══════════════════════════════════════════════════════════════════════
+_drilling_margin_window_cache: dict = {}
+
+@app.post("/api/analysis/drilling-margin-window")
+async def analysis_drilling_margin_window(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    depth_from = body.get("depth_from", 500)
+    depth_to = body.get("depth_to", 5000)
+    n_points = body.get("n_points", 25)
+    mud_weight_ppg = body.get("mud_weight_ppg", 10)
+
+    ck = f"{source}_{well}_{depth_from}_{depth_to}_{n_points}_{mud_weight_ppg}"
+    if ck in _drilling_margin_window_cache:
+        return JSONResponse(_drilling_margin_window_cache[ck])
+
+    def _compute():
+        import time
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        depths = np.linspace(depth_from, depth_to, n_points)
+        profile = []
+        for d in depths:
+            Sv = 0.025 * d
+            Pp = 0.0098 * d
+            Shmin = 0.6 * Sv + 0.4 * Pp
+
+            # Convert pressures to ppg equivalent
+            Pp_ppg = Pp * 145.038 / (0.052 * d * 3.28084) if d > 0 else 0
+            frac_ppg = Shmin * 145.038 / (0.052 * d * 3.28084) if d > 0 else 0
+            Sv_ppg = Sv * 145.038 / (0.052 * d * 3.28084) if d > 0 else 0
+
+            kick_margin = mud_weight_ppg - Pp_ppg
+            loss_margin = frac_ppg - mud_weight_ppg
+            window = frac_ppg - Pp_ppg
+
+            profile.append({
+                "depth_m": round(float(d), 1),
+                "Pp_ppg": round(float(Pp_ppg), 2),
+                "frac_ppg": round(float(frac_ppg), 2),
+                "Sv_ppg": round(float(Sv_ppg), 2),
+                "mw_ppg": mud_weight_ppg,
+                "kick_margin_ppg": round(float(kick_margin), 2),
+                "loss_margin_ppg": round(float(loss_margin), 2),
+                "window_ppg": round(float(window), 2),
+            })
+
+        min_kick = min(p["kick_margin_ppg"] for p in profile)
+        min_loss = min(p["loss_margin_ppg"] for p in profile)
+        min_window = min(p["window_ppg"] for p in profile)
+
+        if min_kick < 0 or min_loss < 0:
+            margin_class = "CRITICAL"
+        elif min_window < 1.0:
+            margin_class = "NARROW"
+        elif min_window < 2.0:
+            margin_class = "ADEQUATE"
+        else:
+            margin_class = "WIDE"
+
+        recs = []
+        if min_kick < 0:
+            recs.append(f"MW below pore pressure at some depths — KICK RISK")
+        if min_loss < 0:
+            recs.append(f"MW above frac gradient at some depths — LOSS RISK")
+        recs.append(f"Min drilling window: {min_window:.1f} ppg")
+        recs.append(f"Min kick margin: {min_kick:.1f} ppg, min loss margin: {min_loss:.1f} ppg")
+
+        with plot_lock:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+            ds = [p["depth_m"] for p in profile]
+            ax.plot([p["Pp_ppg"] for p in profile], ds, 'b-', lw=2, label='Pore Pressure')
+            ax.plot([p["frac_ppg"] for p in profile], ds, 'r-', lw=2, label='Frac Gradient')
+            ax.plot([p["Sv_ppg"] for p in profile], ds, 'k--', lw=1.5, label='Overburden')
+            ax.axvline(mud_weight_ppg, color='green', ls='-', lw=2, label=f'MW={mud_weight_ppg} ppg')
+            ax.fill_betweenx(ds, [p["Pp_ppg"] for p in profile], [p["frac_ppg"] for p in profile], alpha=0.15, color='green', label='Window')
+            ax.set_xlabel("Equivalent MW (ppg)"); ax.set_ylabel("Depth (m)")
+            ax.invert_yaxis(); ax.set_title(f"Drilling Margin — {well}")
+            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "depth_from_m": depth_from, "depth_to_m": depth_to,
+            "n_points": n_points, "mud_weight_ppg": mud_weight_ppg,
+            "min_kick_margin_ppg": round(float(min_kick), 2),
+            "min_loss_margin_ppg": round(float(min_loss), 2),
+            "min_window_ppg": round(float(min_window), 2),
+            "margin_class": margin_class,
+            "profile": profile,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Drilling margin: {margin_class} for {well}",
+                "risk_level": "HIGH" if margin_class in ("CRITICAL", "NARROW") else "MODERATE" if margin_class == "ADEQUATE" else "LOW",
+                "what_this_means": f"Min window {min_window:.1f} ppg at MW={mud_weight_ppg} ppg",
+                "for_non_experts": "Drilling margin is the safe operating window between kick (too light mud) and loss (too heavy mud). A narrow window makes drilling more difficult."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    _drilling_margin_window_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_drilling_margin_window_cache[ck])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [264] Geomechanical Facies  (v3.65.0)
+# ═══════════════════════════════════════════════════════════════════════
+_geomech_facies_cache: dict = {}
+
+@app.post("/api/analysis/geomechanical-facies")
+async def analysis_geomechanical_facies(request: Request):
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_facies = body.get("n_facies", 3)
+
+    ck = f"{source}_{well}_{n_facies}"
+    if ck in _geomech_facies_cache:
+        return JSONResponse(_geomech_facies_cache[ck])
+
+    def _compute():
+        import time
+        from sklearn.cluster import KMeans
+        from sklearn.preprocessing import StandardScaler
+        t0 = time.time()
+        df = get_df(source)
+        dw = df[df["well"] == well].copy()
+        if dw.empty:
+            return {"error": f"No data for well {well}"}
+
+        valid = dw.dropna(subset=[DEPTH_COL, AZIMUTH_COL, DIP_COL])
+        n_fracs = len(valid)
+        if n_fracs < n_facies * 2:
+            return {"error": f"Need at least {n_facies*2} fractures, have {n_fracs}"}
+
+        # Feature matrix: depth, dip, sin(2*az), cos(2*az)
+        depths = valid[DEPTH_COL].values
+        dips = valid[DIP_COL].values
+        azimuths = valid[AZIMUTH_COL].values
+        X = np.column_stack([
+            depths,
+            dips,
+            np.sin(np.radians(azimuths * 2)),
+            np.cos(np.radians(azimuths * 2)),
+        ])
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        km = KMeans(n_clusters=n_facies, random_state=42, n_init=10)
+        labels = km.fit_predict(X_scaled)
+
+        facies_list = []
+        for fi in range(n_facies):
+            mask = labels == fi
+            f_depths = depths[mask]
+            f_dips = dips[mask]
+            f_az = azimuths[mask]
+            facies_list.append({
+                "facies_id": fi,
+                "n_fractures": int(np.sum(mask)),
+                "depth_range_m": [round(float(f_depths.min()), 1), round(float(f_depths.max()), 1)] if len(f_depths) > 0 else [0, 0],
+                "mean_dip_deg": round(float(np.mean(f_dips)), 1) if len(f_dips) > 0 else 0,
+                "mean_depth_m": round(float(np.mean(f_depths)), 1) if len(f_depths) > 0 else 0,
+                "std_dip_deg": round(float(np.std(f_dips)), 1) if len(f_dips) > 0 else 0,
+            })
+
+        # Classify facies character
+        depth_ranges = [f["depth_range_m"][1] - f["depth_range_m"][0] for f in facies_list]
+        max_range = max(depth_ranges) if depth_ranges else 0
+        if max_range > 2000:
+            facies_class = "DISTRIBUTED"
+        elif n_facies >= 3 and any(f["n_fractures"] < 10 for f in facies_list):
+            facies_class = "HETEROGENEOUS"
+        else:
+            facies_class = "WELL_DEFINED"
+
+        recs = []
+        for f in facies_list:
+            recs.append(f"Facies {f['facies_id']}: {f['n_fractures']} fracs, depth {f['depth_range_m'][0]}-{f['depth_range_m'][1]}m, mean dip {f['mean_dip_deg']}°")
+
+        with plot_lock:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 7))
+            colors = plt.cm.Set1(np.linspace(0, 1, n_facies))
+            for fi in range(n_facies):
+                mask = labels == fi
+                axes[0].scatter(dips[mask], depths[mask], c=[colors[fi]], alpha=0.6, s=20, label=f'Facies {fi}')
+            axes[0].set_xlabel("Dip (°)"); axes[0].set_ylabel("Depth (m)")
+            axes[0].invert_yaxis(); axes[0].set_title("Geomechanical Facies")
+            axes[0].legend(fontsize=8); axes[0].grid(True, alpha=0.3)
+
+            counts = [f["n_fractures"] for f in facies_list]
+            axes[1].bar(range(n_facies), counts, color=colors[:n_facies], edgecolor='black')
+            axes[1].set_xlabel("Facies ID"); axes[1].set_ylabel("Count")
+            axes[1].set_title("Facies Distribution")
+            axes[1].set_xticks(range(n_facies))
+            axes[1].grid(True, alpha=0.3)
+            fig.tight_layout()
+            plot_b64 = fig_to_base64(fig)
+            plt.close(fig)
+
+        elapsed = round(time.time() - t0, 3)
+        return {
+            "well": well, "n_fractures": n_fracs, "n_facies": n_facies,
+            "facies_class": facies_class,
+            "facies": facies_list,
+            "recommendations": recs,
+            "plot": plot_b64,
+            "stakeholder_brief": {
+                "headline": f"Geomech facies: {facies_class} ({n_facies} groups) for {well}",
+                "risk_level": "MODERATE" if facies_class == "HETEROGENEOUS" else "LOW",
+                "what_this_means": f"{n_facies} distinct mechanical units identified from fracture data",
+                "for_non_experts": "Geomechanical facies group rock into zones with similar mechanical behavior — each may need different drilling or completion strategies."
+            },
+            "elapsed_s": elapsed,
+        }
+
+    result = await asyncio.to_thread(_compute)
+    if "error" in result:
+        return JSONResponse(result, status_code=400 if "Need at least" in result.get("error", "") else 404)
+    _geomech_facies_cache[ck] = _sanitize_for_json(result)
+    return JSONResponse(_geomech_facies_cache[ck])

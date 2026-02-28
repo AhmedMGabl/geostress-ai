@@ -3990,6 +3990,89 @@
                         </div>
                     </div>
 
+                    <!-- [260] Wellbore Collapse Pressure -->
+                    <div class="card mb-3 border-danger">
+                        <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrow-down-circle-fill"></i> Wellbore Collapse Pressure [260]</span>
+                            <button class="btn btn-sm btn-danger" onclick="runCollapsePressure()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="cp-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="cp-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="cp-npts" placeholder="N pts" value="25"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="cp-ucs" placeholder="UCS (MPa)" value="50" step="5"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="cp-phi" placeholder="Friction angle (°)" value="30" step="5"></div>
+                            </div>
+                            <div id="collapsePressureResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [261] Fracture Aperture vs Stress -->
+                    <div class="card mb-3 border-info">
+                        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-arrows-expand"></i> Fracture Aperture vs Stress [261]</span>
+                            <button class="btn btn-sm btn-info" onclick="runApertureStress()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="fas-aperture" placeholder="Initial aperture (mm)" value="0.5" step="0.1"></div>
+                                <div class="col-6"><input type="number" class="form-control form-control-sm" id="fas-stiffness" placeholder="Stiffness (GPa/m)" value="50" step="10"></div>
+                            </div>
+                            <div id="apertureStressResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [262] Casing Design Check -->
+                    <div class="card mb-3 border-warning">
+                        <div class="card-header bg-warning bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-pipe"></i> Casing Design Check [262]</span>
+                            <button class="btn btn-sm btn-warning" onclick="runCasingDesign()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="cd-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="cd-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-4">
+                                    <select class="form-select form-select-sm" id="cd-grade">
+                                        <option value="J55">J55</option><option value="N80" selected>N80</option><option value="P110">P110</option><option value="Q125">Q125</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div id="casingDesignResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [263] Drilling Margin -->
+                    <div class="card mb-3 border-primary">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-rulers"></i> Drilling Margin [263]</span>
+                            <button class="btn btn-sm btn-primary" onclick="runDrillingMargin()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="dm-from" placeholder="From (m)" value="500"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="dm-to" placeholder="To (m)" value="5000"></div>
+                                <div class="col-4"><input type="number" class="form-control form-control-sm" id="dm-mw" placeholder="MW (ppg)" value="10" step="0.5"></div>
+                            </div>
+                            <div id="drillingMarginResult"></div>
+                        </div>
+                    </div>
+
+                    <!-- [264] Geomechanical Facies -->
+                    <div class="card mb-3 border-success">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-grid-3x3-gap-fill"></i> Geomechanical Facies [264]</span>
+                            <button class="btn btn-sm btn-success" onclick="runGeomechFacies()">Run</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-2">
+                                <div class="col-12"><input type="number" class="form-control form-control-sm" id="gf-nfacies" placeholder="N facies" value="3" min="2" max="8"></div>
+                            </div>
+                            <div id="geomechFaciesResult"></div>
+                        </div>
+                    </div>
+
                     <!-- Persistent Storage Management -->
                     <div class="card mb-4 border-secondary">
                         <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">

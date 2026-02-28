@@ -16218,3 +16218,139 @@ async function runThermalStress() {
         results.innerHTML = html;
     } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
 }
+
+// ============================================================
+// [260] Wellbore Collapse Pressure
+// ============================================================
+async function runCollapsePressure() {
+    var results = document.getElementById('collapsePressureResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('cp-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('cp-to').value) || 5000;
+        var n_points = parseInt(document.getElementById('cp-npts').value) || 25;
+        var UCS_MPa = parseFloat(document.getElementById('cp-ucs').value) || 50;
+        var friction_angle_deg = parseFloat(document.getElementById('cp-phi').value) || 30;
+        var resp = await fetch('/api/analysis/wellbore-collapse-pressure', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,n_points:n_points,UCS_MPa:UCS_MPa,friction_angle_deg:friction_angle_deg})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.collapse_class+'</strong> — Max collapse MW: '+(r.max_collapse_ppg||0).toFixed(1)+' ppg</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Max Collapse</h6><h4>'+(r.max_collapse_ppg||0).toFixed(1)+' ppg</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>% Critical</h6><h4>'+(r.pct_critical||0).toFixed(1)+'%</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>UCS</h6><h4>'+(r.UCS_MPa||0)+' MPa</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ============================================================
+// [261] Fracture Aperture vs Stress
+// ============================================================
+async function runApertureStress() {
+    var results = document.getElementById('apertureStressResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var initial_aperture_mm = parseFloat(document.getElementById('fas-aperture').value) || 0.5;
+        var stiffness_GPa_m = parseFloat(document.getElementById('fas-stiffness').value) || 50;
+        var resp = await fetch('/api/analysis/fracture-aperture-stress', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,initial_aperture_mm:initial_aperture_mm,stiffness_GPa_m:stiffness_GPa_m})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.aperture_class+'</strong> — Mean aperture: '+(r.mean_aperture_mm||0).toFixed(3)+' mm</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Mean Aperture</h6><h4>'+(r.mean_aperture_mm||0).toFixed(3)+' mm</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Mean Perm</h6><h4>'+(r.mean_perm_mD||0).toFixed(4)+' mD</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Open Fracs</h6><h4>'+(r.n_open||0)+'/'+(r.n_fractures||0)+'</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ============================================================
+// [262] Casing Design Check
+// ============================================================
+async function runCasingDesign() {
+    var results = document.getElementById('casingDesignResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('cd-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('cd-to').value) || 5000;
+        var casing_grade = document.getElementById('cd-grade').value || 'N80';
+        var resp = await fetch('/api/analysis/casing-design-grade', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,casing_grade:casing_grade})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.casing_class+'</strong> — Min SF: '+Math.min(r.min_collapse_SF||0,r.min_burst_SF||0).toFixed(2)+'</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Collapse SF</h6><h4>'+(r.min_collapse_SF||0).toFixed(2)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Burst SF</h6><h4>'+(r.min_burst_SF||0).toFixed(2)+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Grade</h6><h4>'+(r.casing_grade||'')+'</h4></div></div>';
+        html += '<div class="col-md-3"><div class="card text-center p-2"><h6>Burst Resist</h6><h4>'+(r.burst_resist_MPa||0).toFixed(0)+' MPa</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ============================================================
+// [263] Drilling Margin
+// ============================================================
+async function runDrillingMargin() {
+    var results = document.getElementById('drillingMarginResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var depth_from = parseFloat(document.getElementById('dm-from').value) || 500;
+        var depth_to = parseFloat(document.getElementById('dm-to').value) || 5000;
+        var mud_weight_ppg = parseFloat(document.getElementById('dm-mw').value) || 10;
+        var resp = await fetch('/api/analysis/drilling-margin-window', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,depth_from:depth_from,depth_to:depth_to,mud_weight_ppg:mud_weight_ppg})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.margin_class+'</strong> — Min window: '+(r.min_window_ppg||0).toFixed(1)+' ppg</div>';
+        html += '<div class="row g-2 mb-2">';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Min Window</h6><h4>'+(r.min_window_ppg||0).toFixed(1)+' ppg</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Kick Margin</h6><h4>'+(r.min_kick_margin_ppg||0).toFixed(1)+' ppg</h4></div></div>';
+        html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Loss Margin</h6><h4>'+(r.min_loss_margin_ppg||0).toFixed(1)+' ppg</h4></div></div></div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
+
+// ============================================================
+// [264] Geomechanical Facies
+// ============================================================
+async function runGeomechFacies() {
+    var results = document.getElementById('geomechFaciesResult');
+    results.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm"></div> Running...</div>';
+    showLoading();
+    try {
+        var well = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+        var n_facies = parseInt(document.getElementById('gf-nfacies').value) || 3;
+        var resp = await fetch('/api/analysis/geomechanical-facies', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'demo',well:well,n_facies:n_facies})});
+        var r = await resp.json();
+        if (r.error) { results.innerHTML = '<div class="alert alert-warning">'+r.error+'</div>'; return; }
+        var html = '<div class="alert alert-info"><strong>'+r.facies_class+'</strong> — '+r.n_facies+' facies from '+r.n_fractures+' fractures</div>';
+        html += '<div class="row g-2 mb-2">';
+        (r.facies||[]).forEach(function(f) {
+            html += '<div class="col-md-4"><div class="card text-center p-2"><h6>Facies '+f.facies_id+'</h6><h4>'+f.n_fractures+' fracs</h4><small>Dip: '+f.mean_dip_deg+'°</small></div></div>';
+        });
+        html += '</div>';
+        if (r.plot) html += '<img src="'+r.plot+'" class="img-fluid mt-2" />';
+        if (r.recommendations) html += '<ul class="list-group mt-2">' + r.recommendations.map(function(x){return '<li class="list-group-item">'+x+'</li>';}).join('') + '</ul>';
+        html += '<small class="text-muted">Elapsed: ' + (r.elapsed_s || 0).toFixed(3) + 's</small>';
+        results.innerHTML = html;
+    } catch (e) { results.innerHTML = '<div class="alert alert-danger">Error: ' + e.message + '</div>'; } finally { hideLoading(); }
+}
