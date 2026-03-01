@@ -2,7 +2,11 @@ services:
   - type: web
     name: geostress-ai
     runtime: python
-    plan: free
+    plan: starter
+    disk:
+      name: geostress-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:

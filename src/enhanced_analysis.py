@@ -22,7 +22,7 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import (
     classification_report, confusion_matrix, accuracy_score,
     f1_score, precision_score, recall_score, balanced_accuracy_score,
-    brier_score_loss,
+    brier_score_loss, matthews_corrcoef, cohen_kappa_score, log_loss,
 )
 from sklearn.calibration import calibration_curve
 from sklearn.utils.class_weight import compute_sample_weight
@@ -34,11 +34,24 @@ from sklearn.metrics import silhouette_score, calinski_harabasz_score
 import warnings
 
 try:
-    from imblearn.over_sampling import SMOTE, ADASYN
+    from imblearn.over_sampling import SMOTE, ADASYN, BorderlineSMOTE
     from imblearn.pipeline import Pipeline as ImbPipeline
     HAS_IMBLEARN = True
 except ImportError:
     HAS_IMBLEARN = False
+
+try:
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    HAS_OPTUNA = True
+except ImportError:
+    HAS_OPTUNA = False
+
+try:
+    import joblib
+    HAS_JOBLIB = True
+except ImportError:
+    HAS_JOBLIB = False
 
 try:
     import xgboost as xgb
@@ -409,12 +422,23 @@ def _cv_with_smote(model, X, y, cv, smote_strategy="auto"):
             model_clone = clone(model)
             model_clone.fit(X_train, y_train)
         else:
-            smote = SMOTE(
-                k_neighbors=k_neighbors,
-                random_state=42,
-                sampling_strategy=smote_strategy,
-            )
-            X_res, y_res = smote.fit_resample(X_train, y_train)
+            # BorderlineSMOTE: only generate synthetic samples near the
+            # decision boundary ("danger zone"), more effective than SMOTE
+            # for severely imbalanced classes like Boundary (n=13).
+            try:
+                oversampler = BorderlineSMOTE(
+                    k_neighbors=k_neighbors,
+                    random_state=42,
+                    kind="borderline-1",
+                )
+            except Exception:
+                # Fallback to regular SMOTE if BorderlineSMOTE fails
+                oversampler = SMOTE(
+                    k_neighbors=k_neighbors,
+                    random_state=42,
+                    sampling_strategy=smote_strategy,
+                )
+            X_res, y_res = oversampler.fit_resample(X_train, y_train)
             smote_counts.append({
                 "original": len(y_train),
                 "resampled": len(y_res),
@@ -445,6 +469,339 @@ def _cv_with_smote(model, X, y, cv, smote_strategy="auto"):
         y_pred_cv,
         smote_info,
     )
+
+
+# ──────────────────────────────────────────────────────
+# Optuna Hyperparameter Optimization
+# ──────────────────────────────────────────────────────
+
+def _optuna_tune_model(
+    model_name: str,
+    X: np.ndarray,
+    y: np.ndarray,
+    n_trials: int = 50,
+    n_folds: int = 3,
+    timeout_s: int = 120,
+) -> dict:
+    """Use Optuna Bayesian optimization to find best hyperparameters.
+
+    Returns dict with best_params, best_score, n_trials_completed.
+    Uses balanced_accuracy as objective (better for imbalanced data).
+    """
+    if not HAS_OPTUNA:
+        return {"error": "optuna not installed", "best_params": {}}
+
+    cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+
+    def objective(trial):
+        if model_name == "random_forest":
+            params = {
+                "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+                "max_depth": trial.suggest_int("max_depth", 4, 20),
+                "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
+                "min_samples_split": trial.suggest_int("min_samples_split", 2, 15),
+                "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2", None]),
+            }
+            model = RandomForestClassifier(
+                **params, class_weight="balanced", random_state=42, n_jobs=-1,
+            )
+        elif model_name == "xgboost" and HAS_XGB:
+            params = {
+                "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+                "max_depth": trial.suggest_int("max_depth", 3, 10),
+                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+                "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+                "gamma": trial.suggest_float("gamma", 0.0, 5.0),
+                "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
+                "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+            }
+            sw = compute_sample_weight("balanced", y)
+            model = xgb.XGBClassifier(
+                **params, random_state=42, eval_metric="mlogloss",
+            )
+        elif model_name == "lightgbm" and HAS_LGB:
+            params = {
+                "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+                "max_depth": trial.suggest_int("max_depth", 3, 12),
+                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+                "num_leaves": trial.suggest_int("num_leaves", 15, 127),
+                "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
+                "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
+                "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+            }
+            model = lgb.LGBMClassifier(
+                **params, class_weight="balanced", random_state=42, verbose=-1,
+            )
+        elif model_name == "catboost" and HAS_CB:
+            params = {
+                "iterations": trial.suggest_int("iterations", 50, 500),
+                "depth": trial.suggest_int("depth", 3, 10),
+                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+                "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-8, 10.0, log=True),
+                "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 5.0),
+            }
+            model = cb.CatBoostClassifier(
+                **params, auto_class_weights="Balanced", random_seed=42, verbose=0,
+            )
+        elif model_name == "gradient_boosting":
+            params = {
+                "n_estimators": trial.suggest_int("n_estimators", 50, 400),
+                "max_depth": trial.suggest_int("max_depth", 3, 8),
+                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+                "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 15),
+            }
+            model = GradientBoostingClassifier(**params, random_state=42)
+        elif model_name == "svm":
+            params = {
+                "C": trial.suggest_float("C", 0.1, 100.0, log=True),
+                "gamma": trial.suggest_categorical("gamma", ["scale", "auto"]),
+                "kernel": trial.suggest_categorical("kernel", ["rbf", "poly"]),
+            }
+            model = SVC(**params, class_weight="balanced", probability=True, random_state=42)
+        elif model_name == "mlp":
+            n_layers = trial.suggest_int("n_layers", 1, 3)
+            layers = []
+            for i in range(n_layers):
+                layers.append(trial.suggest_int(f"n_units_{i}", 16, 128))
+            params = {
+                "hidden_layer_sizes": tuple(layers),
+                "learning_rate_init": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
+                "alpha": trial.suggest_float("alpha", 1e-6, 1e-2, log=True),
+            }
+            model = MLPClassifier(
+                **params, max_iter=500, early_stopping=True,
+                validation_fraction=0.15, random_state=42,
+            )
+        else:
+            return 0.0
+
+        scores = cross_val_score(
+            model, X, y, cv=cv, scoring="balanced_accuracy", n_jobs=-1,
+        )
+        return float(scores.mean())
+
+    study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=42))
+    study.optimize(objective, n_trials=n_trials, timeout=timeout_s)
+
+    return {
+        "best_params": study.best_params,
+        "best_balanced_accuracy": round(study.best_value, 4),
+        "n_trials_completed": len(study.trials),
+        "model_name": model_name,
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Model Serialization (joblib)
+# ──────────────────────────────────────────────────────
+
+import os
+import time
+import hashlib
+import json
+
+_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "models")
+
+
+def _ensure_model_dir():
+    """Create data/models/ directory if it doesn't exist."""
+    os.makedirs(_MODEL_DIR, exist_ok=True)
+
+
+def save_trained_model(
+    model,
+    scaler,
+    label_encoder,
+    feature_names: list,
+    well: str,
+    metrics: dict,
+    model_name: str = "best",
+    tuned_params: dict = None,
+) -> str:
+    """Serialize a trained model + preprocessing pipeline to disk.
+
+    Saves: model, scaler, label_encoder, feature_names, metrics, timestamp.
+    Returns the file path of the saved artifact.
+    """
+    if not HAS_JOBLIB:
+        raise ImportError("joblib is required for model serialization")
+    _ensure_model_dir()
+
+    artifact = {
+        "model": model,
+        "scaler": scaler,
+        "label_encoder": label_encoder,
+        "feature_names": feature_names,
+        "well": well,
+        "model_name": model_name,
+        "metrics": metrics,
+        "tuned_params": tuned_params or {},
+        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "version": "1.0",
+    }
+
+    filename = f"model_{well}_{model_name}.joblib"
+    filepath = os.path.join(_MODEL_DIR, filename)
+    joblib.dump(artifact, filepath, compress=3)
+
+    # Also save a metadata JSON (human-readable, no sklearn objects)
+    meta = {k: v for k, v in artifact.items() if k not in ("model", "scaler", "label_encoder")}
+    meta_path = os.path.join(_MODEL_DIR, f"model_{well}_{model_name}_meta.json")
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2, default=str)
+
+    return filepath
+
+
+def load_trained_model(well: str, model_name: str = "best") -> dict:
+    """Load a previously serialized model artifact from disk.
+
+    Returns dict with model, scaler, label_encoder, feature_names, metrics.
+    Returns None if no saved model exists.
+    """
+    if not HAS_JOBLIB:
+        return None
+    filename = f"model_{well}_{model_name}.joblib"
+    filepath = os.path.join(_MODEL_DIR, filename)
+    if not os.path.exists(filepath):
+        return None
+    try:
+        return joblib.load(filepath)
+    except Exception:
+        return None
+
+
+def list_saved_models() -> list:
+    """List all saved model artifacts with metadata."""
+    _ensure_model_dir()
+    result = []
+    for fname in os.listdir(_MODEL_DIR):
+        if fname.endswith("_meta.json"):
+            try:
+                with open(os.path.join(_MODEL_DIR, fname)) as f:
+                    meta = json.load(f)
+                result.append(meta)
+            except Exception:
+                pass
+    return result
+
+
+def optimize_and_save_best(
+    df: pd.DataFrame,
+    well: str,
+    models_to_tune: list = None,
+    n_trials: int = 50,
+    timeout_per_model_s: int = 120,
+) -> dict:
+    """Full pipeline: tune hyperparameters → train best model → serialize.
+
+    1. Engineers features
+    2. Runs Optuna on each candidate model
+    3. Picks the best by balanced_accuracy
+    4. Trains final model on all data
+    5. Saves artifact to disk
+    6. Returns full results + saved path
+    """
+    features = engineer_enhanced_features(df)
+    labels = df[FRACTURE_TYPE_COL].values
+    le = LabelEncoder()
+    y = le.fit_transform(labels)
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    if models_to_tune is None:
+        models_to_tune = ["random_forest", "xgboost", "lightgbm", "catboost"]
+
+    tuning_results = {}
+    for mname in models_to_tune:
+        result = _optuna_tune_model(
+            mname, X, y,
+            n_trials=n_trials,
+            timeout_s=timeout_per_model_s,
+        )
+        if "error" not in result:
+            tuning_results[mname] = result
+
+    if not tuning_results:
+        return {"error": "No models could be tuned", "tuning_results": {}}
+
+    # Pick the best model by balanced_accuracy
+    best_name = max(tuning_results, key=lambda k: tuning_results[k]["best_balanced_accuracy"])
+    best_result = tuning_results[best_name]
+    best_params = best_result["best_params"]
+
+    # Reconstruct the best model with tuned params
+    if best_name == "random_forest":
+        best_model = RandomForestClassifier(
+            **best_params, class_weight="balanced", random_state=42, n_jobs=-1,
+        )
+    elif best_name == "xgboost" and HAS_XGB:
+        best_model = xgb.XGBClassifier(
+            **best_params, random_state=42, eval_metric="mlogloss",
+        )
+    elif best_name == "lightgbm" and HAS_LGB:
+        best_model = lgb.LGBMClassifier(
+            **best_params, class_weight="balanced", random_state=42, verbose=-1,
+        )
+    elif best_name == "catboost" and HAS_CB:
+        best_model = cb.CatBoostClassifier(
+            **best_params, auto_class_weights="Balanced", random_seed=42, verbose=0,
+        )
+    else:
+        return {"error": f"Cannot reconstruct model: {best_name}"}
+
+    # Train on full dataset
+    sample_weights = compute_sample_weight("balanced", y)
+    sw_models = ("random_forest", "xgboost", "lightgbm", "catboost")
+    sw_fit = {"sample_weight": sample_weights} if best_name in sw_models else {}
+    best_model.fit(X, y, **sw_fit)
+
+    # Full CV metrics for the tuned model
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+    cv_scores = cross_val_score(best_model, X, y, cv=cv, scoring="balanced_accuracy")
+    y_pred_cv = cross_val_predict(best_model, X, y, cv=cv)
+
+    metrics = {
+        "balanced_accuracy": round(float(cv_scores.mean()), 4),
+        "balanced_accuracy_std": round(float(cv_scores.std()), 4),
+        "accuracy": round(float(accuracy_score(y, y_pred_cv)), 4),
+        "f1_macro": round(float(f1_score(y, y_pred_cv, average="macro", zero_division=0)), 4),
+        "f1_weighted": round(float(f1_score(y, y_pred_cv, average="weighted", zero_division=0)), 4),
+        "mcc": round(float(matthews_corrcoef(y, y_pred_cv)), 4),
+        "cohen_kappa": round(float(cohen_kappa_score(y, y_pred_cv)), 4),
+    }
+
+    # Save to disk
+    filepath = save_trained_model(
+        model=best_model,
+        scaler=scaler,
+        label_encoder=le,
+        feature_names=features.columns.tolist(),
+        well=well,
+        metrics=metrics,
+        model_name="best",
+        tuned_params=best_params,
+    )
+
+    return {
+        "best_model_name": best_name,
+        "best_params": best_params,
+        "metrics": metrics,
+        "saved_path": filepath,
+        "tuning_results": {
+            k: {
+                "best_balanced_accuracy": v["best_balanced_accuracy"],
+                "n_trials": v["n_trials_completed"],
+            }
+            for k, v in tuning_results.items()
+        },
+        "all_models_tuned": list(tuning_results.keys()),
+    }
 
 
 def compare_models(
@@ -505,8 +862,13 @@ def compare_models(
                 )
             else:
                 # Single pass: cross_val_predict only (no cross_validate)
-                needs_weight = name in ("gradient_boosting", "xgboost")
-                sw_params = {"sample_weight": sample_weights} if needs_weight else {}
+                # Apply sample_weight to all models that support it
+                # (RF, GBM, XGB, LGB, CatBoost all accept sample_weight)
+                _supports_sw = name in (
+                    "random_forest", "gradient_boosting", "xgboost",
+                    "lightgbm", "catboost",
+                )
+                sw_params = {"sample_weight": sample_weights} if _supports_sw else {}
 
                 y_pred_cv = cross_val_predict(
                     model, X, y, cv=cv,
@@ -529,14 +891,20 @@ def compare_models(
                 min_train = train_counts[train_counts > 0].min()
                 k_n = min(5, min_train - 1)
                 if k_n >= 1:
-                    smote_full = SMOTE(k_neighbors=k_n, random_state=42)
-                    X_full_res, y_full_res = smote_full.fit_resample(X, y)
+                    try:
+                        oversamp = BorderlineSMOTE(k_neighbors=k_n, random_state=42, kind="borderline-1")
+                    except Exception:
+                        oversamp = SMOTE(k_neighbors=k_n, random_state=42)
+                    X_full_res, y_full_res = oversamp.fit_resample(X, y)
                     model.fit(X_full_res, y_full_res)
                 else:
                     model.fit(X, y)
             else:
-                needs_weight = name in ("gradient_boosting", "xgboost")
-                sw_fit = {"sample_weight": sample_weights} if needs_weight else {}
+                _supports_sw = name in (
+                    "random_forest", "gradient_boosting", "xgboost",
+                    "lightgbm", "catboost",
+                )
+                sw_fit = {"sample_weight": sample_weights} if _supports_sw else {}
                 model.fit(X, y, **sw_fit)
             y_pred_full = np.asarray(model.predict(X)).ravel()
             all_preds[name] = y_pred_full
@@ -568,18 +936,27 @@ def compare_models(
                     "support": int(class_counts[ci]),
                 }
 
+            # Extended metrics: MCC, Cohen's kappa, macro F1 (imbalance-robust)
+            _mcc = float(matthews_corrcoef(y, y_pred_cv))
+            _kappa = float(cohen_kappa_score(y, y_pred_cv))
+            _macro_f1 = float(f1_score(y, y_pred_cv, average="macro", zero_division=0))
+            _bal_acc = float(balanced_accuracy_score(y, y_pred_cv))
+
             results[name] = {
                 "cv_accuracy_mean": cv_acc,
                 "cv_accuracy_std": float(acc_scores.std()),
                 "cv_accuracy_scores": acc_scores.tolist(),
                 "cv_f1_mean": float(f1_scores.mean()),
                 "cv_f1_std": float(f1_scores.std()),
+                "cv_f1_macro": round(_macro_f1, 4),
                 "cv_precision": float(precision_score(
                     y, y_pred_cv, average="weighted", zero_division=0
                 )),
                 "cv_recall": float(recall_score(
                     y, y_pred_cv, average="weighted", zero_division=0
                 )),
+                "matthews_corrcoef": round(_mcc, 4),
+                "cohen_kappa": round(_kappa, 4),
                 "confusion_matrix": confusion_matrix(y, y_pred_cv).tolist(),
                 "feature_importances": {
                     k: round(float(v), 4) for k, v in feat_imp.items()
@@ -587,9 +964,7 @@ def compare_models(
                 "class_names": le.classes_.tolist(),
                 "train_accuracy": train_acc,
                 "overfit_gap": round(train_acc - cv_acc, 3),
-                "balanced_accuracy": round(float(
-                    balanced_accuracy_score(y, y_pred_cv)
-                ), 3),
+                "balanced_accuracy": round(_bal_acc, 3),
                 "per_class_metrics": per_class,
                 "smote": smote_info,
             }
@@ -617,8 +992,11 @@ def compare_models(
     )
     ranking = [
         {"rank": i + 1, "model": name, "accuracy": r["cv_accuracy_mean"],
-         "f1": r["cv_f1_mean"], "overfit_gap": r.get("overfit_gap", 0),
-         "balanced_accuracy": r.get("balanced_accuracy", 0)}
+         "f1": r["cv_f1_mean"], "f1_macro": r.get("cv_f1_macro", 0),
+         "overfit_gap": r.get("overfit_gap", 0),
+         "balanced_accuracy": r.get("balanced_accuracy", 0),
+         "mcc": r.get("matthews_corrcoef", 0),
+         "cohen_kappa": r.get("cohen_kappa", 0)}
         for i, (name, r) in enumerate(ranked)
     ]
     ranking_criterion = "balanced_accuracy" if rank_by_balanced else "standard_accuracy"

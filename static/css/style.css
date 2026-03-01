@@ -3,9 +3,9 @@
 :root {
     --sidebar-bg: #1a2332;
     --sidebar-hover: #243044;
-    --sidebar-active: #2d4a6f;
-    --accent: #3b82f6;
-    --accent-light: #60a5fa;
+    --sidebar-active: #3d2e14;
+    --accent: #d97706;
+    --accent-light: #f59e0b;
     --earth-warm: #d97706;
     --earth-red: #dc2626;
     --earth-green: #16a34a;
@@ -14,7 +14,7 @@
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: #f3f4f6;
     margin: 0;
     overflow-x: hidden;
@@ -393,6 +393,91 @@ body {
 }
 .drilling-accordion .accordion-body {
     padding: 0.75rem;
+}
+
+/* Sidebar Group Toggle */
+.sidebar-group-header .nav-link {
+    color: #64748b;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.5rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    user-select: none;
+}
+.sidebar-group-header .nav-link:hover {
+    color: #94a3b8;
+    background: rgba(255,255,255,0.03);
+}
+.sidebar-group-header .badge {
+    font-size: 0.55rem;
+    padding: 0.1rem 0.35rem;
+}
+.sidebar-arrow {
+    font-size: 0.65rem;
+    transition: transform 0.2s ease;
+}
+.sidebar-group {
+    overflow: hidden;
+    max-height: 500px;
+    transition: max-height 0.3s ease, opacity 0.2s ease;
+    opacity: 1;
+}
+.sidebar-group.collapsed {
+    max-height: 0;
+    opacity: 0;
+}
+
+/* Accent button overrides (earth amber) */
+.btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+.btn-primary:hover {
+    background: #b45309;
+    border-color: #b45309;
+}
+.btn-outline-primary {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+.btn-outline-primary:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+/* Card hover animation */
+.card {
+    transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+.card:hover {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+.metric-card {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.metric-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.1);
+}
+
+/* Smooth tab transitions */
+.tab-content {
+    animation: fadeInTab 0.3s ease;
+}
+@keyframes fadeInTab {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Active sidebar accent */
+.sidebar-nav .nav-link.active {
+    color: #fff;
+    background: var(--sidebar-active);
+    border-left-color: var(--accent);
 }
 
 /* Responsive */

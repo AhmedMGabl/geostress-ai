@@ -11,6 +11,9 @@ outputs/
 notebooks/*_executed.ipynb
 .claude/
 data/geostress.db
+data/models/*.joblib
+data/models/*.json
+!data/models/.gitkeep
 
 # Root-level data files (originals are in data/raw/ and references/)
 /*.xls

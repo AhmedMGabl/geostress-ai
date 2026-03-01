@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.75.0 - APL + Stability Window + Trip Margin + Pack-Off + ECD Profile)."""
+"""GeoStress AI - FastAPI Web Application (v3.76.0 - ML Optimization + Model Persistence + Professional UI)."""
 
 import os
 import io
@@ -859,9 +859,37 @@ def _prewarm_caches():
         elapsed = _time.perf_counter() - start
         print(f"Cache pre-warm complete: {len(wells)} wells in {elapsed:.1f}s")
 
-        # Phase 3: Classifier + comparison warm-up (deferred, non-blocking)
-        # Runs after server is already responsive
+        # Phase 3: Try loading saved models first (instant), then fallback to retrain
         if demo_df is not None:
+            try:
+                from src.enhanced_analysis import load_trained_model, list_saved_models
+                saved = list_saved_models()
+                if saved:
+                    print(f"  Found {len(saved)} saved model(s), loading from disk...")
+                    for meta in saved:
+                        w = meta.get("well", "")
+                        artifact = load_trained_model(w, meta.get("model_name", "best"))
+                        if artifact:
+                            # Store loaded model in classify cache for API use
+                            clf_key = f"clf_demo_{artifact.get('model_name', 'best')}_enh_{w}"
+                            _classify_cache[clf_key] = {
+                                "model": artifact["model"],
+                                "scaler": artifact["scaler"],
+                                "label_encoder": artifact["label_encoder"],
+                                "feature_names": artifact["feature_names"],
+                                "cv_mean_accuracy": artifact.get("metrics", {}).get("accuracy", 0),
+                                "saved_model": True,
+                            }
+                            print(f"  Loaded saved model for {w}: "
+                                  f"{artifact.get('model_name', 'best')} "
+                                  f"(bal_acc={artifact.get('metrics', {}).get('balanced_accuracy', '?')})")
+                else:
+                    print("  No saved models found, will train from scratch")
+            except Exception as e:
+                print(f"  Model loading skipped: {e}")
+
+            # Phase 3b: Classifier + comparison warm-up (deferred, non-blocking)
+            # Runs after server is already responsive
             # Pre-warm gradient boosting classifier
             clf_key = "clf_demo_gradient_boosting_enh"
             if clf_key not in _classify_cache:
@@ -1116,14 +1144,44 @@ async def performance_showcase():
     abstention_acc = 79.0
     wsm_grade = "B"
     physics_checks = 5
+    optimized_model = None
 
-    # Try to pull live values from classify cache
-    for key, val in _classify_cache.items():
-        if isinstance(val, dict) and "accuracy" in val:
-            acc = val.get("accuracy")
-            if acc and isinstance(acc, (int, float)):
-                accuracy_pct = round(acc * 100, 1) if acc <= 1 else round(acc, 1)
-            break
+    # Try to pull from saved (Optuna-tuned) model first
+    try:
+        from src.enhanced_analysis import list_saved_models
+        saved = list_saved_models()
+        if saved:
+            # Prefer the multi-class well (harder, more honest metric)
+            # Sort by: number of feature_names (proxy for complexity), then balanced_accuracy
+            multi_class = [s for s in saved if len(s.get("feature_names", [])) > 0]
+            # Pick the one with lowest balanced_accuracy (harder problem = more honest showcase)
+            best_saved = min(multi_class, key=lambda m: m.get("metrics", {}).get("balanced_accuracy", 1.0)) if multi_class else saved[0]
+            metrics = best_saved.get("metrics", {})
+            if metrics.get("accuracy"):
+                accuracy_pct = round(metrics["accuracy"] * 100, 1)
+            if metrics.get("balanced_accuracy"):
+                bal_acc = round(metrics["balanced_accuracy"] * 100, 1)
+            if metrics.get("mcc"):
+                pass  # Include in response below
+            optimized_model = {
+                "well": best_saved.get("well"),
+                "saved_at": best_saved.get("saved_at"),
+                "balanced_accuracy": metrics.get("balanced_accuracy"),
+                "mcc": metrics.get("mcc"),
+                "f1_macro": metrics.get("f1_macro"),
+                "tuned": bool(best_saved.get("tuned_params")),
+            }
+    except Exception:
+        pass
+
+    # Try to pull live values from classify cache (fallback)
+    if optimized_model is None:
+        for key, val in _classify_cache.items():
+            if isinstance(val, dict) and "accuracy" in val:
+                acc = val.get("accuracy")
+                if acc and isinstance(acc, (int, float)):
+                    accuracy_pct = round(acc * 100, 1) if acc <= 1 else round(acc, 1)
+                break
 
     # Try to pull WSM from inversion cache
     for key, val in _inversion_cache.items():
@@ -1174,6 +1232,7 @@ async def performance_showcase():
                 "description": "6 independent quality checks aggregated into GO/CAUTION/NO-GO before any operational decision."
             }
         ],
+        "optimized_model": optimized_model,
         "stakeholder_brief": {
             "headline": "Industrial-grade fracture classification with transparent uncertainty",
             "for_non_experts": "Our AI correctly classifies 87% of fractures (verified across 200 independent tests). When it expresses confidence, that confidence is trustworthy. When it is not confident, it tells you so rather than guessing.",
@@ -10623,6 +10682,149 @@ async def ab_test_models(request: Request):
         },
         "disagreements": disagreements[:50],  # Cap at 50 for response size
         "stakeholder_brief": brief,
+    })
+
+
+# ── Model Optimization & Persistence ─────────────────
+
+@app.post("/api/models/optimize")
+async def optimize_model(request: Request):
+    """Optuna hyperparameter optimization → train best → save to disk.
+
+    Tunes RF, XGBoost, LightGBM, CatBoost using Bayesian optimization.
+    Picks the model with highest balanced_accuracy, trains on full data,
+    serializes to data/models/ for instant loading on restart.
+    """
+    from src.enhanced_analysis import optimize_and_save_best
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+    n_trials = min(int(body.get("n_trials", 50)), 200)
+    timeout = min(int(body.get("timeout_per_model_s", 120)), 300)
+
+    df = get_df(source)
+    if df is None or df.empty:
+        return JSONResponse({"error": "No data available"}, status_code=404)
+    df = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df
+    if df.empty:
+        return JSONResponse({"error": f"No data for well {well}"}, status_code=404)
+
+    t0 = time.time()
+    result = await asyncio.to_thread(
+        optimize_and_save_best, df, well,
+        n_trials=n_trials, timeout_per_model_s=timeout,
+    )
+    result["elapsed_s"] = round(time.time() - t0, 1)
+    result["well"] = well
+    result["stakeholder_brief"] = {
+        "headline": f"Model optimization complete for {well}",
+        "risk_level": "INFO",
+        "what_this_means": (
+            f"Tested {len(result.get('all_models_tuned', []))} model architectures "
+            f"with {n_trials} hyperparameter configurations each. "
+            f"Best model: {result.get('best_model_name', 'N/A')} "
+            f"(balanced accuracy: {result.get('metrics', {}).get('balanced_accuracy', 'N/A')}). "
+            f"Model saved to disk for instant loading."
+        ),
+        "for_non_experts": (
+            "We tested many different AI configurations to find the most accurate one "
+            "for your well data. The best model has been saved and will load instantly "
+            "when the system restarts."
+        ),
+    }
+    return _sanitize_for_json(result)
+
+
+@app.get("/api/models/saved")
+async def list_saved_models_endpoint():
+    """List all saved model artifacts with metadata."""
+    from src.enhanced_analysis import list_saved_models
+    models = list_saved_models()
+    return _sanitize_for_json({
+        "models": models,
+        "count": len(models),
+        "model_dir": "data/models/",
+    })
+
+
+@app.post("/api/models/predict-saved")
+async def predict_with_saved_model(request: Request):
+    """Predict using a saved (serialized) model instead of retraining.
+
+    Much faster: loads pre-trained model from disk (~50ms vs ~30s retrain).
+    """
+    from src.enhanced_analysis import load_trained_model, engineer_enhanced_features
+    body = await request.json()
+    source = body.get("source", "demo")
+    well = body.get("well", "3P")
+
+    artifact = load_trained_model(well, "best")
+    if artifact is None:
+        return JSONResponse(
+            {"error": f"No saved model for well {well}. Run /api/models/optimize first."},
+            status_code=404,
+        )
+
+    df = get_df(source)
+    if df is None or df.empty:
+        return JSONResponse({"error": "No data available"}, status_code=404)
+    df = df[df[WELL_COL] == well].reset_index(drop=True) if WELL_COL in df.columns else df
+    if df.empty:
+        return JSONResponse({"error": f"No data for well {well}"}, status_code=404)
+
+    t0 = time.time()
+    features = await asyncio.to_thread(engineer_enhanced_features, df)
+    X = artifact["scaler"].transform(features.values)
+    model = artifact["model"]
+    le = artifact["label_encoder"]
+
+    y_pred = np.asarray(model.predict(X)).ravel()
+    labels_pred = le.inverse_transform(y_pred)
+
+    proba = None
+    if hasattr(model, "predict_proba"):
+        try:
+            proba = model.predict_proba(X)
+        except Exception:
+            pass
+
+    predictions = []
+    for i in range(len(df)):
+        pred = {
+            "index": i,
+            "predicted_type": str(labels_pred[i]),
+        }
+        if proba is not None:
+            pred["confidence"] = round(float(proba[i].max()), 3)
+            pred["probabilities"] = {
+                str(le.classes_[j]): round(float(proba[i][j]), 3)
+                for j in range(len(le.classes_))
+            }
+        predictions.append(pred)
+
+    elapsed = round(time.time() - t0, 3)
+    return _sanitize_for_json({
+        "well": well,
+        "model_name": artifact.get("model_name", "best"),
+        "model_type": artifact.get("model_name", "unknown"),
+        "saved_at": artifact.get("saved_at", "unknown"),
+        "metrics": artifact.get("metrics", {}),
+        "n_predictions": len(predictions),
+        "predictions": predictions,
+        "elapsed_s": elapsed,
+        "stakeholder_brief": {
+            "headline": f"Predictions for {well} using saved model",
+            "risk_level": "INFO",
+            "what_this_means": (
+                f"Used pre-trained model (saved {artifact.get('saved_at', 'previously')}). "
+                f"Generated {len(predictions)} predictions in {elapsed}s. "
+                f"Model metrics: balanced accuracy {artifact.get('metrics', {}).get('balanced_accuracy', 'N/A')}."
+            ),
+            "for_non_experts": (
+                "Predictions were generated using a previously optimized AI model. "
+                "This is faster and more consistent than retraining from scratch."
+            ),
+        },
     })
 
 

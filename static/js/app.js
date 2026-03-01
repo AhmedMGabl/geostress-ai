@@ -271,6 +271,8 @@ function switchTab(tab) {
     var main = document.querySelector("main");
     if (main) main.scrollTop = 0;
     window.scrollTo(0, 0);
+    // Auto-expand sidebar group containing this tab
+    if (typeof expandGroupForTab === "function") expandGroupForTab(tab);
 }
 
 // ── Well selector sync ────────────────────────────
