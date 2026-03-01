@@ -235,7 +235,9 @@ var tabNames = {
     audit: "Audit Trail",
     calibration: "Model Calibration",
     glossary: "Glossary & Guide",
-    mlops: "Production MLOps"
+    mlops: "Production MLOps",
+    performance: "Performance & Trust",
+    drilling: "Drilling Calculators"
 };
 
 document.querySelectorAll("[data-tab]").forEach(function(link) {
@@ -9133,6 +9135,130 @@ function stopMlopsRefresh() {
     }
 }
 
+// ── Drilling Cards Relocation ──────────────────────
+
+function initDrillingTab() {
+    var src = document.getElementById('drilling-cards-container');
+    var tgt = document.getElementById('drilling-tools-target');
+    if (!src || !tgt) return;
+
+    // Group cards by scanning comment markers
+    var cards = src.children;
+    var groups = {
+        'Stress & Geomechanics': [],
+        'Fracture Characterization': [],
+        'Wellbore Stability': [],
+        'Drilling Engineering': [],
+        'Fault & Seismicity': [],
+        'Other Tools': []
+    };
+
+    // Keyword-based classification
+    var keywords = {
+        'Stress & Geomechanics': ['stress', 'mohr', 'geomech', 'anisotropy', 'gradient', 'rotation', 'polygon', 'ratio', 'overburden', 'pore pressure', 'effective stress', 'biot'],
+        'Fracture Characterization': ['fracture', 'aperture', 'dfn', 'swarm', 'corridor', 'spacing', 'porosity', 'density map', 'orientation', 'stereonet'],
+        'Wellbore Stability': ['stability', 'breakout', 'collapse', 'mud weight', 'shear failure', 'tensile', 'wellbore', 'hole size', 'borehole', 'washout', 'caliper', 'swelling', 'sand'],
+        'Drilling Engineering': ['ecd', 'torque', 'drag', 'casing', 'cement', 'kick', 'hole cleaning', 'surge', 'swab', 'trip margin', 'pack-off', 'annular', 'lost circulation', 'stuck pipe', 'drilling hazard', 'rop', 'hydraulic', 'pressure loss'],
+        'Fault & Seismicity': ['fault', 'seismic', 'reactivation', 'seal', 'slip tendency', 'injection', 'induced']
+    };
+
+    // Move all child elements
+    var elems = Array.from(src.children);
+    elems.forEach(function(el) {
+        if (el.nodeType !== 1) return;
+        var text = (el.textContent || '').toLowerCase();
+        var placed = false;
+        for (var grp in keywords) {
+            for (var k = 0; k < keywords[grp].length; k++) {
+                if (text.indexOf(keywords[grp][k]) >= 0) {
+                    groups[grp].push(el);
+                    placed = true;
+                    break;
+                }
+            }
+            if (placed) break;
+        }
+        if (!placed && el.classList.contains('card')) {
+            groups['Other Tools'].push(el);
+        }
+    });
+
+    // Build accordion
+    var html = '<div class="accordion drilling-accordion" id="drilling-accordion">';
+    var idx = 0;
+    for (var groupName in groups) {
+        if (groups[groupName].length === 0) continue;
+        var collapseId = 'drill-grp-' + idx;
+        html += '<div class="accordion-item">';
+        html += '<h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#' + collapseId + '">';
+        html += groupName + ' <span class="badge bg-secondary ms-2">' + groups[groupName].length + '</span>';
+        html += '</button></h2>';
+        html += '<div id="' + collapseId + '" class="accordion-collapse collapse" data-bs-parent="#drilling-accordion">';
+        html += '<div class="accordion-body" id="' + collapseId + '-body"></div></div></div>';
+        idx++;
+    }
+    html += '</div>';
+    tgt.innerHTML = html;
+
+    // Move actual DOM elements into their accordion bodies
+    idx = 0;
+    for (var groupName2 in groups) {
+        if (groups[groupName2].length === 0) continue;
+        var body = document.getElementById('drill-grp-' + idx + '-body');
+        if (body) {
+            groups[groupName2].forEach(function(el) { body.appendChild(el); });
+        }
+        idx++;
+    }
+
+    // Hide the now-empty container in tab-data
+    src.style.display = 'none';
+}
+
+// ── Performance Showcase ──────────────────────────
+
+var _perfLoaded = false;
+
+async function loadPerformanceShowcase() {
+    if (_perfLoaded) return;
+    try {
+        var res = await fetch('/api/performance/showcase');
+        if (!res.ok) return;
+        var d = await res.json();
+
+        // Update metric cards if API returns dynamic values
+        if (d.accuracy_pct) {
+            var accEl = document.getElementById('perf-accuracy');
+            if (accEl) accEl.textContent = d.accuracy_pct + '%';
+        }
+        if (d.accuracy_ci_95) {
+            var ciEl = document.getElementById('perf-accuracy-ci');
+            if (ciEl) ciEl.textContent = '95% CI: ' + d.accuracy_ci_95[0] + '-' + d.accuracy_ci_95[1] + '%';
+        }
+        if (d.calibration_grade) {
+            var calEl = document.getElementById('perf-calibration');
+            if (calEl) calEl.textContent = d.calibration_grade;
+        }
+        if (d.calibration_ece_pct) {
+            var eceEl = document.getElementById('perf-ece');
+            if (eceEl) eceEl.textContent = 'ECE: ' + d.calibration_ece_pct + '%';
+        }
+        if (d.abstention_accuracy_pct) {
+            var absEl = document.getElementById('perf-abstention-acc');
+            if (absEl) absEl.textContent = d.abstention_accuracy_pct + '%';
+        }
+        if (d.wsm_quality_grade) {
+            var wsmEl = document.getElementById('perf-wsm-grade');
+            if (wsmEl) wsmEl.textContent = d.wsm_quality_grade;
+        }
+
+        _perfLoaded = true;
+    } catch (e) {
+        // Showcase tab works with static defaults even without API
+        _perfLoaded = true;
+    }
+}
+
 // ── Init ──────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", function() {
@@ -9140,6 +9266,7 @@ document.addEventListener("DOMContentLoaded", function() {
     loadFeedbackSummary();
     loadDbStats();
     loadStartupSnapshot();
+    initDrillingTab();
     // Auto-run overview after a short delay (let summary load first)
     setTimeout(function() { runOverview(); }, 500);
     initTooltips();
@@ -9149,11 +9276,15 @@ document.addEventListener("DOMContentLoaded", function() {
     // Auto-load MLOps status when tab is activated
     document.querySelectorAll('[data-tab]').forEach(function(link) {
         link.addEventListener('click', function() {
-            if (this.getAttribute('data-tab') === 'mlops') {
+            var tab = this.getAttribute('data-tab');
+            if (tab === 'mlops') {
                 startMlopsRefresh();
                 loadSystemHealth();
             } else {
                 stopMlopsRefresh();
+            }
+            if (tab === 'performance') {
+                loadPerformanceShowcase();
             }
         });
     });
