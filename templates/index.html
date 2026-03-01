@@ -599,9 +599,29 @@
                                     <i class="bi bi-cpu"></i>
                                 </div>
                                 <h6>Ensemble Resampling</h6>
-                                <p class="text-muted small mb-1">BalancedBagging trains 50 models on balanced subsets. Each bag gets a different view of the data — <strong>ensemble diversity</strong> compensates for extreme class imbalance (17:1 ratio).</p>
+                                <p class="text-muted small mb-1">BalancedBagging trains 100 models on balanced subsets. Each bag gets a different view of the data — <strong>ensemble diversity</strong> compensates for extreme class imbalance (17:1 ratio).</p>
                                 <span class="badge bg-primary bg-opacity-10 text-primary">100 Balanced Bags</span>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- Model Leaderboard -->
+                    <h5 class="mb-3" data-aos="fade-up"><i class="bi bi-trophy"></i> Model Leaderboard</h5>
+                    <div class="card mb-4" data-aos="fade-up">
+                        <div class="card-body p-0">
+                            <table class="table table-sm table-hover mb-0" id="perf-leaderboard">
+                                <thead class="table-light">
+                                    <tr><th style="width:2rem">#</th><th>Model</th><th>Bal Acc</th><th>MCC</th><th>F1 Macro</th><th></th></tr>
+                                </thead>
+                                <tbody id="perf-leaderboard-body">
+                                    <tr><td>1</td><td class="fw-semibold">Balanced Bagging</td><td>67.9%</td><td>0.68</td><td>57.3%</td><td><span class="badge bg-warning text-dark">Best</span></td></tr>
+                                    <tr><td>2</td><td>Neural Network (MLP)</td><td>64.9%</td><td>0.71</td><td>60.8%</td><td></td></tr>
+                                    <tr><td>3</td><td>Easy Ensemble</td><td>64.5%</td><td>0.62</td><td>53.4%</td><td></td></tr>
+                                    <tr><td>4</td><td>SVM (Support Vector)</td><td>63.6%</td><td>0.70</td><td>59.2%</td><td></td></tr>
+                                    <tr><td>5</td><td>CatBoost</td><td>61.9%</td><td>0.74</td><td>59.8%</td><td></td></tr>
+                                </tbody>
+                            </table>
+                            <div class="text-muted small p-2 text-center">12 models tested &middot; Ranked by balanced accuracy (equal weight to all fracture types) &middot; <a href="#" onclick="switchTab('models');return false">Full comparison &rarr;</a></div>
                         </div>
                     </div>
 
