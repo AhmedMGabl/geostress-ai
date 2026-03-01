@@ -1389,8 +1389,28 @@ document.getElementById("file-upload").addEventListener("change", async function
         valDiv.innerHTML = valHtml;
         dataTab.insertBefore(valDiv, dataTab.firstChild);
 
+        // Add guided next steps
+        valHtml = '<div id="upload-next-steps" class="card border-success mb-3">' +
+            '<div class="card-header bg-success bg-opacity-10 py-2"><i class="bi bi-signpost-split text-success"></i> <strong>Next Steps</strong></div>' +
+            '<div class="card-body py-2"><div class="row g-2">' +
+            '<div class="col-md-4"><button class="btn btn-primary btn-sm w-100" onclick="switchTab(\'inversion\');setTimeout(runInversion,300)">' +
+            '<i class="bi bi-gear-wide-connected me-1"></i>Run Stress Inversion</button>' +
+            '<small class="text-muted d-block mt-1">Estimate SHmax and stress magnitudes</small></div>' +
+            '<div class="col-md-4"><button class="btn btn-outline-primary btn-sm w-100" onclick="switchTab(\'classify\')">' +
+            '<i class="bi bi-diagram-3 me-1"></i>Classify Fractures</button>' +
+            '<small class="text-muted d-block mt-1">ML classification by fracture type</small></div>' +
+            '<div class="col-md-4"><button class="btn btn-outline-secondary btn-sm w-100" onclick="switchTab(\'viz\');loadAllViz()">' +
+            '<i class="bi bi-pie-chart me-1"></i>View Visualizations</button>' +
+            '<small class="text-muted d-block mt-1">Rose diagram, stereonet, depth profile</small></div>' +
+            '</div></div></div>';
+        var stepsDiv = document.createElement("div");
+        stepsDiv.innerHTML = valHtml;
+        var existingSteps = document.getElementById("upload-next-steps");
+        if (existingSteps) existingSteps.remove();
+        valDiv.parentNode.insertBefore(stepsDiv.firstChild, valDiv.nextSibling);
+
         showToast("Loaded " + result.rows + " fractures from " + result.filename +
-            (warnings.length > 0 ? " (" + warnings.length + " warnings)" : " — all checks passed"));
+            (warnings.length > 0 ? " (" + warnings.length + " warnings)" : " — all checks passed"), "Success");
         await loadSummary();
     } catch (err) {
         showToast("Upload error: " + err.message, "Error");
