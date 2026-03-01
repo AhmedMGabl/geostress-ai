@@ -5256,6 +5256,13 @@
                         </div>
                     </div>
 
+                    <!-- Empty state (shown until analysis is run) -->
+                    <div id="inversion-empty" class="empty-state">
+                        <i class="bi bi-gear-wide-connected"></i>
+                        <h5>Ready to Analyze</h5>
+                        <p>Click <strong>Run Inversion</strong> to estimate the stress tensor from your fracture data. The system will determine stress magnitudes, SHmax direction, and identify critically stressed fractures.</p>
+                    </div>
+
                     <!-- Auto Regime Detection Banner -->
                     <div id="auto-regime-banner" class="d-none mb-4">
                         <div class="card border-success">
@@ -6323,6 +6330,13 @@
                         </div>
                     </div><!-- /classify-accordion -->
 
+                    <!-- Empty state -->
+                    <div id="classify-empty" class="empty-state">
+                        <i class="bi bi-diagram-3"></i>
+                        <h5>No Classification Results Yet</h5>
+                        <p>Select a classifier above and click <strong>Run Classification</strong> to categorize fractures by type using machine learning. Expand the accordion sections for advanced analyses like ensemble models, feature ablation, and cross-well generalization.</p>
+                    </div>
+
                     <div id="classify-results" class="d-none">
                         <!-- Stakeholder Brief -->
                         <div id="clf-brief" class="d-none mb-4"></div>
@@ -6986,12 +7000,17 @@
 
                 <!-- ═══════ Risk Matrix Tab ═══════ -->
                 <div id="tab-risk" class="tab-content">
-                    <h5 class="mb-3">Operational Risk Assessment</h5>
-                    <p class="text-muted">GO / NO-GO decision framework combining all analysis results.</p>
+                    <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>Risk Assessment</strong> &mdash; GO / NO-GO decision framework combining critically stressed %, data quality, model confidence, sensitivity, and friction into an operational risk matrix.</div>
 
                     <button class="btn btn-primary btn-sm mb-3" onclick="runRiskMatrix()">
                         <i class="bi bi-shield-check"></i> Compute Risk Matrix
                     </button>
+
+                    <div id="risk-empty" class="empty-state">
+                        <i class="bi bi-shield-exclamation"></i>
+                        <h5>Risk Matrix Not Computed</h5>
+                        <p>Click <strong>Compute Risk Matrix</strong> to generate a GO / NO-GO assessment based on 5 independent risk factors.</p>
+                    </div>
 
                     <!-- Overall Risk Banner -->
                     <div id="risk-overall" class="d-none mb-4">

@@ -1434,6 +1434,8 @@ async function runInversion() {
         });
 
         document.getElementById("inversion-results").classList.remove("d-none");
+        var invEmpty = document.getElementById("inversion-empty");
+        if (invEmpty) invEmpty.style.display = "none";
         // Render stakeholder brief (plain-English decision summary)
         if (r.stakeholder_brief) {
             renderStakeholderBrief("inv-brief", r.stakeholder_brief, "inv-brief-detail");
@@ -2309,6 +2311,8 @@ async function runClassification() {
         });
 
         document.getElementById("classify-results").classList.remove("d-none");
+        var clfEmpty = document.getElementById("classify-empty");
+        if (clfEmpty) clfEmpty.style.display = "none";
         // Render stakeholder brief
         if (r.stakeholder_brief) {
             renderStakeholderBrief("clf-brief", r.stakeholder_brief, "clf-brief-detail");
@@ -4707,6 +4711,8 @@ async function runRiskMatrix() {
         });
 
         // Overall banner
+        var riskEmpty = document.getElementById("risk-empty");
+        if (riskEmpty) riskEmpty.style.display = "none";
         var overallEl = document.getElementById("risk-overall");
         overallEl.classList.remove("d-none");
         var card = document.getElementById("risk-overall-card");

@@ -544,3 +544,99 @@ body {
 @media (max-width: 768px) {
     .mobile-menu-btn { display: inline-flex; }
 }
+
+/* Smooth scrolling */
+html { scroll-behavior: smooth; }
+
+/* Skeleton loading animation */
+@keyframes shimmer {
+    0% { background-position: -400px 0; }
+    100% { background-position: 400px 0; }
+}
+.skeleton {
+    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+    background-size: 400px 100%;
+    animation: shimmer 1.5s ease infinite;
+    border-radius: 4px;
+}
+.skeleton-text { height: 14px; margin-bottom: 8px; width: 80%; }
+.skeleton-metric { height: 36px; width: 60px; margin: 0 auto; }
+.skeleton-chart { height: 200px; width: 100%; }
+
+/* Empty state for tabs */
+.empty-state {
+    text-align: center;
+    padding: 3rem 1.5rem;
+    color: #9ca3af;
+}
+.empty-state i {
+    font-size: 3rem;
+    opacity: 0.3;
+    display: block;
+    margin-bottom: 1rem;
+}
+.empty-state h5 {
+    color: #6b7280;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+}
+.empty-state p {
+    max-width: 420px;
+    margin: 0 auto;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+/* Dropdown menu polish */
+.dropdown-menu {
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+    border-radius: 8px;
+    padding: 0.25rem 0;
+}
+.dropdown-item {
+    font-size: 0.85rem;
+    padding: 0.45rem 1rem;
+    border-radius: 4px;
+    margin: 0 0.25rem;
+    width: calc(100% - 0.5rem);
+}
+.dropdown-item:hover {
+    background: #f3f4f6;
+}
+.dropdown-item i {
+    width: 1.2rem;
+    text-align: center;
+}
+
+/* Accordion polish for classify/drilling */
+.drilling-accordion .accordion-item {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px !important;
+    margin-bottom: 0.5rem;
+    overflow: hidden;
+}
+.drilling-accordion .accordion-button {
+    padding: 0.6rem 1rem;
+    font-size: 0.9rem;
+}
+.drilling-accordion .accordion-button:focus {
+    box-shadow: none;
+    border-color: var(--accent);
+}
+.drilling-accordion .accordion-button .badge {
+    font-size: 0.65rem;
+}
+
+/* Toast animations */
+.toast {
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.toast.showing {
+    opacity: 0;
+    transform: translateY(20px);
+}
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
