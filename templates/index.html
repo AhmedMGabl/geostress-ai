@@ -41,7 +41,7 @@
                     </svg>
                     <div>
                         <h4 class="mb-0" style="color:#f1f5f9;font-size:1.1rem;letter-spacing:-0.02em">GeoStress AI</h4>
-                        <small class="text-muted-light" style="font-size:0.68rem">Industrial Fracture Analysis v3.81</small>
+                        <small class="text-muted-light" style="font-size:0.68rem">Industrial Fracture Analysis v3.82</small>
                     </div>
                 </div>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
@@ -205,7 +205,7 @@
             <div class="sidebar-section mt-auto" style="border-top:1px solid rgba(255,255,255,0.08);padding:0.8rem 1rem">
                 <div class="d-flex align-items-center justify-content-between">
                     <small class="text-muted-light" style="font-size:0.65rem">
-                        <i class="bi bi-cpu"></i> GeoStress AI v3.81
+                        <i class="bi bi-cpu"></i> GeoStress AI v3.82
                     </small>
                     <div>
                         <a href="https://github.com/AhmedMGabl/geostress-ai" target="_blank" class="text-muted-light me-2" title="GitHub" style="font-size:0.8rem;text-decoration:none"><i class="bi bi-github"></i></a>
@@ -6547,7 +6547,13 @@
                         </div>
                     </div>
 
-                    <!-- Label Correction Section -->
+                    <!-- Label Correction Section (collapsible) -->
+                    <div class="mb-3">
+                        <a class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" href="#correction-section" role="button">
+                            <i class="bi bi-pencil-square"></i> Expert Corrections &amp; Retraining <i class="bi bi-chevron-down ms-1"></i>
+                        </a>
+                    </div>
+                    <div class="collapse" id="correction-section">
                     <div class="row g-3 mb-4">
                         <div class="col-lg-6">
                             <div class="card border-warning">
@@ -6640,6 +6646,7 @@
                             </div>
                         </div>
                     </div>
+                    </div><!-- /collapse correction-section -->
 
                     <!-- RLHF Preference Model -->
                     <div class="card mt-4 border-success">
@@ -8112,6 +8119,13 @@
                         </button>
                     </div>
 
+                    <!-- Empty State -->
+                    <div id="val-empty" class="empty-state text-center py-4">
+                        <i class="bi bi-check2-all" style="font-size:2.5rem;opacity:0.3"></i>
+                        <h6 class="mt-2 text-muted">No Validation Run Yet</h6>
+                        <p class="small text-muted mb-0">Click <strong>Validate Data</strong> to check your fracture data against physical and geological constraints before running analyses.</p>
+                    </div>
+
                     <!-- Domain Validation Results -->
                     <div id="val-results" class="d-none mb-4">
                         <div id="val-status" class="alert mb-3"></div>
@@ -8197,7 +8211,7 @@
                         <div class="col-md-4">
                             <div class="metric-card">
                                 <div class="metric-label">App Version</div>
-                                <div class="metric-value" id="audit-version">2.6.0</div>
+                                <div class="metric-value" id="audit-version">v3.82</div>
                             </div>
                         </div>
                         <div class="col-md-4">
@@ -8227,28 +8241,40 @@
                     <h5 class="mb-3"><i class="bi bi-mortarboard"></i> Scientific Methods & Research Basis</h5>
                     <p class="text-muted">Understanding what factors are accounted for and the scientific basis of each analysis. Based on peer-reviewed geomechanics research through 2025-2026.</p>
 
-                    <div class="d-flex gap-2 mb-3">
-                        <button class="btn btn-primary btn-sm" onclick="loadResearchMethods()">
-                            <i class="bi bi-arrow-clockwise"></i> Load Methods
-                        </button>
-                        <button class="btn btn-outline-warning btn-sm" onclick="runPhysicsCheck()">
-                            <i class="bi bi-gear-wide"></i> Physics Constraint Check
-                        </button>
-                        <button class="btn btn-outline-info btn-sm" onclick="runPhysicsPredict()">
-                            <i class="bi bi-shield-check"></i> Physics-Constrained Predict
-                        </button>
-                        <button class="btn btn-outline-danger btn-sm" onclick="runMisclassification()">
-                            <i class="bi bi-bug"></i> Misclassification Analysis
-                        </button>
-                        <button class="btn btn-outline-secondary btn-sm" onclick="runModelBias()">
-                            <i class="bi bi-sliders2"></i> Bias Detection
-                        </button>
-                        <button class="btn btn-warning btn-sm" onclick="runReliabilityReport()">
-                            <i class="bi bi-award"></i> Reliability Report
-                        </button>
-                        <button class="btn btn-danger btn-sm" onclick="runPredictWithAbstention()">
-                            <i class="bi bi-shield-exclamation"></i> Predict with Abstention
-                        </button>
+                    <div class="row g-2 mb-3">
+                        <div class="col-auto">
+                            <button class="btn btn-primary btn-sm" onclick="loadResearchMethods()">
+                                <i class="bi bi-arrow-clockwise"></i> Load Methods
+                            </button>
+                        </div>
+                        <div class="col-auto">
+                            <div class="btn-group">
+                                <button class="btn btn-outline-warning btn-sm dropdown-toggle" data-bs-toggle="dropdown">
+                                    <i class="bi bi-gear-wide"></i> Physics Checks
+                                </button>
+                                <ul class="dropdown-menu">
+                                    <li><a class="dropdown-item" href="#" onclick="runPhysicsCheck();return false"><i class="bi bi-gear-wide me-2"></i>Constraint Validation</a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="runPhysicsPredict();return false"><i class="bi bi-shield-check me-2"></i>Physics-Constrained Predict</a></li>
+                                </ul>
+                            </div>
+                        </div>
+                        <div class="col-auto">
+                            <div class="btn-group">
+                                <button class="btn btn-outline-danger btn-sm dropdown-toggle" data-bs-toggle="dropdown">
+                                    <i class="bi bi-bug"></i> ML Diagnostics
+                                </button>
+                                <ul class="dropdown-menu">
+                                    <li><a class="dropdown-item" href="#" onclick="runMisclassification();return false"><i class="bi bi-bug me-2"></i>Misclassification Analysis</a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="runModelBias();return false"><i class="bi bi-sliders2 me-2"></i>Bias Detection</a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="runReliabilityReport();return false"><i class="bi bi-award me-2"></i>Reliability Report</a></li>
+                                </ul>
+                            </div>
+                        </div>
+                        <div class="col-auto">
+                            <button class="btn btn-danger btn-sm" onclick="runPredictWithAbstention()">
+                                <i class="bi bi-shield-exclamation"></i> Abstention Predict
+                            </button>
+                        </div>
                     </div>
                     <!-- Abstention threshold slider -->
                     <div class="mt-2 px-2" style="max-width:350px">

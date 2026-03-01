@@ -1291,17 +1291,17 @@ def compare_models(
                 feat_imp = dict(zip(features.columns, coef))
             elif hasattr(model, "estimators_"):
                 # Aggregate from sub-estimators (BalancedBagging, EasyEnsemble)
+                # imblearn wraps each in Pipeline(sampler, classifier)
                 imps = []
                 for est in model.estimators_:
-                    base = est
-                    if hasattr(est, "estimators_"):
-                        # EasyEnsemble wraps AdaBoost ensembles
-                        for sub in est.estimators_:
+                    leaf = est[-1] if hasattr(est, "__getitem__") else est
+                    if hasattr(leaf, "feature_importances_"):
+                        imps.append(leaf.feature_importances_)
+                    elif hasattr(leaf, "estimators_"):
+                        for sub in leaf.estimators_:
                             if hasattr(sub, "feature_importances_"):
                                 imps.append(sub.feature_importances_)
                                 break
-                    elif hasattr(base, "feature_importances_"):
-                        imps.append(base.feature_importances_)
                 if imps:
                     avg_imp = np.mean(imps, axis=0)
                     feat_imp = dict(zip(features.columns, avg_imp))
@@ -1963,7 +1963,7 @@ def _abstention_recommendation(
 
 def classify_enhanced(
     df: pd.DataFrame,
-    classifier: str = "xgboost",
+    classifier: str = "balanced_bagging",
     n_folds: int = 3,
 ) -> dict:
     """Enhanced single-model classification with richer output.
@@ -2064,6 +2064,22 @@ def classify_enhanced(
     feat_imp = {}
     if hasattr(model, "feature_importances_"):
         feat_imp = dict(zip(features.columns, model.feature_importances_))
+    elif hasattr(model, "estimators_"):
+        # Aggregate from sub-estimators (BalancedBagging, EasyEnsemble)
+        # imblearn wraps each estimator in Pipeline(sampler, classifier)
+        imps = []
+        for est in model.estimators_:
+            leaf = est[-1] if hasattr(est, "__getitem__") else est
+            if hasattr(leaf, "feature_importances_"):
+                imps.append(leaf.feature_importances_)
+            elif hasattr(leaf, "estimators_"):
+                for sub in leaf.estimators_:
+                    if hasattr(sub, "feature_importances_"):
+                        imps.append(sub.feature_importances_)
+                        break
+        if imps:
+            avg_imp = np.mean(imps, axis=0)
+            feat_imp = dict(zip(features.columns, avg_imp))
     elif hasattr(model, "coef_"):
         coef = np.abs(model.coef_).mean(axis=0)
         feat_imp = dict(zip(features.columns, coef))

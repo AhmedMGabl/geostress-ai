@@ -1,4 +1,4 @@
-/* GeoStress AI - Frontend Logic v3.81 (Industrial Grade) */
+/* GeoStress AI - Frontend Logic v3.82 (Industrial Grade) */
 
 var currentSource = "demo";
 var currentWell = "3P";
@@ -96,8 +96,27 @@ async function api(url, options) {
     var timeEl = document.getElementById("response-time");
     if (timeEl) timeEl.textContent = elapsed + "s";
     if (!resp.ok) {
-        var text = await resp.text();
-        throw new Error(text || resp.statusText);
+        var text = "";
+        try { text = await resp.text(); } catch(e) {}
+        // Try to extract JSON detail
+        try {
+            var errObj = JSON.parse(text);
+            text = errObj.detail || errObj.message || text;
+        } catch(e) {}
+        // Humanize common HTTP errors
+        var friendly = {
+            400: "Invalid input — please check your parameters.",
+            404: "Resource not found — the selected well or data may not exist.",
+            422: "Validation error — check that all required fields are filled.",
+            500: "Server error — the analysis encountered an unexpected issue.",
+            502: "Service temporarily unavailable — the server is restarting.",
+            503: "Server busy — please try again in a moment.",
+            504: "Request timed out — try a simpler analysis or smaller dataset."
+        };
+        var msg = text || friendly[resp.status] || resp.statusText;
+        // Strip HTML tags if server returned an error page
+        if (msg.indexOf("<") !== -1) msg = friendly[resp.status] || "Server error (code " + resp.status + ")";
+        throw new Error(msg);
     }
     return resp.json();
 }
@@ -6571,6 +6590,8 @@ async function runDomainValidation() {
             body: JSON.stringify({source: currentSource, well: currentWell || null})
         });
 
+        var valEmpty = document.getElementById("val-empty");
+        if (valEmpty) valEmpty.classList.add("d-none");
         document.getElementById("val-results").classList.remove("d-none");
 
         var statusColors = {PASS: "success", OK: "success", CAUTION: "warning", FAIL: "danger"};
@@ -7356,6 +7377,11 @@ async function loadAuditLog() {
         var data = await api("/api/audit/log?limit=50");
         val("audit-total", data.total);
 
+        // Update version from server
+        if (data.app_version) {
+            val("audit-version", data.app_version);
+        }
+
         if (data.entries.length > 0) {
             var first = data.entries[data.entries.length - 1];
             val("audit-session-start", first.timestamp.substring(0, 19).replace("T", " "));
@@ -7371,7 +7397,11 @@ async function loadAuditLog() {
             tr.appendChild(createCell("td", e.well || "All"));
             tr.appendChild(createCell("td", e.source));
             tr.appendChild(createCell("td", e.elapsed_s + "s"));
-            tr.appendChild(createCell("td", e.result_hash, { fontFamily: "monospace", fontSize: "0.75rem" }));
+            // Truncate hash for readability
+            var shortHash = (e.result_hash || "").substring(0, 12) + "...";
+            var td = createCell("td", shortHash, { fontFamily: "monospace", fontSize: "0.75rem" });
+            td.title = e.result_hash || "";
+            tr.appendChild(td);
             tbody.appendChild(tr);
         });
     } catch (err) {

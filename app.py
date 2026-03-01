@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.81.0 - BalancedBagging ML + CSS Polish + Animations)."""
+"""GeoStress AI - FastAPI Web Application (v3.82.0 - Default BalancedBagging + UX Polish + Mobile)."""
 
 import os
 import io
@@ -171,6 +171,7 @@ VALID_REGIMES = {"normal", "strike_slip", "thrust", "auto"}
 VALID_CLASSIFIERS = {
     "random_forest", "gradient_boosting", "svm", "mlp",
     "xgboost", "lightgbm", "catboost", "stacking",
+    "balanced_bagging", "easy_ensemble", "hierarchical",
 }
 VALID_SOURCES = {"demo", "uploaded"}
 VALID_FRACTURE_TYPES = {
@@ -2149,7 +2150,7 @@ async def run_inversion(request: Request):
 @app.post("/api/analysis/classify")
 async def run_classification(request: Request):
     body = await request.json()
-    classifier = body.get("classifier", "random_forest")
+    classifier = body.get("classifier", "balanced_bagging")
     source = body.get("source", "demo")
     use_enhanced = body.get("enhanced", True)
     _validate_classifier(classifier)
