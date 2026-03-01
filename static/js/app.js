@@ -1,4 +1,4 @@
-/* GeoStress AI - Frontend Logic v2.0 (Industrial Grade) */
+/* GeoStress AI - Frontend Logic v3.79 (Industrial Grade) */
 
 var currentSource = "demo";
 var currentWell = "3P";
@@ -41,7 +41,7 @@ function showLoadingWithProgress(text, taskId) {
                 _progressSource.close();
                 _progressSource = null;
             }
-        } catch (err) {}
+        } catch (err) { console.warn('SSE parse error:', err); }
     };
     _progressSource.onerror = function() {
         if (_progressSource) { _progressSource.close(); _progressSource = null; }
@@ -258,7 +258,23 @@ document.querySelectorAll("[data-tab]").forEach(function(link) {
     });
 });
 
+// ── Mobile Menu ──────────────────────────────────
+function toggleMobileMenu() {
+    var sidebar = document.getElementById("sidebar");
+    var overlay = document.getElementById("mobile-overlay");
+    if (sidebar) sidebar.classList.toggle("mobile-open");
+    if (overlay) overlay.classList.toggle("active");
+}
+function closeMobileMenu() {
+    var sidebar = document.getElementById("sidebar");
+    var overlay = document.getElementById("mobile-overlay");
+    if (sidebar) sidebar.classList.remove("mobile-open");
+    if (overlay) overlay.classList.remove("active");
+}
+
 function switchTab(tab) {
+    // Close mobile menu when switching tabs
+    closeMobileMenu();
     document.querySelectorAll(".sidebar-nav .nav-link").forEach(function(l) {
         l.classList.remove("active");
         if (l.dataset.tab === tab) l.classList.add("active");
@@ -7985,7 +8001,7 @@ async function runEnsemblePredict() {
         }
     } catch (e) {
         hideLoading();
-        alert('Ensemble prediction failed: ' + e.message);
+        showToast('Ensemble prediction failed: ' + e.message, 'Error');
     }
 }
 
@@ -8029,7 +8045,7 @@ async function runAugmentedClassify() {
         );
     } catch (e) {
         hideLoading();
-        alert('Robustness test failed: ' + e.message);
+        showToast('Robustness test failed: ' + e.message, 'Error');
     }
 }
 
@@ -8120,7 +8136,7 @@ async function downloadPdfReport() {
         hideLoading();
     } catch (e) {
         hideLoading();
-        alert('PDF generation failed: ' + e.message);
+        showToast('PDF generation failed: ' + e.message, 'Error');
     }
 }
 
@@ -8197,7 +8213,7 @@ async function runScenarioCheck() {
         }
     } catch (e) {
         hideLoading();
-        alert('Scenario check failed: ' + e.message);
+        showToast('Scenario check failed: ' + e.message, 'Error');
     }
 }
 
@@ -8237,7 +8253,7 @@ async function viewScenarioLibrary() {
         });
     } catch (e) {
         hideLoading();
-        alert('Failed to load library: ' + e.message);
+        showToast('Failed to load library: ' + e.message, 'Error');
     }
 }
 
@@ -8277,7 +8293,7 @@ async function exportDatabase() {
         loadDbStats();
     } catch (e) {
         hideLoading();
-        alert('Export failed: ' + e.message);
+        showToast('Export failed: ' + e.message, 'Error');
     }
 }
 
@@ -8299,11 +8315,11 @@ async function importDatabase(event) {
         });
         const result = await res.json();
         hideLoading();
-        alert(`Imported: ${result.counts.audit} audit, ${result.counts.models} models, ${result.counts.preferences} preferences`);
+        showToast(`Imported: ${result.counts.audit} audit, ${result.counts.models} models, ${result.counts.preferences} preferences`, 'Success');
         loadDbStats();
     } catch (e) {
         hideLoading();
-        alert('Import failed: ' + e.message);
+        showToast('Import failed: ' + e.message, 'Error');
     }
     event.target.value = '';
 }
@@ -8755,10 +8771,10 @@ async function rollbackModel(modelType, version, well) {
             body: JSON.stringify({model_type: modelType, target_version: version, well: well || null})
         });
         const d = await r.json();
-        alert(d.message || 'Rollback complete');
+        showToast(d.message || 'Rollback complete', 'Success');
         loadModelRegistry();
     } catch(e) {
-        alert('Rollback failed: ' + e.message);
+        showToast('Rollback failed: ' + e.message, 'Error');
     }
 }
 
@@ -9124,7 +9140,7 @@ async function refreshMlopsStatus() {
         if (el) el.textContent = (d.total_reviews || d.rlhf_reviews || 0);
         el = document.getElementById('mlops-last-refresh');
         if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString();
-    } catch(e) {}
+    } catch(e) { console.warn('MLOps dashboard refresh error:', e); }
 }
 
 function startMlopsRefresh() {
@@ -11609,19 +11625,19 @@ async function submitOutcome() {
         var depth = parseFloat(document.getElementById('fb-depth').value) || 0;
         var predicted = document.getElementById('fb-predicted').value.trim();
         var actual = document.getElementById('fb-actual').value.trim();
-        if (!predicted || !actual) { alert('Please enter both predicted and actual types.'); hideLoading(); return; }
+        if (!predicted || !actual) { showToast('Please enter both predicted and actual types.', 'Warning'); hideLoading(); return; }
         var r = await apiFetch('/api/feedback/submit-outcome', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({well: well, depth_m: depth, predicted_type: predicted, actual_type: actual})
         });
-        alert(r.message);
+        showToast(r.message, 'Success');
         document.getElementById('fb-depth').value = '';
         document.getElementById('fb-predicted').value = '';
         document.getElementById('fb-actual').value = '';
         loadAccuracyTrend();
     } catch (e) {
-        alert('Error: ' + e.message);
+        showToast('Feedback error: ' + e.message, 'Error');
     } finally {
         hideLoading();
     }
@@ -11726,7 +11742,7 @@ async function runStreamingInversion() {
                     } else if (data.event === 'start') {
                         m.innerHTML = metricCard('Well', data.well) + metricCard('Regime', data.regime) + metricCard('Fractures', data.n_fractures);
                     }
-                } catch (parseErr) {}
+                } catch (parseErr) { console.warn('Stream parse error:', parseErr); }
             }
         }
     } catch (e) {
