@@ -111,6 +111,19 @@ function btnLoading(btn, loading) {
     }
 }
 
+// Mark sidebar tab as completed with a check icon
+function markTabComplete(tabName) {
+    var link = document.querySelector('.sidebar-nav a[data-tab="' + tabName + '"]');
+    if (!link || link.querySelector('.tab-done')) return;
+    var badge = document.createElement('span');
+    badge.className = 'tab-done badge bg-success ms-auto';
+    badge.style.cssText = 'font-size:0.55rem;padding:0.15rem 0.3rem;border-radius:50%;';
+    badge.innerHTML = '<i class="bi bi-check2"></i>';
+    link.style.display = 'flex';
+    link.style.alignItems = 'center';
+    link.appendChild(badge);
+}
+
 function val(id, v) {
     var el = document.getElementById(id);
     if (el) el.textContent = v;
@@ -1682,6 +1695,7 @@ async function runInversion() {
             regimeLabel = r.auto_regime.best_regime + " (auto-detected, " + r.auto_regime.confidence + " confidence)";
         }
         showToast("Inversion complete: " + regimeLabel + ", SHmax=" + r.shmax_azimuth_deg + "\u00b0, Pp=" + (r.pore_pressure_mpa || 0).toFixed(1) + " MPa");
+        markTabComplete("inversion");
     } catch (err) {
         showToast("Inversion error: " + err.message, "Error");
     } finally {
@@ -2460,6 +2474,7 @@ async function runClassification() {
         }
 
         showToast("Classification: " + (r.cv_mean_accuracy * 100).toFixed(1) + "% accuracy (" + classifier + ")");
+        markTabComplete("classify");
     } catch (err) {
         showToast("Classification error: " + err.message, "Error");
     } finally {
@@ -4710,6 +4725,7 @@ async function runSensitivity() {
         }
 
         showToast("Sensitivity analysis complete");
+        markTabComplete("sensitivity");
     } catch (err) {
         showToast("Sensitivity error: " + err.message, "Error");
     } finally {
@@ -4766,6 +4782,7 @@ async function runRiskMatrix() {
         });
 
         showToast("Risk assessment: " + r.overall_level + " — " + r.go_nogo);
+        markTabComplete("risk");
     } catch (err) {
         showToast("Risk matrix error: " + err.message, "Error");
     } finally {
@@ -8466,6 +8483,8 @@ async function loadStartupSnapshot() {
             </div>`;
 
         container.innerHTML = html;
+        markTabComplete("executive");
+        markTabComplete("data");
     } catch (e) {
         console.warn('Startup snapshot unavailable:', e);
     }
