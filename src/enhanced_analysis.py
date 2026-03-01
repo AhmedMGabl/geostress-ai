@@ -38,6 +38,7 @@ try:
     from imblearn.combine import SMOTEENN
     from imblearn.under_sampling import EditedNearestNeighbours
     from imblearn.pipeline import Pipeline as ImbPipeline
+    from imblearn.ensemble import BalancedBaggingClassifier, EasyEnsembleClassifier
     HAS_IMBLEARN = True
 except ImportError:
     HAS_IMBLEARN = False
@@ -296,6 +297,86 @@ def engineer_enhanced_features(df: pd.DataFrame,
 
 
 # ──────────────────────────────────────────────────────
+# Hierarchical Classifier for Extreme Class Imbalance
+# ──────────────────────────────────────────────────────
+
+class HierarchicalClassifier:
+    """Two-level hierarchical classifier for severe class imbalance.
+
+    Level 1: Binary split (group A = high-count vs group B = low-count).
+    Level 2: Sub-classify within each group.
+
+    This reduces the effective imbalance ratio at each level, letting
+    each sub-model specialize. Fully sklearn-compatible for cross_val_predict.
+
+    Based on ICLL (Imbalanced Classification via Layered Learning,
+    Frontiers 2024) and CLIMB NeurIPS 2025 benchmark insights.
+    """
+
+    def __init__(self, level1_clf, level2a_clf, level2b_clf,
+                 group_a_labels=None, group_b_labels=None):
+        self.level1_clf = level1_clf
+        self.level2a_clf = level2a_clf
+        self.level2b_clf = level2b_clf
+        self.group_a_labels = group_a_labels or []
+        self.group_b_labels = group_b_labels or []
+        self.classes_ = None
+
+    def _binary_label(self, y):
+        return np.array([0 if v in self._a_set else 1 for v in y])
+
+    def fit(self, X, y):
+        from sklearn.base import clone
+        self.classes_ = np.unique(y)
+        self._a_set = set(self.group_a_labels)
+        self._b_set = set(self.group_b_labels)
+
+        # Level 1: binary
+        y_bin = self._binary_label(y)
+        self.level1_clf.fit(X, y_bin)
+
+        # Level 2a: group A sub-classes
+        mask_a = np.isin(y, self.group_a_labels)
+        if mask_a.sum() > 0:
+            self.level2a_clf.fit(X[mask_a], y[mask_a])
+
+        # Level 2b: group B sub-classes
+        mask_b = np.isin(y, self.group_b_labels)
+        if mask_b.sum() > 0:
+            self.level2b_clf.fit(X[mask_b], y[mask_b])
+
+        return self
+
+    def predict(self, X):
+        group_pred = self.level1_clf.predict(X)
+        final_pred = np.empty(len(X), dtype=self.classes_.dtype)
+
+        mask_a = group_pred == 0
+        mask_b = group_pred == 1
+
+        if mask_a.any():
+            final_pred[mask_a] = self.level2a_clf.predict(X[mask_a])
+        if mask_b.any():
+            final_pred[mask_b] = self.level2b_clf.predict(X[mask_b])
+
+        return final_pred
+
+    def get_params(self, deep=True):
+        return {
+            "level1_clf": self.level1_clf,
+            "level2a_clf": self.level2a_clf,
+            "level2b_clf": self.level2b_clf,
+            "group_a_labels": self.group_a_labels,
+            "group_b_labels": self.group_b_labels,
+        }
+
+    def set_params(self, **params):
+        for k, v in params.items():
+            setattr(self, k, v)
+        return self
+
+
+# ──────────────────────────────────────────────────────
 # Multi-Model Classification
 # ──────────────────────────────────────────────────────
 
@@ -378,6 +459,30 @@ def _get_models(fast: bool = False) -> dict:
         stack_method="predict_proba",
         n_jobs=-1,
     )
+
+    # ── Imbalance-Aware Ensemble Models (CLIMB NeurIPS 2025) ──
+    # These embed resampling INSIDE the ensemble, which is far more effective
+    # than standalone SMOTE with 13 minority samples.
+    if HAS_IMBLEARN:
+        # BalancedBagging: each bag trained on a balanced random undersample
+        _bb_base = lgb.LGBMClassifier(
+            n_estimators=50, max_depth=6, learning_rate=0.1,
+            class_weight="balanced", random_state=42, verbose=-1,
+        ) if HAS_LGB else RandomForestClassifier(
+            n_estimators=50, max_depth=8, class_weight="balanced",
+            random_state=42, n_jobs=-1,
+        )
+        models["balanced_bagging"] = BalancedBaggingClassifier(
+            estimator=_bb_base,
+            n_estimators=30 if fast else 50,
+            random_state=42, n_jobs=-1,
+        )
+
+        # EasyEnsemble: ensemble of AdaBoost on balanced subsets
+        models["easy_ensemble"] = EasyEnsembleClassifier(
+            n_estimators=20 if fast else 40,
+            random_state=42, n_jobs=-1,
+        )
 
     return models
 
@@ -1102,11 +1207,25 @@ def compare_models(
     all_preds = {}  # Collect predictions for agreement analysis
     sample_weights = compute_sample_weight("balanced", y)
 
+    # Models that handle imbalance internally — skip SMOTE and sample_weight
+    _self_balancing = {"balanced_bagging", "easy_ensemble"}
+
     for name, model in all_models.items():
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
 
-            if use_smote:
+            if name in _self_balancing:
+                # These ensemble models embed resampling internally
+                y_pred_cv = cross_val_predict(model, X, y, cv=cv)
+                acc_list, f1_list = [], []
+                for train_idx, test_idx in cv.split(X, y):
+                    acc_list.append(accuracy_score(y[test_idx], y_pred_cv[test_idx]))
+                    f1_list.append(f1_score(y[test_idx], y_pred_cv[test_idx],
+                                            average="weighted", zero_division=0))
+                acc_scores = np.array(acc_list)
+                f1_scores = np.array(f1_list)
+                smote_info = {"applied": False, "reason": "Model handles imbalance internally"}
+            elif use_smote:
                 # SMOTE-enhanced CV (proper: SMOTE only on train folds)
                 acc_scores, f1_scores, y_pred_cv, smote_info = _cv_with_smote(
                     model, X, y, cv,
@@ -1136,8 +1255,9 @@ def compare_models(
                 smote_info = {"applied": False}
 
             # Fit on full data for feature importances + predictions
-            # (SMOTE for full fit if applicable, else use sample weights)
-            if use_smote and HAS_IMBLEARN:
+            if name in _self_balancing:
+                model.fit(X, y)
+            elif use_smote and HAS_IMBLEARN:
                 train_counts = np.bincount(y)
                 min_train = train_counts[train_counts > 0].min()
                 k_n = min(5, min_train - 1)
@@ -1169,6 +1289,22 @@ def compare_models(
             elif hasattr(model, "coef_"):
                 coef = np.abs(model.coef_).mean(axis=0)
                 feat_imp = dict(zip(features.columns, coef))
+            elif hasattr(model, "estimators_"):
+                # Aggregate from sub-estimators (BalancedBagging, EasyEnsemble)
+                imps = []
+                for est in model.estimators_:
+                    base = est
+                    if hasattr(est, "estimators_"):
+                        # EasyEnsemble wraps AdaBoost ensembles
+                        for sub in est.estimators_:
+                            if hasattr(sub, "feature_importances_"):
+                                imps.append(sub.feature_importances_)
+                                break
+                    elif hasattr(base, "feature_importances_"):
+                        imps.append(base.feature_importances_)
+                if imps:
+                    avg_imp = np.mean(imps, axis=0)
+                    feat_imp = dict(zip(features.columns, avg_imp))
 
             train_acc = float(accuracy_score(y, y_pred_full))
             cv_acc = float(acc_scores.mean())
@@ -1226,6 +1362,97 @@ def compare_models(
                                                use_smote=use_smote)
     if stack_result is not None:
         results["stacking_ensemble"] = stack_result
+
+    # ── Hierarchical Classifier (CLIMB NeurIPS 2025) ──
+    # Binary split: high-count classes vs low-count classes, then sub-classify.
+    # Each sub-problem has less extreme imbalance.
+    try:
+        class_counts = np.bincount(y, minlength=len(le.classes_))
+        median_count = np.median(class_counts[class_counts > 0])
+        group_a = [int(c) for c in range(len(le.classes_)) if class_counts[c] >= median_count]
+        group_b = [int(c) for c in range(len(le.classes_)) if class_counts[c] < median_count]
+
+        if len(group_a) >= 1 and len(group_b) >= 1:
+            _l1 = RandomForestClassifier(
+                n_estimators=100, max_depth=8, class_weight="balanced",
+                random_state=42, n_jobs=-1,
+            )
+            _l2a = RandomForestClassifier(
+                n_estimators=100, max_depth=10, class_weight="balanced",
+                random_state=42, n_jobs=-1,
+            )
+            _l2b_base = lgb.LGBMClassifier(
+                n_estimators=100, max_depth=6, class_weight="balanced",
+                random_state=42, verbose=-1,
+            ) if HAS_LGB else RandomForestClassifier(
+                n_estimators=100, max_depth=10, class_weight="balanced",
+                random_state=42, n_jobs=-1,
+            )
+            hier_model = HierarchicalClassifier(
+                level1_clf=_l1, level2a_clf=_l2a, level2b_clf=_l2b_base,
+                group_a_labels=group_a, group_b_labels=group_b,
+            )
+            # CV
+            y_pred_hier = cross_val_predict(hier_model, X, y, cv=cv)
+            acc_list_h, f1_list_h = [], []
+            for train_idx, test_idx in cv.split(X, y):
+                acc_list_h.append(accuracy_score(y[test_idx], y_pred_hier[test_idx]))
+                f1_list_h.append(f1_score(y[test_idx], y_pred_hier[test_idx],
+                                          average="weighted", zero_division=0))
+            hier_model.fit(X, y)
+            y_pred_hier_full = np.asarray(hier_model.predict(X)).ravel()
+            all_preds["hierarchical"] = y_pred_hier_full
+
+            _h_acc = np.array(acc_list_h)
+            _h_f1 = np.array(f1_list_h)
+            _h_bal = float(balanced_accuracy_score(y, y_pred_hier))
+            _h_mcc = float(matthews_corrcoef(y, y_pred_hier))
+            _h_kappa = float(cohen_kappa_score(y, y_pred_hier))
+            _h_macro_f1 = float(f1_score(y, y_pred_hier, average="macro", zero_division=0))
+            _h_train_acc = float(accuracy_score(y, y_pred_hier_full))
+
+            h_per_class = {}
+            h_prec = precision_score(y, y_pred_hier, average=None, zero_division=0)
+            h_rec = recall_score(y, y_pred_hier, average=None, zero_division=0)
+            h_f1c = f1_score(y, y_pred_hier, average=None, zero_division=0)
+            for ci, cname in enumerate(le.classes_):
+                h_per_class[cname] = {
+                    "precision": round(float(h_prec[ci]), 3),
+                    "recall": round(float(h_rec[ci]), 3),
+                    "f1": round(float(h_f1c[ci]), 3),
+                    "support": int(class_counts[ci]),
+                }
+
+            group_a_names = [le.classes_[i] for i in group_a]
+            group_b_names = [le.classes_[i] for i in group_b]
+
+            results["hierarchical"] = {
+                "cv_accuracy_mean": float(_h_acc.mean()),
+                "cv_accuracy_std": float(_h_acc.std()),
+                "cv_accuracy_scores": _h_acc.tolist(),
+                "cv_f1_mean": float(_h_f1.mean()),
+                "cv_f1_std": float(_h_f1.std()),
+                "cv_f1_macro": round(_h_macro_f1, 4),
+                "cv_precision": float(precision_score(y, y_pred_hier, average="weighted", zero_division=0)),
+                "cv_recall": float(recall_score(y, y_pred_hier, average="weighted", zero_division=0)),
+                "matthews_corrcoef": round(_h_mcc, 4),
+                "cohen_kappa": round(_h_kappa, 4),
+                "confusion_matrix": confusion_matrix(y, y_pred_hier).tolist(),
+                "feature_importances": {},
+                "class_names": le.classes_.tolist(),
+                "train_accuracy": _h_train_acc,
+                "overfit_gap": round(_h_train_acc - float(_h_acc.mean()), 3),
+                "balanced_accuracy": round(_h_bal, 3),
+                "per_class_metrics": h_per_class,
+                "smote": {"applied": False, "reason": "Hierarchical split handles imbalance"},
+                "hierarchy_info": {
+                    "group_a": group_a_names,
+                    "group_b": group_b_names,
+                    "strategy": "median_count_split",
+                },
+            }
+    except Exception:
+        pass  # Hierarchical is a bonus; don't break the pipeline
 
     # Determine if class imbalance is severe enough to rank by balanced accuracy
     class_counts = np.bincount(y, minlength=len(le.classes_))

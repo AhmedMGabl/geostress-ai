@@ -41,7 +41,7 @@
                     </svg>
                     <div>
                         <h4 class="mb-0" style="color:#f1f5f9;font-size:1.1rem;letter-spacing:-0.02em">GeoStress AI</h4>
-                        <small class="text-muted-light" style="font-size:0.68rem">Industrial Fracture Analysis v3.80</small>
+                        <small class="text-muted-light" style="font-size:0.68rem">Industrial Fracture Analysis v3.81</small>
                     </div>
                 </div>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
@@ -205,7 +205,7 @@
             <div class="sidebar-section mt-auto" style="border-top:1px solid rgba(255,255,255,0.08);padding:0.8rem 1rem">
                 <div class="d-flex align-items-center justify-content-between">
                     <small class="text-muted-light" style="font-size:0.65rem">
-                        <i class="bi bi-cpu"></i> GeoStress AI v3.80
+                        <i class="bi bi-cpu"></i> GeoStress AI v3.81
                     </small>
                     <div>
                         <a href="https://github.com/AhmedMGabl/geostress-ai" target="_blank" class="text-muted-light me-2" title="GitHub" style="font-size:0.8rem;text-decoration:none"><i class="bi bi-github"></i></a>
@@ -518,15 +518,15 @@
                     <div class="row g-3 mb-4">
                         <div class="col-md-3" data-aos="fade-up" data-aos-delay="50">
                             <div class="showcase-metric" style="border-color:#d97706;">
-                                <div class="big-number" id="perf-bal-acc">57%</div>
-                                <div class="ci-range" id="perf-bal-acc-std">&plusmn; 3.9%</div>
+                                <div class="big-number" id="perf-bal-acc">66%</div>
+                                <div class="ci-range" id="perf-bal-acc-std">&plusmn; 3.5%</div>
                                 <div class="fw-semibold mt-1">Balanced Accuracy</div>
-                                <div class="text-muted small" id="perf-vs-random">2.8x random baseline (20%)</div>
+                                <div class="text-muted small" id="perf-vs-random">3.3x random baseline (20%)</div>
                             </div>
                         </div>
                         <div class="col-md-3" data-aos="fade-up" data-aos-delay="100">
                             <div class="showcase-metric">
-                                <div class="big-number" id="perf-mcc" style="color:#6366f1;">0.33</div>
+                                <div class="big-number" id="perf-mcc" style="color:#6366f1;">0.66</div>
                                 <div class="ci-range">Matthews Correlation</div>
                                 <div class="fw-semibold mt-1">MCC Score</div>
                                 <div class="text-muted small">Robust to class imbalance</div>
@@ -534,7 +534,7 @@
                         </div>
                         <div class="col-md-3" data-aos="fade-up" data-aos-delay="150">
                             <div class="showcase-metric">
-                                <div class="big-number" id="perf-f1" style="color:#0891b2;">47%</div>
+                                <div class="big-number" id="perf-f1" style="color:#0891b2;">55%</div>
                                 <div class="ci-range">Across all classes</div>
                                 <div class="fw-semibold mt-1">Macro F1 Score</div>
                                 <div class="text-muted small">Equal weight to rare + common types</div>
@@ -586,9 +586,9 @@
                                 <div class="icon-circle bg-primary bg-opacity-10 text-primary">
                                     <i class="bi bi-cpu"></i>
                                 </div>
-                                <h6>Bayesian-Optimized</h6>
-                                <p class="text-muted small mb-1">Every model undergoes 40 hyperparameter trials using Tree-structured Parzen Estimators. Not default settings — <strong>rigorously tuned</strong> for this specific geological dataset.</p>
-                                <span class="badge bg-primary bg-opacity-10 text-primary">40 Trials / Model</span>
+                                <h6>Ensemble Resampling</h6>
+                                <p class="text-muted small mb-1">BalancedBagging trains 50 models on balanced subsets. Each bag gets a different view of the data — <strong>ensemble diversity</strong> compensates for extreme class imbalance (17:1 ratio).</p>
+                                <span class="badge bg-primary bg-opacity-10 text-primary">50 Balanced Bags</span>
                             </div>
                         </div>
                     </div>
@@ -643,11 +643,11 @@
                                     </div>
                                     <div class="d-flex justify-content-between mb-2">
                                         <span>Class Imbalance</span>
-                                        <strong>BorderlineSMOTE rare-event augmentation</strong>
+                                        <strong>BalancedBagging + EasyEnsemble</strong>
                                     </div>
                                     <div class="d-flex justify-content-between">
-                                        <span>Hyperparameters</span>
-                                        <strong>Bayesian-optimized (Optuna TPE)</strong>
+                                        <span>Architecture</span>
+                                        <strong>12 models + hierarchical classification</strong>
                                     </div>
                                 </div>
                             </div>

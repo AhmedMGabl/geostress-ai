@@ -1,4 +1,4 @@
-/* GeoStress AI - Frontend Logic v3.80 (Industrial Grade) */
+/* GeoStress AI - Frontend Logic v3.81 (Industrial Grade) */
 
 var currentSource = "demo";
 var currentWell = "3P";
@@ -122,6 +122,97 @@ function markTabComplete(tabName) {
     link.style.display = 'flex';
     link.style.alignItems = 'center';
     link.appendChild(badge);
+}
+
+// Auto-expand the sidebar group containing a given tab
+function expandGroupForTab(tabName) {
+    var link = document.querySelector('.sidebar-nav a[data-tab="' + tabName + '"]');
+    if (!link) return;
+    var group = link.closest('.sidebar-group');
+    if (group && group.classList.contains('collapsed')) {
+        group.classList.remove('collapsed');
+        // Rotate the arrow on the header
+        var header = group.previousElementSibling;
+        if (header) {
+            var arrow = header.querySelector('.sidebar-arrow');
+            if (arrow) arrow.style.transform = 'rotate(90deg)';
+        }
+    }
+}
+
+// Count-up animation for metric numbers
+function animateCountUp(el, endVal, duration, suffix) {
+    suffix = suffix || '';
+    duration = duration || 1200;
+    var startTime = null;
+    var startVal = 0;
+    el.classList.add('count-up', 'counting');
+    function step(timestamp) {
+        if (!startTime) startTime = timestamp;
+        var progress = Math.min((timestamp - startTime) / duration, 1);
+        // Ease-out cubic
+        var eased = 1 - Math.pow(1 - progress, 3);
+        var current = startVal + (endVal - startVal) * eased;
+        if (Number.isInteger(endVal)) {
+            el.textContent = Math.round(current) + suffix;
+        } else {
+            el.textContent = current.toFixed(1) + suffix;
+        }
+        if (progress < 1) {
+            requestAnimationFrame(step);
+        } else {
+            el.textContent = endVal + suffix;
+            el.classList.remove('counting');
+        }
+    }
+    requestAnimationFrame(step);
+}
+
+// Trigger count-up on elements with data-count attribute when they become visible
+var _countObserver = null;
+function initCountUpObserver() {
+    if (_countObserver || !window.IntersectionObserver) return;
+    _countObserver = new IntersectionObserver(function(entries) {
+        entries.forEach(function(entry) {
+            if (entry.isIntersecting && !entry.target._counted) {
+                entry.target._counted = true;
+                var val = parseFloat(entry.target.dataset.count);
+                var suffix = entry.target.dataset.countSuffix || '';
+                if (!isNaN(val)) animateCountUp(entry.target, val, 1200, suffix);
+            }
+        });
+    }, { threshold: 0.3 });
+}
+
+// Welcome toast (shown once per browser)
+function showWelcomeToast() {
+    if (localStorage.getItem('geostress_welcomed')) return;
+    localStorage.setItem('geostress_welcomed', '1');
+    var toastEl = document.createElement('div');
+    toastEl.className = 'toast toast-welcome position-fixed';
+    toastEl.style.cssText = 'bottom:1.5rem;right:1.5rem;z-index:9999;min-width:340px;';
+    toastEl.setAttribute('role', 'alert');
+    toastEl.innerHTML = '<div class="d-flex align-items-start p-3">' +
+        '<div class="me-3" style="font-size:1.5rem"><i class="bi bi-geo-alt-fill"></i></div>' +
+        '<div class="flex-grow-1">' +
+        '<strong class="d-block mb-1">Welcome to GeoStress AI</strong>' +
+        '<small class="opacity-75">Start with Quick Analysis or explore the fracture data. All results are physics-validated.</small>' +
+        '</div>' +
+        '<button type="button" class="btn-close btn-close-white ms-2" onclick="this.closest(\'.toast\').remove()"></button>' +
+        '</div>';
+    document.body.appendChild(toastEl);
+    // Animate in
+    requestAnimationFrame(function() {
+        toastEl.classList.add('show');
+    });
+    // Auto-dismiss after 6s
+    setTimeout(function() {
+        if (toastEl.parentNode) {
+            toastEl.style.opacity = '0';
+            toastEl.style.transform = 'translateY(20px)';
+            setTimeout(function() { if (toastEl.parentNode) toastEl.remove(); }, 300);
+        }
+    }, 6000);
 }
 
 function val(id, v) {
@@ -9321,10 +9412,10 @@ async function loadPerformanceShowcase() {
         if (!res.ok) return;
         var d = await res.json();
 
-        // Primary metrics
+        // Primary metrics (with count-up animation)
         if (d.abstention_accuracy_pct) {
             var absEl = document.getElementById('perf-abstention-acc');
-            if (absEl) absEl.textContent = d.abstention_accuracy_pct + '%';
+            if (absEl) animateCountUp(absEl, parseInt(d.abstention_accuracy_pct), 1200, '%');
         }
         if (d.calibration_grade) {
             var calEl = document.getElementById('perf-calibration');
@@ -9339,10 +9430,10 @@ async function loadPerformanceShowcase() {
             if (wsmEl) wsmEl.textContent = d.wsm_quality_grade;
         }
 
-        // ML model quality metrics
+        // ML model quality metrics (with count-up)
         if (d.balanced_accuracy_pct) {
             var balEl = document.getElementById('perf-bal-acc');
-            if (balEl) balEl.textContent = d.balanced_accuracy_pct + '%';
+            if (balEl) animateCountUp(balEl, parseFloat(d.balanced_accuracy_pct), 1400, '%');
         }
         if (d.balanced_accuracy_std_pct) {
             var stdEl = document.getElementById('perf-bal-acc-std');
@@ -9354,15 +9445,15 @@ async function loadPerformanceShowcase() {
         }
         if (d.mcc != null) {
             var mccEl = document.getElementById('perf-mcc');
-            if (mccEl) mccEl.textContent = d.mcc.toFixed(2);
+            if (mccEl) animateCountUp(mccEl, parseFloat(d.mcc.toFixed(2)), 1000, '');
         }
         if (d.f1_macro_pct) {
             var f1El = document.getElementById('perf-f1');
-            if (f1El) f1El.textContent = d.f1_macro_pct + '%';
+            if (f1El) animateCountUp(f1El, parseInt(d.f1_macro_pct), 1200, '%');
         }
         if (d.n_classes) {
             var ncEl = document.getElementById('perf-n-classes');
-            if (ncEl) ncEl.textContent = d.n_classes;
+            if (ncEl) animateCountUp(ncEl, parseInt(d.n_classes), 800, '');
         }
         if (d.imbalance_ratio) {
             var imbEl = document.getElementById('perf-imbalance');
@@ -9389,6 +9480,10 @@ document.addEventListener("DOMContentLoaded", function() {
     initTooltips();
     // Watch for dynamically added content
     _tooltipObserver.observe(document.body, { childList: true, subtree: true });
+
+    // Init count-up observer and welcome toast
+    initCountUpObserver();
+    setTimeout(showWelcomeToast, 1500);
 
     // Auto-load MLOps status when tab is activated
     document.querySelectorAll('[data-tab]').forEach(function(link) {
