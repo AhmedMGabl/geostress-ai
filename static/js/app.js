@@ -95,6 +95,22 @@ function setImg(id, src) {
     if (el && src) el.src = src;
 }
 
+// Button loading state: prevents double-clicks and shows spinner
+function btnLoading(btn, loading) {
+    if (!btn) return;
+    if (loading) {
+        btn._origHTML = btn.innerHTML;
+        btn.disabled = true;
+        var label = btn.textContent.trim().split("\n")[0].trim();
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> ' + label;
+        btn.style.opacity = "0.8";
+    } else {
+        btn.disabled = false;
+        if (btn._origHTML) btn.innerHTML = btn._origHTML;
+        btn.style.opacity = "";
+    }
+}
+
 function val(id, v) {
     var el = document.getElementById(id);
     if (el) el.textContent = v;
@@ -1409,6 +1425,8 @@ async function loadAllViz() {
 // ── Inversion (Enhanced with pore pressure + interpretation) ──
 
 async function runInversion() {
+    var btn = event && event.target ? event.target.closest("button") : null;
+    btnLoading(btn, true);
     var selectedRegime = document.getElementById("regime-select").value;
     var loadingMsg = selectedRegime === "auto"
         ? "Auto-detecting best stress regime (running all 3 inversions)..."
@@ -1668,6 +1686,7 @@ async function runInversion() {
         showToast("Inversion error: " + err.message, "Error");
     } finally {
         hideLoading();
+        btnLoading(btn, false);
     }
 }
 
@@ -2301,6 +2320,8 @@ async function runModelComparison(fast) {
 // ── Classification (Enhanced) ─────────────────────
 
 async function runClassification() {
+    var btn = event && event.target ? event.target.closest("button") : null;
+    btnLoading(btn, true);
     showLoading("Running ML classification with enhanced features...");
     try {
         var classifier = document.getElementById("classifier-select").value;
@@ -2443,6 +2464,7 @@ async function runClassification() {
         showToast("Classification error: " + err.message, "Error");
     } finally {
         hideLoading();
+        btnLoading(btn, false);
     }
 }
 
@@ -4585,6 +4607,8 @@ async function runWorstCase() {
 }
 
 async function runSensitivity() {
+    var btn = event && event.target ? event.target.closest("button") : null;
+    btnLoading(btn, true);
     showLoading("Running sensitivity analysis");
     try {
         var well = document.getElementById("well-select").value || null;
@@ -4690,6 +4714,7 @@ async function runSensitivity() {
         showToast("Sensitivity error: " + err.message, "Error");
     } finally {
         hideLoading();
+        btnLoading(btn, false);
     }
 }
 
@@ -4697,6 +4722,8 @@ async function runSensitivity() {
 // ── Risk Matrix ──────────────────────────────────
 
 async function runRiskMatrix() {
+    var btn = event && event.target ? event.target.closest("button") : null;
+    btnLoading(btn, true);
     showLoading("Computing risk assessment");
     try {
         var well = document.getElementById("well-select").value || null;
@@ -4743,6 +4770,7 @@ async function runRiskMatrix() {
         showToast("Risk matrix error: " + err.message, "Error");
     } finally {
         hideLoading();
+        btnLoading(btn, false);
     }
 }
 
