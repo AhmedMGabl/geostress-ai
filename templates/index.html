@@ -30,21 +30,33 @@
         <nav id="sidebar">
             <div class="sidebar-header">
                 <div class="d-flex align-items-center gap-2">
-                    <svg width="36" height="36" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
-                        <defs><linearGradient id="lg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#d97706"/><stop offset="100%" stop-color="#f59e0b"/></linearGradient></defs>
-                        <circle cx="20" cy="20" r="18" fill="url(#lg1)" opacity="0.15"/>
-                        <path d="M8 28 Q14 24 20 26 Q26 28 32 24" stroke="#d97706" stroke-width="2" fill="none" opacity="0.5"/>
-                        <path d="M8 22 Q14 18 20 20 Q26 22 32 18" stroke="#d97706" stroke-width="2" fill="none" opacity="0.7"/>
-                        <path d="M8 16 Q14 12 20 14 Q26 16 32 12" stroke="#d97706" stroke-width="2.5" fill="none"/>
-                        <line x1="20" y1="8" x2="20" y2="32" stroke="#f59e0b" stroke-width="2" stroke-dasharray="2,3" opacity="0.4"/>
-                        <polygon points="18,8 22,8 20,4" fill="#f59e0b"/>
+                    <svg width="40" height="40" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg" class="logo-mark">
+                        <defs>
+                            <linearGradient id="lg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#d97706"/><stop offset="100%" stop-color="#fbbf24"/></linearGradient>
+                            <filter id="glow"><feGaussianBlur stdDeviation="1.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                        </defs>
+                        <circle cx="22" cy="22" r="20" fill="url(#lg1)" opacity="0.12"/>
+                        <circle cx="22" cy="22" r="20" fill="none" stroke="#d97706" stroke-width="1" opacity="0.3"/>
+                        <!-- Geological strata layers -->
+                        <path d="M6 30 Q12 26 22 28 Q32 30 38 26" stroke="#d97706" stroke-width="1.8" fill="none" opacity="0.4"/>
+                        <path d="M6 24 Q12 20 22 22 Q32 24 38 20" stroke="#d97706" stroke-width="2" fill="none" opacity="0.6"/>
+                        <path d="M6 18 Q12 14 22 16 Q32 18 38 14" stroke="#d97706" stroke-width="2.2" fill="none" opacity="0.85"/>
+                        <!-- Stress arrow (σ1) -->
+                        <line x1="22" y1="9" x2="22" y2="35" stroke="#fbbf24" stroke-width="2" stroke-dasharray="2,3" opacity="0.35" filter="url(#glow)"/>
+                        <polygon points="19.5,9 24.5,9 22,4" fill="#fbbf24" filter="url(#glow)"/>
+                        <!-- SHmax indicator -->
+                        <circle cx="22" cy="22" r="3" fill="#fbbf24" opacity="0.5"/>
+                        <circle cx="22" cy="22" r="1.5" fill="#fbbf24"/>
                     </svg>
                     <div>
-                        <h4 class="mb-0" style="color:#f1f5f9;font-size:1.1rem;letter-spacing:-0.02em">GeoStress AI</h4>
-                        <small class="text-muted-light" style="font-size:0.68rem">Industrial Fracture Analysis v3.82</small>
+                        <h4 class="mb-0" style="color:#f1f5f9;font-size:1.15rem;letter-spacing:-0.03em;font-weight:700">GeoStress<span style="color:#fbbf24;font-weight:400"> AI</span></h4>
+                        <small class="text-muted-light" style="font-size:0.65rem;letter-spacing:0.04em;text-transform:uppercase">Industrial Fracture Analysis</small>
                     </div>
                 </div>
-                <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
+                <div class="d-flex justify-content-between align-items-center mt-1">
+                    <small class="text-muted-light"><i class="bi bi-clock"></i> <span id="response-time">-</span></small>
+                    <small class="text-muted-light" style="font-size:0.6rem;opacity:0.6">v3.82</small>
+                </div>
             </div>
 
             <ul class="nav flex-column sidebar-nav">
@@ -5222,25 +5234,52 @@
                     <div class="row g-3">
                         <div class="col-lg-6">
                             <div class="card">
-                                <div class="card-header">Rose Diagram</div>
-                                <div class="card-body text-center">
-                                    <img id="rose-img" class="plot-img" alt="Click Generate All">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-pie-chart"></i> Rose Diagram</span>
+                                    <button class="btn btn-outline-primary btn-sm py-0 px-2" onclick="loadSingleViz('rose')">
+                                        <i class="bi bi-arrow-clockwise"></i>
+                                    </button>
+                                </div>
+                                <div class="card-body text-center" id="rose-container">
+                                    <div class="viz-placeholder" id="rose-placeholder">
+                                        <i class="bi bi-pie-chart" style="font-size:3rem;opacity:0.15"></i>
+                                        <p class="small text-muted mt-2 mb-0">Shows fracture strike directions</p>
+                                    </div>
+                                    <img id="rose-img" class="plot-img d-none" alt="Rose Diagram">
                                 </div>
                             </div>
                         </div>
                         <div class="col-lg-6">
                             <div class="card">
-                                <div class="card-header">Stereonet</div>
-                                <div class="card-body text-center">
-                                    <img id="stereonet-img" class="plot-img" alt="Click Generate All">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-bullseye"></i> Stereonet</span>
+                                    <button class="btn btn-outline-primary btn-sm py-0 px-2" onclick="loadSingleViz('stereonet')">
+                                        <i class="bi bi-arrow-clockwise"></i>
+                                    </button>
+                                </div>
+                                <div class="card-body text-center" id="stereonet-container">
+                                    <div class="viz-placeholder" id="stereonet-placeholder">
+                                        <i class="bi bi-bullseye" style="font-size:3rem;opacity:0.15"></i>
+                                        <p class="small text-muted mt-2 mb-0">3D orientations on equal-area projection</p>
+                                    </div>
+                                    <img id="stereonet-img" class="plot-img d-none" alt="Stereonet">
                                 </div>
                             </div>
                         </div>
                         <div class="col-12">
                             <div class="card">
-                                <div class="card-header">Depth Profile</div>
-                                <div class="card-body text-center">
-                                    <img id="depth-img" class="plot-img" alt="Click Generate All">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-bar-chart"></i> Depth Profile</span>
+                                    <button class="btn btn-outline-primary btn-sm py-0 px-2" onclick="loadSingleViz('depth')">
+                                        <i class="bi bi-arrow-clockwise"></i>
+                                    </button>
+                                </div>
+                                <div class="card-body text-center" id="depth-container">
+                                    <div class="viz-placeholder" id="depth-placeholder">
+                                        <i class="bi bi-bar-chart" style="font-size:3rem;opacity:0.15"></i>
+                                        <p class="small text-muted mt-2 mb-0">Fracture distribution vs depth</p>
+                                    </div>
+                                    <img id="depth-img" class="plot-img d-none" alt="Depth Profile">
                                 </div>
                             </div>
                         </div>

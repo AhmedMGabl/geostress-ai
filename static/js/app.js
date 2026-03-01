@@ -1562,6 +1562,13 @@ function switchToDemo() {
 
 // ── Visualizations ────────────────────────────────
 
+function _showVizImg(id) {
+    var img = document.getElementById(id);
+    var placeholder = document.getElementById(id.replace("-img", "-placeholder"));
+    if (img) img.classList.remove("d-none");
+    if (placeholder) placeholder.classList.add("d-none");
+}
+
 async function loadAllViz() {
     showLoading("Generating visualizations...");
     try {
@@ -1574,12 +1581,34 @@ async function loadAllViz() {
             api("/api/viz/depth-profile?source=" + src)
         ]);
 
-        setImg("rose-img", results[0].image);
-        setImg("stereonet-img", results[1].image);
-        if (results[2].image) setImg("depth-img", results[2].image);
+        setImg("rose-img", results[0].image); _showVizImg("rose-img");
+        setImg("stereonet-img", results[1].image); _showVizImg("stereonet-img");
+        if (results[2].image) { setImg("depth-img", results[2].image); _showVizImg("depth-img"); }
         showToast("Visualizations generated for Well " + well);
     } catch (err) {
         showToast("Visualization error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+async function loadSingleViz(type) {
+    var well = currentWell;
+    var src = currentSource;
+    var urls = {
+        rose: "/api/viz/rose?well=" + well + "&source=" + src,
+        stereonet: "/api/viz/stereonet?well=" + well + "&source=" + src,
+        depth: "/api/viz/depth-profile?source=" + src
+    };
+    var imgIds = { rose: "rose-img", stereonet: "stereonet-img", depth: "depth-img" };
+    if (!urls[type]) return;
+    showLoading("Generating " + type + "...");
+    try {
+        var r = await api(urls[type]);
+        if (r.image) { setImg(imgIds[type], r.image); _showVizImg(imgIds[type]); }
+        showToast(type.charAt(0).toUpperCase() + type.slice(1) + " generated");
+    } catch (err) {
+        showToast(type + " error: " + err.message, "Error");
     } finally {
         hideLoading();
     }
