@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GeoStress AI - Industrial Fracture Analysis</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Ccircle cx='20' cy='20' r='18' fill='%231a2332'/%3E%3Cpath d='M8 22 Q14 18 20 20 Q26 22 32 18' stroke='%23d97706' stroke-width='3' fill='none'/%3E%3Cline x1='20' y1='10' x2='20' y2='30' stroke='%23f59e0b' stroke-width='2' stroke-dasharray='2,3' opacity='0.5'/%3E%3Cpolygon points='18,10 22,10 20,6' fill='%23f59e0b'/%3E%3C/svg%3E">
+    <meta name="description" content="AI-powered geostress inversion and fracture analysis for oil and gas operations. Bayesian-optimized ML models with physics validation.">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.2/font/bootstrap-icons.min.css" rel="stylesheet">
     <link href="https://unpkg.com/aos@2.3.4/dist/aos.css" rel="stylesheet">
@@ -39,7 +41,7 @@
                     </svg>
                     <div>
                         <h4 class="mb-0" style="color:#f1f5f9;font-size:1.1rem;letter-spacing:-0.02em">GeoStress AI</h4>
-                        <small class="text-muted-light" style="font-size:0.68rem">Industrial Fracture Analysis v3.79</small>
+                        <small class="text-muted-light" style="font-size:0.68rem">Industrial Fracture Analysis v3.80</small>
                     </div>
                 </div>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
@@ -261,21 +263,9 @@
                             <h4 class="mb-1"><i class="bi bi-speedometer2"></i> Executive Summary</h4>
                             <p class="text-muted mb-0">Plain-language overview for decision-makers. No jargon, just actionable insights.</p>
                         </div>
-                        <div class="d-flex gap-2">
+                        <div class="d-flex gap-2 flex-wrap">
                             <button class="btn btn-primary btn-sm" onclick="runExecutiveSummary()">
                                 <i class="bi bi-arrow-clockwise"></i> Generate Summary
-                            </button>
-                            <button class="btn btn-outline-primary btn-sm" onclick="runSufficiencyCheck()">
-                                <i class="bi bi-clipboard-check"></i> Data Sufficiency
-                            </button>
-                            <button class="btn btn-outline-warning btn-sm" onclick="runSafetyCheck()">
-                                <i class="bi bi-shield-exclamation"></i> Safety Check
-                            </button>
-                            <button class="btn btn-outline-info btn-sm" onclick="runFieldConsistency()">
-                                <i class="bi bi-globe2"></i> Field Consistency
-                            </button>
-                            <button class="btn btn-success btn-sm" onclick="runEvidenceChain()">
-                                <i class="bi bi-list-check"></i> Full Evidence Chain
                             </button>
                             <button class="btn btn-warning btn-sm" onclick="runGuidedWizard()">
                                 <i class="bi bi-signpost-split"></i> Guided Wizard
@@ -283,15 +273,21 @@
                             <button class="btn btn-dark btn-sm" onclick="exportPdfReport()">
                                 <i class="bi bi-file-earmark-pdf"></i> PDF Report
                             </button>
-                            <button class="btn btn-success btn-sm" onclick="exportFullJsonReport()">
-                                <i class="bi bi-filetype-json"></i> JSON Report
-                            </button>
-                            <button class="btn btn-outline-info btn-sm" onclick="runBatchAnalysis()">
-                                <i class="bi bi-collection"></i> Batch All Wells
-                            </button>
-                            <button class="btn btn-outline-dark btn-sm" onclick="runDecisionReadiness()">
-                                <i class="bi bi-clipboard-check"></i> Decision Readiness
-                            </button>
+                            <div class="dropdown">
+                                <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                    <i class="bi bi-three-dots"></i> More
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><a class="dropdown-item" href="#" onclick="runSufficiencyCheck()"><i class="bi bi-clipboard-check"></i> Data Sufficiency</a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="runSafetyCheck()"><i class="bi bi-shield-exclamation"></i> Safety Check</a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="runFieldConsistency()"><i class="bi bi-globe2"></i> Field Consistency</a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="runEvidenceChain()"><i class="bi bi-list-check"></i> Evidence Chain</a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item" href="#" onclick="exportFullJsonReport()"><i class="bi bi-filetype-json"></i> Export JSON</a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="runBatchAnalysis()"><i class="bi bi-collection"></i> Batch All Wells</a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="runDecisionReadiness()"><i class="bi bi-clipboard-check"></i> Decision Readiness</a></li>
+                                </ul>
+                            </div>
                         </div>
                     </div>
 
@@ -5240,22 +5236,24 @@
                 <!-- INVERSION TAB (Enhanced) -->
                 <div id="tab-inversion" class="tab-content">
                     <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>Stress Inversion</strong> &mdash; The core analysis: estimates underground stress magnitudes and directions from fracture orientations. <strong>Key output:</strong> SHmax (maximum horizontal stress direction) determines optimal drilling direction. The Mohr circle shows which fractures are close to failure.</div>
-                    <div class="d-flex gap-2 mb-3 flex-wrap">
+                    <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
                         <button class="btn btn-primary btn-sm" onclick="runInversion()">
                             <i class="bi bi-play-fill"></i> Run Inversion
                         </button>
                         <button class="btn btn-outline-secondary btn-sm" onclick="runAllRegimes()">
                             <i class="bi bi-arrow-repeat"></i> Compare All Regimes
                         </button>
-                        <button class="btn btn-outline-info btn-sm" onclick="runBayesian()">
-                            <i class="bi bi-distribute-vertical"></i> Bayesian Uncertainty
-                        </button>
-                        <button class="btn btn-outline-success btn-sm" onclick="exportInversion()">
-                            <i class="bi bi-download"></i> Export Results (CSV)
-                        </button>
-                        <button class="btn btn-outline-success btn-sm" onclick="exportData()">
-                            <i class="bi bi-filetype-csv"></i> Export Raw Data
-                        </button>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i class="bi bi-three-dots"></i> More
+                            </button>
+                            <ul class="dropdown-menu">
+                                <li><a class="dropdown-item" href="#" onclick="runBayesian();return false"><i class="bi bi-distribute-vertical me-2"></i>Bayesian Uncertainty</a></li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li><a class="dropdown-item" href="#" onclick="exportInversion();return false"><i class="bi bi-download me-2"></i>Export Results (CSV)</a></li>
+                                <li><a class="dropdown-item" href="#" onclick="exportData();return false"><i class="bi bi-filetype-csv me-2"></i>Export Raw Data</a></li>
+                            </ul>
+                        </div>
                     </div>
 
                     <!-- Auto Regime Detection Banner -->
@@ -5926,7 +5924,7 @@
                 <!-- CLASSIFICATION TAB (Enhanced) -->
                 <div id="tab-classify" class="tab-content">
                     <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>ML Classification</strong> &mdash; Uses machine learning to automatically categorize fractures by type (e.g., continuous, discontinuous, brecciated). Accuracy metrics show how reliable the classification is. Conformal prediction adds calibrated confidence intervals.</div>
-                    <div class="d-flex gap-2 mb-3">
+                    <div class="d-flex gap-2 mb-3 align-items-center">
                         <select id="classifier-select" class="form-select form-select-sm" style="width:auto">
                             <option value="random_forest">Random Forest</option>
                             <option value="gradient_boosting">Gradient Boosting</option>
@@ -5939,12 +5937,15 @@
                         <button class="btn btn-primary btn-sm" onclick="runClassification()">
                             <i class="bi bi-play-fill"></i> Run Classification
                         </button>
-                        <button class="btn btn-outline-info btn-sm" onclick="runDeepEnsemble()">
-                            <i class="bi bi-layers-fill"></i> Deep Ensemble UQ
-                        </button>
-                        <button class="btn btn-outline-secondary btn-sm" onclick="runTransferLearning()">
-                            <i class="bi bi-arrow-left-right"></i> Transfer Learning
-                        </button>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i class="bi bi-three-dots"></i> Advanced
+                            </button>
+                            <ul class="dropdown-menu">
+                                <li><a class="dropdown-item" href="#" onclick="runDeepEnsemble();return false"><i class="bi bi-layers-fill me-2"></i>Deep Ensemble UQ</a></li>
+                                <li><a class="dropdown-item" href="#" onclick="runTransferLearning();return false"><i class="bi bi-arrow-left-right me-2"></i>Transfer Learning</a></li>
+                            </ul>
+                        </div>
                     </div>
                     <p class="text-muted small">Uses enhanced physics-informed features including pore pressure, overburden stress, temperature, fracture density, and fabric strength.</p>
 
@@ -5954,63 +5955,89 @@
                     <!-- Transfer Learning Results -->
                     <div id="transfer-results" class="d-none mb-3"></div>
 
-                    <!-- Domain-Adapted Transfer Learning -->
-                    <div class="card border-info mb-3">
-                        <div class="card-header bg-info bg-opacity-10 py-2">
-                            <i class="bi bi-diagram-3"></i> <strong>Domain-Adapted Transfer</strong>
-                            <small class="text-muted ms-2">MMD reweighting + pseudo-labeling</small>
+                    <!-- Advanced ML Analysis — Collapsible Accordion -->
+                    <div class="accordion drilling-accordion mb-3" id="classify-accordion">
+                        <!-- Group 1: Ensemble & Evaluation -->
+                        <div class="accordion-item">
+                            <h2 class="accordion-header">
+                                <button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#cls-group-evaluation">
+                                    <i class="bi bi-bar-chart-line me-2"></i> Model Evaluation & Ensemble <span class="badge bg-secondary ms-2">4</span>
+                                </button>
+                            </h2>
+                            <div id="cls-group-evaluation" class="accordion-collapse collapse" data-bs-parent="#classify-accordion">
+                                <div class="accordion-body p-2">
+
+                    <!-- Heterogeneous Ensemble (moved to group 1) -->
+                    <div class="card border-dark mb-3">
+                        <div class="card-header bg-dark bg-opacity-75 text-white py-2">
+                            <i class="bi bi-stack"></i> <strong>Heterogeneous Ensemble</strong>
+                            <small class="opacity-75 ms-2">RF + GBM + SVM + LR + MLP meta-learner</small>
                         </div>
                         <div class="card-body py-2">
                             <p class="text-muted small mb-2">
-                                Compares 5 domain adaptation strategies: zero-shot, fine-tuned, MMD kernel reweighting,
-                                progressive pseudo-labeling, and target-only. Also reports feature distribution shifts (Cohen's d).
+                                Trains 5 diverse model families and combines them via a meta-learner.
+                                Reports ensemble accuracy, per-model contributions, and prediction confidence from model agreement.
                             </p>
-                            <div class="d-flex gap-2 mb-2 align-items-center">
-                                <select id="ta-source-well" class="form-select form-select-sm" style="width:auto">
-                                    <option value="3P">Source: 3P</option>
-                                    <option value="6P">Source: 6P</option>
-                                </select>
-                                <i class="bi bi-arrow-right"></i>
-                                <select id="ta-target-well" class="form-select form-select-sm" style="width:auto">
-                                    <option value="6P">Target: 6P</option>
-                                    <option value="3P">Target: 3P</option>
-                                </select>
-                                <button class="btn btn-info btn-sm" onclick="runTransferAdapted()">
-                                    <i class="bi bi-arrow-left-right"></i> Compare Methods
-                                </button>
-                            </div>
-                            <div id="ta-results" class="d-none">
-                                <div id="ta-brief" class="mb-2"></div>
+                            <button class="btn btn-dark btn-sm" onclick="runHeteroEnsemble()">
+                                <i class="bi bi-stack"></i> Build Ensemble
+                            </button>
+                            <div id="he-results" class="d-none mt-2">
+                                <div id="he-brief" class="mb-2"></div>
                                 <div class="row g-2 mb-2">
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Method</div><div class="metric-value" id="ta-best-method">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Accuracy</div><div class="metric-value" id="ta-best-acc">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Feature Shifts</div><div class="metric-value" id="ta-n-shifts">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Fine-tune Size</div><div class="metric-value" id="ta-ft-size">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Ensemble Acc</div><div class="metric-value" id="he-acc">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">vs Best Single</div><div class="metric-value" id="he-improvement">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Agreement</div><div class="metric-value" id="he-agreement">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Contested</div><div class="metric-value" id="he-contested">--</div></div></div>
                                 </div>
-                                <div class="text-center mb-2" id="ta-plot-img"></div>
-                                <div class="card">
-                                    <div class="card-header py-1"><i class="bi bi-table"></i> Method Comparison</div>
-                                    <div class="card-body p-0">
-                                        <table class="table table-sm table-hover mb-0">
-                                            <thead class="table-light"><tr><th>Method</th><th>Accuracy</th><th>F1</th><th>Details</th></tr></thead>
-                                            <tbody id="ta-table-body"></tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                                <div id="ta-shifts-section" class="d-none mt-2">
-                                    <h6 class="small fw-bold"><i class="bi bi-exclamation-triangle text-warning"></i> Significant Feature Shifts</h6>
-                                    <div class="table-responsive" style="max-height:200px;overflow-y:auto">
-                                        <table class="table table-sm table-bordered mb-0">
-                                            <thead class="table-light"><tr><th>Feature</th><th>Cohen's d</th><th>Severity</th></tr></thead>
-                                            <tbody id="ta-shifts-body"></tbody>
-                                        </table>
+                                <div class="text-center mb-2" id="he-plot-img"></div>
+                                <div class="row g-2">
+                                    <div class="col-md-6">
+                                        <div class="card"><div class="card-header py-1"><i class="bi bi-bar-chart"></i> Base Model Accuracies</div>
+                                            <div class="card-body p-0"><table class="table table-sm table-hover mb-0">
+                                                <thead class="table-light"><tr><th>Model</th><th>CV Accuracy</th><th>Contribution</th></tr></thead>
+                                                <tbody id="he-models-body"></tbody>
+                                            </table></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Balanced Classification (SMOTE) -->
+                    <!-- Model Significance Testing (moved to group 1) -->
+                    <div class="card border-dark mb-3">
+                        <div class="card-header bg-dark text-white py-2">
+                            <i class="bi bi-graph-up-arrow"></i> <strong>Model Significance Testing</strong>
+                            <small class="text-white-50 ms-2">Are differences between models real?</small>
+                        </div>
+                        <div class="card-body py-2">
+                            <p class="text-muted small mb-2">
+                                Runs all classifiers and performs pairwise McNemar's test to determine if accuracy
+                                differences are statistically significant (p&lt;0.05). Prevents over-reading noise.
+                            </p>
+                            <button class="btn btn-dark btn-sm" onclick="runModelSignificance()">
+                                <i class="bi bi-calculator"></i> Run Significance Test
+                            </button>
+                            <div id="msig-results" class="d-none mt-2">
+                                <div class="row g-2 mb-2">
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Model</div><div class="metric-value" id="msig-best">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Accuracy</div><div class="metric-value" id="msig-acc">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Sig. Better Than</div><div class="metric-value" id="msig-sig-count">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Models Tested</div><div class="metric-value" id="msig-n-models">--</div></div></div>
+                                </div>
+                                <div class="alert alert-light border small" id="msig-verdict"></div>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover">
+                                        <thead class="table-light"><tr><th>Rank</th><th>Model</th><th>Accuracy</th><th>F1</th><th>Balanced Acc</th><th>Time (s)</th></tr></thead>
+                                        <tbody id="msig-table-body"></tbody>
+                                    </table>
+                                </div>
+                                <div class="text-center"><img id="msig-plot" class="img-fluid" style="max-width:800px" /></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Balanced Classification -->
                     <div class="card border-success mb-3">
                         <div class="card-header bg-success bg-opacity-10 py-2">
                             <i class="bi bi-balance-scale"></i> <strong>Class-Balanced Classification</strong>
@@ -6057,42 +6084,54 @@
                         </div>
                     </div>
 
-                    <!-- Heterogeneous Ensemble -->
-                    <div class="card border-dark mb-3">
-                        <div class="card-header bg-dark bg-opacity-75 text-white py-2">
-                            <i class="bi bi-stack"></i> <strong>Heterogeneous Ensemble</strong>
-                            <small class="opacity-75 ms-2">RF + GBM + SVM + LR + MLP meta-learner</small>
+                    <!-- Conformal Prediction -->
+                    <div class="card border-success mb-3">
+                        <div class="card-header bg-success bg-opacity-10 py-2">
+                            <i class="bi bi-shield-check"></i> <strong>Conformal Prediction (Uncertainty-Aware)</strong>
+                            <small class="text-muted ms-2">How confident is each prediction?</small>
                         </div>
                         <div class="card-body py-2">
                             <p class="text-muted small mb-2">
-                                Trains 5 diverse model families and combines them via a meta-learner.
-                                Reports ensemble accuracy, per-model contributions, and prediction confidence from model agreement.
+                                Instead of a single class label, returns a SET of possible classes with guaranteed coverage.
+                                Smaller sets = higher confidence. Singleton predictions are unambiguous.
                             </p>
-                            <button class="btn btn-dark btn-sm" onclick="runHeteroEnsemble()">
-                                <i class="bi bi-stack"></i> Build Ensemble
+                            <button class="btn btn-success btn-sm" onclick="runConformalPredict()">
+                                <i class="bi bi-shield-check"></i> Run Conformal Analysis
                             </button>
-                            <div id="he-results" class="d-none mt-2">
-                                <div id="he-brief" class="mb-2"></div>
+                            <div id="cf-results" class="d-none mt-2">
                                 <div class="row g-2 mb-2">
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Ensemble Acc</div><div class="metric-value" id="he-acc">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">vs Best Single</div><div class="metric-value" id="he-improvement">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Agreement</div><div class="metric-value" id="he-agreement">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Contested</div><div class="metric-value" id="he-contested">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Coverage</div><div class="metric-value" id="cf-coverage">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Avg Set Size</div><div class="metric-value" id="cf-avg-size">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Singleton %</div><div class="metric-value" id="cf-singleton">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Confidence</div><div class="metric-value" id="cf-risk">--</div></div></div>
                                 </div>
-                                <div class="text-center mb-2" id="he-plot-img"></div>
-                                <div class="row g-2">
-                                    <div class="col-md-6">
-                                        <div class="card"><div class="card-header py-1"><i class="bi bi-bar-chart"></i> Base Model Accuracies</div>
-                                            <div class="card-body p-0"><table class="table table-sm table-hover mb-0">
-                                                <thead class="table-light"><tr><th>Model</th><th>CV Accuracy</th><th>Contribution</th></tr></thead>
-                                                <tbody id="he-models-body"></tbody>
-                                            </table></div>
-                                        </div>
-                                    </div>
+                                <div class="alert alert-light border small" id="cf-brief"></div>
+                                <h6>Per-Class Confidence</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Class</th><th>Count</th><th>Avg Set Size</th><th>Singleton %</th><th>Coverage</th><th>Confidence</th></tr></thead><tbody id="cf-class-body"></tbody></table>
                                 </div>
+                                <h6>Most Uncertain Predictions</h6>
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Depth (m)</th><th>True Class</th><th>Prediction Set</th><th>Set Size</th><th>Max Prob</th></tr></thead><tbody id="cf-uncertain-body"></tbody></table>
+                                </div>
+                                <div class="text-center"><img id="cf-plot" class="img-fluid" style="max-width:800px" /></div>
                             </div>
                         </div>
                     </div>
+
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Group 2: Feature Engineering & Optimization -->
+                        <div class="accordion-item">
+                            <h2 class="accordion-header">
+                                <button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#cls-group-features">
+                                    <i class="bi bi-sliders2 me-2"></i> Feature Engineering & Tuning <span class="badge bg-secondary ms-2">2</span>
+                                </button>
+                            </h2>
+                            <div id="cls-group-features" class="accordion-collapse collapse" data-bs-parent="#classify-accordion">
+                                <div class="accordion-body p-2">
 
                     <!-- Feature Ablation Study -->
                     <div class="card border-warning mb-3">
@@ -6178,70 +6217,72 @@
                         </div>
                     </div>
 
-                    <!-- Model Significance Testing -->
-                    <div class="card border-dark mb-3">
-                        <div class="card-header bg-dark text-white py-2">
-                            <i class="bi bi-graph-up-arrow"></i> <strong>Model Significance Testing</strong>
-                            <small class="text-white-50 ms-2">Are differences between models real?</small>
-                        </div>
-                        <div class="card-body py-2">
-                            <p class="text-muted small mb-2">
-                                Runs all classifiers and performs pairwise McNemar's test to determine if accuracy
-                                differences are statistically significant (p&lt;0.05). Prevents over-reading noise.
-                            </p>
-                            <button class="btn btn-dark btn-sm" onclick="runModelSignificance()">
-                                <i class="bi bi-calculator"></i> Run Significance Test
-                            </button>
-                            <div id="msig-results" class="d-none mt-2">
-                                <div class="row g-2 mb-2">
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Model</div><div class="metric-value" id="msig-best">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Accuracy</div><div class="metric-value" id="msig-acc">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Sig. Better Than</div><div class="metric-value" id="msig-sig-count">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Models Tested</div><div class="metric-value" id="msig-n-models">--</div></div></div>
                                 </div>
-                                <div class="alert alert-light border small" id="msig-verdict"></div>
-                                <div class="table-responsive mb-2">
-                                    <table class="table table-sm table-hover">
-                                        <thead class="table-light"><tr><th>Rank</th><th>Model</th><th>Accuracy</th><th>F1</th><th>Balanced Acc</th><th>Time (s)</th></tr></thead>
-                                        <tbody id="msig-table-body"></tbody>
-                                    </table>
-                                </div>
-                                <div class="text-center"><img id="msig-plot" class="img-fluid" style="max-width:800px" /></div>
                             </div>
                         </div>
-                    </div>
 
-                    <!-- Conformal Prediction -->
-                    <div class="card border-success mb-3">
-                        <div class="card-header bg-success bg-opacity-10 py-2">
-                            <i class="bi bi-shield-check"></i> <strong>Conformal Prediction (Uncertainty-Aware)</strong>
-                            <small class="text-muted ms-2">How confident is each prediction?</small>
+                        <!-- Group 3: Transfer & Generalization -->
+                        <div class="accordion-item">
+                            <h2 class="accordion-header">
+                                <button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#cls-group-transfer">
+                                    <i class="bi bi-arrow-left-right me-2"></i> Transfer & Generalization <span class="badge bg-secondary ms-2">2</span>
+                                </button>
+                            </h2>
+                            <div id="cls-group-transfer" class="accordion-collapse collapse" data-bs-parent="#classify-accordion">
+                                <div class="accordion-body p-2">
+
+                    <!-- Domain-Adapted Transfer Learning -->
+                    <div class="card border-info mb-3">
+                        <div class="card-header bg-info bg-opacity-10 py-2">
+                            <i class="bi bi-diagram-3"></i> <strong>Domain-Adapted Transfer</strong>
+                            <small class="text-muted ms-2">MMD reweighting + pseudo-labeling</small>
                         </div>
                         <div class="card-body py-2">
                             <p class="text-muted small mb-2">
-                                Instead of a single class label, returns a SET of possible classes with guaranteed coverage.
-                                Smaller sets = higher confidence. Singleton predictions are unambiguous.
+                                Compares 5 domain adaptation strategies: zero-shot, fine-tuned, MMD kernel reweighting,
+                                progressive pseudo-labeling, and target-only. Also reports feature distribution shifts (Cohen's d).
                             </p>
-                            <button class="btn btn-success btn-sm" onclick="runConformalPredict()">
-                                <i class="bi bi-shield-check"></i> Run Conformal Analysis
-                            </button>
-                            <div id="cf-results" class="d-none mt-2">
+                            <div class="d-flex gap-2 mb-2 align-items-center">
+                                <select id="ta-source-well" class="form-select form-select-sm" style="width:auto">
+                                    <option value="3P">Source: 3P</option>
+                                    <option value="6P">Source: 6P</option>
+                                </select>
+                                <i class="bi bi-arrow-right"></i>
+                                <select id="ta-target-well" class="form-select form-select-sm" style="width:auto">
+                                    <option value="6P">Target: 6P</option>
+                                    <option value="3P">Target: 3P</option>
+                                </select>
+                                <button class="btn btn-info btn-sm" onclick="runTransferAdapted()">
+                                    <i class="bi bi-arrow-left-right"></i> Compare Methods
+                                </button>
+                            </div>
+                            <div id="ta-results" class="d-none">
+                                <div id="ta-brief" class="mb-2"></div>
                                 <div class="row g-2 mb-2">
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Coverage</div><div class="metric-value" id="cf-coverage">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Avg Set Size</div><div class="metric-value" id="cf-avg-size">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Singleton %</div><div class="metric-value" id="cf-singleton">--</div></div></div>
-                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Confidence</div><div class="metric-value" id="cf-risk">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Method</div><div class="metric-value" id="ta-best-method">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Best Accuracy</div><div class="metric-value" id="ta-best-acc">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Feature Shifts</div><div class="metric-value" id="ta-n-shifts">--</div></div></div>
+                                    <div class="col-md-3"><div class="metric-card"><div class="metric-label">Fine-tune Size</div><div class="metric-value" id="ta-ft-size">--</div></div></div>
                                 </div>
-                                <div class="alert alert-light border small" id="cf-brief"></div>
-                                <h6>Per-Class Confidence</h6>
-                                <div class="table-responsive mb-2">
-                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Class</th><th>Count</th><th>Avg Set Size</th><th>Singleton %</th><th>Coverage</th><th>Confidence</th></tr></thead><tbody id="cf-class-body"></tbody></table>
+                                <div class="text-center mb-2" id="ta-plot-img"></div>
+                                <div class="card">
+                                    <div class="card-header py-1"><i class="bi bi-table"></i> Method Comparison</div>
+                                    <div class="card-body p-0">
+                                        <table class="table table-sm table-hover mb-0">
+                                            <thead class="table-light"><tr><th>Method</th><th>Accuracy</th><th>F1</th><th>Details</th></tr></thead>
+                                            <tbody id="ta-table-body"></tbody>
+                                        </table>
+                                    </div>
                                 </div>
-                                <h6>Most Uncertain Predictions</h6>
-                                <div class="table-responsive mb-2">
-                                    <table class="table table-sm table-hover"><thead class="table-light"><tr><th>Depth (m)</th><th>True Class</th><th>Prediction Set</th><th>Set Size</th><th>Max Prob</th></tr></thead><tbody id="cf-uncertain-body"></tbody></table>
+                                <div id="ta-shifts-section" class="d-none mt-2">
+                                    <h6 class="small fw-bold"><i class="bi bi-exclamation-triangle text-warning"></i> Significant Feature Shifts</h6>
+                                    <div class="table-responsive" style="max-height:200px;overflow-y:auto">
+                                        <table class="table table-sm table-bordered mb-0">
+                                            <thead class="table-light"><tr><th>Feature</th><th>Cohen's d</th><th>Severity</th></tr></thead>
+                                            <tbody id="ta-shifts-body"></tbody>
+                                        </table>
+                                    </div>
                                 </div>
-                                <div class="text-center"><img id="cf-plot" class="img-fluid" style="max-width:800px" /></div>
                             </div>
                         </div>
                     </div>
@@ -6276,6 +6317,11 @@
                             </div>
                         </div>
                     </div>
+
+                                </div>
+                            </div>
+                        </div>
+                    </div><!-- /classify-accordion -->
 
                     <div id="classify-results" class="d-none">
                         <!-- Stakeholder Brief -->
@@ -6862,16 +6908,19 @@
                         </div>
                     </div>
 
-                    <div class="d-flex gap-2 mb-3">
+                    <div class="d-flex gap-2 mb-3 align-items-center">
                         <button class="btn btn-primary btn-sm" onclick="runSensitivity()">
                             <i class="bi bi-sliders"></i> Run Full Sensitivity Analysis
                         </button>
-                        <button class="btn btn-outline-danger btn-sm" onclick="runSensitivityHeatmap()">
-                            <i class="bi bi-grid-3x3"></i> Sensitivity Heatmap
-                        </button>
-                        <button class="btn btn-danger btn-sm" onclick="runWorstCase()">
-                            <i class="bi bi-exclamation-octagon"></i> Worst-Case Scenarios
-                        </button>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-danger dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i class="bi bi-three-dots"></i> Advanced
+                            </button>
+                            <ul class="dropdown-menu">
+                                <li><a class="dropdown-item" href="#" onclick="runSensitivityHeatmap();return false"><i class="bi bi-grid-3x3 me-2"></i>Sensitivity Heatmap</a></li>
+                                <li><a class="dropdown-item text-danger" href="#" onclick="runWorstCase();return false"><i class="bi bi-exclamation-octagon me-2"></i>Worst-Case Scenarios</a></li>
+                            </ul>
+                        </div>
                     </div>
                     <div id="worst-case-results" class="d-none mb-4">
                         <div class="card border-danger">
@@ -7044,19 +7093,21 @@
                     <div class="card border-primary mt-4 mb-4">
                         <div class="card-header bg-primary text-white"><i class="bi bi-file-earmark-text"></i> Advanced Industrial Analysis</div>
                         <div class="card-body">
-                            <div class="d-flex gap-2 flex-wrap mb-3">
+                            <div class="d-flex gap-2 flex-wrap mb-3 align-items-center">
                                 <button class="btn btn-primary btn-sm" onclick="runStakeholderReport()">
                                     <i class="bi bi-file-earmark-bar-graph"></i> Stakeholder Decision Report
                                 </button>
-                                <button class="btn btn-success btn-sm" onclick="runModelArena()">
-                                    <i class="bi bi-trophy"></i> Model Arena (Compare All)
-                                </button>
-                                <button class="btn btn-info btn-sm" onclick="runAutoRetrain()">
-                                    <i class="bi bi-arrow-repeat"></i> Auto-Retrain from Feedback
-                                </button>
-                                <button class="btn btn-danger btn-sm" onclick="runNegativeOutcomes()">
-                                    <i class="bi bi-bug"></i> Negative Outcome Learning
-                                </button>
+                                <div class="btn-group btn-group-sm">
+                                    <button class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                                        <i class="bi bi-three-dots"></i> More Analyses
+                                    </button>
+                                    <ul class="dropdown-menu">
+                                        <li><a class="dropdown-item" href="#" onclick="runModelArena();return false"><i class="bi bi-trophy me-2 text-success"></i>Model Arena (Compare All)</a></li>
+                                        <li><a class="dropdown-item" href="#" onclick="runAutoRetrain();return false"><i class="bi bi-arrow-repeat me-2 text-info"></i>Auto-Retrain from Feedback</a></li>
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item text-danger" href="#" onclick="runNegativeOutcomes();return false"><i class="bi bi-bug me-2"></i>Negative Outcome Learning</a></li>
+                                    </ul>
+                                </div>
                             </div>
 
                             <!-- Stakeholder Decision Report Results -->
@@ -8411,12 +8462,18 @@
                     <div class="card mb-3">
                         <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
                             <span><i class="bi bi-tags"></i> Model Version Registry</span>
-                            <div>
-                                <button class="btn btn-sm btn-outline-light me-1" onclick="loadModelRegistry()"><i class="bi bi-list-ul"></i> List Versions</button>
-                                <button class="btn btn-sm btn-outline-light me-1" onclick="registerModel()"><i class="bi bi-plus-circle"></i> Register</button>
-                                <button class="btn btn-sm btn-outline-light me-1" onclick="compareModelVersions()"><i class="bi bi-arrow-left-right"></i> Compare</button>
-                                <button class="btn btn-sm btn-outline-warning me-1" onclick="runAbTest()"><i class="bi bi-shuffle"></i> A/B Test</button>
-                                <button class="btn btn-sm btn-success" onclick="runEnsembleVote()"><i class="bi bi-check2-all"></i> Ensemble Vote</button>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-light" onclick="loadModelRegistry()"><i class="bi bi-list-ul"></i> List</button>
+                                <button class="btn btn-outline-light dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                                    Actions
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><a class="dropdown-item" href="#" onclick="registerModel();return false"><i class="bi bi-plus-circle me-2"></i>Register New Version</a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="compareModelVersions();return false"><i class="bi bi-arrow-left-right me-2"></i>Compare Versions</a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item" href="#" onclick="runAbTest();return false"><i class="bi bi-shuffle me-2 text-warning"></i>A/B Test</a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="runEnsembleVote();return false"><i class="bi bi-check2-all me-2 text-success"></i>Ensemble Vote</a></li>
+                                </ul>
                             </div>
                         </div>
                         <div class="card-body" id="model-registry-result">
@@ -8454,10 +8511,13 @@
                     <div class="card mb-3 border-primary">
                         <div class="card-header bg-primary bg-opacity-75 text-white d-flex justify-content-between align-items-center">
                             <span><i class="bi bi-person-check"></i> RLHF Expert Review Queue</span>
-                            <div>
-                                <button class="btn btn-sm btn-outline-light me-1" onclick="loadRlhfQueue()"><i class="bi bi-list-task"></i> Get Review Queue</button>
-                                <button class="btn btn-sm btn-outline-light me-1" onclick="viewRlhfImpact()"><i class="bi bi-graph-up"></i> View Impact</button>
-                                <button class="btn btn-sm btn-warning" onclick="rlhfRetrain()"><i class="bi bi-lightning"></i> Apply & Retrain</button>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-light" onclick="loadRlhfQueue()"><i class="bi bi-list-task"></i> Queue</button>
+                                <button class="btn btn-outline-light dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"></button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><a class="dropdown-item" href="#" onclick="viewRlhfImpact();return false"><i class="bi bi-graph-up me-2"></i>View Impact</a></li>
+                                    <li><a class="dropdown-item text-warning fw-bold" href="#" onclick="rlhfRetrain();return false"><i class="bi bi-lightning me-2"></i>Apply & Retrain</a></li>
+                                </ul>
                             </div>
                         </div>
                         <div class="card-body" id="rlhf-queue-result">

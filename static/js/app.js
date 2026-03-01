@@ -1,4 +1,4 @@
-/* GeoStress AI - Frontend Logic v3.79 (Industrial Grade) */
+/* GeoStress AI - Frontend Logic v3.80 (Industrial Grade) */
 
 var currentSource = "demo";
 var currentWell = "3P";

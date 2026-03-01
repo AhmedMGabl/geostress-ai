@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.79.0 - Per-Class Threshold Tuning + Feature Selection + ML Pipeline)."""
+"""GeoStress AI - FastAPI Web Application (v3.80.0 - UI Declutter + Accordion Groups + Dropdown Menus)."""
 
 import os
 import io
