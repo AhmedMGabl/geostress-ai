@@ -267,6 +267,10 @@ function switchTab(tab) {
     var el = document.getElementById("tab-" + tab);
     if (el) el.classList.add("active");
     document.getElementById("page-title").textContent = tabNames[tab] || tab;
+    // Scroll content area to top on tab switch
+    var main = document.querySelector("main");
+    if (main) main.scrollTop = 0;
+    window.scrollTo(0, 0);
 }
 
 // ── Well selector sync ────────────────────────────
