@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.77.0 - Honest Performance Showcase + Model Deployment)."""
+"""GeoStress AI - FastAPI Web Application (v3.78.0 - SMOTE-ENN + Cost-Sensitive Weight Tuning)."""
 
 import os
 import io

@@ -41,12 +41,13 @@
     "cohen_kappa": 1.0
   },
   "tuned_params": {
-    "n_estimators": 218,
-    "max_depth": 20,
-    "min_samples_leaf": 8,
-    "min_samples_split": 10,
-    "max_features": "sqrt"
+    "weight_exp": 0.5621780831931538,
+    "n_estimators": 478,
+    "max_depth": 16,
+    "min_samples_leaf": 6,
+    "min_samples_split": 4,
+    "max_features": null
   },
-  "saved_at": "2026-03-01 07:48:14",
+  "saved_at": "2026-03-01 08:47:17",
   "version": "1.0"
 }

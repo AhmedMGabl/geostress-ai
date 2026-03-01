@@ -35,6 +35,8 @@ import warnings
 
 try:
     from imblearn.over_sampling import SMOTE, ADASYN, BorderlineSMOTE
+    from imblearn.combine import SMOTEENN
+    from imblearn.under_sampling import EditedNearestNeighbours
     from imblearn.pipeline import Pipeline as ImbPipeline
     HAS_IMBLEARN = True
 except ImportError:
@@ -422,23 +424,41 @@ def _cv_with_smote(model, X, y, cv, smote_strategy="auto"):
             model_clone = clone(model)
             model_clone.fit(X_train, y_train)
         else:
-            # BorderlineSMOTE: only generate synthetic samples near the
-            # decision boundary ("danger zone"), more effective than SMOTE
-            # for severely imbalanced classes like Boundary (n=13).
+            # SMOTE-ENN: oversample minorities + clean noisy majority samples.
+            # ENN removes samples whose neighbors disagree with label,
+            # sharpening the decision boundary (especially for
+            # Continuous/Discontinuous confusion).
+            X_res, y_res = None, None
             try:
-                oversampler = BorderlineSMOTE(
-                    k_neighbors=k_neighbors,
+                smote_enn = SMOTEENN(
+                    smote=SMOTE(k_neighbors=k_neighbors, random_state=42),
+                    enn=EditedNearestNeighbours(n_neighbors=3, kind_sel="mode"),
                     random_state=42,
-                    kind="borderline-1",
                 )
+                X_res, y_res = smote_enn.fit_resample(X_train, y_train)
+                # Safety: ensure ENN didn't remove too many minority samples
+                for cls_id in np.unique(y_train):
+                    if (y_res == cls_id).sum() < (y_train == cls_id).sum():
+                        X_res, y_res = None, None
+                        break
             except Exception:
-                # Fallback to regular SMOTE if BorderlineSMOTE fails
-                oversampler = SMOTE(
-                    k_neighbors=k_neighbors,
-                    random_state=42,
-                    sampling_strategy=smote_strategy,
-                )
-            X_res, y_res = oversampler.fit_resample(X_train, y_train)
+                X_res, y_res = None, None
+
+            # Fallback chain: BorderlineSMOTE -> SMOTE
+            if X_res is None:
+                try:
+                    oversampler = BorderlineSMOTE(
+                        k_neighbors=k_neighbors, random_state=42,
+                        kind="borderline-1",
+                    )
+                    X_res, y_res = oversampler.fit_resample(X_train, y_train)
+                except Exception:
+                    oversampler = SMOTE(
+                        k_neighbors=k_neighbors, random_state=42,
+                        sampling_strategy=smote_strategy,
+                    )
+                    X_res, y_res = oversampler.fit_resample(X_train, y_train)
+
             smote_counts.append({
                 "original": len(y_train),
                 "resampled": len(y_res),
@@ -493,8 +513,24 @@ def _optuna_tune_model(
 
     cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
 
+    def _tuned_class_weight(trial, y_arr):
+        """Compute class weights with tunable exponent.
+
+        weight_exp=0 -> uniform, 1.0 -> sklearn 'balanced', >1.0 -> aggressive.
+        Softens the 15.7x weight for Boundary class (only 13 samples).
+        """
+        weight_exp = trial.suggest_float("weight_exp", 0.3, 1.0)
+        counts = np.bincount(y_arr)
+        n_samples = len(y_arr)
+        n_cls = len(counts)
+        balanced_w = n_samples / (n_cls * counts.astype(float))
+        weights = balanced_w ** weight_exp
+        # Must be plain Python floats for sklearn clone() compatibility
+        return {int(i): float(weights[i]) for i in range(n_cls)}
+
     def objective(trial):
         if model_name == "random_forest":
+            cw = _tuned_class_weight(trial, y)
             params = {
                 "n_estimators": trial.suggest_int("n_estimators", 50, 500),
                 "max_depth": trial.suggest_int("max_depth", 4, 20),
@@ -503,7 +539,7 @@ def _optuna_tune_model(
                 "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2", None]),
             }
             model = RandomForestClassifier(
-                **params, class_weight="balanced", random_state=42, n_jobs=-1,
+                **params, class_weight=cw, random_state=42, n_jobs=-1,
             )
         elif model_name == "xgboost" and HAS_XGB:
             params = {
@@ -517,11 +553,11 @@ def _optuna_tune_model(
                 "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
                 "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
             }
-            sw = compute_sample_weight("balanced", y)
             model = xgb.XGBClassifier(
                 **params, random_state=42, eval_metric="mlogloss",
             )
         elif model_name == "lightgbm" and HAS_LGB:
+            cw = _tuned_class_weight(trial, y)
             params = {
                 "n_estimators": trial.suggest_int("n_estimators", 50, 500),
                 "max_depth": trial.suggest_int("max_depth", 3, 12),
@@ -534,9 +570,10 @@ def _optuna_tune_model(
                 "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
             }
             model = lgb.LGBMClassifier(
-                **params, class_weight="balanced", random_state=42, verbose=-1,
+                **params, class_weight=cw, random_state=42, verbose=-1,
             )
         elif model_name == "catboost" and HAS_CB:
+            # CatBoost class_weights breaks sklearn clone(); use auto_class_weights
             params = {
                 "iterations": trial.suggest_int("iterations", 50, 500),
                 "depth": trial.suggest_int("depth", 3, 10),
@@ -557,12 +594,13 @@ def _optuna_tune_model(
             }
             model = GradientBoostingClassifier(**params, random_state=42)
         elif model_name == "svm":
+            cw = _tuned_class_weight(trial, y)
             params = {
                 "C": trial.suggest_float("C", 0.1, 100.0, log=True),
                 "gamma": trial.suggest_categorical("gamma", ["scale", "auto"]),
                 "kernel": trial.suggest_categorical("kernel", ["rbf", "poly"]),
             }
-            model = SVC(**params, class_weight="balanced", probability=True, random_state=42)
+            model = SVC(**params, class_weight=cw, probability=True, random_state=42)
         elif model_name == "mlp":
             n_layers = trial.suggest_int("n_layers", 1, 3)
             layers = []
@@ -736,21 +774,36 @@ def optimize_and_save_best(
     best_params = best_result["best_params"]
 
     # Reconstruct the best model with tuned params
+    # Extract weight_exp (custom param, not passed to constructor)
+    model_params = {k: v for k, v in best_params.items() if k != "weight_exp"}
+    weight_exp = best_params.get("weight_exp")
+
+    # Convert weight_exp to actual class_weight dict
+    def _build_class_weight(y_arr, w_exp):
+        if w_exp is None:
+            return "balanced"
+        counts = np.bincount(y_arr)
+        balanced_w = len(y_arr) / (len(counts) * counts.astype(float))
+        weights = balanced_w ** w_exp
+        return {int(i): float(weights[i]) for i in range(len(counts))}
+
+    cw = _build_class_weight(y, weight_exp)
+
     if best_name == "random_forest":
         best_model = RandomForestClassifier(
-            **best_params, class_weight="balanced", random_state=42, n_jobs=-1,
+            **model_params, class_weight=cw, random_state=42, n_jobs=-1,
         )
     elif best_name == "xgboost" and HAS_XGB:
         best_model = xgb.XGBClassifier(
-            **best_params, random_state=42, eval_metric="mlogloss",
+            **model_params, random_state=42, eval_metric="mlogloss",
         )
     elif best_name == "lightgbm" and HAS_LGB:
         best_model = lgb.LGBMClassifier(
-            **best_params, class_weight="balanced", random_state=42, verbose=-1,
+            **model_params, class_weight=cw, random_state=42, verbose=-1,
         )
     elif best_name == "catboost" and HAS_CB:
         best_model = cb.CatBoostClassifier(
-            **best_params, auto_class_weights="Balanced", random_seed=42, verbose=0,
+            **model_params, auto_class_weights="Balanced", random_seed=42, verbose=0,
         )
     else:
         return {"error": f"Cannot reconstruct model: {best_name}"}

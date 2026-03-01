@@ -32,25 +32,26 @@
   "well": "3P",
   "model_name": "best",
   "metrics": {
-    "balanced_accuracy": 0.5664,
-    "balanced_accuracy_std": 0.0387,
-    "accuracy": 0.5164,
-    "f1_macro": 0.4659,
-    "f1_weighted": 0.5422,
-    "mcc": 0.3289,
-    "cohen_kappa": 0.3056
+    "balanced_accuracy": 0.5483,
+    "balanced_accuracy_std": 0.0526,
+    "accuracy": 0.6421,
+    "f1_macro": 0.5128,
+    "f1_weighted": 0.6441,
+    "mcc": 0.3956,
+    "cohen_kappa": 0.3933
   },
   "tuned_params": {
-    "n_estimators": 75,
-    "max_depth": 5,
-    "learning_rate": 0.01340161771834497,
-    "subsample": 0.8435217188126921,
-    "colsample_bytree": 0.6011694243452163,
-    "num_leaves": 58,
-    "min_child_samples": 26,
-    "reg_alpha": 7.571220457339975e-06,
-    "reg_lambda": 0.0006270869948177219
+    "weight_exp": 0.7926930315872969,
+    "n_estimators": 54,
+    "max_depth": 8,
+    "learning_rate": 0.04513054173142556,
+    "subsample": 0.9259308962023541,
+    "colsample_bytree": 0.5314588535594166,
+    "num_leaves": 89,
+    "min_child_samples": 20,
+    "reg_alpha": 0.16320064152969646,
+    "reg_lambda": 0.001192609239475605
   },
-  "saved_at": "2026-03-01 07:46:09",
+  "saved_at": "2026-03-01 08:44:51",
   "version": "1.0"
 }
