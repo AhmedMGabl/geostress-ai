@@ -4,6 +4,26 @@ var currentSource = "demo";
 var currentWell = "3P";
 var feedbackRating = 3;
 
+// Human-readable model name mapping
+var MODEL_NAMES = {
+    "random_forest": "Random Forest",
+    "gradient_boosting": "Gradient Boosting",
+    "svm": "SVM (Support Vector)",
+    "mlp": "Neural Network (MLP)",
+    "xgboost": "XGBoost",
+    "lightgbm": "LightGBM",
+    "catboost": "CatBoost",
+    "stacking": "Stacking Ensemble",
+    "stacking_ensemble": "Stacking Ensemble",
+    "balanced_bagging": "Balanced Bagging",
+    "easy_ensemble": "Easy Ensemble",
+    "hierarchical": "Hierarchical Split",
+    "logistic_regression": "Logistic Regression"
+};
+function displayModelName(raw) {
+    return MODEL_NAMES[raw] || raw.replace(/_/g, " ").replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+}
+
 // ── Helpers ───────────────────────────────────────
 
 var _loadingTimer = null;
@@ -2201,7 +2221,7 @@ async function runModelComparison(fast) {
         }
 
         // Summary metrics
-        val("mc-best-model", r.best_model ? r.best_model.replace("_", " ") : "--");
+        val("mc-best-model", r.best_model ? displayModelName(r.best_model) : "--");
         val("mc-best-acc", r.ranking && r.ranking[0] ? (r.ranking[0].accuracy * 100).toFixed(1) + "%" : "--");
         val("mc-agreement", (r.model_agreement_mean * 100).toFixed(1) + "%");
         val("mc-low-conf", r.low_confidence_count + " (" + r.low_confidence_pct + "%)");
@@ -2228,7 +2248,7 @@ async function runModelComparison(fast) {
                 tr.appendChild(createCell("td", "#" + row.rank));
                 var tdName = document.createElement("td");
                 var nameStrong = document.createElement("strong");
-                nameStrong.textContent = row.model.replace("_", " ");
+                nameStrong.textContent = displayModelName(row.model);
                 tdName.appendChild(nameStrong);
                 tr.appendChild(tdName);
                 tr.appendChild(createCell("td", (row.accuracy * 100).toFixed(1) + "%"));
@@ -2256,7 +2276,7 @@ async function runModelComparison(fast) {
 
                 var header = document.createElement("div");
                 header.className = "card-header";
-                header.textContent = modelName.replace("_", " ") +
+                header.textContent = displayModelName(modelName) +
                     " - Accuracy: " + (m.cv_accuracy_mean * 100).toFixed(1) +
                     "% \u00b1" + (m.cv_accuracy_std * 100).toFixed(1) + "%";
                 card.appendChild(header);
@@ -2466,7 +2486,7 @@ async function runClassification() {
         val("clf-accuracy", (r.cv_mean_accuracy * 100).toFixed(1) + "%");
         val("clf-std", "\u00b1" + (r.cv_std_accuracy * 100).toFixed(1) + "%");
         val("clf-f1", r.cv_f1_mean ? (r.cv_f1_mean * 100).toFixed(1) + "%" : "--");
-        val("clf-type", classifier.replace("_", " "));
+        val("clf-type", displayModelName(classifier));
 
         // Confidence gate: color-code accuracy and add warning for low accuracy
         var accEl = document.getElementById("clf-accuracy");
@@ -2952,7 +2972,7 @@ async function runModelArena() {
         document.getElementById("arena-brief").innerHTML =
             '<div class="alert alert-' + bColor + ' py-1 small mb-0"><strong>' + sb.headline + '</strong><br>' + sb.confidence_sentence + '</div>';
 
-        document.getElementById("arena-best").textContent = (r.best_model || "").replace(/_/g, " ");
+        document.getElementById("arena-best").textContent = displayModelName(r.best_model || "");
         var br = (r.results || {})[r.best_model] || {};
         document.getElementById("arena-best-acc").textContent = ((br.accuracy || 0) * 100).toFixed(1) + "%";
         document.getElementById("arena-n-models").textContent = r.n_models;
@@ -9500,6 +9520,51 @@ document.addEventListener("DOMContentLoaded", function() {
             }
         });
     });
+});
+
+// ── Keyboard Shortcuts ────────────────────────────────────────
+
+document.addEventListener("keydown", function(e) {
+    // Ignore when typing in inputs
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    var shortcuts = {
+        "1": "executive",
+        "2": "performance",
+        "3": "data",
+        "4": "inversion",
+        "5": "classify",
+        "6": "risk",
+        "7": "viz",
+        "8": "models",
+        "9": "sensitivity"
+    };
+
+    if (shortcuts[e.key]) {
+        e.preventDefault();
+        switchTab(shortcuts[e.key]);
+    }
+
+    // 'r' to refresh/run current tab's main action
+    if (e.key === "r") {
+        var active = document.querySelector(".tab-content.active");
+        if (!active) return;
+        var id = active.id;
+        if (id === "tab-executive") runExecutiveSummary();
+        else if (id === "tab-inversion") runInversion();
+        else if (id === "tab-classify") runClassification();
+        else if (id === "tab-risk") runRiskMatrix();
+    }
+
+    // '?' to show shortcuts help
+    if (e.key === "?") {
+        var msg = "Keyboard Shortcuts:\n\n" +
+            "1-9  Switch tabs (Exec, Perf, Data, Inv, Classify, Risk, Viz, Models, Sens)\n" +
+            "R    Re-run current tab analysis\n" +
+            "?    Show this help";
+        alert(msg);
+    }
 });
 
 // ── 1D Stress Profile ─────────────────────────────────────────
