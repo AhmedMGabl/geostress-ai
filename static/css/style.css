@@ -464,6 +464,16 @@ body {
     box-shadow: 0 6px 16px rgba(0,0,0,0.1);
 }
 
+/* Quick Start Cards */
+.quick-start-card {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    border-radius: 12px !important;
+}
+.quick-start-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12) !important;
+}
+
 /* Smooth tab transitions */
 .tab-content {
     animation: fadeInTab 0.3s ease;
