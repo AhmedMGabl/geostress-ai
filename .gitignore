@@ -11,8 +11,7 @@ outputs/
 notebooks/*_executed.ipynb
 .claude/
 data/geostress.db
-data/models/*.joblib
-data/models/*.json
+catboost_info/
 !data/models/.gitkeep
 
 # Root-level data files (originals are in data/raw/ and references/)

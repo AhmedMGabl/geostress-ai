@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.76.0 - ML Optimization + Model Persistence + Professional UI)."""
+"""GeoStress AI - FastAPI Web Application (v3.77.0 - Honest Performance Showcase + Model Deployment)."""
 
 import os
 import io
@@ -1134,16 +1134,24 @@ async def performance_showcase():
     """IP-safe performance metrics for customer-facing showcase.
 
     Returns aggregate metrics without revealing model names, feature names,
-    or training methodology. Pre-computed values based on demo data.
+    or training methodology. Uses real Optuna-tuned model metrics when available.
     """
-    # Pull dynamic values from cached results if available
-    accuracy_pct = 86.9
-    accuracy_ci = [84.1, 89.6]
+    # Defaults (used when no saved model exists yet)
+    balanced_accuracy_pct = 57.0
+    balanced_accuracy_std_pct = 3.9
+    accuracy_pct = 52.0
+    mcc = 0.33
+    f1_macro_pct = 47.0
+    cohen_kappa = 0.31
     calibration_grade = "EXCELLENT"
     calibration_ece = 2.7
     abstention_acc = 79.0
     wsm_grade = "B"
     physics_checks = 5
+    n_classes = 5
+    imbalance_ratio = "17:1"
+    random_baseline_pct = 20.0
+    optimization_method = "Bayesian (40 trials/model)"
     optimized_model = None
 
     # Try to pull from saved (Optuna-tuned) model first
@@ -1151,30 +1159,36 @@ async def performance_showcase():
         from src.enhanced_analysis import list_saved_models
         saved = list_saved_models()
         if saved:
-            # Prefer the multi-class well (harder, more honest metric)
-            # Sort by: number of feature_names (proxy for complexity), then balanced_accuracy
             multi_class = [s for s in saved if len(s.get("feature_names", [])) > 0]
-            # Pick the one with lowest balanced_accuracy (harder problem = more honest showcase)
             best_saved = min(multi_class, key=lambda m: m.get("metrics", {}).get("balanced_accuracy", 1.0)) if multi_class else saved[0]
             metrics = best_saved.get("metrics", {})
+            if metrics.get("balanced_accuracy"):
+                balanced_accuracy_pct = round(metrics["balanced_accuracy"] * 100, 1)
+            if metrics.get("balanced_accuracy_std"):
+                balanced_accuracy_std_pct = round(metrics["balanced_accuracy_std"] * 100, 1)
             if metrics.get("accuracy"):
                 accuracy_pct = round(metrics["accuracy"] * 100, 1)
-            if metrics.get("balanced_accuracy"):
-                bal_acc = round(metrics["balanced_accuracy"] * 100, 1)
-            if metrics.get("mcc"):
-                pass  # Include in response below
+            if metrics.get("mcc") is not None:
+                mcc = round(metrics["mcc"], 3)
+            if metrics.get("f1_macro"):
+                f1_macro_pct = round(metrics["f1_macro"] * 100, 1)
+            if metrics.get("cohen_kappa") is not None:
+                cohen_kappa = round(metrics["cohen_kappa"], 3)
+            if metrics.get("f1_weighted"):
+                f1_weighted_pct = round(metrics["f1_weighted"] * 100, 1)
             optimized_model = {
                 "well": best_saved.get("well"),
                 "saved_at": best_saved.get("saved_at"),
                 "balanced_accuracy": metrics.get("balanced_accuracy"),
                 "mcc": metrics.get("mcc"),
                 "f1_macro": metrics.get("f1_macro"),
+                "cohen_kappa": metrics.get("cohen_kappa"),
                 "tuned": bool(best_saved.get("tuned_params")),
             }
     except Exception:
         pass
 
-    # Try to pull live values from classify cache (fallback)
+    # Fallback: pull from classify cache if no saved model
     if optimized_model is None:
         for key, val in _classify_cache.items():
             if isinstance(val, dict) and "accuracy" in val:
@@ -1189,9 +1203,21 @@ async def performance_showcase():
             wsm_grade = val.get("wsm_quality", {}).get("rank", "B") if isinstance(val.get("wsm_quality"), dict) else "B"
             break
 
+    # Compute improvement over random baseline
+    improvement_over_random = round(balanced_accuracy_pct / random_baseline_pct, 1)
+
     return {
+        "balanced_accuracy_pct": balanced_accuracy_pct,
+        "balanced_accuracy_std_pct": balanced_accuracy_std_pct,
         "accuracy_pct": accuracy_pct,
-        "accuracy_ci_95": accuracy_ci,
+        "mcc": mcc,
+        "f1_macro_pct": f1_macro_pct,
+        "cohen_kappa": cohen_kappa,
+        "n_classes": n_classes,
+        "imbalance_ratio": imbalance_ratio,
+        "random_baseline_pct": random_baseline_pct,
+        "improvement_over_random": improvement_over_random,
+        "optimization_method": optimization_method,
         "calibration_grade": calibration_grade,
         "calibration_ece_pct": calibration_ece,
         "physics_checks_count": physics_checks,
@@ -1203,8 +1229,8 @@ async def performance_showcase():
         "n_uncertainty_sources": 6,
         "research_basis": "7 cited peer-reviewed papers (2025-2026)",
         "ensemble_type": "Multi-model accuracy-weighted voting",
-        "feature_type": "Physics-informed",
-        "validation_method": "Bootstrap cross-validation with 200 resamples",
+        "feature_type": "Physics-informed (28 engineered features)",
+        "validation_method": "Stratified k-fold cross-validation with BorderlineSMOTE",
         "differentiators": [
             {
                 "icon": "shield-exclamation",
@@ -1222,9 +1248,9 @@ async def performance_showcase():
                 "description": "Every prediction validated against 5 fundamental geomechanics laws before delivery."
             },
             {
-                "icon": "globe2",
-                "title": "WSM Standard",
-                "description": "Stress orientation quality ranked against the World Stress Map international standard."
+                "icon": "cpu",
+                "title": "Bayesian-Optimized",
+                "description": "40 hyperparameter trials per model using Tree-structured Parzen Estimators. Not default settings — rigorously tuned."
             },
             {
                 "icon": "clipboard-check",
@@ -1234,8 +1260,8 @@ async def performance_showcase():
         ],
         "optimized_model": optimized_model,
         "stakeholder_brief": {
-            "headline": "Industrial-grade fracture classification with transparent uncertainty",
-            "for_non_experts": "Our AI correctly classifies 87% of fractures (verified across 200 independent tests). When it expresses confidence, that confidence is trustworthy. When it is not confident, it tells you so rather than guessing.",
+            "headline": "Bayesian-optimized fracture classification with transparent uncertainty",
+            "for_non_experts": f"Our AI classifies {n_classes} fracture types with {balanced_accuracy_pct}% balanced accuracy — {improvement_over_random}x better than random chance. When it is not confident, it refuses to predict rather than guessing.",
             "risk_level": "LOW"
         }
     }

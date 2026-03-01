@@ -9232,30 +9232,52 @@ async function loadPerformanceShowcase() {
         if (!res.ok) return;
         var d = await res.json();
 
-        // Update metric cards if API returns dynamic values
-        if (d.accuracy_pct) {
-            var accEl = document.getElementById('perf-accuracy');
-            if (accEl) accEl.textContent = d.accuracy_pct + '%';
-        }
-        if (d.accuracy_ci_95) {
-            var ciEl = document.getElementById('perf-accuracy-ci');
-            if (ciEl) ciEl.textContent = '95% CI: ' + d.accuracy_ci_95[0] + '-' + d.accuracy_ci_95[1] + '%';
+        // Primary metrics
+        if (d.abstention_accuracy_pct) {
+            var absEl = document.getElementById('perf-abstention-acc');
+            if (absEl) absEl.textContent = d.abstention_accuracy_pct + '%';
         }
         if (d.calibration_grade) {
             var calEl = document.getElementById('perf-calibration');
             if (calEl) calEl.textContent = d.calibration_grade;
         }
-        if (d.calibration_ece_pct) {
+        if (d.calibration_ece_pct != null) {
             var eceEl = document.getElementById('perf-ece');
             if (eceEl) eceEl.textContent = 'ECE: ' + d.calibration_ece_pct + '%';
-        }
-        if (d.abstention_accuracy_pct) {
-            var absEl = document.getElementById('perf-abstention-acc');
-            if (absEl) absEl.textContent = d.abstention_accuracy_pct + '%';
         }
         if (d.wsm_quality_grade) {
             var wsmEl = document.getElementById('perf-wsm-grade');
             if (wsmEl) wsmEl.textContent = d.wsm_quality_grade;
+        }
+
+        // ML model quality metrics
+        if (d.balanced_accuracy_pct) {
+            var balEl = document.getElementById('perf-bal-acc');
+            if (balEl) balEl.textContent = d.balanced_accuracy_pct + '%';
+        }
+        if (d.balanced_accuracy_std_pct) {
+            var stdEl = document.getElementById('perf-bal-acc-std');
+            if (stdEl) stdEl.innerHTML = '&plusmn; ' + d.balanced_accuracy_std_pct + '%';
+        }
+        if (d.improvement_over_random) {
+            var randEl = document.getElementById('perf-vs-random');
+            if (randEl) randEl.textContent = d.improvement_over_random + 'x random baseline (' + (d.random_baseline_pct || 20) + '%)';
+        }
+        if (d.mcc != null) {
+            var mccEl = document.getElementById('perf-mcc');
+            if (mccEl) mccEl.textContent = d.mcc.toFixed(2);
+        }
+        if (d.f1_macro_pct) {
+            var f1El = document.getElementById('perf-f1');
+            if (f1El) f1El.textContent = d.f1_macro_pct + '%';
+        }
+        if (d.n_classes) {
+            var ncEl = document.getElementById('perf-n-classes');
+            if (ncEl) ncEl.textContent = d.n_classes;
+        }
+        if (d.imbalance_ratio) {
+            var imbEl = document.getElementById('perf-imbalance');
+            if (imbEl) imbEl.textContent = d.imbalance_ratio + ' imbalance ratio';
         }
 
         _perfLoaded = true;

@@ -39,7 +39,7 @@
                     </svg>
                     <div>
                         <h4 class="mb-0" style="color:#f1f5f9;font-size:1.1rem;letter-spacing:-0.02em">GeoStress AI</h4>
-                        <small class="text-muted-light" style="font-size:0.68rem">Industrial Fracture Analysis v3.76</small>
+                        <small class="text-muted-light" style="font-size:0.68rem">Industrial Fracture Analysis v3.77</small>
                     </div>
                 </div>
                 <small class="text-muted-light d-block mt-1"><i class="bi bi-clock"></i> Last: <span id="response-time">-</span></small>
@@ -451,22 +451,29 @@
 
                 <!-- PERFORMANCE & TRUST TAB -->
                 <div id="tab-performance" class="tab-content">
-                    <div class="showcase-hero mb-4">
-                        <h3 class="mb-2"><i class="bi bi-trophy"></i> Industrial-Grade AI You Can Trust</h3>
-                        <p class="mb-0 opacity-75">Rigorous validation, physics-constrained predictions, and transparent uncertainty quantification.</p>
-                    </div>
-
-                    <!-- Key Metrics -->
-                    <div class="row g-3 mb-4">
-                        <div class="col-md-3">
-                            <div class="showcase-metric">
-                                <div class="big-number" id="perf-accuracy">87%</div>
-                                <div class="ci-range" id="perf-accuracy-ci">95% CI: 84-90%</div>
-                                <div class="fw-semibold mt-1">Classification Accuracy</div>
-                                <div class="text-muted small">Verified across 200 bootstrap resamples</div>
+                    <div class="showcase-hero mb-4" data-aos="fade-up">
+                        <div class="d-flex align-items-center gap-3 mb-2">
+                            <div style="width:48px;height:48px;border-radius:50%;background:rgba(217,119,6,0.2);display:flex;align-items:center;justify-content:center;">
+                                <i class="bi bi-trophy" style="font-size:1.5rem;color:#f59e0b;"></i>
+                            </div>
+                            <div>
+                                <h3 class="mb-0">Industrial-Grade AI You Can Trust</h3>
+                                <p class="mb-0 opacity-75" style="font-size:0.9rem;">Bayesian-optimized, physics-constrained, with honest uncertainty quantification.</p>
                             </div>
                         </div>
-                        <div class="col-md-3">
+                    </div>
+
+                    <!-- Primary Metrics: What's genuinely impressive -->
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-3" data-aos="fade-up" data-aos-delay="50">
+                            <div class="showcase-metric">
+                                <div class="big-number" id="perf-abstention-acc" style="color:#16a34a;">79%</div>
+                                <div class="ci-range">On committed predictions</div>
+                                <div class="fw-semibold mt-1">Confident Accuracy</div>
+                                <div class="text-muted small">Refuses to predict when uncertain</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3" data-aos="fade-up" data-aos-delay="100">
                             <div class="showcase-metric">
                                 <div class="big-number text-success" id="perf-calibration">EXCELLENT</div>
                                 <div class="ci-range" id="perf-ece">ECE: 2.7%</div>
@@ -474,15 +481,15 @@
                                 <div class="text-muted small">80% confidence = ~80% correct</div>
                             </div>
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-3" data-aos="fade-up" data-aos-delay="150">
                             <div class="showcase-metric">
                                 <div class="big-number text-primary" id="perf-physics">5 / 5</div>
                                 <div class="ci-range">Checks Passed</div>
                                 <div class="fw-semibold mt-1">Physics Validation</div>
-                                <div class="text-muted small">Every result checked against geomechanics laws</div>
+                                <div class="text-muted small">Every result verified against geomechanics laws</div>
                             </div>
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-3" data-aos="fade-up" data-aos-delay="200">
                             <div class="showcase-metric">
                                 <div class="big-number text-warning" id="perf-decision">6-Signal</div>
                                 <div class="ci-range">GO / CAUTION / NO-GO</div>
@@ -492,20 +499,65 @@
                         </div>
                     </div>
 
-                    <!-- Differentiators -->
-                    <h5 class="mb-3"><i class="bi bi-star"></i> What Sets Us Apart</h5>
+                    <!-- ML Model Quality: honest, contextualized -->
+                    <h5 class="mb-3" data-aos="fade-up"><i class="bi bi-cpu"></i> Bayesian-Optimized Model Quality</h5>
                     <div class="row g-3 mb-4">
-                        <div class="col-md-4">
+                        <div class="col-md-3" data-aos="fade-up" data-aos-delay="50">
+                            <div class="showcase-metric" style="border-color:#d97706;">
+                                <div class="big-number" id="perf-bal-acc">57%</div>
+                                <div class="ci-range" id="perf-bal-acc-std">&plusmn; 3.9%</div>
+                                <div class="fw-semibold mt-1">Balanced Accuracy</div>
+                                <div class="text-muted small" id="perf-vs-random">2.8x random baseline (20%)</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3" data-aos="fade-up" data-aos-delay="100">
+                            <div class="showcase-metric">
+                                <div class="big-number" id="perf-mcc" style="color:#6366f1;">0.33</div>
+                                <div class="ci-range">Matthews Correlation</div>
+                                <div class="fw-semibold mt-1">MCC Score</div>
+                                <div class="text-muted small">Robust to class imbalance</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3" data-aos="fade-up" data-aos-delay="150">
+                            <div class="showcase-metric">
+                                <div class="big-number" id="perf-f1" style="color:#0891b2;">47%</div>
+                                <div class="ci-range">Across all classes</div>
+                                <div class="fw-semibold mt-1">Macro F1 Score</div>
+                                <div class="text-muted small">Equal weight to rare + common types</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3" data-aos="fade-up" data-aos-delay="200">
+                            <div class="showcase-metric">
+                                <div class="big-number" id="perf-n-classes" style="color:#7c3aed;">5</div>
+                                <div class="ci-range" id="perf-imbalance">17:1 imbalance ratio</div>
+                                <div class="fw-semibold mt-1">Fracture Types</div>
+                                <div class="text-muted small">Severe class imbalance handled</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-info border-0 small mb-4" data-aos="fade-up" style="background:rgba(6,182,212,0.08);color:#0e7490;">
+                        <i class="bi bi-info-circle me-1"></i>
+                        <strong>Why balanced accuracy?</strong> Standard accuracy is misleading for imbalanced data.
+                        With 5 fracture types and a 17:1 class ratio, balanced accuracy gives equal weight to every type —
+                        ensuring rare fractures (which are often the most operationally important) are not ignored.
+                        <strong>Random chance on this problem is 20%.</strong>
+                    </div>
+
+                    <!-- Differentiators -->
+                    <h5 class="mb-3" data-aos="fade-up"><i class="bi bi-star"></i> What Sets Us Apart</h5>
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-4" data-aos="fade-up" data-aos-delay="50">
                             <div class="differentiator-card">
                                 <div class="icon-circle bg-danger bg-opacity-10 text-danger">
                                     <i class="bi bi-shield-exclamation"></i>
                                 </div>
                                 <h6>Refuses When Uncertain</h6>
-                                <p class="text-muted small mb-1">Unlike typical AI that always gives an answer, GeoStress AI refuses to predict when confidence is below threshold. On committed predictions: <strong id="perf-abstention-acc">79%</strong> accuracy.</p>
+                                <p class="text-muted small mb-1">Unlike typical AI that always gives an answer, GeoStress AI refuses to predict when confidence is below threshold. On committed predictions: <strong>79%</strong> accuracy.</p>
                                 <span class="badge bg-danger bg-opacity-10 text-danger">Safety-Critical Design</span>
                             </div>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-4" data-aos="fade-up" data-aos-delay="100">
                             <div class="differentiator-card">
                                 <div class="icon-circle bg-success bg-opacity-10 text-success">
                                     <i class="bi bi-bullseye"></i>
@@ -515,31 +567,31 @@
                                 <span class="badge bg-success bg-opacity-10 text-success">Statistically Verified</span>
                             </div>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-4" data-aos="fade-up" data-aos-delay="150">
                             <div class="differentiator-card">
                                 <div class="icon-circle bg-primary bg-opacity-10 text-primary">
-                                    <i class="bi bi-gear-wide"></i>
+                                    <i class="bi bi-cpu"></i>
                                 </div>
-                                <h6>Physics-Constrained</h6>
-                                <p class="text-muted small mb-1">Every prediction validated against Byerlee's friction law, stress ordering, frictional equilibrium, R-ratio bounds, and lithostatic gradient.</p>
-                                <span class="badge bg-primary bg-opacity-10 text-primary">5 Physical Laws</span>
+                                <h6>Bayesian-Optimized</h6>
+                                <p class="text-muted small mb-1">Every model undergoes 40 hyperparameter trials using Tree-structured Parzen Estimators. Not default settings — <strong>rigorously tuned</strong> for this specific geological dataset.</p>
+                                <span class="badge bg-primary bg-opacity-10 text-primary">40 Trials / Model</span>
                             </div>
                         </div>
                     </div>
 
                     <!-- Trust Indicators -->
-                    <h5 class="mb-3"><i class="bi bi-patch-check"></i> Trust Indicators</h5>
-                    <div class="d-flex flex-wrap gap-2 mb-4">
+                    <h5 class="mb-3" data-aos="fade-up"><i class="bi bi-patch-check"></i> Trust Indicators</h5>
+                    <div class="d-flex flex-wrap gap-2 mb-4" data-aos="fade-up">
                         <span class="trust-badge"><i class="bi bi-globe2"></i> WSM Standard Compliance</span>
                         <span class="trust-badge"><i class="bi bi-shield-lock"></i> SHA-256 Audit Trail</span>
                         <span class="trust-badge"><i class="bi bi-journal-check"></i> Peer-Reviewed Research (2025-2026)</span>
-                        <span class="trust-badge"><i class="bi bi-graph-up"></i> Bootstrap-Validated (200 resamples)</span>
+                        <span class="trust-badge"><i class="bi bi-cpu"></i> Bayesian Hyperparameter Tuning</span>
                         <span class="trust-badge"><i class="bi bi-calculator"></i> Multiple Uncertainty Estimates</span>
                         <span class="trust-badge"><i class="bi bi-people"></i> Expert-in-the-Loop (RLHF)</span>
                     </div>
 
-                    <!-- Additional Metrics -->
-                    <div class="row g-3 mb-4">
+                    <!-- Detailed Cards -->
+                    <div class="row g-3 mb-4" data-aos="fade-up">
                         <div class="col-md-6">
                             <div class="card h-100">
                                 <div class="card-header"><i class="bi bi-bar-chart"></i> Stress Inversion Quality</div>
@@ -565,23 +617,23 @@
                         </div>
                         <div class="col-md-6">
                             <div class="card h-100">
-                                <div class="card-header"><i class="bi bi-robot"></i> Model Ensemble</div>
+                                <div class="card-header"><i class="bi bi-robot"></i> Model Engineering</div>
                                 <div class="card-body">
                                     <div class="d-flex justify-content-between mb-2">
-                                        <span>Ensemble Type</span>
+                                        <span>Ensemble Architecture</span>
                                         <strong>Multi-model accuracy-weighted voting</strong>
                                     </div>
                                     <div class="d-flex justify-content-between mb-2">
                                         <span>Feature Engineering</span>
-                                        <strong>Physics-informed</strong>
+                                        <strong>28 physics-informed features</strong>
                                     </div>
                                     <div class="d-flex justify-content-between mb-2">
-                                        <span>Class Imbalance Handling</span>
-                                        <strong>Specialized rare-event detection</strong>
+                                        <span>Class Imbalance</span>
+                                        <strong>BorderlineSMOTE rare-event augmentation</strong>
                                     </div>
                                     <div class="d-flex justify-content-between">
-                                        <span>Validation Strategy</span>
-                                        <strong>Held-out bootstrap cross-validation</strong>
+                                        <span>Hyperparameters</span>
+                                        <strong>Bayesian-optimized (Optuna TPE)</strong>
                                     </div>
                                 </div>
                             </div>
@@ -589,15 +641,12 @@
                     </div>
 
                     <!-- IP Protection Notice -->
-                    <div class="alert alert-secondary border small">
+                    <div class="alert alert-secondary border small" data-aos="fade-up">
                         <i class="bi bi-lock"></i> <strong>Proprietary Technology</strong> &mdash;
                         Model architecture, feature engineering, and training methodology are proprietary.
                         You see <strong>results and confidence</strong>, not how we get there.
                         All metrics shown are independently verifiable through the application's built-in validation tools.
                     </div>
-
-                    <!-- Dynamic metrics from API (populated by JS) -->
-                    <div id="perf-dynamic" class="d-none"></div>
                 </div>
 
                 <!-- DRILLING CALCULATORS TAB -->
