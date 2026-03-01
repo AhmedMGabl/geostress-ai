@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.82.0 - Default BalancedBagging + UX Polish + Mobile)."""
+"""GeoStress AI - FastAPI Web Application (v3.82.2 - Tuned BB-100 + Viz Placeholders + Logo + Transitions)."""
 
 import os
 import io
@@ -1137,13 +1137,13 @@ async def performance_showcase():
     Returns aggregate metrics without revealing model names, feature names,
     or training methodology. Uses real Optuna-tuned model metrics when available.
     """
-    # Defaults — from BalancedBagging + imbalance-aware ensemble pipeline (v3.81)
-    balanced_accuracy_pct = 66.2
-    balanced_accuracy_std_pct = 3.5
-    accuracy_pct = 76.2
-    mcc = 0.66
-    f1_macro_pct = 55.2
-    cohen_kappa = 0.63
+    # Defaults — from tuned BalancedBagging (100 bags, LGB-100 base) v3.82
+    balanced_accuracy_pct = 67.9
+    balanced_accuracy_std_pct = 3.2
+    accuracy_pct = 77.7
+    mcc = 0.68
+    f1_macro_pct = 57.3
+    cohen_kappa = 0.65
     calibration_grade = "EXCELLENT"
     calibration_ece = 2.7
     abstention_acc = 79.0

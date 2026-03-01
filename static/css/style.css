@@ -147,8 +147,13 @@ body {
 .tab-content {
     display: none;
 }
+@keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
 .tab-content.active {
     display: block;
+    animation: fadeSlideIn 0.25s ease-out;
 }
 
 /* Metric Cards */
@@ -477,14 +482,7 @@ body {
     box-shadow: 0 8px 24px rgba(0,0,0,0.12) !important;
 }
 
-/* Smooth tab transitions */
-.tab-content {
-    animation: fadeInTab 0.3s ease;
-}
-@keyframes fadeInTab {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
-}
+/* (Tab transition moved to .tab-content.active above) */
 
 /* Active sidebar accent */
 .sidebar-nav .nav-link.active {
