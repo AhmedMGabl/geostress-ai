@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.78.0 - SMOTE-ENN + Cost-Sensitive Weight Tuning)."""
+"""GeoStress AI - FastAPI Web Application (v3.79.0 - Per-Class Threshold Tuning + Feature Selection + ML Pipeline)."""
 
 import os
 import io
@@ -10800,19 +10800,37 @@ async def predict_with_saved_model(request: Request):
 
     t0 = time.time()
     features = await asyncio.to_thread(engineer_enhanced_features, df)
-    X = artifact["scaler"].transform(features.values)
+
+    # Select only the features the model was trained on (handles feature selection)
+    saved_feature_names = artifact.get("feature_names", features.columns.tolist())
+    available_cols = [c for c in saved_feature_names if c in features.columns]
+    if len(available_cols) != len(saved_feature_names):
+        missing = set(saved_feature_names) - set(available_cols)
+        return JSONResponse(
+            {"error": f"Feature mismatch: missing {missing}"},
+            status_code=500,
+        )
+    X = artifact["scaler"].transform(features[available_cols].values)
     model = artifact["model"]
     le = artifact["label_encoder"]
 
-    y_pred = np.asarray(model.predict(X)).ravel()
-    labels_pred = le.inverse_transform(y_pred)
-
+    # Apply class thresholds if stored (from per-class threshold tuning)
+    class_thresholds = artifact.get("tuned_params", {}).get("class_thresholds")
     proba = None
     if hasattr(model, "predict_proba"):
         try:
             proba = model.predict_proba(X)
         except Exception:
             pass
+
+    if proba is not None and class_thresholds:
+        n_cls = proba.shape[1]
+        t_array = np.array([class_thresholds.get(str(i), class_thresholds.get(i, 1.0/n_cls)) for i in range(n_cls)])
+        adjusted = proba - t_array[np.newaxis, :]
+        y_pred = np.argmax(adjusted, axis=1)
+    else:
+        y_pred = np.asarray(model.predict(X)).ravel()
+    labels_pred = le.inverse_transform(y_pred)
 
     predictions = []
     for i in range(len(df)):

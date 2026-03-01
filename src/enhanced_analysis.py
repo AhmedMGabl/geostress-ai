@@ -492,6 +492,111 @@ def _cv_with_smote(model, X, y, cv, smote_strategy="auto"):
 
 
 # ──────────────────────────────────────────────────────
+# Feature Selection via Mutual Information
+# ──────────────────────────────────────────────────────
+
+def _select_features_mi(X, y, feature_names, min_features=12, top_pct=0.7):
+    """Select top features by mutual information with the target.
+
+    Uses sklearn's mutual_info_classif (k-NN entropy estimator) to rank
+    features by information content. Drops only features that contribute
+    near-zero mutual information.
+
+    Returns (X_selected, selected_indices, selected_names, mi_scores).
+    """
+    from sklearn.feature_selection import mutual_info_classif
+
+    mi = mutual_info_classif(X, y, discrete_features=False, random_state=42)
+
+    # Rank by MI score (descending)
+    ranked = np.argsort(mi)[::-1]
+    n_keep = max(min_features, int(len(feature_names) * top_pct))
+    n_keep = min(n_keep, len(feature_names))
+
+    # Always keep at least features with > 5% of max MI
+    mi_threshold = mi.max() * 0.05
+    above_threshold = np.where(mi > mi_threshold)[0]
+    keep = set(ranked[:n_keep].tolist()) | set(above_threshold.tolist())
+    selected_idx = sorted(keep)
+
+    return (
+        X[:, selected_idx],
+        selected_idx,
+        [feature_names[i] for i in selected_idx],
+        {feature_names[i]: round(float(mi[i]), 4) for i in range(len(feature_names))},
+    )
+
+
+# ──────────────────────────────────────────────────────
+# Per-Class Threshold Tuning
+# ──────────────────────────────────────────────────────
+
+def _tune_class_thresholds(model, X, y, cv, metric="balanced_accuracy"):
+    """Optimize per-class probability thresholds for multi-class prediction.
+
+    Default predict uses argmax(probabilities). For imbalanced data, tuning
+    per-class thresholds can significantly improve balanced accuracy:
+    lower threshold for rare classes → more sensitive detection.
+
+    Uses cross-validated probabilities to avoid overfitting thresholds.
+    Returns (thresholds_dict, improvement_pct).
+    """
+    from sklearn.base import clone
+
+    n_classes = len(np.unique(y))
+
+    # Get cross-validated probability estimates
+    y_proba_cv = np.zeros((len(y), n_classes))
+    for train_idx, test_idx in cv.split(X, y):
+        m = clone(model)
+        m.fit(X[train_idx], y[train_idx])
+        y_proba_cv[test_idx] = m.predict_proba(X[test_idx])
+
+    # Baseline: argmax prediction
+    y_pred_baseline = np.argmax(y_proba_cv, axis=1)
+    baseline_score = balanced_accuracy_score(y, y_pred_baseline)
+
+    # Grid search per-class thresholds
+    # Lower threshold for rare classes, higher for majority
+    best_thresholds = np.ones(n_classes) / n_classes  # default uniform
+    best_score = baseline_score
+
+    counts = np.bincount(y, minlength=n_classes)
+    median_count = np.median(counts[counts > 0])
+
+    # For each class, try different thresholds
+    for cls in range(n_classes):
+        if counts[cls] == 0:
+            continue
+        # Rare classes get lower thresholds (0.05-0.3), majority get higher (0.2-0.5)
+        is_rare = counts[cls] < median_count * 0.5
+        if is_rare:
+            candidates = np.linspace(0.05, 0.35, 10)
+        else:
+            candidates = np.linspace(0.15, 0.50, 10)
+
+        for t in candidates:
+            trial_t = best_thresholds.copy()
+            trial_t[cls] = t
+
+            # Adjusted prediction: subtract threshold then argmax
+            adjusted_proba = y_proba_cv - trial_t[np.newaxis, :]
+            y_pred_t = np.argmax(adjusted_proba, axis=1)
+
+            score = balanced_accuracy_score(y, y_pred_t)
+            if score > best_score:
+                best_score = score
+                best_thresholds = trial_t.copy()
+
+    improvement = best_score - baseline_score
+    return (
+        {int(i): round(float(best_thresholds[i]), 4) for i in range(n_classes)},
+        round(float(improvement) * 100, 2),
+        round(float(best_score), 4),
+    )
+
+
+# ──────────────────────────────────────────────────────
 # Optuna Hyperparameter Optimization
 # ──────────────────────────────────────────────────────
 
@@ -735,22 +840,62 @@ def optimize_and_save_best(
     models_to_tune: list = None,
     n_trials: int = 50,
     timeout_per_model_s: int = 120,
+    use_feature_selection: bool = False,  # MI-based selection drops interaction features; disabled by default
+    use_threshold_tuning: bool = True,
 ) -> dict:
-    """Full pipeline: tune hyperparameters → train best model → serialize.
+    """Full pipeline: feature select → tune hyperparameters → threshold tune → serialize.
 
     1. Engineers features
-    2. Runs Optuna on each candidate model
-    3. Picks the best by balanced_accuracy
-    4. Trains final model on all data
-    5. Saves artifact to disk
-    6. Returns full results + saved path
+    2. (Optional) Feature selection via mutual information
+    3. Runs Optuna on each candidate model
+    4. Picks the best by balanced_accuracy
+    5. (Optional) Per-class threshold tuning on probabilities
+    6. Trains final model on all data
+    7. Saves artifact to disk
+    8. Returns full results + saved path
     """
     features = engineer_enhanced_features(df)
+    all_feature_names = features.columns.tolist()
     labels = df[FRACTURE_TYPE_COL].values
     le = LabelEncoder()
     y = le.fit_transform(labels)
+
+    # Preliminary scaling for feature selection (MI needs scaled data)
+    pre_scaler = StandardScaler()
+    X_all = pre_scaler.fit_transform(features.values)
+
+    # Step 1: Feature selection via mutual information
+    feature_selection_info = {}
+    selected_feature_names = all_feature_names
+    selected_indices = None
+    if use_feature_selection and X_all.shape[1] > 12:
+        try:
+            X_sel, sel_idx, sel_names, mi_scores = _select_features_mi(
+                X_all, y, all_feature_names, min_features=12, top_pct=0.7,
+            )
+            # Only use selection if we actually dropped something
+            if len(sel_idx) < X_all.shape[1]:
+                selected_feature_names = sel_names
+                selected_indices = sel_idx
+                feature_selection_info = {
+                    "applied": True,
+                    "original_features": len(all_feature_names),
+                    "selected_features": len(sel_names),
+                    "dropped": [n for n in all_feature_names if n not in sel_names],
+                    "mi_scores": mi_scores,
+                }
+            else:
+                feature_selection_info = {"applied": False, "reason": "All features above MI threshold"}
+        except Exception as e:
+            feature_selection_info = {"applied": False, "reason": str(e)}
+
+    # Refit scaler on selected features only (so saved scaler matches model input)
+    if selected_indices is not None:
+        feat_selected = features.iloc[:, selected_indices]
+    else:
+        feat_selected = features
     scaler = StandardScaler()
-    X = scaler.fit_transform(features.values)
+    X = scaler.fit_transform(feat_selected.values)
 
     if models_to_tune is None:
         models_to_tune = ["random_forest", "xgboost", "lightgbm", "catboost"]
@@ -808,16 +953,55 @@ def optimize_and_save_best(
     else:
         return {"error": f"Cannot reconstruct model: {best_name}"}
 
+    # Step 2: Per-class threshold tuning (before final training)
+    threshold_info = {}
+    class_thresholds = None
+    if use_threshold_tuning and hasattr(best_model, "predict_proba"):
+        try:
+            cv_thresh = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+            thresholds, improvement_pct, tuned_score = _tune_class_thresholds(
+                best_model, X, y, cv_thresh,
+            )
+            if improvement_pct > 0.5:  # Only use if meaningful improvement
+                class_thresholds = thresholds
+                threshold_info = {
+                    "applied": True,
+                    "thresholds": thresholds,
+                    "improvement_pct": improvement_pct,
+                    "tuned_balanced_accuracy": tuned_score,
+                }
+            else:
+                threshold_info = {
+                    "applied": False,
+                    "reason": f"Improvement too small ({improvement_pct}%)",
+                }
+        except Exception as e:
+            threshold_info = {"applied": False, "reason": str(e)}
+
     # Train on full dataset
     sample_weights = compute_sample_weight("balanced", y)
     sw_models = ("random_forest", "xgboost", "lightgbm", "catboost")
     sw_fit = {"sample_weight": sample_weights} if best_name in sw_models else {}
     best_model.fit(X, y, **sw_fit)
 
-    # Full CV metrics for the tuned model
+    # Full CV metrics for the tuned model (with threshold adjustment if applicable)
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     cv_scores = cross_val_score(best_model, X, y, cv=cv, scoring="balanced_accuracy")
-    y_pred_cv = cross_val_predict(best_model, X, y, cv=cv)
+
+    if class_thresholds is not None and hasattr(best_model, "predict_proba"):
+        # Use threshold-adjusted predictions for metrics
+        from sklearn.base import clone as sk_clone
+        y_pred_cv = np.zeros(len(y), dtype=int)
+        for train_idx, test_idx in cv.split(X, y):
+            m_clone = sk_clone(best_model)
+            sw_fold = {"sample_weight": sample_weights[train_idx]} if best_name in sw_models else {}
+            m_clone.fit(X[train_idx], y[train_idx], **sw_fold)
+            proba = m_clone.predict_proba(X[test_idx])
+            t_array = np.array([class_thresholds[i] for i in range(proba.shape[1])])
+            adjusted = proba - t_array[np.newaxis, :]
+            y_pred_cv[test_idx] = np.argmax(adjusted, axis=1)
+    else:
+        y_pred_cv = cross_val_predict(best_model, X, y, cv=cv)
 
     metrics = {
         "balanced_accuracy": round(float(cv_scores.mean()), 4),
@@ -829,16 +1013,28 @@ def optimize_and_save_best(
         "cohen_kappa": round(float(cohen_kappa_score(y, y_pred_cv)), 4),
     }
 
-    # Save to disk
+    # If threshold tuning improved balanced_accuracy, update the metric
+    if class_thresholds is not None and threshold_info.get("tuned_balanced_accuracy"):
+        metrics["balanced_accuracy_with_thresholds"] = threshold_info["tuned_balanced_accuracy"]
+
+    # Build full tuned_params including thresholds and feature selection
+    full_tuned_params = dict(best_params)
+    if class_thresholds:
+        full_tuned_params["class_thresholds"] = class_thresholds
+    if feature_selection_info.get("applied"):
+        full_tuned_params["selected_features"] = selected_feature_names
+
+    # Save to disk -- use selected features if feature selection was applied
+    save_feature_names = selected_feature_names if feature_selection_info.get("applied") else all_feature_names
     filepath = save_trained_model(
         model=best_model,
         scaler=scaler,
         label_encoder=le,
-        feature_names=features.columns.tolist(),
+        feature_names=save_feature_names,
         well=well,
         metrics=metrics,
         model_name="best",
-        tuned_params=best_params,
+        tuned_params=full_tuned_params,
     )
 
     return {
@@ -846,6 +1042,8 @@ def optimize_and_save_best(
         "best_params": best_params,
         "metrics": metrics,
         "saved_path": filepath,
+        "feature_selection": feature_selection_info,
+        "threshold_tuning": threshold_info,
         "tuning_results": {
             k: {
                 "best_balanced_accuracy": v["best_balanced_accuracy"],
