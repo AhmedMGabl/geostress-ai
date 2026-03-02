@@ -5297,7 +5297,7 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="col-12">
+                        <div class="col-lg-6">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center">
                                     <span><i class="bi bi-bar-chart"></i> Depth Profile</span>
@@ -5311,6 +5311,23 @@
                                         <p class="small text-muted mt-2 mb-0">Fracture distribution vs depth</p>
                                     </div>
                                     <img id="depth-img" class="plot-img d-none" alt="Depth Profile">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="card border-success">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-layers text-success"></i> Mud Weight Window <span class="badge bg-success ms-1" style="font-size:0.55rem">CORE DELIVERABLE</span></span>
+                                    <button class="btn btn-outline-success btn-sm py-0 px-2" onclick="loadSingleViz('mww')">
+                                        <i class="bi bi-arrow-clockwise"></i>
+                                    </button>
+                                </div>
+                                <div class="card-body text-center" id="mww-container">
+                                    <div class="viz-placeholder" id="mww-placeholder">
+                                        <i class="bi bi-layers" style="font-size:3rem;opacity:0.15;color:var(--bs-success)"></i>
+                                        <p class="small text-muted mt-2 mb-0">Safe drilling window: pore pressure → fracture gradient</p>
+                                    </div>
+                                    <img id="mww-img" class="plot-img d-none" alt="Mud Weight Window">
                                 </div>
                             </div>
                         </div>

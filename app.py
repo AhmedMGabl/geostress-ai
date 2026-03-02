@@ -1860,6 +1860,139 @@ async def viz_depth_profile(source: str = "demo"):
     return {"image": img}
 
 
+@app.get("/api/viz/mww")
+async def viz_mud_weight_window(well: str = "3P", source: str = "demo"):
+    """Mud Weight Window (MWW) depth-pressure chart.
+
+    Industry-standard wellbore stability deliverable showing the safe mud weight
+    corridor between borehole collapse (lower bound) and fracture initiation
+    (upper bound) across the full well depth range. Units: g/cm³ (sg).
+
+    Returns a matplotlib well-log-style chart as base64 PNG.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyArrowPatch
+
+    df = get_df(source)
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True)
+    if len(df_well) == 0:
+        return {"image": None, "message": f"Well '{well}' not found"}
+
+    # ── Determine depth range from data ─────────────────────────
+    df_depth = df_well.dropna(subset=[DEPTH_COL])
+    if len(df_depth) > 0:
+        depth_min = max(float(df_depth[DEPTH_COL].min()), 200.0)
+        depth_max = float(df_depth[DEPTH_COL].max()) * 1.1  # extend 10% below TD
+    else:
+        depth_min, depth_max = 500.0, 4000.0
+
+    ref_depth = (depth_min + depth_max) / 2.0
+    pp_ref = 1000 * 9.81 * ref_depth / 1e6
+
+    # ── Run ONE inversion at mid-depth to get stress ratios ──────
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values)
+
+    auto = await asyncio.to_thread(
+        auto_detect_regime, normals, depth_m=ref_depth,
+        cohesion=0.0, pore_pressure=pp_ref)
+    regime = auto["best_regime"]
+    inv = await asyncio.to_thread(
+        invert_stress, normals, regime=regime, cohesion=0.0,
+        pore_pressure=pp_ref)
+
+    sigma1 = float(inv["sigma1"])
+    sigma3 = float(inv["sigma3"])
+    R_val = float(inv["R"])
+    sv_ref = 2500 * 9.81 * ref_depth / 1e6
+    scale_ref = sv_ref  # normalize by Sv at ref depth
+
+    # ── Build depth profile (30 points) ─────────────────────────
+    from src.geostress import mud_weight_window as _mww
+    depths = np.linspace(depth_min, depth_max, 30)
+    pp_list, collapse_list, fg_list, sv_list = [], [], [], []
+
+    for d in depths:
+        sv_d = 2500 * 9.81 * d / 1e6
+        pp_d = 1000 * 9.81 * d / 1e6
+        scale = sv_d / scale_ref
+        s1 = sigma1 * scale
+        s3 = sigma3 * scale
+        s2 = s3 + R_val * (s1 - s3)
+        if regime == "normal":
+            shmax_d, shmin_d = s2, s3
+        elif regime == "thrust":
+            shmax_d, shmin_d = s1, s2
+        else:
+            shmax_d, shmin_d = s1, s3
+        mw = _mww(sv_d, pp_d, shmin_d, d, shmax_mpa=shmax_d)
+        pp_list.append(mw["pore_pressure"]["sg"])
+        collapse_list.append(mw["collapse_gradient"]["sg"])
+        fg_list.append(mw["fracture_gradient"]["sg"])
+        sv_list.append(mw["overburden"]["sg"])
+
+    # ── Plot ─────────────────────────────────────────────────────
+    def _make_mww_plot():
+        fig, ax = plt.subplots(figsize=(5, 9))
+        fig.patch.set_facecolor("#1a1a2e")
+        ax.set_facecolor("#16213e")
+
+        d = depths
+
+        # Safe window shading (between collapse and fracture gradient)
+        ax.fill_betweenx(d, collapse_list, fg_list,
+                         alpha=0.18, color="#22c55e", label="_nolegend_")
+
+        # Stress lines
+        ax.plot(sv_list, d, color="#94a3b8", linewidth=1.5,
+                linestyle="--", label="Sv (overburden)")
+        ax.plot(pp_list, d, color="#38bdf8", linewidth=2.0,
+                label="Pore Pressure")
+        ax.plot(collapse_list, d, color="#f97316", linewidth=2.0,
+                linestyle="-.", label="Collapse Gradient")
+        ax.plot(fg_list, d, color="#22c55e", linewidth=2.0,
+                label="Fracture Gradient (Shmin)")
+
+        # Axis style
+        ax.invert_yaxis()
+        ax.set_xlabel("Equivalent Mud Weight (g/cm³)", color="#e2e8f0",
+                      fontsize=10, labelpad=8)
+        ax.set_ylabel("Depth (m)", color="#e2e8f0", fontsize=10, labelpad=8)
+        ax.set_title(f"Mud Weight Window — Well {well}\n({regime.replace('_', ' ').title()})",
+                     color="#f8fafc", fontsize=11, fontweight="bold", pad=10)
+
+        ax.tick_params(colors="#94a3b8", labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#334155")
+
+        ax.grid(True, alpha=0.15, color="#475569")
+        ax.set_xlim(left=max(0.8, min(pp_list) - 0.1))
+
+        legend = ax.legend(loc="lower right", fontsize=7.5,
+                           facecolor="#1e293b", edgecolor="#475569",
+                           labelcolor="#cbd5e1")
+
+        # Annotation: safe window label
+        mid_d = (depth_min + depth_max) / 2
+        mid_fg = float(np.interp(mid_d, depths, fg_list))
+        mid_col = float(np.interp(mid_d, depths, collapse_list))
+        if mid_fg - mid_col > 0.1:
+            ax.annotate("Safe\nWindow", xy=((mid_fg + mid_col) / 2, mid_d),
+                        fontsize=7, color="#86efac", ha="center", va="center",
+                        fontweight="bold")
+
+        plt.tight_layout()
+        return fig_to_base64(fig)
+
+    img = await asyncio.to_thread(_make_mww_plot)
+    return {
+        "image": img,
+        "well": well,
+        "regime": regime,
+        "depth_range_m": [round(depth_min), round(depth_max)],
+    }
+
+
 # ── Analysis API (Original - kept for backward compat) ──
 
 @app.post("/api/analysis/inversion")

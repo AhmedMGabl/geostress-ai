@@ -1578,12 +1578,14 @@ async function loadAllViz() {
         var results = await Promise.all([
             api("/api/viz/rose?well=" + well + "&source=" + src),
             api("/api/viz/stereonet?well=" + well + "&source=" + src),
-            api("/api/viz/depth-profile?source=" + src)
+            api("/api/viz/depth-profile?source=" + src),
+            api("/api/viz/mww?well=" + well + "&source=" + src)
         ]);
 
         setImg("rose-img", results[0].image); _showVizImg("rose-img");
         setImg("stereonet-img", results[1].image); _showVizImg("stereonet-img");
         if (results[2].image) { setImg("depth-img", results[2].image); _showVizImg("depth-img"); }
+        if (results[3].image) { setImg("mww-img", results[3].image); _showVizImg("mww-img"); }
         showToast("Visualizations generated for Well " + well);
     } catch (err) {
         showToast("Visualization error: " + err.message, "Error");
@@ -1598,15 +1600,16 @@ async function loadSingleViz(type) {
     var urls = {
         rose: "/api/viz/rose?well=" + well + "&source=" + src,
         stereonet: "/api/viz/stereonet?well=" + well + "&source=" + src,
-        depth: "/api/viz/depth-profile?source=" + src
+        depth: "/api/viz/depth-profile?source=" + src,
+        mww: "/api/viz/mww?well=" + well + "&source=" + src
     };
-    var imgIds = { rose: "rose-img", stereonet: "stereonet-img", depth: "depth-img" };
+    var imgIds = { rose: "rose-img", stereonet: "stereonet-img", depth: "depth-img", mww: "mww-img" };
     if (!urls[type]) return;
     showLoading("Generating " + type + "...");
     try {
         var r = await api(urls[type]);
         if (r.image) { setImg(imgIds[type], r.image); _showVizImg(imgIds[type]); }
-        showToast(type.charAt(0).toUpperCase() + type.slice(1) + " generated");
+        showToast(type.toUpperCase() + " chart generated");
     } catch (err) {
         showToast(type + " error: " + err.message, "Error");
     } finally {
