@@ -18,6 +18,7 @@ var MODEL_NAMES = {
     "balanced_bagging": "Balanced Bagging",
     "easy_ensemble": "Easy Ensemble",
     "hierarchical": "Hierarchical Split",
+    "focal_lgbm": "Focal LightGBM \u03b3=1.5",
     "logistic_regression": "Logistic Regression"
 };
 function displayModelName(raw) {

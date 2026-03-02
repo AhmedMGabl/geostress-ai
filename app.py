@@ -172,6 +172,7 @@ VALID_CLASSIFIERS = {
     "random_forest", "gradient_boosting", "svm", "mlp",
     "xgboost", "lightgbm", "catboost", "stacking",
     "balanced_bagging", "easy_ensemble", "hierarchical",
+    "focal_lgbm",  # focal loss LightGBM — better minority class detection
 }
 VALID_SOURCES = {"demo", "uploaded"}
 VALID_FRACTURE_TYPES = {

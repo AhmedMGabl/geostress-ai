@@ -381,6 +381,72 @@ class HierarchicalClassifier:
 # Multi-Model Classification
 # ──────────────────────────────────────────────────────
 
+class _FocalLGBM:
+    """2-step focal-weight LightGBM for imbalanced multiclass (AI-1 fix).
+
+    Step 1: Warm-up on balanced weights → per-sample predicted probabilities.
+    Step 2: Focal weight = (1 - p_correct)^gamma → retrain with focal weights.
+    Down-weights easy majority examples, forces gradient toward hard minority.
+    Literature: Lin et al. 2017 focal loss, gamma=1.5 for 17:1 imbalance.
+    """
+
+    def __init__(self, gamma=1.5, n_estimators=200, max_depth=7,
+                 num_leaves=31, learning_rate=0.05, random_state=42):
+        self.gamma = gamma
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.num_leaves = num_leaves
+        self.learning_rate = learning_rate
+        self.random_state = random_state
+        self.model_ = None
+        self.classes_ = None
+        self.feature_importances_ = None
+
+    def fit(self, X, y):
+        if not HAS_LGB:
+            raise RuntimeError("LightGBM not available for FocalLGBM")
+        # Step 1: Warm-up to obtain per-sample probabilities
+        warm = lgb.LGBMClassifier(
+            n_estimators=30, max_depth=5, class_weight="balanced",
+            learning_rate=0.1, random_state=self.random_state, verbose=-1,
+        )
+        warm.fit(X, y)
+        proba = warm.predict_proba(X)
+        self.classes_ = warm.classes_
+        # Map labels to integer indices for probability lookup
+        cls_list = list(self.classes_)
+        y_idx = np.array([cls_list.index(yi) for yi in y])
+        p_correct = proba[np.arange(len(y)), y_idx]
+        # Step 2: Focal sample weights — emphasize hard/minority examples
+        focal_weights = (1.0 - np.clip(p_correct, 0.0, 1.0)) ** self.gamma
+        focal_weights = focal_weights / (focal_weights.mean() + 1e-9)
+        # Step 3: Final model trained with focal weights
+        self.model_ = lgb.LGBMClassifier(
+            n_estimators=self.n_estimators, max_depth=self.max_depth,
+            num_leaves=self.num_leaves, learning_rate=self.learning_rate,
+            random_state=self.random_state, verbose=-1,
+        )
+        self.model_.fit(X, y, sample_weight=focal_weights)
+        self.feature_importances_ = self.model_.feature_importances_
+        return self
+
+    def predict(self, X):
+        return self.model_.predict(X)
+
+    def predict_proba(self, X):
+        return self.model_.predict_proba(X)
+
+    def get_params(self, deep=True):
+        return dict(gamma=self.gamma, n_estimators=self.n_estimators,
+                    max_depth=self.max_depth, num_leaves=self.num_leaves,
+                    learning_rate=self.learning_rate, random_state=self.random_state)
+
+    def set_params(self, **params):
+        for k, v in params.items():
+            setattr(self, k, v)
+        return self
+
+
 def _get_models(fast: bool = False) -> dict:
     """Return all available classification models.
 
@@ -489,6 +555,20 @@ def _get_models(fast: bool = False) -> dict:
         models["easy_ensemble"] = EasyEnsembleClassifier(
             n_estimators=20 if fast else 40,
             random_state=42, n_jobs=-1,
+        )
+
+    # ── Focal LightGBM (AI-1 fix) ─────────────────────────────
+    # 2-step focal-weight approach (Imbalance-XGBoost, Lin et al. 2017):
+    # 1. Warm-up model → per-sample predicted probabilities
+    # 2. Focal weight = (1 - p_correct)^gamma → retrain with these weights
+    # gamma=1.5 is the published sweet spot for 17:1 imbalance ratios.
+    # No new dependencies — pure LightGBM + sklearn.
+    if HAS_LGB:
+        models["focal_lgbm"] = _FocalLGBM(
+            gamma=1.5,
+            n_estimators=100 if fast else 200,
+            max_depth=7, num_leaves=31,
+            learning_rate=0.05, random_state=42,
         )
 
     return models
@@ -1241,7 +1321,7 @@ def compare_models(
     sample_weights = compute_sample_weight("balanced", y)
 
     # Models that handle imbalance internally — skip SMOTE and sample_weight
-    _self_balancing = {"balanced_bagging", "easy_ensemble"}
+    _self_balancing = {"balanced_bagging", "easy_ensemble", "focal_lgbm"}
 
     for name, model in all_models.items():
         with warnings.catch_warnings():

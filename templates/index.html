@@ -6080,6 +6080,8 @@
                     <div class="alert alert-light border py-2 mb-3 small"><i class="bi bi-info-circle text-primary"></i> <strong>ML Classification</strong> &mdash; Uses machine learning to automatically categorize fractures by type (e.g., continuous, discontinuous, brecciated). Accuracy metrics show how reliable the classification is. Conformal prediction adds calibrated confidence intervals.</div>
                     <div class="d-flex gap-2 mb-3 align-items-center">
                         <select id="classifier-select" class="form-select form-select-sm" style="width:auto">
+                            <option value="balanced_bagging">Balanced Bagging ★ (Default)</option>
+                            <option value="focal_lgbm">Focal LightGBM γ=1.5 🔬</option>
                             <option value="random_forest">Random Forest</option>
                             <option value="gradient_boosting">Gradient Boosting</option>
                             <option value="xgboost">XGBoost</option>
@@ -6087,6 +6089,7 @@
                             <option value="catboost">CatBoost</option>
                             <option value="svm">SVM</option>
                             <option value="mlp">Neural Network</option>
+                            <option value="easy_ensemble">Easy Ensemble</option>
                         </select>
                         <button class="btn btn-primary btn-sm" onclick="runClassification()">
                             <i class="bi bi-play-fill"></i> Run Classification
