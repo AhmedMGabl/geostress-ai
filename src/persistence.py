@@ -22,10 +22,35 @@ from pathlib import Path
 
 import os
 
-# Allow override via env var (e.g. Railway volume mount at /data/geostress.db)
-_DEFAULT_DB = Path(os.environ.get("DB_PATH", "")) or (
-    Path(__file__).parent.parent / "data" / "geostress.db"
-)
+
+def _resolve_db_path() -> Path:
+    """Resolve the database path, creating the directory if needed.
+
+    Priority:
+    1. DB_PATH env var (Railway volume, e.g. /data/geostress.db)
+    2. data/geostress.db relative to project root
+    3. /tmp/geostress.db fallback if neither is writable
+    """
+    candidates = []
+    if os.environ.get("DB_PATH"):
+        candidates.append(Path(os.environ["DB_PATH"]))
+    candidates.append(Path(__file__).parent.parent / "data" / "geostress.db")
+    candidates.append(Path("/tmp/geostress.db"))
+
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            # Quick write-check
+            candidate.parent.joinpath(".write_test").touch()
+            candidate.parent.joinpath(".write_test").unlink(missing_ok=True)
+            return candidate
+        except OSError:
+            continue
+
+    return candidates[-1]  # /tmp always works
+
+
+_DEFAULT_DB = _resolve_db_path()
 
 _local = threading.local()
 
