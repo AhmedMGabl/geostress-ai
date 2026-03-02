@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.88.0 - ADASYN + MWW Calibration Overlay + Focus Mode)."""
+"""GeoStress AI - FastAPI Web Application (v3.89.0 - LAS Export + Leaderboard Fix + ADASYN + MWW)."""
 
 import os
 import io
@@ -4815,6 +4815,126 @@ async def export_inversion(request: Request):
         "rows": len(export_df),
         "filename": f"inversion_{well}_{regime}.csv",
     })
+
+
+@app.post("/api/export/las")
+async def export_las(request: Request):
+    """Export 1D Mechanical Earth Model (MEM) as LAS 2.0 format.
+
+    LAS (Log ASCII Standard) is the industry format for importing stress
+    profiles into RokDoc, Petrel, Techlog, and other commercial geomechanics
+    software. Returns the full LAS file as a string for browser download.
+
+    Exports curves: DEPTH, SV (overburden), SHMAX, SHMIN, PP, CRIT_STRESS
+    All in MPa. Depth in meters (STEP: 10m default).
+    """
+    body = await request.json()
+    well = body.get("well", "3P")
+    source = body.get("source", "demo")
+    regime = body.get("regime", "auto")
+    depth_step = float(body.get("depth_step_m", 10.0))
+
+    df = get_df(source)
+    df_well = df[df[WELL_COL] == well].reset_index(drop=True)
+    if len(df_well) == 0:
+        raise HTTPException(404, f"Well '{well}' not found")
+
+    # Depth range from data
+    df_depth = df_well.dropna(subset=[DEPTH_COL])
+    if len(df_depth) > 0:
+        depth_min = max(float(df_depth[DEPTH_COL].min()), 100.0)
+        depth_max = float(df_depth[DEPTH_COL].max()) * 1.05
+    else:
+        depth_min, depth_max = 500.0, 4000.0
+
+    ref_depth = (depth_min + depth_max) / 2
+    pp_ref = 1000 * 9.81 * ref_depth / 1e6
+    normals = fracture_plane_normal(
+        df_well[AZIMUTH_COL].values, df_well[DIP_COL].values)
+
+    if regime == "auto":
+        auto = await asyncio.to_thread(
+            auto_detect_regime, normals, depth_m=ref_depth,
+            cohesion=0.0, pore_pressure=pp_ref)
+        regime = auto["best_regime"]
+    inv = await asyncio.to_thread(
+        invert_stress, normals, regime=regime, cohesion=0.0,
+        pore_pressure=pp_ref)
+
+    sigma1 = float(inv["sigma1"])
+    sigma3 = float(inv["sigma3"])
+    R_val = float(inv["R"])
+    sv_ref = 2500 * 9.81 * ref_depth / 1e6
+
+    # Build depth array
+    depths = np.arange(depth_min, depth_max + depth_step, depth_step)
+    rho_rock = 2500  # kg/m³
+    rho_water = 1000
+    g = 9.81
+
+    rows = []
+    for d in depths:
+        sv_d = rho_rock * g * d / 1e6
+        pp_d = rho_water * g * d / 1e6
+        scale = sv_d / sv_ref
+        s1 = sigma1 * scale
+        s3 = sigma3 * scale
+        s2 = s3 + R_val * (s1 - s3)
+        if regime == "normal":
+            shmax_d, shmin_d = s2, s3
+        elif regime == "thrust":
+            shmax_d, shmin_d = s1, s2
+        else:
+            shmax_d, shmin_d = s1, s3
+        # Critically stressed estimate: simple ratio
+        mu = float(inv.get("mu", 0.6))
+        crit = min(100.0, 100.0 * (shmin_d - pp_d) / max(sv_d - pp_d, 0.001) * mu)
+        rows.append((d, sv_d, shmax_d, shmin_d, pp_d, crit))
+
+    # Build LAS 2.0 string
+    from datetime import datetime as _dt
+    now_str = _dt.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    las_lines = [
+        "~VERSION INFORMATION",
+        " VERS.                 2.0   : LAS, Version 2.0",
+        " WRAP.                 NO    : One line per depth step",
+        "~WELL INFORMATION",
+        f" STRT.M          {rows[0][0]:.2f}  : START DEPTH",
+        f" STOP.M          {rows[-1][0]:.2f}  : STOP DEPTH",
+        f" STEP.M          {depth_step:.2f}   : DEPTH INCREMENT",
+        " NULL.           -9999.25   : NULL VALUE",
+        f" WELL.           {well}         : WELL NAME",
+        f" DATE.           {now_str}  : DATE",
+        " COMP.           GeoStress AI (geostress-ai.onrender.com): COMPANY",
+        " SRVC.           AI Geostress Inversion v3.88  : SERVICE",
+        f" PROV.           {regime.replace('_',' ').title()} Fault Regime  : PROVINCE",
+        "~CURVE INFORMATION",
+        " DEPT .M          : Depth",
+        " SV   .MPA        : Overburden stress (Sv)",
+        " SHMAX.MPA        : Maximum horizontal stress",
+        " SHMIN.MPA        : Minimum horizontal stress (= fracture gradient proxy)",
+        " PP   .MPA        : Pore pressure (hydrostatic)",
+        " CRIT .FRAC       : Critically stressed fraction estimate (0-100%)",
+        "~PARAMETER INFORMATION",
+        f" REGIME.      {regime}  : Stress regime",
+        f" MU    .      {float(inv.get('mu', 0.6)):.3f}   : Friction coefficient",
+        f" R     .      {R_val:.3f}   : Stress shape ratio (sigma2-sigma3)/(sigma1-sigma3)",
+        "~A  DEPT        SV          SHMAX       SHMIN       PP          CRIT",
+    ]
+    for d, sv, shmax, shmin, pp, crit in rows:
+        las_lines.append(
+            f"  {d:10.3f}  {sv:10.4f}  {shmax:10.4f}  {shmin:10.4f}  {pp:10.4f}  {crit:8.2f}"
+        )
+
+    las_str = "\n".join(las_lines) + "\n"
+    return {
+        "las": las_str,
+        "filename": f"geostress_1D_MEM_{well}_{regime}.las",
+        "n_rows": len(rows),
+        "depth_range_m": [round(depth_min), round(depth_max)],
+        "regime": regime,
+        "curves": ["DEPT", "SV", "SHMAX", "SHMIN", "PP", "CRIT"],
+    }
 
 
 @app.post("/api/export/pdf-report")

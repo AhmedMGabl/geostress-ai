@@ -2052,6 +2052,34 @@ async function exportInversion() {
     }
 }
 
+async function exportLAS() {
+    showLoading("Generating 1D MEM LAS file...");
+    try {
+        var r = await api("/api/export/las", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                well: currentWell,
+                regime: document.getElementById("regime-select").value,
+                source: currentSource,
+                depth_step_m: 10
+            })
+        });
+        // Download LAS file
+        var blob = new Blob([r.las], { type: "text/plain;charset=utf-8" });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url; a.download = r.filename;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
+        showToast("LAS exported: " + r.n_rows + " depth steps (" + r.depth_range_m[0] + "–" + r.depth_range_m[1] + "m)");
+    } catch (err) {
+        showToast("LAS export error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
 async function exportData() {
     showLoading("Exporting fracture data...");
     try {

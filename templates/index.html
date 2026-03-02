@@ -55,7 +55,7 @@
                 </div>
                 <div class="d-flex justify-content-between align-items-center mt-1">
                     <small class="text-muted-light"><i class="bi bi-clock"></i> <span id="response-time">-</span></small>
-                    <small class="text-muted-light" style="font-size:0.6rem;opacity:0.6">v3.88</small>
+                    <small class="text-muted-light" style="font-size:0.6rem;opacity:0.6">v3.89</small>
                 </div>
             </div>
 
@@ -227,7 +227,7 @@
             <div class="sidebar-section mt-auto" style="border-top:1px solid rgba(255,255,255,0.08);padding:0.8rem 1rem">
                 <div class="d-flex align-items-center justify-content-between">
                     <small class="text-muted-light" style="font-size:0.65rem">
-                        <i class="bi bi-cpu"></i> GeoStress AI v3.88
+                        <i class="bi bi-cpu"></i> GeoStress AI v3.89
                     </small>
                     <div>
                         <a href="https://github.com/AhmedMGabl/geostress-ai" target="_blank" class="text-muted-light me-2" title="GitHub" style="font-size:0.8rem;text-decoration:none"><i class="bi bi-github"></i></a>
@@ -635,11 +635,11 @@
                                     <tr><th style="width:2rem">#</th><th>Model</th><th>Bal Acc</th><th>MCC</th><th>F1 Macro</th><th></th></tr>
                                 </thead>
                                 <tbody id="perf-leaderboard-body">
-                                    <tr><td>1</td><td class="fw-semibold">Balanced Bagging</td><td>71.0%</td><td>0.67</td><td>58.3%</td><td><span class="badge bg-warning text-dark">Best</span></td></tr>
-                                    <tr><td>2</td><td>Extra Trees Ensemble</td><td>70.0%</td><td>0.66</td><td>57.1%</td><td></td></tr>
-                                    <tr><td>3</td><td>Random Forest</td><td>67.9%</td><td>0.68</td><td>57.3%</td><td></td></tr>
-                                    <tr><td>4</td><td>Neural Network (MLP)</td><td>64.9%</td><td>0.71</td><td>60.8%</td><td></td></tr>
-                                    <tr><td>5</td><td>Easy Ensemble</td><td>64.5%</td><td>0.62</td><td>53.4%</td><td></td></tr>
+                                    <tr><td>1</td><td class="fw-semibold">Balanced Bagging (XGB)</td><td>71.0%</td><td>0.67</td><td>58.3%</td><td><span class="badge bg-warning text-dark">Best</span></td></tr>
+                                    <tr><td>2</td><td>Neural Network (MLP)</td><td>69.2%</td><td>0.65</td><td>60.8%</td><td><span class="badge bg-info text-dark" style="font-size:0.55rem">Top F1</span></td></tr>
+                                    <tr><td>3</td><td>Easy Ensemble</td><td>66.0%</td><td>0.63</td><td>54.5%</td><td></td></tr>
+                                    <tr><td>4</td><td>Random Forest (SMOTE)</td><td>64.8%</td><td>0.66</td><td>57.3%</td><td></td></tr>
+                                    <tr><td>5</td><td>Stacking Ensemble</td><td>63.5%</td><td>0.62</td><td>55.2%</td><td></td></tr>
                                 </tbody>
                             </table>
                             <div class="text-muted small p-2 text-center">12 models tested &middot; Ranked by balanced accuracy (equal weight to all fracture types) &middot; <a href="#" onclick="switchTab('models');return false">Full comparison &rarr;</a></div>
@@ -5362,6 +5362,7 @@
                                 <li><a class="dropdown-item" href="#" onclick="runBayesian();return false"><i class="bi bi-distribute-vertical me-2"></i>Bayesian Uncertainty</a></li>
                                 <li><hr class="dropdown-divider"></li>
                                 <li><a class="dropdown-item" href="#" onclick="exportInversion();return false"><i class="bi bi-download me-2"></i>Export Results (CSV)</a></li>
+                                <li><a class="dropdown-item" href="#" onclick="exportLAS();return false"><i class="bi bi-filetype-raw me-2"></i>Export 1D MEM (LAS 2.0) <span class="badge bg-success ms-1" style="font-size:0.55rem">Petrel/RokDoc</span></a></li>
                                 <li><a class="dropdown-item" href="#" onclick="exportData();return false"><i class="bi bi-filetype-csv me-2"></i>Export Raw Data</a></li>
                             </ul>
                         </div>
