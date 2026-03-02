@@ -1594,6 +1594,8 @@ async function loadAllViz() {
         if (results[2].image) { setImg("depth-img", results[2].image); _showVizImg("depth-img"); }
         if (results[3].image) { setImg("mww-img", results[3].image); _showVizImg("mww-img"); }
         showToast("Visualizations generated for Well " + well);
+        // Polar stability map runs separately (POST endpoint)
+        loadPolarStabilityMap();
     } catch (err) {
         showToast("Visualization error: " + err.message, "Error");
     } finally {
@@ -1619,6 +1621,45 @@ async function loadSingleViz(type) {
         showToast(type.toUpperCase() + " chart generated");
     } catch (err) {
         showToast(type + " error: " + err.message, "Error");
+    } finally {
+        hideLoading();
+    }
+}
+
+// ── Polar Stability Map (Viz Tab) ─────────────────────────────
+// Renders /api/analysis/trajectory-sensitivity as a prominent card
+// in the Viz tab — answers "at which azimuth/inclination should I drill?"
+async function loadPolarStabilityMap() {
+    var placeholder = document.getElementById('polar-placeholder');
+    var results = document.getElementById('polar-results');
+    var summary = document.getElementById('polar-summary');
+    var imgEl = document.getElementById('polar-img');
+    if (placeholder) placeholder.classList.add('d-none');
+    if (results) results.classList.add('d-none');
+    showLoading("Running trajectory sensitivity sweep (360\u00b0 \u00d7 85\u00b0)...");
+    try {
+        var r = await apiFetch('/api/analysis/trajectory-sensitivity', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: currentSource, well: currentWell, depth: parseFloat(document.getElementById('depth-input').value) || 3000 })
+        });
+        var bt = r.best_trajectory || {};
+        summary.innerHTML =
+            '<div class="col-sm-3"><div class="card bg-success text-white text-center p-2"><div class="small fw-bold">Best Safety Factor</div><div class="fs-4">' + (bt.safety_factor || '\u2014') + '</div></div></div>' +
+            '<div class="col-sm-3"><div class="card bg-primary text-white text-center p-2"><div class="small fw-bold">Optimal Azimuth / Inc</div><div class="fs-5">' + (bt.azimuth_deg != null ? bt.azimuth_deg + '\u00b0 / ' + bt.dip_deg + '\u00b0' : '\u2014') + '</div></div></div>' +
+            '<div class="col-sm-3"><div class="card bg-info text-white text-center p-2"><div class="small fw-bold">Stable Trajectories</div><div class="fs-4">' + (r.pct_stable != null ? r.pct_stable + '%' : '\u2014') + '</div></div></div>' +
+            '<div class="col-sm-3"><div class="card text-center p-2"><div class="small fw-bold">Directions Tested</div><div class="fs-4">' + (r.n_trajectories_tested || '\u2014') + '</div></div></div>';
+        if (r.plot) { imgEl.src = 'data:image/png;base64,' + r.plot; imgEl.style.display = ''; }
+        if (r.recommendations && r.recommendations.length) {
+            var recHtml = '<div class="col-12"><ul class="small mt-1">';
+            r.recommendations.forEach(function(rec) { recHtml += '<li>' + rec + '</li>'; });
+            summary.innerHTML += recHtml + '</ul></div>';
+        }
+        if (results) results.classList.remove('d-none');
+        showToast('Stability map ready \u2014 optimal drilling direction identified');
+    } catch (err) {
+        if (placeholder) placeholder.classList.remove('d-none');
+        showToast('Stability map error: ' + err.message, 'Error');
     } finally {
         hideLoading();
     }

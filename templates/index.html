@@ -5354,6 +5354,29 @@
                                 </div>
                             </div>
                         </div>
+                        <!-- Polar Stability Map — full width row -->
+                        <div class="col-12">
+                            <div class="card border-warning">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-compass text-warning"></i> Polar Stability Map <span class="badge bg-warning text-dark ms-1" style="font-size:0.55rem">DRILLING DECISION</span></span>
+                                    <button class="btn btn-outline-warning btn-sm py-0 px-2" onclick="loadPolarStabilityMap()">
+                                        <i class="bi bi-arrow-clockwise"></i>
+                                    </button>
+                                </div>
+                                <div class="card-body" id="polar-container">
+                                    <div class="viz-placeholder text-center" id="polar-placeholder">
+                                        <i class="bi bi-compass" style="font-size:3rem;opacity:0.15;color:var(--bs-warning)"></i>
+                                        <p class="small text-muted mt-2 mb-0">Azimuth × inclination heatmap — find the safest well trajectory</p>
+                                        <p class="small text-muted">Replicates Techlog's flagship "Wellbore Stability Navigator" feature</p>
+                                        <button class="btn btn-warning btn-sm mt-2" onclick="loadPolarStabilityMap()"><i class="bi bi-play-fill"></i> Generate Stability Map</button>
+                                    </div>
+                                    <div id="polar-results" class="d-none">
+                                        <div id="polar-summary" class="row g-2 mb-2"></div>
+                                        <img id="polar-img" class="plot-img w-100" alt="Polar Stability Map" style="display:none">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
