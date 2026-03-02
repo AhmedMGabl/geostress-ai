@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.83.0 - BB-XGB 71% Balanced Accuracy)."""
+"""GeoStress AI - FastAPI Web Application (v3.84.0 - Persistent Model Storage)."""
 
 import os
 import io
@@ -860,7 +860,7 @@ def _prewarm_caches():
         elapsed = _time.perf_counter() - start
         print(f"Cache pre-warm complete: {len(wells)} wells in {elapsed:.1f}s")
 
-        # Phase 3: Try loading saved models first (instant), then fallback to retrain
+        # Phase 3: Load saved models from persistent volume (instant, ~0s vs ~2-4 min training)
         if demo_df is not None:
             try:
                 from src.enhanced_analysis import load_trained_model, list_saved_models
@@ -868,47 +868,79 @@ def _prewarm_caches():
                 if saved:
                     print(f"  Found {len(saved)} saved model(s), loading from disk...")
                     for meta in saved:
-                        w = meta.get("well", "")
-                        artifact = load_trained_model(w, meta.get("model_name", "best"))
+                        clf_name = meta.get("model_name", "best")
+                        artifact = load_trained_model(meta.get("well", "demo"), clf_name)
                         if artifact:
-                            # Store loaded model in classify cache for API use
-                            clf_key = f"clf_demo_{artifact.get('model_name', 'best')}_enh_{w}"
-                            _classify_cache[clf_key] = {
-                                "model": artifact["model"],
-                                "scaler": artifact["scaler"],
-                                "label_encoder": artifact["label_encoder"],
-                                "feature_names": artifact["feature_names"],
-                                "cv_mean_accuracy": artifact.get("metrics", {}).get("accuracy", 0),
-                                "saved_model": True,
-                            }
-                            print(f"  Loaded saved model for {w}: "
-                                  f"{artifact.get('model_name', 'best')} "
-                                  f"(bal_acc={artifact.get('metrics', {}).get('balanced_accuracy', '?')})")
+                            # Key matches /api/analysis/classify endpoint lookup
+                            clf_key = f"clf_demo_{clf_name}_enh"
+                            if clf_key not in _classify_cache:
+                                _classify_cache[clf_key] = {
+                                    "model": artifact["model"],
+                                    "scaler": artifact["scaler"],
+                                    "label_encoder": artifact["label_encoder"],
+                                    "feature_names": artifact["feature_names"],
+                                    "cv_mean_accuracy": artifact.get("metrics", {}).get("accuracy", 0),
+                                    "cv_std_accuracy": 0.0,
+                                    "cv_f1_mean": 0.0,
+                                    "confusion_matrix": [],
+                                    "feature_importances": {},
+                                    "class_names": [],
+                                    "class_confidence": {},
+                                    "mean_confidence": 0.0,
+                                    "saved_model": True,
+                                }
+                                bal = artifact.get("metrics", {}).get("balanced_accuracy", "?")
+                                print(f"  Loaded {clf_name} (bal_acc={bal})")
                 else:
                     print("  No saved models found, will train from scratch")
             except Exception as e:
                 print(f"  Model loading skipped: {e}")
 
             # Phase 3b: Classifier + comparison warm-up (deferred, non-blocking)
-            # Runs after server is already responsive
-            # Pre-warm gradient boosting classifier
-            clf_key = "clf_demo_gradient_boosting_enh"
-            if clf_key not in _classify_cache:
+            # Trains on all demo data (matching /api/analysis/classify endpoint cache key).
+            # After training, persists to the Railway volume — next restart loads instantly.
+            from src.enhanced_analysis import save_trained_model as _save_model
+
+            def _warm_and_persist(clf_name: str, label: str):
+                """Train classifier on all demo data, cache it, and save to disk."""
+                clf_key = f"clf_demo_{clf_name}_enh"  # Must match classify endpoint key
+                if clf_key in _classify_cache and _classify_cache[clf_key].get("saved_model"):
+                    print(f"  Skipping {label}: already loaded from disk")
+                    return
+                if clf_key not in _classify_cache:
+                    try:
+                        r = classify_enhanced(demo_df, classifier=clf_name)
+                        _classify_cache[clf_key] = r
+                        print(f"  {label} warm: done ({_time.perf_counter()-start:.1f}s)")
+                    except Exception as exc:
+                        print(f"  {label} warm: failed ({exc})")
+                        return
+                else:
+                    r = _classify_cache[clf_key]
+                # Persist to disk so next restart skips training (~2-4 min saved)
                 try:
-                    clf_result = classify_enhanced(demo_df, classifier="gradient_boosting")
-                    _classify_cache[clf_key] = clf_result
-                    print(f"  Deferred classify warm: done ({_time.perf_counter()-start:.1f}s)")
-                except Exception:
-                    pass
-            # Pre-warm random forest classifier (most common choice)
-            clf_key_rf = "clf_demo_random_forest_enh"
-            if clf_key_rf not in _classify_cache:
-                try:
-                    clf_result_rf = classify_enhanced(demo_df, classifier="random_forest")
-                    _classify_cache[clf_key_rf] = clf_result_rf
-                    print(f"  Deferred RF classify warm: done ({_time.perf_counter()-start:.1f}s)")
-                except Exception:
-                    pass
+                    metrics = {
+                        "accuracy": r.get("cv_mean_accuracy", 0),
+                        "balanced_accuracy": r.get("cv_mean_accuracy", 0),
+                    }
+                    _save_model(
+                        model=r["model"],
+                        scaler=r["scaler"],
+                        label_encoder=r["label_encoder"],
+                        feature_names=r["feature_names"],
+                        well="demo",
+                        metrics=metrics,
+                        model_name=clf_name,
+                    )
+                    print(f"  Saved {label} to persistent volume")
+                except Exception as exc:
+                    print(f"  Save {label}: failed ({exc})")
+
+            # Best model first — balanced_bagging is our production default
+            _warm_and_persist("balanced_bagging", "BalancedBagging")
+            _warm_and_persist("gradient_boosting", "GradientBoosting")
+            _warm_and_persist("random_forest", "RandomForest")
+
             # Pre-warm model comparison (fast mode)
             mc_key = f"demo_{len(demo_df)}_fast"
             if mc_key not in _model_comparison_cache:
@@ -10790,7 +10822,7 @@ async def list_saved_models_endpoint():
     return _sanitize_for_json({
         "models": models,
         "count": len(models),
-        "model_dir": "data/models/",
+        "model_dir": __import__("src.enhanced_analysis", fromlist=["_get_model_dir"])._get_model_dir(),
     })
 
 

@@ -859,12 +859,26 @@ import time
 import hashlib
 import json
 
-_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "models")
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _get_model_dir() -> str:
+    """Resolve model directory — respects MODEL_DIR env var, then derives from DB_PATH volume."""
+    if os.environ.get("MODEL_DIR"):
+        return os.environ["MODEL_DIR"]
+    # Derive from DB_PATH: same volume root as the database
+    db_path = os.environ.get("DB_PATH", "")
+    if db_path:
+        return os.path.join(os.path.dirname(db_path), "models")
+    # Local fallback
+    return os.path.join(_PROJECT_ROOT, "data", "models")
 
 
 def _ensure_model_dir():
-    """Create data/models/ directory if it doesn't exist."""
-    os.makedirs(_MODEL_DIR, exist_ok=True)
+    """Create models directory if it doesn't exist."""
+    model_dir = _get_model_dir()
+    os.makedirs(model_dir, exist_ok=True)
+    return model_dir
 
 
 def save_trained_model(
@@ -884,7 +898,7 @@ def save_trained_model(
     """
     if not HAS_JOBLIB:
         raise ImportError("joblib is required for model serialization")
-    _ensure_model_dir()
+    model_dir = _ensure_model_dir()
 
     artifact = {
         "model": model,
@@ -900,12 +914,12 @@ def save_trained_model(
     }
 
     filename = f"model_{well}_{model_name}.joblib"
-    filepath = os.path.join(_MODEL_DIR, filename)
+    filepath = os.path.join(model_dir, filename)
     joblib.dump(artifact, filepath, compress=3)
 
     # Also save a metadata JSON (human-readable, no sklearn objects)
     meta = {k: v for k, v in artifact.items() if k not in ("model", "scaler", "label_encoder")}
-    meta_path = os.path.join(_MODEL_DIR, f"model_{well}_{model_name}_meta.json")
+    meta_path = os.path.join(model_dir, f"model_{well}_{model_name}_meta.json")
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2, default=str)
 
@@ -920,8 +934,9 @@ def load_trained_model(well: str, model_name: str = "best") -> dict:
     """
     if not HAS_JOBLIB:
         return None
+    model_dir = _get_model_dir()
     filename = f"model_{well}_{model_name}.joblib"
-    filepath = os.path.join(_MODEL_DIR, filename)
+    filepath = os.path.join(model_dir, filename)
     if not os.path.exists(filepath):
         return None
     try:
@@ -932,12 +947,12 @@ def load_trained_model(well: str, model_name: str = "best") -> dict:
 
 def list_saved_models() -> list:
     """List all saved model artifacts with metadata."""
-    _ensure_model_dir()
+    model_dir = _ensure_model_dir()
     result = []
-    for fname in os.listdir(_MODEL_DIR):
+    for fname in os.listdir(model_dir):
         if fname.endswith("_meta.json"):
             try:
-                with open(os.path.join(_MODEL_DIR, fname)) as f:
+                with open(os.path.join(model_dir, fname)) as f:
                     meta = json.load(f)
                 result.append(meta)
             except Exception:
