@@ -9586,6 +9586,38 @@ async function loadPerformanceShowcase() {
     }
 }
 
+// ── Live System Health Polling ────────────────────────────────
+// Polls /api/system/health every 60s and updates the sidebar status dot.
+// Green = HEALTHY, amber = DEGRADED, red = CRITICAL.
+
+var _healthPollInterval = null;
+
+function _updateStatusBar(h) {
+    var dot = document.getElementById('live-status-dot');
+    var text = document.getElementById('live-status-text');
+    var badge = document.getElementById('live-cache-badge');
+    if (!dot) return;
+    var colors = { HEALTHY: '#22c55e', DEGRADED: '#f59e0b', CRITICAL: '#ef4444' };
+    dot.style.background = colors[h.status] || '#6b7280';
+    text.textContent = h.status.charAt(0) + h.status.slice(1).toLowerCase() +
+        ' · score ' + h.health_score;
+    if (badge && h.total_cached_items != null) {
+        badge.textContent = h.total_cached_items + ' cached';
+    }
+}
+
+async function pollSystemHealth() {
+    try {
+        var r = await fetch('/api/system/health');
+        if (r.ok) { _updateStatusBar(await r.json()); }
+    } catch (e) { /* silently ignore — network may be offline */ }
+}
+
+function startHealthPolling() {
+    pollSystemHealth(); // immediate first check
+    _healthPollInterval = setInterval(pollSystemHealth, 60000); // every 60s
+}
+
 // ── Focus Mode ────────────────────────────────────────────────
 // Hides "expert" sidebar items so new users see only the 12 core tabs.
 // Expert items are marked data-expert="true" in the HTML.
@@ -9650,6 +9682,7 @@ document.addEventListener("DOMContentLoaded", function() {
     loadDbStats();
     initParamPersistence();
     initFocusMode();
+    startHealthPolling();
     loadStartupSnapshot();
     initDrillingTab();
     // Auto-run overview after a short delay (let summary load first)

@@ -59,6 +59,15 @@
                 </div>
             </div>
 
+            <!-- Live System Status -->
+            <div class="px-2 pb-1">
+                <div id="live-status-bar" class="d-flex align-items-center gap-2 px-2 py-1 rounded" style="background:rgba(255,255,255,0.05);font-size:0.68rem;">
+                    <span id="live-status-dot" style="width:8px;height:8px;border-radius:50%;background:#6b7280;display:inline-block;flex-shrink:0"></span>
+                    <span id="live-status-text" class="text-muted">checking...</span>
+                    <span id="live-cache-badge" class="ms-auto text-muted" style="font-size:0.6rem"></span>
+                </div>
+            </div>
+
             <!-- Focus Mode toggle -->
             <div class="px-2 pb-2">
                 <button id="focus-mode-btn" class="btn btn-outline-secondary btn-sm w-100"
