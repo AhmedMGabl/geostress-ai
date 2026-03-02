@@ -20,8 +20,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-# Default database path — next to data/ directory
-_DEFAULT_DB = Path(__file__).parent.parent / "data" / "geostress.db"
+import os
+
+# Allow override via env var (e.g. Railway volume mount at /data/geostress.db)
+_DEFAULT_DB = Path(os.environ.get("DB_PATH", "")) or (
+    Path(__file__).parent.parent / "data" / "geostress.db"
+)
 
 _local = threading.local()
 
