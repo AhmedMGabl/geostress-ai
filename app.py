@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.87.0 - Focus Mode + MWW Chart + Session Persistence)."""
+"""GeoStress AI - FastAPI Web Application (v3.88.0 - ADASYN + MWW Calibration Overlay + Focus Mode)."""
 
 import os
 import io
@@ -1931,8 +1931,24 @@ async def viz_mud_weight_window(well: str = "3P", source: str = "demo"):
         fg_list.append(mw["fracture_gradient"]["sg"])
         sv_list.append(mw["overburden"]["sg"])
 
+    # ── Fetch field calibration measurements (LOT/XLOT/DFIT) ────
+    # Convert measured stress (MPa) → EMW (sg) to overlay on chart
+    cal_rows = db_get_field_measurements(well)
+    cal_points = []
+    for row in cal_rows:
+        d_cal = float(row.get("depth_m", 0) or 0)
+        s_cal = float(row.get("measured_stress_mpa", 0) or 0)
+        if d_cal > 0 and s_cal > 0:
+            sg_val = s_cal * 1e6 / (9.81 * d_cal * 1000)
+            cal_points.append({
+                "depth_m": d_cal,
+                "sg": sg_val,
+                "test_type": row.get("test_type", "Field"),
+            })
+
     # ── Plot ─────────────────────────────────────────────────────
     def _make_mww_plot():
+        import matplotlib.pyplot as plt  # ensure import inside thread
         fig, ax = plt.subplots(figsize=(5, 9))
         fig.patch.set_facecolor("#1a1a2e")
         ax.set_facecolor("#16213e")
@@ -1953,13 +1969,28 @@ async def viz_mud_weight_window(well: str = "3P", source: str = "demo"):
         ax.plot(fg_list, d, color="#22c55e", linewidth=2.0,
                 label="Fracture Gradient (Shmin)")
 
+        # ── Overlay field calibration points ──────────────────────
+        type_colors = {"LOT": "#facc15", "XLOT": "#fb923c",
+                       "DFIT": "#a78bfa", "Minifrac": "#f472b6"}
+        plotted_types: set = set()
+        for pt in cal_points:
+            color = type_colors.get(pt["test_type"], "#e2e8f0")
+            label = pt["test_type"] if pt["test_type"] not in plotted_types else "_nolegend_"
+            plotted_types.add(pt["test_type"])
+            ax.scatter(pt["sg"], pt["depth_m"], color=color, s=60,
+                       zorder=5, marker="D", label=label, edgecolors="#1e293b",
+                       linewidths=0.8)
+
         # Axis style
         ax.invert_yaxis()
         ax.set_xlabel("Equivalent Mud Weight (g/cm³)", color="#e2e8f0",
                       fontsize=10, labelpad=8)
         ax.set_ylabel("Depth (m)", color="#e2e8f0", fontsize=10, labelpad=8)
-        ax.set_title(f"Mud Weight Window — Well {well}\n({regime.replace('_', ' ').title()})",
-                     color="#f8fafc", fontsize=11, fontweight="bold", pad=10)
+        n_cal = len(cal_points)
+        cal_note = f" · {n_cal} field pt{'s' if n_cal != 1 else ''}" if n_cal else ""
+        ax.set_title(
+            f"Mud Weight Window — Well {well}\n({regime.replace('_', ' ').title()}{cal_note})",
+            color="#f8fafc", fontsize=11, fontweight="bold", pad=10)
 
         ax.tick_params(colors="#94a3b8", labelsize=8)
         for spine in ax.spines.values():
@@ -1968,9 +1999,9 @@ async def viz_mud_weight_window(well: str = "3P", source: str = "demo"):
         ax.grid(True, alpha=0.15, color="#475569")
         ax.set_xlim(left=max(0.8, min(pp_list) - 0.1))
 
-        legend = ax.legend(loc="lower right", fontsize=7.5,
-                           facecolor="#1e293b", edgecolor="#475569",
-                           labelcolor="#cbd5e1")
+        ax.legend(loc="lower right", fontsize=7.5,
+                  facecolor="#1e293b", edgecolor="#475569",
+                  labelcolor="#cbd5e1")
 
         # Annotation: safe window label
         mid_d = (depth_min + depth_max) / 2
@@ -1990,6 +2021,7 @@ async def viz_mud_weight_window(well: str = "3P", source: str = "demo"):
         "well": well,
         "regime": regime,
         "depth_range_m": [round(depth_min), round(depth_max)],
+        "field_calibration_points": len(cal_points),
     }
 
 

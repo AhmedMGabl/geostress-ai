@@ -555,7 +555,18 @@ def _cv_with_smote(model, X, y, cv, smote_strategy="auto"):
             except Exception:
                 X_res, y_res = None, None
 
-            # Fallback chain: BorderlineSMOTE -> SMOTE
+            # Fallback chain: ADASYN -> BorderlineSMOTE -> SMOTE
+            # ADASYN focuses synthetic generation on hard-to-classify boundary
+            # samples (uses density estimation), best for severe imbalance.
+            if X_res is None:
+                try:
+                    oversampler = ADASYN(
+                        n_neighbors=k_neighbors, random_state=42,
+                        sampling_strategy=smote_strategy,
+                    )
+                    X_res, y_res = oversampler.fit_resample(X_train, y_train)
+                except Exception:
+                    X_res, y_res = None, None
             if X_res is None:
                 try:
                     oversampler = BorderlineSMOTE(
