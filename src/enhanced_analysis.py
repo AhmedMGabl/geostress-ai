@@ -3012,15 +3012,49 @@ def critically_stressed_enhanced(
     mu: float = 0.6,
     cohesion: float = 0.0,
     pore_pressure: float = 0.0,
+    pp_profile: list = None,
+    fracture_depths: np.ndarray = None,
 ) -> dict:
     """Enhanced critically stressed analysis with pore pressure correction.
 
     Uses effective stress: σn_eff = σn - Pp
     Mohr-Coulomb: τ >= cohesion + μ * (σn - Pp)
 
+    Parameters
+    ----------
+    pp_profile : list of [depth_m, pp_mpa] pairs, optional (GEO-2 fix)
+        When provided alongside fracture_depths, interpolates Pp per fracture
+        instead of applying a uniform scalar. This is the #1 accuracy improvement
+        for the critical stress calculation (Pp is the top uncertainty driver).
+    fracture_depths : array of per-fracture depths (m), optional
+        Must be provided together with pp_profile.
+
     Returns detailed analysis with risk categories.
     """
-    sigma_n_eff = sigma_n - pore_pressure
+    # GEO-2 fix: depth-varying Pp interpolation
+    depth_varying_pp = False
+    if pp_profile is not None and fracture_depths is not None and len(pp_profile) >= 2:
+        try:
+            prof = np.array(pp_profile)  # shape (n, 2): [depth_m, pp_mpa]
+            # Sort by depth, handle NaN depths by falling back to scalar
+            valid_mask = ~np.isnan(fracture_depths)
+            pp_arr = np.full(len(sigma_n), pore_pressure)
+            if valid_mask.sum() >= 1:
+                pp_arr[valid_mask] = np.interp(
+                    fracture_depths[valid_mask],
+                    prof[:, 0], prof[:, 1],
+                    left=prof[0, 1], right=prof[-1, 1],
+                )
+            sigma_n_eff = sigma_n - pp_arr
+            depth_varying_pp = True
+            pore_pressure_applied = pp_arr  # per-fracture vector
+        except Exception:
+            sigma_n_eff = sigma_n - pore_pressure
+            pore_pressure_applied = pore_pressure
+    else:
+        sigma_n_eff = sigma_n - pore_pressure
+        pore_pressure_applied = pore_pressure
+
     tau_critical = cohesion + mu * sigma_n_eff
     excess_shear = tau - tau_critical  # positive = critically stressed
 
@@ -3030,12 +3064,12 @@ def critically_stressed_enhanced(
     # Risk categories
     HIGH_RISK = 1.0    # slip_ratio >= 1.0 (above failure line)
     MODERATE = 0.8     # 0.8 <= slip_ratio < 1.0
-    LOW = 0.0          # slip_ratio < 0.8
 
     risk = np.full(len(sigma_n), "low", dtype=object)
     risk[slip_ratio >= MODERATE] = "moderate"
     risk[slip_ratio >= HIGH_RISK] = "high"
 
+    pp_scalar = float(np.mean(pore_pressure_applied)) if depth_varying_pp else float(pore_pressure)
     return {
         "is_critical": is_critical,
         "count_critical": int(is_critical.sum()),
@@ -3048,7 +3082,8 @@ def critically_stressed_enhanced(
         "high_risk_count": int((risk == "high").sum()),
         "moderate_risk_count": int((risk == "moderate").sum()),
         "low_risk_count": int((risk == "low").sum()),
-        "pore_pressure_applied": pore_pressure,
+        "pore_pressure_applied": pp_scalar,
+        "depth_varying_pp": depth_varying_pp,
         "mean_slip_ratio": float(slip_ratio.mean()),
         "max_slip_ratio": float(slip_ratio.max()),
     }

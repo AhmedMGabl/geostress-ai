@@ -2153,8 +2153,12 @@ async def run_inversion(request: Request):
 
     # Enhanced critically stressed analysis with pore pressure
     pp = result.get("pore_pressure", 0.0)
+    # GEO-2 fix: use depth-varying Pp profile if client provides one
+    pp_profile_raw = body.get("pp_profile")  # list of [depth_m, pp_mpa] from pore-pressure-prediction
+    fracture_depths = df_well[DEPTH_COL].values.astype(float)
     cs_result = critically_stressed_enhanced(
-        result["sigma_n"], result["tau"], result["mu"], cohesion, pp
+        result["sigma_n"], result["tau"], result["mu"], cohesion, pp,
+        pp_profile=pp_profile_raw, fracture_depths=fracture_depths,
     )
 
     # Temperature correction for deep wells (2025 research)
@@ -2213,6 +2217,11 @@ async def run_inversion(request: Request):
         "critically_stressed_count": cs_result["count_critical"],
         "critically_stressed_total": cs_result["total"],
         "critically_stressed_pct": cs_result["pct_critical"],
+        "critically_stressed": {
+            "pct_critical": cs_result["pct_critical"],
+            "count_critical": cs_result["count_critical"],
+            "depth_varying_pp": cs_result.get("depth_varying_pp", False),
+        },
         "critically_stressed_range": {
             "low_friction": round(cs_at_mu_lo, 1),
             "best_estimate": cs_result["pct_critical"],

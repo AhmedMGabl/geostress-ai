@@ -5390,6 +5390,13 @@
                         <button class="btn btn-outline-secondary btn-sm" onclick="runAllRegimes()">
                             <i class="bi bi-arrow-repeat"></i> Compare All Regimes
                         </button>
+                        <!-- GEO-2 fix: depth-varying Pp toggle -->
+                        <div class="form-check form-switch ms-2 mb-0" title="Uses Eaton pore pressure profile — interpolates Pp per fracture depth instead of one scalar value">
+                            <input class="form-check-input" type="checkbox" id="use-depth-pp" role="switch">
+                            <label class="form-check-label small text-muted" for="use-depth-pp">
+                                Depth-varying Pp <span class="badge bg-info ms-1" style="font-size:0.55rem">GEO-2</span>
+                            </label>
+                        </div>
                         <div class="btn-group btn-group-sm">
                             <button class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
                                 <i class="bi bi-three-dots"></i> More
@@ -5464,6 +5471,10 @@
                             <div class="col-md-2"><div class="metric-card"><div class="metric-label">Pore Pressure <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Fluid pressure in rock pores (MPa). Reduces effective normal stress on fractures, making them more likely to slip. Higher Pp = more critically stressed fractures."></i></div><div class="metric-value" id="inv-pp">--</div></div></div>
                         </div>
 
+                        <!-- GEO-2: depth-varying Pp indicator -->
+                        <div id="inv-depth-pp-badge" class="d-none mb-2">
+                            <span class="badge bg-info"><i class="bi bi-graph-up me-1"></i>Depth-varying Pp applied — per-fracture effective stress interpolated from Eaton profile</span>
+                        </div>
                         <!-- Uncertainty Confidence Intervals -->
                         <div id="inv-uncertainty" class="d-none mb-4"></div>
 

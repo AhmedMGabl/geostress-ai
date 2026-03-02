@@ -1689,6 +1689,21 @@ async function runInversion() {
             geothermal_gradient: geoGradient
         };
 
+        // GEO-2 fix: depth-varying Pp — fetch Eaton profile and pass per-fracture Pp
+        var depthPpToggle = document.getElementById("use-depth-pp");
+        if (depthPpToggle && depthPpToggle.checked) {
+            try {
+                var ppResp = await apiFetch("/api/analysis/pore-pressure-prediction", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ source: currentSource, well: currentWell })
+                });
+                if (ppResp && ppResp.profile && ppResp.profile.length >= 2) {
+                    body.pp_profile = ppResp.profile.map(function(pt) { return [pt.depth_m, pt.pp_mpa]; });
+                    showToast("Depth-varying Pp profile loaded (" + body.pp_profile.length + " points)", "Info");
+                }
+            } catch (e) { /* fall back to scalar Pp silently */ }
+        }
+
         var r = await api("/api/analysis/inversion", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1854,6 +1869,14 @@ async function runInversion() {
             val("inv-high-risk", r.risk_categories.high);
             val("inv-mod-risk", r.risk_categories.moderate);
             val("inv-low-risk", r.risk_categories.low);
+        }
+
+        // Depth-varying Pp indicator (GEO-2 fix)
+        var depthPpEl = document.getElementById("inv-depth-pp-badge");
+        if (depthPpEl && r.critically_stressed && r.critically_stressed.depth_varying_pp) {
+            depthPpEl.classList.remove("d-none");
+        } else if (depthPpEl) {
+            depthPpEl.classList.add("d-none");
         }
 
         // Display interpretation for stakeholders
