@@ -2163,6 +2163,23 @@ def classify_enhanced(
     except Exception:
         pass
 
+    # ── Per-class threshold calibration ─────────────────────────────────────
+    # For imbalanced data, argmax(predict_proba) under-predicts rare classes.
+    # Tuning per-class thresholds recovers rare class recall with minimal cost.
+    # This runs quickly (~same as 1 CV fold) and often gains +2-5pp balanced acc.
+    class_thresholds = None
+    threshold_improvement = 0.0
+    if hasattr(model, "predict_proba"):
+        try:
+            thresholds, improvement_pct, tuned_score = _tune_class_thresholds(
+                model, X, y, cv
+            )
+            if improvement_pct > 0.5:  # Only apply if improvement is meaningful
+                class_thresholds = thresholds
+                threshold_improvement = improvement_pct
+        except Exception:
+            pass
+
     result = {
         "model": model,
         "scaler": scaler,
@@ -2180,6 +2197,8 @@ def classify_enhanced(
         "class_names": le.classes_.tolist(),
         "class_confidence": class_confidence,
         "mean_confidence": mean_confidence,
+        "class_thresholds": class_thresholds,
+        "threshold_improvement_pct": round(threshold_improvement, 2),
     }
     if spatial_cv_result:
         result["spatial_cv"] = spatial_cv_result

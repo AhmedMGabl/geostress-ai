@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.84.0 - Persistent Model Storage)."""
+"""GeoStress AI - FastAPI Web Application (v3.85.0 - UI Fixes + Session Persistence + Threshold Calibration)."""
 
 import os
 import io

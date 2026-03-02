@@ -8673,8 +8673,10 @@ async function loadStartupSnapshot() {
             </div>`;
 
         container.innerHTML = html;
+        // Hide quick-start cards once real data is loaded
+        var qsp = document.getElementById('quick-start-panel');
+        if (qsp) { qsp.style.cssText = 'display:none !important'; }
         markTabComplete("executive");
-        markTabComplete("data");
     } catch (e) {
         console.warn('Startup snapshot unavailable:', e);
     }
@@ -9546,12 +9548,35 @@ async function loadPerformanceShowcase() {
     }
 }
 
+// ── Session Persistence (localStorage) ─────────────────────────
+// Saves well selection, regime, depth, pore pressure, geothermal gradient
+// so users don't lose their context on page refresh.
+
+function _persistParam(id, key) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var saved = localStorage.getItem('gs_param_' + key);
+    if (saved !== null) el.value = saved;
+    el.addEventListener('change', function() {
+        localStorage.setItem('gs_param_' + key, this.value);
+    });
+}
+
+function initParamPersistence() {
+    _persistParam('well-select', 'well');
+    _persistParam('regime-select', 'regime');
+    _persistParam('depth-input', 'depth');
+    _persistParam('pp-input', 'pp');
+    _persistParam('geothermal-input', 'geothermal');
+}
+
 // ── Init ──────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", function() {
     loadSummary();
     loadFeedbackSummary();
     loadDbStats();
+    initParamPersistence();
     loadStartupSnapshot();
     initDrillingTab();
     // Auto-run overview after a short delay (let summary load first)

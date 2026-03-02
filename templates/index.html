@@ -55,7 +55,7 @@
                 </div>
                 <div class="d-flex justify-content-between align-items-center mt-1">
                     <small class="text-muted-light"><i class="bi bi-clock"></i> <span id="response-time">-</span></small>
-                    <small class="text-muted-light" style="font-size:0.6rem;opacity:0.6">v3.84</small>
+                    <small class="text-muted-light" style="font-size:0.6rem;opacity:0.6">v3.85</small>
                 </div>
             </div>
 
@@ -217,7 +217,7 @@
             <div class="sidebar-section mt-auto" style="border-top:1px solid rgba(255,255,255,0.08);padding:0.8rem 1rem">
                 <div class="d-flex align-items-center justify-content-between">
                     <small class="text-muted-light" style="font-size:0.65rem">
-                        <i class="bi bi-cpu"></i> GeoStress AI v3.84
+                        <i class="bi bi-cpu"></i> GeoStress AI v3.85
                     </small>
                     <div>
                         <a href="https://github.com/AhmedMGabl/geostress-ai" target="_blank" class="text-muted-light me-2" title="GitHub" style="font-size:0.8rem;text-decoration:none"><i class="bi bi-github"></i></a>
@@ -258,9 +258,20 @@
                         Results are <u>not</u> a substitute for certified geomechanical analysis by a qualified engineer.
                         Stress magnitudes require field calibration (LOT/XLOT/DFIT) before use in casing or completion design.
                         Always validate against independent data sources before operational decisions.
-                        <a href="#" onclick="document.getElementById('industrial-disclaimer').classList.add('d-none'); return false;" class="ms-2 text-decoration-none"><i class="bi bi-x-circle"></i> Dismiss</a>
+                        <a href="#" onclick="dismissIndustrialNotice(); return false;" class="ms-2 text-decoration-none"><i class="bi bi-x-circle"></i> Dismiss</a>
                     </div>
                 </div>
+                <script>
+                (function() {
+                    if (localStorage.getItem('gs_notice_dismissed') === '1') {
+                        document.getElementById('industrial-disclaimer').classList.add('d-none');
+                    }
+                })();
+                function dismissIndustrialNotice() {
+                    document.getElementById('industrial-disclaimer').classList.add('d-none');
+                    localStorage.setItem('gs_notice_dismissed', '1');
+                }
+                </script>
                 <!-- Pipeline Progress Panel -->
                 <div id="pipeline-panel" class="d-none mb-4">
                     <div class="card border-warning">
@@ -538,7 +549,7 @@
                         </div>
                         <div class="col-md-3" data-aos="fade-up" data-aos-delay="100">
                             <div class="showcase-metric">
-                                <div class="big-number" id="perf-mcc" style="color:#6366f1;">0.68</div>
+                                <div class="big-number" id="perf-mcc" style="color:#6366f1;">0.67</div>
                                 <div class="ci-range">Matthews Correlation</div>
                                 <div class="fw-semibold mt-1">MCC Score</div>
                                 <div class="text-muted small">Robust to class imbalance</div>
@@ -5501,7 +5512,6 @@
                             </div>
                         </div>
                     </div>
-                </div>
 
                     <!-- Pore Pressure Coupling -->
                     <div class="card border-danger mb-3">
