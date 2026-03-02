@@ -5328,14 +5328,18 @@
                             <div class="card border-success">
                                 <div class="card-header d-flex justify-content-between align-items-center">
                                     <span><i class="bi bi-layers text-success"></i> Mud Weight Window <span class="badge bg-success ms-1" style="font-size:0.55rem">CORE DELIVERABLE</span></span>
-                                    <button class="btn btn-outline-success btn-sm py-0 px-2" onclick="loadSingleViz('mww')">
-                                        <i class="bi bi-arrow-clockwise"></i>
-                                    </button>
+                                    <div class="d-flex align-items-center gap-1">
+                                        <input type="number" id="mww-planned-mw" class="form-control form-control-sm" style="width:80px" step="0.05" min="0.8" max="3.0" placeholder="MW sg" title="Planned mud weight (g/cm³)">
+                                        <button class="btn btn-outline-success btn-sm py-0 px-2" onclick="loadSingleViz('mww')">
+                                            <i class="bi bi-arrow-clockwise"></i>
+                                        </button>
+                                    </div>
                                 </div>
                                 <div class="card-body text-center" id="mww-container">
                                     <div class="viz-placeholder" id="mww-placeholder">
                                         <i class="bi bi-layers" style="font-size:3rem;opacity:0.15;color:var(--bs-success)"></i>
                                         <p class="small text-muted mt-2 mb-0">Safe drilling window: pore pressure → fracture gradient</p>
+                                        <p class="small text-muted">Enter planned MW above to check operational safety</p>
                                     </div>
                                     <img id="mww-img" class="plot-img d-none" alt="Mud Weight Window">
                                 </div>

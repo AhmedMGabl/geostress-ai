@@ -1569,6 +1569,13 @@ function _showVizImg(id) {
     if (placeholder) placeholder.classList.add("d-none");
 }
 
+function _mwwMwParam() {
+    var el = document.getElementById('mww-planned-mw');
+    if (!el || !el.value) return '';
+    var v = parseFloat(el.value);
+    return (v > 0.5 && v < 4.0) ? '&mw_sg=' + v : '';
+}
+
 async function loadAllViz() {
     showLoading("Generating visualizations...");
     try {
@@ -1579,7 +1586,7 @@ async function loadAllViz() {
             api("/api/viz/rose?well=" + well + "&source=" + src),
             api("/api/viz/stereonet?well=" + well + "&source=" + src),
             api("/api/viz/depth-profile?source=" + src),
-            api("/api/viz/mww?well=" + well + "&source=" + src)
+            api("/api/viz/mww?well=" + well + "&source=" + src + _mwwMwParam())
         ]);
 
         setImg("rose-img", results[0].image); _showVizImg("rose-img");
@@ -1601,7 +1608,7 @@ async function loadSingleViz(type) {
         rose: "/api/viz/rose?well=" + well + "&source=" + src,
         stereonet: "/api/viz/stereonet?well=" + well + "&source=" + src,
         depth: "/api/viz/depth-profile?source=" + src,
-        mww: "/api/viz/mww?well=" + well + "&source=" + src
+        mww: "/api/viz/mww?well=" + well + "&source=" + src + _mwwMwParam()
     };
     var imgIds = { rose: "rose-img", stereonet: "stereonet-img", depth: "depth-img", mww: "mww-img" };
     if (!urls[type]) return;

@@ -1861,17 +1861,21 @@ async def viz_depth_profile(source: str = "demo"):
 
 
 @app.get("/api/viz/mww")
-async def viz_mud_weight_window(well: str = "3P", source: str = "demo"):
+async def viz_mud_weight_window(
+    well: str = "3P",
+    source: str = "demo",
+    mw_sg: float = None,  # optional planned mud weight (g/cm³) overlay
+):
     """Mud Weight Window (MWW) depth-pressure chart.
 
     Industry-standard wellbore stability deliverable showing the safe mud weight
     corridor between borehole collapse (lower bound) and fracture initiation
     (upper bound) across the full well depth range. Units: g/cm³ (sg).
 
+    Optional: mw_sg — planned mud weight in g/cm³ to overlay as a vertical line.
     Returns a matplotlib well-log-style chart as base64 PNG.
     """
     import matplotlib.pyplot as plt
-    from matplotlib.patches import FancyArrowPatch
 
     df = get_df(source)
     df_well = df[df[WELL_COL] == well].reset_index(drop=True)
@@ -2011,6 +2015,26 @@ async def viz_mud_weight_window(well: str = "3P", source: str = "demo"):
             ax.annotate("Safe\nWindow", xy=((mid_fg + mid_col) / 2, mid_d),
                         fontsize=7, color="#86efac", ha="center", va="center",
                         fontweight="bold")
+
+        # ── Planned mud weight overlay ─────────────────────────
+        if mw_sg is not None and 0.5 < mw_sg < 4.0:
+            ax.axvline(x=mw_sg, color="#fbbf24", linewidth=1.8,
+                       linestyle=":", label=f"Planned MW ({mw_sg:.2f} sg)")
+            # Status at mid-depth
+            status_col = float(np.interp(mid_d, depths, collapse_list))
+            status_fg = float(np.interp(mid_d, depths, fg_list))
+            if mw_sg < status_col:
+                mw_status = "KICK RISK"
+                mw_color = "#ef4444"
+            elif mw_sg > status_fg:
+                mw_status = "LOSS RISK"
+                mw_color = "#ef4444"
+            else:
+                margin = min(mw_sg - status_col, status_fg - mw_sg)
+                mw_status = f"SAFE (margin {margin:.2f} sg)"
+                mw_color = "#22c55e"
+            ax.text(mw_sg + 0.02, depth_max * 0.95, mw_status,
+                    fontsize=7, color=mw_color, va="bottom", fontweight="bold")
 
         plt.tight_layout()
         return fig_to_base64(fig)
