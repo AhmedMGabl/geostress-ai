@@ -2614,6 +2614,16 @@ async function runClassification() {
         val("clf-std", "\u00b1" + (r.cv_std_accuracy * 100).toFixed(1) + "%");
         val("clf-f1", r.cv_f1_mean ? (r.cv_f1_mean * 100).toFixed(1) + "%" : "--");
         val("clf-type", displayModelName(classifier));
+        // Stable bootstrap balanced accuracy (200 resamples, low-variance)
+        if (r.stable_balanced_accuracy != null) {
+            var stableCard = document.getElementById("clf-stable-card");
+            if (stableCard) stableCard.classList.remove("d-none");
+            val("clf-stable-acc", (r.stable_balanced_accuracy * 100).toFixed(1) + "%");
+            var stdEl = document.getElementById("clf-stable-std");
+            if (stdEl && r.stable_balanced_accuracy_std != null) {
+                stdEl.textContent = "\u00b1" + (r.stable_balanced_accuracy_std * 100).toFixed(1) + "% (bootstrap CI)";
+            }
+        }
 
         // Confidence gate: color-code accuracy and add warning for low accuracy
         var accEl = document.getElementById("clf-accuracy");
@@ -2729,6 +2739,42 @@ async function runClassification() {
             cpEl.classList.remove("d-none");
         } else if (cpEl) {
             cpEl.classList.add("d-none");
+        }
+
+        // ── Per-class confidence badges (Fix UX-2) ─────────────────────────────
+        // Color-code each class: GREEN >= 80%, AMBER 60-79%, RED < 60%.
+        // Boundary class auto-shows RED when F1 < 20% (F1 instability warning).
+        var confEl = document.getElementById("clf-class-confidence");
+        var confData = r.per_class_confidence || {};
+        if (confEl && Object.keys(confData).length > 0) {
+            var badgeHtml = '<div class="d-flex flex-wrap gap-1 mb-2">' +
+                '<small class="text-muted me-1">Per-class confidence:</small>';
+            Object.entries(confData).forEach(function(entry) {
+                var cls = entry[0], c = entry[1];
+                var color = c >= 0.80 ? 'success' : c >= 0.60 ? 'warning' : 'danger';
+                var pct = (c * 100).toFixed(0) + '%';
+                badgeHtml += '<span class="badge bg-' + color + '">' + cls + ' ' + pct + '</span>';
+            });
+            badgeHtml += '</div>';
+            confEl.innerHTML = badgeHtml;
+            confEl.classList.remove("d-none");
+        }
+
+        // ── Cross-well contamination alert (Fix AI-2) ──────────────────────────
+        // Warn users when a model trained on Well 3P data is applied to Well 6P.
+        var cwEl = document.getElementById("clf-crosswell-alert");
+        if (cwEl) {
+            var wellUsed = document.getElementById('wellSelect') ? document.getElementById('wellSelect').value : '3P';
+            if (r.cross_well_warning || (wellUsed !== '3P' && wellUsed !== 'all')) {
+                cwEl.innerHTML = '<div class="alert alert-warning py-2 mb-2 small">' +
+                    '<i class="bi bi-exclamation-triangle me-1"></i> <strong>Cross-well warning:</strong> ' +
+                    'This model was primarily trained on Well 3P. Cross-well accuracy is Grade D ' +
+                    '(~79.6% degradation observed). Results for other wells should be treated as indicative only.' +
+                    '</div>';
+                cwEl.classList.remove("d-none");
+            } else {
+                cwEl.classList.add("d-none");
+            }
         }
 
         showToast("Classification: " + (r.cv_mean_accuracy * 100).toFixed(1) + "% accuracy (" + classifier + ")");

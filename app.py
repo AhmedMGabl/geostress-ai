@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.89.0 - LAS Export + Leaderboard Fix + ADASYN + MWW)."""
+"""GeoStress AI - FastAPI Web Application (v3.92.0 - Polar Stability Map + Live Health + MWW + LAS)."""
 
 import os
 import io
@@ -800,7 +800,7 @@ def _audit_record(action: str, params: dict, result_summary: dict,
             parameters=_sanitize_for_json(params),
             result_hash=result_hash,
             result_summary=_sanitize_for_json(result_summary),
-            elapsed_s=elapsed_s, app_version="3.3.1",
+            elapsed_s=elapsed_s, app_version="3.92.0",
         )
 
 
@@ -1045,7 +1045,7 @@ def _build_startup_snapshot(wells):
                 "model_runs": stats.get("model_count", 0),
                 "expert_preferences": stats.get("preference_count", 0),
             },
-            "app_version": "3.3.1",
+            "app_version": "3.92.0",
         }
         print(f"  Startup snapshot built: {len(wells)} wells, {_startup_snapshot['total_fractures']} fractures")
     except Exception as e:
@@ -2427,6 +2427,12 @@ async def run_classification(request: Request):
             ],
         },
     }
+    # Stable bootstrap-balanced accuracy (Fix ML-1: 3-fold too few samples for minority class)
+    if clf_result.get("stable_balanced_accuracy") is not None:
+        resp["stable_balanced_accuracy"] = clf_result["stable_balanced_accuracy"]
+        resp["stable_balanced_accuracy_std"] = clf_result.get("stable_balanced_accuracy_std")
+    # Per-class confidence propagated to top-level for UX badges (Fix UX-2)
+    resp["per_class_confidence"] = clf_result.get("class_confidence", {})
     # Spatial (depth-blocked) CV — geological ML best practice
     if "spatial_cv" in clf_result:
         resp["spatial_cv"] = clf_result["spatial_cv"]
@@ -9016,7 +9022,7 @@ async def trustworthiness_report(request: Request):
         "n_samples": len(df_well),
         "n_checks": n_checks,
         "elapsed_s": elapsed,
-        "app_version": "3.3.1",
+        "app_version": "3.92.0",
     })
 
 
@@ -9321,7 +9327,7 @@ async def comprehensive_report(request: Request):
         "pore_pressure": pp,
         "n_fractures": n_fractures,
         "elapsed_s": elapsed,
-        "app_version": "3.2.0",
+        "app_version": "3.92.0",
         "from_cache": False,
     })
     _comprehensive_cache[comp_cache_key] = result
@@ -20312,7 +20318,7 @@ async def system_health():
         "unresolved_failures": unresolved,
         "snapshot_ready": bool(_startup_snapshot),
         "rlhf_reviews": rlhf_total,
-        "app_version": "3.28.0",
+        "app_version": "3.92.0",
         "recommendations": (
             ["System is running smoothly."]
             if status == "HEALTHY" else

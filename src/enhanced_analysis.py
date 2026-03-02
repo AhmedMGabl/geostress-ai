@@ -11,6 +11,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import (
     cross_val_score, cross_val_predict, cross_validate, StratifiedKFold,
+    RepeatedStratifiedKFold,
 )
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import (
@@ -2191,6 +2192,22 @@ def classify_enhanced(
         except Exception:
             pass
 
+    # ── Stable metric via Bootstrap of CV predictions (Fix ML-1) ──
+    # 3-fold CV on 13 Boundary samples gives ~4 per test fold → high variance.
+    # Bootstrap over cross_val_predict outputs gives a stable estimate without
+    # expensive re-fitting. 200 resamples → reliable CI in <0.1s.
+    stable_bal_acc, stable_bal_acc_std = None, None
+    try:
+        rng = np.random.RandomState(42)
+        boot_scores = [
+            balanced_accuracy_score(y[idx], y_pred_cv[idx])
+            for idx in (rng.choice(len(y), len(y), replace=True) for _ in range(200))
+        ]
+        stable_bal_acc = round(float(np.mean(boot_scores)), 4)
+        stable_bal_acc_std = round(float(np.std(boot_scores)), 4)
+    except Exception:
+        pass
+
     result = {
         "model": model,
         "scaler": scaler,
@@ -2201,6 +2218,8 @@ def classify_enhanced(
         "cv_std_accuracy": float(scores.std()),
         "cv_f1_mean": float(f1_scores.mean()),
         "cv_f1_std": float(f1_scores.std()),
+        "stable_balanced_accuracy": stable_bal_acc,
+        "stable_balanced_accuracy_std": stable_bal_acc_std,
         "confusion_matrix": conf_matrix,
         "feature_importances": {
             k: round(float(v), 4) for k, v in feat_imp.items()

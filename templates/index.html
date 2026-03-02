@@ -6485,6 +6485,10 @@
                     </div>
 
                     <div id="classify-results" class="d-none">
+                        <!-- Cross-well contamination alert (auto-shown for non-3P wells) -->
+                        <div id="clf-crosswell-alert" class="d-none"></div>
+                        <!-- Per-class confidence badges -->
+                        <div id="clf-class-confidence" class="d-none"></div>
                         <!-- Stakeholder Brief -->
                         <div id="clf-brief" class="d-none mb-4"></div>
                         <div class="row g-3 mb-4">
@@ -6510,6 +6514,14 @@
                                 <div class="metric-card">
                                     <div class="metric-label">Classifier</div>
                                     <div class="metric-value" id="clf-type">--</div>
+                                </div>
+                            </div>
+                            <!-- Stable Bootstrap Balanced Accuracy (Fix ML-1) -->
+                            <div class="col-md-3 d-none" id="clf-stable-card">
+                                <div class="metric-card border-info">
+                                    <div class="metric-label text-info">Stable Bal. Acc. <span class="badge bg-info ms-1" style="font-size:0.5rem">200-Bootstrap</span></div>
+                                    <div class="metric-value text-info" id="clf-stable-acc">--</div>
+                                    <div class="small text-muted" id="clf-stable-std"></div>
                                 </div>
                             </div>
                         </div>
