@@ -1,4 +1,4 @@
-"""GeoStress AI - FastAPI Web Application (v3.85.0 - UI Fixes + Session Persistence + Threshold Calibration)."""
+"""GeoStress AI - FastAPI Web Application (v3.87.0 - Focus Mode + MWW Chart + Session Persistence)."""
 
 import os
 import io

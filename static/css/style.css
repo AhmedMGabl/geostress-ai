@@ -854,3 +854,13 @@ body {
 .toast-error { border-left: 4px solid #ef4444; }
 .toast-success { border-left: 4px solid #22c55e; }
 .toast-warning { border-left: 4px solid #f59e0b; }
+
+/* Focus Mode toggle button */
+#focus-mode-btn {
+    font-size: 0.72rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+    opacity: 0.8;
+}
+#focus-mode-btn:hover { opacity: 1; }

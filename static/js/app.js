@@ -9551,6 +9551,40 @@ async function loadPerformanceShowcase() {
     }
 }
 
+// ── Focus Mode ────────────────────────────────────────────────
+// Hides "expert" sidebar items so new users see only the 12 core tabs.
+// Expert items are marked data-expert="true" in the HTML.
+// State persists in localStorage ('gs_focus_mode').
+
+function initFocusMode() {
+    var enabled = localStorage.getItem('gs_focus_mode') === '1';
+    _applyFocusMode(enabled);
+}
+
+function toggleFocusMode() {
+    var enabled = localStorage.getItem('gs_focus_mode') === '1';
+    enabled = !enabled;
+    localStorage.setItem('gs_focus_mode', enabled ? '1' : '0');
+    _applyFocusMode(enabled);
+    showToast(enabled ? 'Focus Mode ON — showing core tabs only' : 'Expert Mode — all tabs visible');
+}
+
+function _applyFocusMode(enabled) {
+    var btn = document.getElementById('focus-mode-btn');
+    var icon = document.getElementById('focus-icon');
+    var label = document.getElementById('focus-label');
+    document.querySelectorAll('[data-expert="true"]').forEach(function(el) {
+        el.style.display = enabled ? 'none' : '';
+    });
+    if (btn) {
+        btn.className = enabled
+            ? 'btn btn-warning btn-sm w-100'
+            : 'btn btn-outline-secondary btn-sm w-100';
+    }
+    if (icon) icon.className = enabled ? 'bi bi-funnel-fill' : 'bi bi-funnel';
+    if (label) label.textContent = enabled ? 'Expert Mode' : 'Focus Mode';
+}
+
 // ── Session Persistence (localStorage) ─────────────────────────
 // Saves well selection, regime, depth, pore pressure, geothermal gradient
 // so users don't lose their context on page refresh.
@@ -9580,6 +9614,7 @@ document.addEventListener("DOMContentLoaded", function() {
     loadFeedbackSummary();
     loadDbStats();
     initParamPersistence();
+    initFocusMode();
     loadStartupSnapshot();
     initDrillingTab();
     // Auto-run overview after a short delay (let summary load first)

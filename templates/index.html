@@ -55,8 +55,18 @@
                 </div>
                 <div class="d-flex justify-content-between align-items-center mt-1">
                     <small class="text-muted-light"><i class="bi bi-clock"></i> <span id="response-time">-</span></small>
-                    <small class="text-muted-light" style="font-size:0.6rem;opacity:0.6">v3.85</small>
+                    <small class="text-muted-light" style="font-size:0.6rem;opacity:0.6">v3.87</small>
                 </div>
+            </div>
+
+            <!-- Focus Mode toggle -->
+            <div class="px-2 pb-2">
+                <button id="focus-mode-btn" class="btn btn-outline-secondary btn-sm w-100"
+                    onclick="toggleFocusMode()"
+                    title="Focus Mode hides advanced tabs so you can find core features faster">
+                    <i class="bi bi-funnel" id="focus-icon"></i>
+                    <span id="focus-label">Focus Mode</span>
+                </button>
             </div>
 
             <ul class="nav flex-column sidebar-nav">
@@ -89,19 +99,19 @@
                     <li class="nav-item"><a class="nav-link" data-tab="viz" href="#"><i class="bi bi-pie-chart"></i> Visualizations</a></li>
                     <li class="nav-item"><a class="nav-link" data-tab="classify" href="#"><i class="bi bi-diagram-3"></i> ML Classification</a></li>
                     <li class="nav-item"><a class="nav-link" data-tab="models" href="#"><i class="bi bi-bar-chart-line"></i> Model Comparison</a></li>
-                    <li class="nav-item"><a class="nav-link" data-tab="shap" href="#"><i class="bi bi-lightbulb"></i> Why It Predicts</a></li>
-                    <li class="nav-item"><a class="nav-link" data-tab="cluster" href="#"><i class="bi bi-bullseye"></i> Fracture Clustering</a></li>
-                    <li class="nav-item"><a class="nav-link" data-tab="sensitivity" href="#"><i class="bi bi-sliders"></i> Sensitivity</a></li>
+                    <li class="nav-item" data-expert="true"><a class="nav-link" data-tab="shap" href="#"><i class="bi bi-lightbulb"></i> Why It Predicts</a></li>
+                    <li class="nav-item" data-expert="true"><a class="nav-link" data-tab="cluster" href="#"><i class="bi bi-bullseye"></i> Fracture Clustering</a></li>
+                    <li class="nav-item" data-expert="true"><a class="nav-link" data-tab="sensitivity" href="#"><i class="bi bi-sliders"></i> Sensitivity</a></li>
                 </div>
 
-                <!-- Risk & Safety Group -->
-                <li class="nav-item sidebar-group-header" onclick="toggleSidebarGroup(this)">
+                <!-- Risk & Safety Group (expert-only in focus mode) -->
+                <li class="nav-item sidebar-group-header" data-expert="true" onclick="toggleSidebarGroup(this)">
                     <span class="nav-link" style="cursor:pointer">
                         <i class="bi bi-chevron-right sidebar-arrow"></i> Risk & Safety
                         <span class="badge bg-secondary ms-auto" style="font-size:0.6rem">5</span>
                     </span>
                 </li>
-                <div class="sidebar-group collapsed">
+                <div class="sidebar-group collapsed" data-expert="true">
                     <li class="nav-item"><a class="nav-link" data-tab="risk" href="#"><i class="bi bi-shield-exclamation"></i> Risk Matrix</a></li>
                     <li class="nav-item"><a class="nav-link" data-tab="near-miss" href="#"><i class="bi bi-exclamation-diamond"></i> Near-Miss Safety</a></li>
                     <li class="nav-item"><a class="nav-link" data-tab="uncertainty" href="#"><i class="bi bi-clipboard-pulse"></i> Uncertainty Budget</a></li>
@@ -120,17 +130,17 @@
                     <li class="nav-item"><a class="nav-link" data-tab="decision" href="#"><i class="bi bi-signpost-split"></i> Decisions</a></li>
                     <li class="nav-item"><a class="nav-link" data-tab="wells" href="#"><i class="bi bi-building"></i> Well Comparison</a></li>
                     <li class="nav-item"><a class="nav-link" data-tab="report" href="#"><i class="bi bi-file-earmark-text"></i> Well Report</a></li>
-                    <li class="nav-item"><a class="nav-link" data-tab="calibration" href="#"><i class="bi bi-bullseye"></i> Calibration</a></li>
+                    <li class="nav-item" data-expert="true"><a class="nav-link" data-tab="calibration" href="#"><i class="bi bi-bullseye"></i> Calibration</a></li>
                 </div>
 
-                <!-- Quality & Compliance Group -->
-                <li class="nav-item sidebar-group-header" onclick="toggleSidebarGroup(this)">
+                <!-- Quality & Compliance Group (expert-only in focus mode) -->
+                <li class="nav-item sidebar-group-header" data-expert="true" onclick="toggleSidebarGroup(this)">
                     <span class="nav-link" style="cursor:pointer">
                         <i class="bi bi-chevron-right sidebar-arrow"></i> Quality & Compliance
                         <span class="badge bg-secondary ms-auto" style="font-size:0.6rem">4</span>
                     </span>
                 </li>
-                <div class="sidebar-group collapsed">
+                <div class="sidebar-group collapsed" data-expert="true">
                     <li class="nav-item"><a class="nav-link" data-tab="validation" href="#"><i class="bi bi-check2-all"></i> Data Validation</a></li>
                     <li class="nav-item"><a class="nav-link" data-tab="audit" href="#"><i class="bi bi-shield-check"></i> Audit Trail</a></li>
                     <li class="nav-item"><a class="nav-link" data-tab="feedback" href="#"><i class="bi bi-chat-dots"></i> Feedback</a></li>
@@ -146,7 +156,7 @@
                 </li>
                 <div class="sidebar-group collapsed">
                     <li class="nav-item"><a class="nav-link" data-tab="drilling" href="#"><i class="bi bi-tools"></i> Drilling Calculators</a></li>
-                    <li class="nav-item"><a class="nav-link" data-tab="research" href="#"><i class="bi bi-mortarboard"></i> Research & Methods</a></li>
+                    <li class="nav-item" data-expert="true"><a class="nav-link" data-tab="research" href="#"><i class="bi bi-mortarboard"></i> Research & Methods</a></li>
                 </div>
 
                 <li class="nav-item">
@@ -217,7 +227,7 @@
             <div class="sidebar-section mt-auto" style="border-top:1px solid rgba(255,255,255,0.08);padding:0.8rem 1rem">
                 <div class="d-flex align-items-center justify-content-between">
                     <small class="text-muted-light" style="font-size:0.65rem">
-                        <i class="bi bi-cpu"></i> GeoStress AI v3.85
+                        <i class="bi bi-cpu"></i> GeoStress AI v3.87
                     </small>
                     <div>
                         <a href="https://github.com/AhmedMGabl/geostress-ai" target="_blank" class="text-muted-light me-2" title="GitHub" style="font-size:0.8rem;text-decoration:none"><i class="bi bi-github"></i></a>
